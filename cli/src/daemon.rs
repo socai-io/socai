@@ -4,9 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use socai_core::runtime::SocaiRuntime;
-use socai_core::sites::xhs::{
-    extract_note_command, search_notes_command, topic_scan_command, XHS_HOME_URL,
-};
+use socai_core::sites::{find_site, SiteCommand, SiteSpec};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -46,6 +44,9 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
 #[derive(Debug, Serialize, Deserialize)]
 struct DaemonRequest {
     id: String,
+    /// Site id the command belongs to. Empty (legacy clients) means "xhs".
+    #[serde(default)]
+    site: String,
     command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auth: Option<String>,
@@ -159,18 +160,23 @@ pub async fn run_daemon() -> Result<()> {
     Ok(())
 }
 
-pub async fn send_or_spawn(command: &str, args: Value, command_timeout: Duration) -> Result<Value> {
-    match send_request(command, args.clone(), command_timeout).await {
+pub async fn send_or_spawn(
+    site: &str,
+    command: &str,
+    args: Value,
+    command_timeout: Duration,
+) -> Result<Value> {
+    match send_request(site, command, args.clone(), command_timeout).await {
         Ok(result) => Ok(result),
         Err(_) => {
             spawn_daemon().await?;
-            send_request(command, args, command_timeout).await
+            send_request(site, command, args, command_timeout).await
         }
     }
 }
 
 pub async fn stop_daemon() -> Result<bool> {
-    match send_request("shutdown", json!({}), Duration::from_secs(10)).await {
+    match send_request("", "shutdown", json!({}), Duration::from_secs(10)).await {
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
@@ -236,14 +242,21 @@ async fn handle_request(
             return Ok(json!({ "ok": true }));
         }
 
+        let site_id = if request.site.trim().is_empty() {
+            "xhs"
+        } else {
+            request.site.trim()
+        };
+        let site = find_site(site_id).ok_or_else(|| anyhow!("unknown site: {site_id}"))?;
+        let spec = site
+            .command(&command)
+            .ok_or_else(|| anyhow!("unknown {site_id} command: {command}"))?;
+
         let mut state = state.lock().await;
         state.last_activity = Instant::now();
-        match command.as_str() {
-            "search_notes" => state.search_notes(&id, request.args, &telemetry).await,
-            "topic_scan" => state.topic_scan(&id, request.args, &telemetry).await,
-            "extract_note" => state.extract_note(&id, request.args, &telemetry).await,
-            other => Err(anyhow!("unknown daemon command: {other}")),
-        }
+        state
+            .run_site_command(&id, site, spec, request.args, &telemetry)
+            .await
     }
     .await;
 
@@ -274,26 +287,26 @@ fn daemon_request_authorized(request_auth: Option<&str>, daemon_auth: Option<&st
 }
 
 impl DaemonState {
-    async fn search_notes(
+    async fn run_site_command(
         &mut self,
         request_id: &str,
+        site: &'static SiteSpec,
+        spec: &'static SiteCommand,
         args: Value,
         telemetry: &DaemonTelemetry,
     ) -> Result<Value> {
         let started = Instant::now();
         let result = async {
-            let query = required_string(&args, "query")?;
-            let filters = args.get("filters");
-            let num_notes = args.get("num_notes").and_then(Value::as_i64);
             let debug_snapshot = debug_snapshot_flag(&args);
-            let page = self.runtime.ensure_site_page("xhs", XHS_HOME_URL).await?;
-            search_notes_command(page, &query, filters, num_notes, debug_snapshot).await
+            let page = self.runtime.ensure_site_page(site.id, site.home_url).await?;
+            (spec.run)(page, args.clone(), debug_snapshot).await
         }
         .await;
         self.track_tool_trace(
             request_id,
-            "search_notes",
-            "search_notes",
+            site.id,
+            spec.name,
+            spec.tool_name,
             &args,
             telemetry,
             started,
@@ -302,77 +315,11 @@ impl DaemonState {
         result
     }
 
-    async fn topic_scan(
-        &mut self,
-        request_id: &str,
-        args: Value,
-        telemetry: &DaemonTelemetry,
-    ) -> Result<Value> {
-        let started = Instant::now();
-        let result = async {
-            let query = required_string(&args, "query")?;
-            let tab_label = args.get("tab_label").and_then(Value::as_str);
-            let filters = args.get("filters");
-            let num_notes = args.get("num_notes").and_then(Value::as_i64);
-            let download_media = args
-                .get("download_media")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let debug_snapshot = debug_snapshot_flag(&args);
-            let page = self.runtime.ensure_site_page("xhs", XHS_HOME_URL).await?;
-            topic_scan_command(
-                page,
-                &query,
-                tab_label,
-                filters,
-                num_notes,
-                download_media,
-                debug_snapshot,
-            )
-            .await
-        }
-        .await;
-        self.track_tool_trace(
-            request_id,
-            "topic_scan",
-            "topic_scan",
-            &args,
-            telemetry,
-            started,
-            &result,
-        );
-        result
-    }
-
-    async fn extract_note(
-        &mut self,
-        request_id: &str,
-        args: Value,
-        telemetry: &DaemonTelemetry,
-    ) -> Result<Value> {
-        let started = Instant::now();
-        let result = async {
-            let note_id = required_string(&args, "note_id")?;
-            let debug_snapshot = debug_snapshot_flag(&args);
-            let page = self.runtime.ensure_site_page("xhs", XHS_HOME_URL).await?;
-            extract_note_command(page, &note_id, debug_snapshot).await
-        }
-        .await;
-        self.track_tool_trace(
-            request_id,
-            "extract_note",
-            "read_note",
-            &args,
-            telemetry,
-            started,
-            &result,
-        );
-        result
-    }
-
+    #[allow(clippy::too_many_arguments)]
     fn track_tool_trace(
         &self,
         request_id: &str,
+        site_id: &str,
         command: &str,
         tool_name: &str,
         input: &Value,
@@ -384,7 +331,7 @@ impl DaemonState {
             return;
         }
 
-        let mut props = base_trace_props(request_id, command, tool_name);
+        let mut props = base_trace_props(request_id, site_id, command, tool_name);
         props.insert(
             "duration_ms".into(),
             json!(started.elapsed().as_millis() as u64),
@@ -406,18 +353,23 @@ impl DaemonState {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        let _ = self.runtime.close_site_session("xhs").await;
+        let _ = self.runtime.close_all_site_sessions().await;
         self.runtime.disconnect_browser().await;
         Ok(())
     }
 }
 
-fn base_trace_props(request_id: &str, command: &str, tool_name: &str) -> Map<String, Value> {
+fn base_trace_props(
+    request_id: &str,
+    site_id: &str,
+    command: &str,
+    tool_name: &str,
+) -> Map<String, Value> {
     let mut props = Map::new();
     props.insert("request_id".into(), json!(request_id));
     props.insert("command".into(), json!(command));
     props.insert("tool_name".into(), json!(tool_name));
-    props.insert("site".into(), json!("xhs"));
+    props.insert("site".into(), json!(site_id));
     props
 }
 
@@ -637,11 +589,17 @@ mod tests {
     }
 }
 
-async fn send_request(command: &str, args: Value, request_timeout: Duration) -> Result<Value> {
+async fn send_request(
+    site: &str,
+    command: &str,
+    args: Value,
+    request_timeout: Duration,
+) -> Result<Value> {
     let paths = daemon_paths()?;
     let (stream, auth) = connect_daemon(&paths).await?;
     let request = DaemonRequest {
         id: request_id(),
+        site: site.to_string(),
         command: command.to_string(),
         auth,
         args,
@@ -711,7 +669,7 @@ async fn spawn_daemon() -> Result<()> {
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
-        if send_request("ping", json!({}), Duration::from_secs(2))
+        if send_request("", "ping", json!({}), Duration::from_secs(2))
             .await
             .is_ok()
         {
@@ -823,16 +781,6 @@ fn debug_snapshot_flag(args: &Value) -> bool {
     args.get("debug_snapshot")
         .and_then(Value::as_bool)
         .unwrap_or(false)
-}
-
-fn required_string(args: &Value, key: &str) -> Result<String> {
-    let value = args
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("missing required argument: {key}"))?;
-    Ok(value.to_string())
 }
 
 fn daemon_paths() -> Result<DaemonPaths> {

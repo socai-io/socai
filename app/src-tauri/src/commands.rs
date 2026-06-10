@@ -13,9 +13,9 @@ use socai_core::runtime::{
     SocaiRuntime,
 };
 use socai_core::sites::xhs::{
-    search_notes_command, topic_scan_command, xhs_agent_instructions, xhs_agent_tools,
-    XhsPageRuntime, XHS_HOME_URL,
+    search_notes_command, topic_scan_command, XhsPageRuntime, XHS_HOME_URL,
 };
+use socai_core::sites::{find_site, SiteSpec};
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -24,6 +24,15 @@ use tauri::{AppHandle, Emitter, State};
 
 const TAURI_AGENT_PREAMBLE: &str = "You are running inside the socai desktop app.";
 const XHS_NOTE_BASE_URL: &str = "https://www.xiaohongshu.com/explore";
+
+/// Site the desktop agent runner drives. Becomes a runtime choice once the
+/// app grows a site switcher.
+const APP_SITE_ID: &str = "xhs";
+
+fn app_site() -> Result<&'static SiteSpec> {
+    find_site(APP_SITE_ID)
+        .ok_or_else(|| anyhow::anyhow!("app default site {APP_SITE_ID} is not registered"))
+}
 
 // ── CDP connect tests (existing) ───────────────────────────────────────────
 
@@ -35,10 +44,10 @@ pub async fn cdp_connect(runtime: State<'_, SocaiRuntime>) -> Result<(), String>
 
 #[tauri::command]
 pub async fn cdp_disconnect(runtime: State<'_, SocaiRuntime>) -> Result<(), String> {
-    // Close any legacy shared XHS page before tearing down the WS. The desktop
-    // task runner now uses short-lived tabs, but this keeps old tool/session
-    // state from leaving a stale automated tab behind.
-    let _ = runtime.close_site_session("xhs").await;
+    // Close any legacy shared site pages before tearing down the WS. The
+    // desktop task runner now uses short-lived tabs, but this keeps old
+    // tool/session state from leaving a stale automated tab behind.
+    let _ = runtime.close_all_site_sessions().await;
     runtime.disconnect_browser().await;
     Ok(())
 }
@@ -685,7 +694,8 @@ async fn run_agent_task_on_fresh_page(
 
     ensure_llm_provider_configured_for(provider, model)?;
     let llm_provider = create_llm_provider_for(provider, model)?;
-    let page = Arc::new(runtime.create_page(XHS_HOME_URL).await?);
+    let site = app_site()?;
+    let page = Arc::new(runtime.create_page(site.home_url).await?);
     let target_id = page.target_id().to_string();
     label_controlled_page(&page, &title_label).await;
     if let Some(registry) = &registry {
@@ -707,13 +717,13 @@ async fn run_agent_task_on_fresh_page(
         }
     }
     let outcome = async {
-        let tools = xhs_agent_tools(page.clone(), llm_provider.clone()).await?;
+        let tools = (site.agent_tools)(page.clone(), llm_provider.clone()).await?;
         let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
         let pump = pump_agent_task_events(app, registry.clone(), task_id.clone(), rx);
 
         let config = AgentRunConfig {
-            extra_instructions: xhs_agent_instructions(TAURI_AGENT_PREAMBLE),
-            enabled_sites: vec!["xhs".to_string()],
+            extra_instructions: (site.agent_instructions)(TAURI_AGENT_PREAMBLE),
+            enabled_sites: vec![site.id.to_string()],
             run_dir,
             ..AgentRunConfig::default()
         };

@@ -13,11 +13,14 @@ use crate::media::{timing_delta, MediaProcessor, TimingSnapshot};
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
+use crate::sites::registry::{
+    required_string, ArgKind, BoxFuture, CommandArg, SiteCommand, SiteSpec, SlowWhen,
+};
 use crate::sites::xhs::media_manifest::{
     ensure_entity_note_id, topic_scan_media_manifest, write_media_manifest_file,
 };
 use crate::sites::xhs::page::XHS_SEARCH_FILTERS;
-use crate::sites::xhs::{ReadNoteOptions, XhsHistoryStore, XhsNoteCard, XhsPageRuntime};
+use crate::sites::xhs::{ReadNoteOptions, XhsHistoryStore, XhsNoteCard, XhsPageRuntime, XHS_HOME_URL};
 
 /// Default number of notes `topic_scan` reads when the caller doesn't specify.
 const DEFAULT_NUM_NOTES: i64 = 10;
@@ -93,6 +96,167 @@ pub fn xhs_agent_instructions(extra: &str) -> String {
     } else {
         format!("{extra}\n\n{base}")
     }
+}
+
+/// Registry entry for Xiaohongshu — the only wiring a site needs beyond its
+/// module declaration in `sites/mod.rs`.
+pub static XHS_SITE: SiteSpec = SiteSpec {
+    id: "xhs",
+    about: "Xiaohongshu (xiaohongshu.com)",
+    home_url: XHS_HOME_URL,
+    agent_tools: |page, llm| Box::pin(xhs_agent_tools(page, llm)),
+    agent_instructions: xhs_agent_instructions,
+    commands: &[
+        SiteCommand {
+            name: "search_notes",
+            tool_name: "search_notes",
+            about: "Search Xiaohongshu and print the first results page's note cards as JSON.",
+            args: &[
+                CommandArg {
+                    key: "query",
+                    long: None,
+                    value_name: "QUERY",
+                    help: "Search query",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "filters",
+                    long: Some("filter"),
+                    value_name: "GROUP=OPTION",
+                    help: "Search-result filter as `group=option` (repeatable), e.g. \
+                           `--filter publish_time=一天内 --filter note_type=图文`. Groups: \
+                           sort, note_type, publish_time, search_scope, distance.",
+                    required: false,
+                    kind: ArgKind::KeyValueMap,
+                },
+                CommandArg {
+                    key: "num_notes",
+                    long: Some("num-notes"),
+                    value_name: "N",
+                    help: "Auto-scroll the feed to collect at least this many cards \
+                           (titles/likes/covers only — note bodies are not opened). Omit for \
+                           the first page only (~19 cards).",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+            ],
+            // Scrolling for a large `num_notes` can take a while; give it the
+            // longer budget rather than the default single-action timeout.
+            slow: SlowWhen::ArgPresent("num_notes"),
+            run: run_search_notes,
+        },
+        SiteCommand {
+            name: "topic_scan",
+            tool_name: "topic_scan",
+            about: "Run a Xiaohongshu topic scan (note body + top comments per note).",
+            args: &[
+                CommandArg {
+                    key: "query",
+                    long: None,
+                    value_name: "QUERY",
+                    help: "Search query",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "tab_label",
+                    long: Some("tab"),
+                    value_name: "TAB",
+                    help: "Search tab to scan (e.g. 最新)",
+                    required: false,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "filters",
+                    long: Some("filter"),
+                    value_name: "GROUP=OPTION",
+                    help: "Search-result filter as `group=option` (repeatable), e.g. \
+                           `--filter publish_time=一天内 --filter note_type=图文`. Groups: \
+                           sort, note_type, publish_time, search_scope, distance.",
+                    required: false,
+                    kind: ArgKind::KeyValueMap,
+                },
+                CommandArg {
+                    key: "num_notes",
+                    long: Some("num-notes"),
+                    value_name: "N",
+                    help: "Number of notes to read; scrolls the feed only if the first page \
+                           holds fewer.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "download_media",
+                    long: Some("download-media"),
+                    value_name: "DOWNLOAD_MEDIA",
+                    help: "Download note images/videos into the command run_dir and include \
+                           local_path fields in the JSON output.",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_topic_scan,
+        },
+        SiteCommand {
+            name: "extract_note",
+            tool_name: "read_note",
+            about: "Open a note from the current search/topic page and print the parsed note.",
+            args: &[CommandArg {
+                key: "note_id",
+                long: Some("note-id"),
+                value_name: "NOTE_ID",
+                help: "Note id to open",
+                required: true,
+                kind: ArgKind::Str,
+            }],
+            slow: SlowWhen::Never,
+            run: run_extract_note,
+        },
+    ],
+};
+
+fn run_search_notes(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+    Box::pin(async move {
+        let query = required_string(&args, "query")?;
+        let filters = args.get("filters").cloned();
+        let num_notes = args.get("num_notes").and_then(Value::as_i64);
+        search_notes_command(page, &query, filters.as_ref(), num_notes, debug_snapshot).await
+    })
+}
+
+fn run_topic_scan(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+    Box::pin(async move {
+        let query = required_string(&args, "query")?;
+        let tab_label = args
+            .get("tab_label")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let filters = args.get("filters").cloned();
+        let num_notes = args.get("num_notes").and_then(Value::as_i64);
+        let download_media = args
+            .get("download_media")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        topic_scan_command(
+            page,
+            &query,
+            tab_label.as_deref(),
+            filters.as_ref(),
+            num_notes,
+            download_media,
+            debug_snapshot,
+        )
+        .await
+    })
+}
+
+fn run_extract_note(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+    Box::pin(async move {
+        let note_id = required_string(&args, "note_id")?;
+        extract_note_command(page, &note_id, debug_snapshot).await
+    })
 }
 
 #[derive(Clone, Copy)]

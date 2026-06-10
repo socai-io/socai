@@ -24,7 +24,16 @@ use socai_core::agent::{local_agent_tools, make_run_dir, Session};
 use socai_core::runtime::{
     create_llm_provider, run_agent_task as run_agent_with_tools, AgentRunConfig, SocaiRuntime,
 };
-use socai_core::sites::xhs::{xhs_agent_instructions, xhs_agent_tools, XHS_HOME_URL};
+use socai_core::sites::{find_site, SiteSpec};
+
+/// Site the interactive TUI drives. Becomes a runtime choice once the TUI
+/// grows a site switcher.
+const TUI_SITE_ID: &str = "xhs";
+
+fn tui_site() -> Result<&'static SiteSpec> {
+    find_site(TUI_SITE_ID)
+        .ok_or_else(|| anyhow::anyhow!("TUI default site {TUI_SITE_ID} is not registered"))
+}
 
 const PROVIDER_ORDER: &[Provider] = &[
     Provider::Kimi,
@@ -200,7 +209,7 @@ pub async fn run() -> Result<()> {
         }
     }
 
-    let _ = runtime.close_site_session("xhs").await;
+    let _ = runtime.close_all_site_sessions().await;
     runtime.disconnect_browser().await;
     Ok(())
 }
@@ -606,7 +615,8 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     // Browser/network setup can fail (e.g. DNS ERR_NAME_NOT_RESOLVED). Record
     // the turn even then, so a follow-up still knows what the user asked.
     println!("[socai] connecting browser...");
-    let page = match runtime.ensure_site_page("xhs", XHS_HOME_URL).await {
+    let site = tui_site()?;
+    let page = match runtime.ensure_site_page(site.id, site.home_url).await {
         Ok(page) => page,
         Err(err) => {
             state.session.record_turn(
@@ -618,7 +628,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
             return Err(err);
         }
     };
-    let mut tools = xhs_agent_tools(page, llm_provider.clone()).await?;
+    let mut tools = (site.agent_tools)(page, llm_provider.clone()).await?;
     tools.extend(local_agent_tools());
 
     // Track run_id + latest assistant text live off the event stream so we can
@@ -643,8 +653,8 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     // belong to this session so it can read back earlier artifacts.
     let preamble = format!("{TUI_AGENT_PREAMBLE}\n\n{}", state.session.context_note());
     let config = AgentRunConfig {
-        extra_instructions: xhs_agent_instructions(&preamble),
-        enabled_sites: vec!["xhs".to_string()],
+        extra_instructions: (site.agent_instructions)(&preamble),
+        enabled_sites: vec![site.id.to_string()],
         seed_messages: state.session.chat_messages(),
         run_dir: Some(run_dir.clone()),
         ..AgentRunConfig::default()
