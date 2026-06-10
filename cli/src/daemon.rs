@@ -9,7 +9,7 @@ use socai_core::sites::{find_site, SiteCommand, SiteSpec};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -41,6 +41,51 @@ const LOG_NAME: &str = "rust-daemon.log";
 const IDLE_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// The daemon only serves a CLI of the exact same build. A version mismatch
+/// is a hard error the user has to reconcile (update or rebuild); a same-
+/// version binary change (dev rebuild) restarts the daemon automatically.
+const PROTOCOL_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CODE_VERSION_MISMATCH: &str = "version-mismatch";
+const CODE_STALE_DAEMON: &str = "stale-daemon";
+
+static BUILD_ID: OnceLock<String> = OnceLock::new();
+
+/// Fingerprint (size + mtime) of the executable this process started from.
+/// The daemon pins it at startup — before a rebuild can swap the file under
+/// the same path — so comparing it against the calling CLI detects a stale
+/// daemon even when the package version did not change.
+fn process_build_id() -> &'static str {
+    BUILD_ID.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| std::fs::metadata(exe).ok())
+            .and_then(|meta| {
+                let mtime = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+                Some(format!("{}-{}", meta.len(), mtime.as_nanos()))
+            })
+            .unwrap_or_else(|| "unknown".to_string())
+    })
+}
+
+/// Daemon failures that need different client-side recovery: a version
+/// mismatch must fail, a stale daemon is restarted automatically.
+#[derive(Debug)]
+enum DaemonClientError {
+    VersionMismatch(String),
+    StaleDaemon(String),
+}
+
+impl std::fmt::Display for DaemonClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DaemonClientError::VersionMismatch(message)
+            | DaemonClientError::StaleDaemon(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for DaemonClientError {}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct DaemonRequest {
     id: String,
@@ -50,6 +95,11 @@ struct DaemonRequest {
     command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auth: Option<String>,
+    /// CLI package version + binary fingerprint. Empty for legacy clients.
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    build_id: String,
     #[serde(default)]
     args: Value,
     #[serde(default)]
@@ -85,6 +135,40 @@ struct DaemonResponse {
     result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// Machine-readable failure class (e.g. version-mismatch, stale-daemon).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    /// Daemon build identity; missing on responses from legacy daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    build_id: Option<String>,
+}
+
+impl DaemonResponse {
+    fn success(id: String, result: Value) -> Self {
+        Self {
+            id,
+            ok: true,
+            result: Some(result),
+            error: None,
+            code: None,
+            version: Some(PROTOCOL_VERSION.to_string()),
+            build_id: Some(process_build_id().to_string()),
+        }
+    }
+
+    fn failure(id: String, code: Option<&str>, error: String) -> Self {
+        Self {
+            id,
+            ok: false,
+            result: None,
+            error: Some(error),
+            code: code.map(str::to_string),
+            version: Some(PROTOCOL_VERSION.to_string()),
+            build_id: Some(process_build_id().to_string()),
+        }
+    }
 }
 
 struct DaemonPaths {
@@ -113,6 +197,8 @@ struct DaemonState {
 }
 
 pub async fn run_daemon() -> Result<()> {
+    // Pin the binary fingerprint before a rebuild can swap the file under us.
+    let _ = process_build_id();
     let paths = daemon_paths()?;
     fs::create_dir_all(&paths.home).await?;
     cleanup_stale_ipc(&paths).await?;
@@ -166,13 +252,24 @@ pub async fn send_or_spawn(
     args: Value,
     command_timeout: Duration,
 ) -> Result<Value> {
-    match send_request(site, command, args.clone(), command_timeout).await {
-        Ok(result) => Ok(result),
-        Err(_) => {
-            spawn_daemon().await?;
-            send_request(site, command, args, command_timeout).await
+    let err = match send_request(site, command, args.clone(), command_timeout).await {
+        Ok(result) => return Ok(result),
+        Err(err) => err,
+    };
+    match err.downcast_ref::<DaemonClientError>() {
+        // A different release serving this CLI is never acceptable — the user
+        // has to bring both onto the same version.
+        Some(DaemonClientError::VersionMismatch(_)) => return Err(err),
+        // Same version, different binary (typically a dev rebuild): replace
+        // the daemon so commands never run on stale code.
+        Some(DaemonClientError::StaleDaemon(_)) => {
+            eprintln!("socai daemon was started from a different build; restarting it");
+            let _ = stop_daemon().await;
         }
+        None => {}
     }
+    spawn_daemon().await?;
+    send_request(site, command, args, command_timeout).await
 }
 
 pub async fn stop_daemon() -> Result<bool> {
@@ -224,12 +321,37 @@ async fn handle_request(
     let telemetry = request.telemetry.clone();
     let auth_token = { state.lock().await.auth_token.clone() };
     if !daemon_request_authorized(request.auth.as_deref(), auth_token.as_deref()) {
-        return DaemonResponse {
-            id,
-            ok: false,
-            result: None,
-            error: Some("daemon authentication failed".into()),
-        };
+        return DaemonResponse::failure(id, None, "daemon authentication failed".into());
+    }
+
+    // Site commands only run for a CLI of the exact same build. ping and
+    // shutdown stay exempt so `socai stop` works across any version pairing.
+    if !matches!(command.as_str(), "ping" | "shutdown") {
+        if request.version != PROTOCOL_VERSION {
+            let cli_version = if request.version.is_empty() {
+                "<unknown>"
+            } else {
+                request.version.as_str()
+            };
+            return DaemonResponse::failure(
+                id,
+                Some(CODE_VERSION_MISMATCH),
+                format!(
+                    "socai daemon {PROTOCOL_VERSION} cannot serve CLI {cli_version}; \
+                     run `socai stop`, then update or rebuild so both use the same version"
+                ),
+            );
+        }
+        if request.build_id != process_build_id() {
+            return DaemonResponse::failure(
+                id,
+                Some(CODE_STALE_DAEMON),
+                format!(
+                    "socai daemon was started from a different build of {PROTOCOL_VERSION} \
+                     (the binary changed since it started)"
+                ),
+            );
+        }
     }
 
     let result = async {
@@ -261,18 +383,8 @@ async fn handle_request(
     .await;
 
     match result {
-        Ok(result) => DaemonResponse {
-            id,
-            ok: true,
-            result: Some(result),
-            error: None,
-        },
-        Err(err) => DaemonResponse {
-            id,
-            ok: false,
-            result: None,
-            error: Some(format!("{err:#}")),
-        },
+        Ok(result) => DaemonResponse::success(id, result),
+        Err(err) => DaemonResponse::failure(id, None, format!("{err:#}")),
     }
 }
 
@@ -602,6 +714,8 @@ async fn send_request(
         site: site.to_string(),
         command: command.to_string(),
         auth,
+        version: PROTOCOL_VERSION.to_string(),
+        build_id: process_build_id().to_string(),
         args,
         telemetry: DaemonTelemetry {
             enabled: telemetry_enabled(),
@@ -623,12 +737,29 @@ async fn send_request(
         }
         let response: DaemonResponse = serde_json::from_str(line.trim_end())?;
         if !response.ok {
-            return Err(anyhow!(
-                "{}",
-                response
-                    .error
-                    .unwrap_or_else(|| "daemon command failed".to_string())
-            ));
+            let message = response
+                .error
+                .unwrap_or_else(|| "daemon command failed".to_string());
+            return Err(match response.code.as_deref() {
+                Some(CODE_VERSION_MISMATCH) => {
+                    anyhow::Error::new(DaemonClientError::VersionMismatch(message))
+                }
+                Some(CODE_STALE_DAEMON) => {
+                    anyhow::Error::new(DaemonClientError::StaleDaemon(message))
+                }
+                _ => anyhow!("{message}"),
+            });
+        }
+        // Legacy daemons (pre build checking) execute commands without
+        // validating; their responses lack the build identity. Treat them as
+        // stale so they get replaced rather than silently serving old code.
+        if !matches!(command, "ping" | "shutdown")
+            && (response.version.as_deref() != Some(PROTOCOL_VERSION)
+                || response.build_id.as_deref() != Some(process_build_id()))
+        {
+            return Err(anyhow::Error::new(DaemonClientError::StaleDaemon(
+                "socai daemon predates build checking or runs a different build".to_string(),
+            )));
         }
         response
             .result
