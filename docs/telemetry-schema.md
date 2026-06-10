@@ -215,7 +215,7 @@ CLI behavior in `cli/src/daemon.rs`:
 A user runs:
 
 ```bash
-socai topic_scan "运营爆款思路" --num-notes 12 --tab latest
+socai xhs topic_scan "运营爆款思路" --num-notes 12 --tab latest
 ```
 
 Representative Axiom row after proxy sanitization:
@@ -265,7 +265,7 @@ Axiom will also show native `_time` and `_sysTime` columns for the row.
 A user runs:
 
 ```bash
-SOCAI_TELEMETRY_QUERY_TEXT=off socai topic_scan "运营爆款思路" --num-notes 12
+SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs topic_scan "运营爆款思路" --num-notes 12
 ```
 
 Representative Axiom row:

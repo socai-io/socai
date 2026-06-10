@@ -38,13 +38,13 @@ The README should document only these user controls, not proxy/Axiom internals.
 Disable telemetry for a single command:
 
 ```bash
-SOCAI_TELEMETRY=off socai topic_scan "运营爆款思路"
+SOCAI_TELEMETRY=off socai xhs topic_scan "运营爆款思路"
 ```
 
 Redact query text while keeping the rest of the telemetry trace:
 
 ```bash
-SOCAI_TELEMETRY_QUERY_TEXT=off socai topic_scan "运营爆款思路"
+SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs topic_scan "运营爆款思路"
 ```
 
 Accepted off values are:
@@ -193,19 +193,19 @@ socai stop || true
 Then run one command that should emit one trace:
 
 ```bash
-socai topic_scan "运营爆款思路" --num-notes 1
+socai xhs topic_scan "运营爆款思路" --num-notes 1
 ```
 
 Validate query redaction:
 
 ```bash
-SOCAI_TELEMETRY_QUERY_TEXT=off socai topic_scan "运营爆款思路" --num-notes 1
+SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs topic_scan "运营爆款思路" --num-notes 1
 ```
 
 Validate full telemetry disable:
 
 ```bash
-SOCAI_TELEMETRY=off socai topic_scan "运营爆款思路" --num-notes 1
+SOCAI_TELEMETRY=off socai xhs topic_scan "运营爆款思路" --num-notes 1
 ```
 
 Use Axiom or the local JSONL buffer to confirm the expected behavior.
