@@ -240,9 +240,12 @@ pub async fn run_daemon() -> Result<()> {
         }
     }
 
-    state.lock().await.shutdown().await?;
+    // Unlink our IPC endpoint before the slow browser teardown: a successor
+    // daemon may bind a fresh socket at this path right away, and removing it
+    // after shutdown would yank the new daemon's endpoint from under it.
     cleanup_stale_ipc(&paths).await?;
     let _ = fs::remove_file(&paths.pid).await;
+    state.lock().await.shutdown().await?;
     Ok(())
 }
 
@@ -265,6 +268,7 @@ pub async fn send_or_spawn(
         Some(DaemonClientError::StaleDaemon(_)) => {
             eprintln!("socai daemon was started from a different build; restarting it");
             let _ = stop_daemon().await;
+            wait_for_daemon_exit().await;
         }
         None => {}
     }
@@ -869,13 +873,30 @@ async fn connect_daemon(paths: &DaemonPaths) -> Result<(DaemonStream, Option<Str
 }
 
 #[cfg(unix)]
-async fn cleanup_stale_ipc(paths: &DaemonPaths) -> Result<()> {
-    if paths.socket.exists() {
-        fs::remove_file(&paths.socket)
-            .await
-            .with_context(|| format!("remove stale socket {}", paths.socket.display()))?;
+/// Give a just-stopped daemon a moment to unlink its IPC endpoint so the
+/// successor's pre-spawn cleanup doesn't race its exit cleanup.
+async fn wait_for_daemon_exit() {
+    let Ok(paths) = daemon_paths() else { return };
+    #[cfg(unix)]
+    let marker = paths.socket.clone();
+    #[cfg(windows)]
+    let marker = paths.endpoint.clone();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while marker.exists() && Instant::now() < deadline {
+        sleep(Duration::from_millis(50)).await;
     }
-    Ok(())
+}
+
+async fn cleanup_stale_ipc(paths: &DaemonPaths) -> Result<()> {
+    // A just-stopped daemon races us removing the same socket (its exit
+    // cleanup vs our pre-spawn cleanup), so a missing file is success.
+    match fs::remove_file(&paths.socket).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => {
+            Err(err).with_context(|| format!("remove stale socket {}", paths.socket.display()))
+        }
+    }
 }
 
 #[cfg(windows)]
