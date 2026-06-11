@@ -7,14 +7,18 @@
 
 use std::sync::Arc;
 
-use crate::agent::{make_run_dir, Backend as LlmProvider, Tool, ToolContext, ToolResult};
-use crate::cdp::{with_snapshot_recording, PageSession};
+use crate::agent::{Backend as LlmProvider, Tool, ToolContext, ToolResult};
+use crate::cdp::PageSession;
 use crate::media::{timing_delta, MediaProcessor, TimingSnapshot};
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
 use crate::sites::registry::{
     required_string, ArgKind, BoxFuture, CommandArg, SiteCommand, SiteSpec, SlowWhen,
+};
+use crate::sites::runner::{
+    get_bool, get_f64, get_i64, get_str, insert_optional_str, json_result, run_tool_command,
+    trimmed_required, PageHook, ToolCommand,
 };
 use crate::sites::xhs::media_manifest::{
     ensure_entity_note_id, topic_scan_media_manifest, write_media_manifest_file,
@@ -399,50 +403,35 @@ async fn run_xhs_tool_command(
     input: Value,
     debug_snapshot: bool,
 ) -> anyhow::Result<Value> {
-    let (run_dir, ctx) = command_context(spec.command_name);
-    // Persist the full command input up front (best-effort) so a run is
-    // debuggable from its dir alone — including the exact args — even when the
-    // tool errors out partway.
-    let invocation = json!({
-        "command": spec.command_name,
-        "tool": spec.tool_name,
-        "input": input.clone(),
-    });
-    let _ = std::fs::create_dir_all(&ctx.run_dir);
-    if let Ok(bytes) = serde_json::to_vec_pretty(&invocation) {
-        let _ = std::fs::write(ctx.run_dir.join("command_input.json"), bytes);
-    }
-    // Snapshot recording (when `--debug-snapshot` is on) wraps the whole
-    // command — setup navigation, the tool's clicks/scrolls, and teardown. All
-    // recorder machinery lives in the generic CDP layer; this is the only hook
-    // a site command runner needs.
-    let data = with_snapshot_recording(&page, &ctx.run_dir, debug_snapshot, async {
-        apply_command_page_action(spec.before, &page).await?;
-        let data = call_xhs_tool(page.clone(), spec.tool_name, input, &ctx).await?;
-        apply_command_page_action(spec.after, &page).await?;
-        Ok::<Value, anyhow::Error>(data)
-    })
-    .await?;
-
-    Ok(json!({
-        "command": spec.command_name,
-        "run_dir": run_dir,
-        "input": invocation.get("input").cloned().unwrap_or(Value::Null),
-        "data": data,
-    }))
+    let tools = xhs_tools(page.clone());
+    run_tool_command(
+        ToolCommand {
+            site_id: "xhs",
+            command_name: spec.command_name,
+            tool_name: spec.tool_name,
+            before: page_action_hook(spec.before),
+            after: page_action_hook(spec.after),
+        },
+        page,
+        &tools,
+        input,
+        debug_snapshot,
+    )
+    .await
 }
 
-async fn apply_command_page_action(
-    action: CommandPageAction,
-    page: &PageSession,
-) -> anyhow::Result<()> {
+fn page_action_hook(action: CommandPageAction) -> Option<PageHook> {
     match action {
-        CommandPageAction::None => Ok(()),
-        CommandPageAction::SearchReady => ensure_search_ready(page).await,
-        CommandPageAction::CloseOpenNote => {
-            close_open_note(page).await;
-            Ok(())
-        }
+        CommandPageAction::None => None,
+        CommandPageAction::SearchReady => Some(Box::new(|page| {
+            Box::pin(async move { ensure_search_ready(&page).await })
+        })),
+        CommandPageAction::CloseOpenNote => Some(Box::new(|page| {
+            Box::pin(async move {
+                close_open_note(&page).await;
+                Ok(())
+            })
+        })),
     }
 }
 
@@ -480,71 +469,6 @@ pub async fn close_open_note(page: &PageSession) {
     if note_open || state_name == "note_detail" {
         let _ = runtime.close_note(0.8).await;
     }
-}
-
-async fn call_xhs_tool(
-    page: Arc<PageSession>,
-    tool_name: &str,
-    input: Value,
-    ctx: &ToolContext,
-) -> anyhow::Result<Value> {
-    let tool = xhs_tools(page)
-        .into_iter()
-        .find(|tool| tool.name() == tool_name)
-        .ok_or_else(|| anyhow::anyhow!("xhs tool not found: {tool_name}"))?;
-    let result = tool.call(input, ctx).await?;
-    let text = result.flat_text();
-    serde_json::from_str(text.trim()).or_else(|_| Ok(json!({ "raw_reply": text })))
-}
-
-fn command_context(label: &str) -> (String, ToolContext) {
-    let run_dir = make_run_dir(label);
-    let run_id = run_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(label)
-        .to_string();
-    let ctx = ToolContext::new(run_id, run_dir.clone());
-    ctx.enable_site("xhs");
-    (run_dir.display().to_string(), ctx)
-}
-
-fn trimmed_required(value: &str, label: &str) -> anyhow::Result<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("{label} is empty");
-    }
-    Ok(trimmed.to_string())
-}
-
-fn insert_optional_str(input: &mut Value, key: &str, value: Option<&str>) {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return;
-    };
-    if let Some(obj) = input.as_object_mut() {
-        obj.insert(key.to_string(), Value::String(value.to_string()));
-    }
-}
-
-fn json_result(value: &Value) -> ToolResult {
-    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-    ToolResult::text(text)
-}
-
-fn get_f64(input: &Value, key: &str, default: f64) -> f64 {
-    input.get(key).and_then(Value::as_f64).unwrap_or(default)
-}
-
-fn get_i64(input: &Value, key: &str, default: i64) -> i64 {
-    input.get(key).and_then(Value::as_i64).unwrap_or(default)
-}
-
-fn get_str<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
-    input.get(key).and_then(Value::as_str)
-}
-
-fn get_bool(input: &Value, key: &str, default: bool) -> bool {
-    input.get(key).and_then(Value::as_bool).unwrap_or(default)
 }
 
 fn read_note_options(input: &Value) -> ReadNoteOptions {
