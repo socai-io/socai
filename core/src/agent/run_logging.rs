@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{Local, Utc};
+use chrono::Local;
 use serde_json::{json, Map, Value};
 
 fn timestamp() -> String {
@@ -55,19 +55,20 @@ pub fn default_runs_root() -> PathBuf {
 }
 
 /// Allocate a unique run directory for the given task:
-/// `agent_<YYYYMMDD_HHMMSS>_<slug>` with a numeric suffix if that name already
-/// exists.
+/// `<YYYYMMDD_HHMMSS>_<slug>` with a numeric suffix if that name already
+/// exists. The timestamp is local time, matching the per-frame snapshot
+/// folder names.
 pub fn make_run_dir(task: &str) -> PathBuf {
-    let ts = Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let ts = Local::now().format("%Y%m%d_%H%M%S").to_string();
     let slug = safe_slug(task, 48);
-    let base = default_runs_root().join(format!("agent_{ts}_{slug}"));
+    let base = default_runs_root().join(format!("{ts}_{slug}"));
     if !base.exists() {
         return base;
     }
     for suffix in 2u32.. {
         let candidate = base.with_file_name(format!(
             "{}_{}",
-            base.file_name().and_then(|s| s.to_str()).unwrap_or("agent"),
+            base.file_name().and_then(|s| s.to_str()).unwrap_or("run"),
             suffix
         ));
         if !candidate.exists() {

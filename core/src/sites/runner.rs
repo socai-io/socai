@@ -37,7 +37,17 @@ pub async fn run_tool_command(
     input: Value,
     debug_snapshot: bool,
 ) -> anyhow::Result<Value> {
-    let (run_dir, ctx) = command_context(cmd.site_id, cmd.command_name);
+    // Run-dir label: site + command, plus the query when the command has one,
+    // so runs are tellable apart at a glance (…_xhs_search_notes_咖啡).
+    let mut label = format!("{}_{}", cmd.site_id, cmd.command_name);
+    if let Some(query) = input.get("query").and_then(Value::as_str) {
+        let query = query.trim();
+        if !query.is_empty() {
+            label.push('_');
+            label.push_str(query);
+        }
+    }
+    let (run_dir, ctx) = command_context_for_label(cmd.site_id, &label);
     // Persist the full command input up front (best-effort) so a run is
     // debuggable from its dir alone — including the exact args — even when the
     // tool errors out partway.
@@ -92,8 +102,13 @@ pub async fn call_site_tool(
 }
 
 /// Allocate a run dir for a one-shot command and build its ToolContext with
-/// the site enabled (so site-gated tools resolve).
+/// the site enabled (so site-gated tools resolve). The site id is part of the
+/// run-dir name (`<ts>_<site>_<command>[_<query>]`).
 pub fn command_context(site_id: &str, label: &str) -> (String, ToolContext) {
+    command_context_for_label(site_id, &format!("{site_id}_{label}"))
+}
+
+fn command_context_for_label(site_id: &str, label: &str) -> (String, ToolContext) {
     let run_dir = make_run_dir(label);
     let run_id = run_dir
         .file_name()

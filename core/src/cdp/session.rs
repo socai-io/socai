@@ -246,6 +246,18 @@ impl PageSession {
         Ok(())
     }
 
+    /// JPEG screenshot (quality 0-100). Web-page captures compress far
+    /// better as JPEG than PNG at no practical loss for review purposes.
+    pub async fn screenshot_jpeg(&self, full: bool, quality: u32) -> anyhow::Result<Vec<u8>> {
+        let params = ScreenshotParams::builder()
+            .format(CaptureScreenshotFormat::Jpeg)
+            .quality(i64::from(quality))
+            .full_page(full)
+            .capture_beyond_viewport(full)
+            .build();
+        Ok(self.page.screenshot(params).await?)
+    }
+
     pub async fn screenshot_png(&self, full: bool) -> anyhow::Result<Vec<u8>> {
         let params = ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)

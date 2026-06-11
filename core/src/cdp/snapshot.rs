@@ -28,9 +28,12 @@
 //! <run_dir>/snapshots/
 //!   index.jsonl                     # one line per node
 //!   00001_153012_482/
-//!     dom.html                      # document.documentElement.outerHTML
+//!     dom.html                      # slimmed DOM: scripts/styles/head/svg
+//!                                   # bodies stripped, all elements/attrs kept
+//!     dom.raw.html                  # full document.documentElement.outerHTML
 //!     a11y.json                     # slimmed getFullAXTree (screen-reader view)
-//!     screenshot.png                # viewport PNG
+//!     screenshot.jpg                # viewport JPEG
+//!     screenshot_full.jpg           # full-page JPEG (matches the DOM extent)
 //!   00002_153013_771/
 //!     ...
 //! ```
@@ -48,6 +51,10 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use super::session::PageSession;
+
+/// Both snapshot screenshots are JPEG at this quality — web pages compress
+/// ~5-10x smaller than PNG with no practical review loss.
+const SCREENSHOT_JPEG_QUALITY: u32 = 80;
 
 /// Run `fut` with a [`SnapshotRecorder`] attached to `page` for its duration,
 /// writing into `<run_dir>/snapshots`. A no-op when `enabled` is false.
@@ -217,7 +224,7 @@ impl SnapshotRecorder {
         // Take the viewport screenshot and skip the node if it's pixel-identical
         // to the last one written. A failed screenshot can't be deduped, so fall
         // through and capture the node anyway.
-        let shot = page.screenshot_png(false).await.ok();
+        let shot = page.screenshot_jpeg(false, SCREENSHOT_JPEG_QUALITY).await.ok();
         if let Some(bytes) = &shot {
             let shot_hash = hash_bytes(bytes);
             if state.last_shot_hash == Some(shot_hash) {
@@ -225,6 +232,11 @@ impl SnapshotRecorder {
             }
             state.last_shot_hash = Some(shot_hash);
         }
+
+        // Take the full-page companion immediately after the viewport shot so
+        // the two depict (as nearly as possible) the same instant — anything
+        // slower (the a11y fetch in write_node) happens after both shots.
+        let full_shot = page.screenshot_jpeg(true, SCREENSHOT_JPEG_QUALITY).await.ok();
 
         // Enable the Accessibility domain once so AXNodeIds stay stable across
         // nodes (not required for getFullAXTree to return data).
@@ -236,13 +248,14 @@ impl SnapshotRecorder {
         let seq = state.seq;
 
         if let Err(err) = self
-            .write_node(page, seq, &url, &dom, shot.as_deref())
+            .write_node(page, seq, &url, &dom, shot.as_deref(), full_shot.as_deref())
             .await
         {
             tracing::warn!("debug-snapshot: node {seq} failed: {err:#}");
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn write_node(
         &self,
         page: &PageSession,
@@ -250,6 +263,7 @@ impl SnapshotRecorder {
         url: &str,
         dom: &str,
         shot: Option<&[u8]>,
+        full_shot: Option<&[u8]>,
     ) -> anyhow::Result<()> {
         // One timestamp + one folder for all three views, so they share a
         // synchronized timepoint label. DOM and screenshot were captured moments
@@ -259,7 +273,12 @@ impl SnapshotRecorder {
         let node_dir = self.dir.join(&node_name);
         tokio::fs::create_dir_all(&node_dir).await?;
 
-        tokio::fs::write(node_dir.join("dom.html"), dom).await?;
+        // dom.html is the slimmed view agents read by default (typically ~10%
+        // of the raw size); the untouched serialization stays available next
+        // to it for the rare case the stripped parts matter.
+        let slim = slim_dom(dom);
+        tokio::fs::write(node_dir.join("dom.html"), &slim).await?;
+        tokio::fs::write(node_dir.join("dom.raw.html"), dom).await?;
 
         let (a11y_ok, a11y_nodes) = match page.ax_tree_json().await {
             Ok(ax) => {
@@ -284,7 +303,10 @@ impl SnapshotRecorder {
         };
 
         if let Some(bytes) = shot {
-            tokio::fs::write(node_dir.join("screenshot.png"), bytes).await?;
+            tokio::fs::write(node_dir.join("screenshot.jpg"), bytes).await?;
+        }
+        if let Some(bytes) = full_shot {
+            tokio::fs::write(node_dir.join("screenshot_full.jpg"), bytes).await?;
         }
 
         let entry = serde_json::json!({
@@ -292,10 +314,12 @@ impl SnapshotRecorder {
             "ts": now.to_rfc3339(),
             "url": url,
             "dir": node_name,
-            "dom_bytes": dom.len(),
+            "dom_bytes": slim.len(),
+            "dom_raw_bytes": dom.len(),
             "a11y_nodes": a11y_nodes,
             "has_a11y": a11y_ok,
             "has_screenshot": shot.is_some(),
+            "has_full_screenshot": full_shot.is_some(),
         });
         append_jsonl(&self.dir.join("index.jsonl"), &entry).await
     }
@@ -305,6 +329,52 @@ impl SnapshotRecorder {
 /// actually navigates: drop `ignored` nodes and keep, per node, only the role,
 /// accessible name, value, meaningful states, and child links. Structure is
 /// preserved via `children` (the original `AXNodeId`s).
+/// Fixed-logic DOM slimming: drop content that never informs selectors or
+/// page-state checks — `<head>`, `<script>`/`<style>`/`<noscript>` bodies and
+/// SVG internals (a stub tag is kept so layout structure stays visible). All
+/// element tags, attributes (id / class / data-* / aria / href / src / style)
+/// and text content survive, so anything a selector or extractor could target
+/// is still in the slim view. On heavy SPA pages this is ~10% of the raw size.
+pub fn slim_dom(html: &str) -> String {
+    let mut out = strip_blocks(html, "<head", "</head>", Some("<head/>"));
+    out = strip_blocks(&out, "<script", "</script>", None);
+    out = strip_blocks(&out, "<style", "</style>", None);
+    out = strip_blocks(&out, "<noscript", "</noscript>", None);
+    out = strip_blocks(&out, "<svg", "</svg>", Some("…"));
+    out
+}
+
+/// Remove every `open…close` block. `stub` controls what remains: `None`
+/// drops the block entirely; `Some("…")` keeps the opening tag (with its
+/// attributes) plus the closing tag around the stub; `Some(other)` replaces
+/// the whole block with `other`. Unterminated blocks are left untouched.
+fn strip_blocks(html: &str, open: &str, close: &str, stub: Option<&str>) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find(open) {
+        out.push_str(&rest[..start]);
+        let block = &rest[start..];
+        let Some(end) = block.find(close) else {
+            out.push_str(block);
+            return out;
+        };
+        match stub {
+            Some("…") => {
+                if let Some(tag_end) = block.find('>') {
+                    out.push_str(&block[..=tag_end]);
+                    out.push('…');
+                    out.push_str(close);
+                }
+            }
+            Some(replacement) => out.push_str(replacement),
+            None => {}
+        }
+        rest = &block[end + close.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn compact_ax_tree(ax: &Value) -> Value {
     let nodes = ax
         .get("nodes")
@@ -313,6 +383,14 @@ fn compact_ax_tree(ax: &Value) -> Value {
             nodes
                 .iter()
                 .filter(|n| !n.get("ignored").and_then(Value::as_bool).unwrap_or(false))
+                // InlineTextBox nodes are layout-split copies of their parent
+                // StaticText — pure duplication (~40% of all nodes on feeds).
+                .filter(|n| {
+                    n.get("role")
+                        .and_then(|r| r.get("value"))
+                        .and_then(Value::as_str)
+                        != Some("InlineTextBox")
+                })
                 .map(compact_ax_node)
                 .collect::<Vec<_>>()
         })
@@ -387,4 +465,40 @@ async fn append_jsonl(path: &Path, entry: &Value) -> anyhow::Result<()> {
         .await?;
     file.write_all(line.as_bytes()).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slim_dom;
+
+    #[test]
+    fn slim_dom_strips_bulk_but_keeps_anchors() {
+        let html = concat!(
+            "<html><head><title>t</title><script>var x=1;</script></head>",
+            "<body><script>window.__DATA__={\"big\":\"blob\"};</script>",
+            "<style>.a{color:red}</style>",
+            "<noscript>enable js</noscript>",
+            "<div id=\"waterfall_item_42\" data-aweme-id=\"42\" class=\"xYz12\">",
+            "<svg viewBox=\"0 0 14 14\"><path d=\"M0 0h14v14H0z\"/></svg>",
+            "<a href=\"//example.com/video/42\">标题文本</a></div></body></html>"
+        );
+        let slim = slim_dom(html);
+        assert!(slim.contains("<head/>"));
+        assert!(!slim.contains("var x=1"));
+        assert!(!slim.contains("__DATA__"));
+        assert!(!slim.contains("color:red"));
+        assert!(!slim.contains("enable js"));
+        assert!(!slim.contains("M0 0h14"));
+        assert!(slim.contains("<svg viewBox=\"0 0 14 14\">…</svg>"));
+        assert!(slim.contains("waterfall_item_42"));
+        assert!(slim.contains("data-aweme-id=\"42\""));
+        assert!(slim.contains("href=\"//example.com/video/42\""));
+        assert!(slim.contains("标题文本"));
+    }
+
+    #[test]
+    fn slim_dom_leaves_unterminated_blocks_alone() {
+        let html = "<body><script>broken";
+        assert_eq!(slim_dom(html), "<body><script>broken");
+    }
 }

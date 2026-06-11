@@ -439,7 +439,8 @@ pub async fn agent_task_start(
     ensure_llm_provider_configured_for(provider.as_deref(), model.as_deref())
         .map_err(|e| format!("{e:#}"))?;
 
-    let run_dir = make_run_dir(&task_text);
+    let site_id = app_site().map(|site| site.id).unwrap_or("agent");
+    let run_dir = make_run_dir(&format!("{site_id} {task_text}"));
     let _ = std::fs::create_dir_all(&run_dir);
     let registry = tasks.inner().clone();
     let snapshot = registry

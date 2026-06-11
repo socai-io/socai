@@ -609,13 +609,13 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     // Pin the run dir up front (instead of letting the loop allocate it) so an
     // interrupted or failed turn still knows where partial artifacts live and
     // can record itself for follow-ups.
-    let run_dir = make_run_dir(task);
+    let site = tui_site()?;
+    let run_dir = make_run_dir(&format!("{} {task}", site.id));
     let _ = std::fs::create_dir_all(&run_dir);
 
     // Browser/network setup can fail (e.g. DNS ERR_NAME_NOT_RESOLVED). Record
     // the turn even then, so a follow-up still knows what the user asked.
     println!("[socai] connecting browser...");
-    let site = tui_site()?;
     let page = match runtime.ensure_site_page(site.id, site.home_url).await {
         Ok(page) => page,
         Err(err) => {
