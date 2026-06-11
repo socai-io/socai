@@ -1,3 +1,4 @@
+mod bridge;
 mod daemon;
 mod tracking;
 mod tui;
@@ -68,7 +69,8 @@ fn build_cli() -> clap::Command {
                         ),
                 ),
         )
-        .subcommand(clap::Command::new("__daemon").hide(true));
+        .subcommand(clap::Command::new("__daemon").hide(true))
+        .subcommand(clap::Command::new("__bridge").hide(true));
     for site in all_sites() {
         let mut site_cmd = clap::Command::new(site.id)
             .about(site.about)
@@ -191,7 +193,10 @@ async fn run_site_command(
 }
 
 fn should_warn_for_update(subcommand: &str) -> bool {
-    !matches!(subcommand, "__daemon" | "update" | "version" | "config")
+    !matches!(
+        subcommand,
+        "__daemon" | "__bridge" | "update" | "version" | "config"
+    )
 }
 
 #[tokio::main]
@@ -228,8 +233,13 @@ async fn main() -> Result<()> {
             } else {
                 eprintln!("socai rust daemon is not running");
             }
+            // Stop the CDP bridge too so Chrome drops its debugging banner.
+            if bridge::stop_bridge().await? {
+                eprintln!("socai cdp bridge stopped");
+            }
         }
         "__daemon" => daemon::run_daemon().await?,
+        "__bridge" => bridge::run_bridge().await?,
         _ => {
             if let Some(site) = find_site(name) {
                 let (command_name, command_matches) = sub_matches

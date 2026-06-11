@@ -4001,6 +4001,7 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
+ "futures",
  "inquire",
  "libc",
  "reqwest 0.12.28",
@@ -4009,6 +4010,7 @@ dependencies = [
  "serde_json",
  "socai-core",
  "tokio",
+ "tokio-tungstenite",
  "tracing-subscriber",
  "uuid",
 ]
@@ -4679,6 +4681,18 @@ checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
  "tokio",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6989540ced10490aaf14e6bad2e3d33728a2813310a0c71d1574304c49631cd"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite",
 ]
 
 [[package]]

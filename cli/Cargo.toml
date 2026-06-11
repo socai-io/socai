@@ -17,6 +17,8 @@ serde.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
 tokio = { workspace = true }
+futures.workspace = true
+tokio-tungstenite.workspace = true
 uuid = { version = "1", features = ["v4"] }
 tracing-subscriber.workspace = true
 rustyline.workspace = true

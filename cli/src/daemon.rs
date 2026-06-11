@@ -410,6 +410,11 @@ impl DaemonState {
         let started = Instant::now();
         let result = async {
             let debug_snapshot = debug_snapshot_flag(&args);
+            // Route CDP through the bridge (spawning it on first use) so the
+            // chrome connection — and its allow-debugging consent — survives
+            // daemon restarts. Falls back to a direct connect when the bridge
+            // can't start.
+            crate::bridge::ensure_bridge_env().await;
             let page = self
                 .runtime
                 .ensure_site_page(site.id, site.home_url)
@@ -777,29 +782,7 @@ async fn spawn_daemon() -> Result<()> {
     fs::create_dir_all(&paths.home).await?;
     cleanup_stale_ipc(&paths).await?;
 
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&paths.log)
-        .with_context(|| format!("open daemon log {}", paths.log.display()))?;
-    let stderr = log.try_clone()?;
-
-    let mut command = std::process::Command::new(std::env::current_exe()?);
-    command
-        .arg("__daemon")
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(stderr));
-    #[cfg(unix)]
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    command.spawn().context("spawn socai rust daemon")?;
+    spawn_detached_subcommand("__daemon", &paths.log, |_| {})?;
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
@@ -917,13 +900,56 @@ fn debug_snapshot_flag(args: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn daemon_paths() -> Result<DaemonPaths> {
-    let home = match std::env::var_os("SOCAI_HOME") {
-        Some(path) => PathBuf::from(path),
-        None => home_dir()
+/// Spawn `socai <subcommand>` as a detached background process (own session
+/// on unix) with stdout/stderr appended to `log_path`. `configure` can adjust
+/// the command (e.g. env) before spawning. Shared by the daemon and the CDP
+/// bridge.
+pub(crate) fn spawn_detached_subcommand(
+    subcommand: &str,
+    log_path: &std::path::Path,
+    configure: impl FnOnce(&mut std::process::Command),
+) -> Result<std::process::Child> {
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .with_context(|| format!("open log {}", log_path.display()))?;
+    let stderr = log.try_clone()?;
+
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .arg(subcommand)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr));
+    configure(&mut command);
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
+        .spawn()
+        .with_context(|| format!("spawn socai {subcommand}"))
+}
+
+/// The socai state dir (`$SOCAI_HOME` or `~/.socai`), shared by the daemon
+/// and the CDP bridge.
+pub(crate) fn socai_home() -> Result<PathBuf> {
+    match std::env::var_os("SOCAI_HOME") {
+        Some(path) => Ok(PathBuf::from(path)),
+        None => Ok(home_dir()
             .context("could not locate user home directory for ~/.socai")?
-            .join(".socai"),
-    };
+            .join(".socai")),
+    }
+}
+
+fn daemon_paths() -> Result<DaemonPaths> {
+    let home = socai_home()?;
 
     Ok(DaemonPaths {
         #[cfg(unix)]
