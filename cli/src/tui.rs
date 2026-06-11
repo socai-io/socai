@@ -688,12 +688,9 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
         Ok(outcome) => outcome,
         Err(err) => {
             // Record the failed turn too, so its topic survives for follow-ups.
-            state.session.record_turn(
-                task,
-                &format!("[turn failed: {err:#}]"),
-                "",
-                &run_dir,
-            );
+            state
+                .session
+                .record_turn(task, &format!("[turn failed: {err:#}]"), "", &run_dir);
             return Err(err);
         }
     };

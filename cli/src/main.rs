@@ -241,8 +241,9 @@ async fn main() -> Result<()> {
                 run_site_command(site, command, command_matches).await?;
             } else {
                 // Legacy top-level alias (`socai search_notes …`).
-                let site = find_site(LEGACY_SITE_ID)
-                    .ok_or_else(|| anyhow::anyhow!("legacy site {LEGACY_SITE_ID} not registered"))?;
+                let site = find_site(LEGACY_SITE_ID).ok_or_else(|| {
+                    anyhow::anyhow!("legacy site {LEGACY_SITE_ID} not registered")
+                })?;
                 let command = site
                     .command(name)
                     .ok_or_else(|| anyhow::anyhow!("unknown command: {name}"))?;

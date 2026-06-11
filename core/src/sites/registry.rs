@@ -17,8 +17,7 @@ use crate::cdp::PageSession;
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + Send>>;
 
 /// Async factory: build the site's agent tools against a shared page.
-pub type AgentToolsFn =
-    fn(Arc<PageSession>, Arc<dyn LlmProvider>) -> BoxFuture<Vec<Arc<dyn Tool>>>;
+pub type AgentToolsFn = fn(Arc<PageSession>, Arc<dyn LlmProvider>) -> BoxFuture<Vec<Arc<dyn Tool>>>;
 
 /// One-shot CLI/daemon command: `(page, JSON args, debug_snapshot)` → JSON.
 pub type CommandRunFn = fn(Arc<PageSession>, Value, bool) -> BoxFuture<Value>;

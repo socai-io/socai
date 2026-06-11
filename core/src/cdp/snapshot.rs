@@ -235,7 +235,10 @@ impl SnapshotRecorder {
         state.seq += 1;
         let seq = state.seq;
 
-        if let Err(err) = self.write_node(page, seq, &url, &dom, shot.as_deref()).await {
+        if let Err(err) = self
+            .write_node(page, seq, &url, &dom, shot.as_deref())
+            .await
+        {
             tracing::warn!("debug-snapshot: node {seq} failed: {err:#}");
         }
     }

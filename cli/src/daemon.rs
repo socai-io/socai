@@ -410,7 +410,10 @@ impl DaemonState {
         let started = Instant::now();
         let result = async {
             let debug_snapshot = debug_snapshot_flag(&args);
-            let page = self.runtime.ensure_site_page(site.id, site.home_url).await?;
+            let page = self
+                .runtime
+                .ensure_site_page(site.id, site.home_url)
+                .await?;
             (spec.run)(page, args.clone(), debug_snapshot).await
         }
         .await;

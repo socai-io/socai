@@ -105,7 +105,10 @@ impl Tool for ReadFileTool {
         let meta = std::fs::metadata(&path)
             .map_err(|e| anyhow::anyhow!("cannot stat {}: {e}", path.display()))?;
         if meta.is_dir() {
-            anyhow::bail!("{} is a directory; use bash (ls) to list it", path.display());
+            anyhow::bail!(
+                "{} is a directory; use bash (ls) to list it",
+                path.display()
+            );
         }
 
         if let Some(media_type) = image_media_type(&path) {

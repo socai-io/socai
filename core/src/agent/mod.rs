@@ -19,6 +19,7 @@ pub mod signature;
 pub mod system_prompt;
 pub mod tool;
 
+pub use self::file_bash_tools::{local_agent_tools, BashTool, ReadFileTool};
 pub use self::llm::{
     AnthropicBackend, Backend, Block, LLMResponse, Message, MessageContent, MessageRole,
     OpenAICompatBackend, StopReason, ToolCall, ToolResultContent, ToolSchema,
@@ -31,7 +32,6 @@ pub use self::provider::{
     save_default_model, Credential, CredentialKind, ModelCatalogEntry, Provider, ProviderConfig,
     PROVIDERS,
 };
-pub use self::file_bash_tools::{local_agent_tools, BashTool, ReadFileTool};
 pub use self::r#loop::{run_agent, run_agent_with_events, AgentEvent, AgentOptions, AgentOutcome};
 pub use self::run_logging::{make_run_dir, RunDebugLogger};
 pub use self::run_state::{ArtifactRecord, RunState};
