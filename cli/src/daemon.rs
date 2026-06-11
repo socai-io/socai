@@ -1011,3 +1011,72 @@ fn request_id() -> String {
         .as_millis();
     format!("{}-{millis}", std::process::id())
 }
+
+/// Best-effort sweep: terminate every lingering socai `__daemon` / `__bridge`
+/// process, no matter which binary or `SOCAI_HOME` spawned it. The graceful
+/// socket shutdown only reaches whoever currently owns the IPC endpoint, so
+/// this catches orphans left by restart races or crashes. Returns the number
+/// of processes signalled.
+pub async fn kill_lingering_helpers() -> usize {
+    let pids = lingering_helper_pids();
+    if pids.is_empty() {
+        return 0;
+    }
+    for pid in &pids {
+        signal_pid(*pid, false);
+    }
+    // Give them a moment to exit on SIGTERM, then SIGKILL any holdouts.
+    sleep(Duration::from_millis(400)).await;
+    for pid in &pids {
+        signal_pid(*pid, true);
+    }
+    pids.len()
+}
+
+/// PIDs of running `socai __daemon` / `socai __bridge` processes (excluding the
+/// caller). Identified by command line so it spans every install path.
+#[cfg(unix)]
+fn lingering_helper_pids() -> Vec<u32> {
+    let me = std::process::id();
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let (pid_str, cmd) = line.split_once(' ')?;
+            let pid: u32 = pid_str.trim().parse().ok()?;
+            if pid == me {
+                return None;
+            }
+            // The binary is always named `socai`; matching the exact
+            // `socai __daemon` / `socai __bridge` tail avoids hitting the
+            // `socai stop` process or unrelated programs.
+            (cmd.contains("socai __daemon") || cmd.contains("socai __bridge")).then_some(pid)
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn lingering_helper_pids() -> Vec<u32> {
+    // No cheap command-line process filter on Windows; the graceful socket
+    // shutdown remains the stop path there.
+    Vec::new()
+}
+
+#[cfg(unix)]
+fn signal_pid(pid: u32, force: bool) {
+    let sig = if force { libc::SIGKILL } else { libc::SIGTERM };
+    // Safe FFI: kill() with a signal number; failures (already exited, not
+    // ours) are ignored on purpose.
+    unsafe {
+        libc::kill(pid as libc::pid_t, sig);
+    }
+}
+
+#[cfg(windows)]
+fn signal_pid(_pid: u32, _force: bool) {}

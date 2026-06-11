@@ -228,14 +228,24 @@ async fn main() -> Result<()> {
         "update" => version::run_update_command().await?,
         "config" => run_config_command(sub_matches)?,
         "stop" => {
-            if daemon::stop_daemon().await? {
+            // Graceful shutdown reaches whoever owns the IPC endpoint; the
+            // sweep then kills any orphan daemon/bridge from any binary or
+            // SOCAI_HOME, so one `socai stop` always leaves a clean slate.
+            let daemon_stopped = daemon::stop_daemon().await?;
+            // Stop the CDP bridge too so Chrome drops its debugging banner.
+            let bridge_stopped = bridge::stop_bridge().await?;
+            let swept = daemon::kill_lingering_helpers().await;
+
+            if daemon_stopped || swept > 0 {
                 eprintln!("socai rust daemon stopped");
             } else {
                 eprintln!("socai rust daemon is not running");
             }
-            // Stop the CDP bridge too so Chrome drops its debugging banner.
-            if bridge::stop_bridge().await? {
+            if bridge_stopped {
                 eprintln!("socai cdp bridge stopped");
+            }
+            if swept > 0 {
+                eprintln!("cleaned up {swept} lingering socai helper process(es)");
             }
         }
         "__daemon" => daemon::run_daemon().await?,
