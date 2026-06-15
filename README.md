@@ -10,7 +10,7 @@
 几点优势：
 - 不使用程序化的批量爬虫，而是像人一样点击，避免被屏蔽
 - 沉淀了小红书网页知识，避免agent盲目探索，又快又准
-- 复用你已登录的chrome小红书账号，避免未登录被屏蔽
+- 默认复用你已登录的 chrome 小红书账号，避免未登录被屏蔽；也可通过 `socai config` 选择 socai 独立资料目录
 
 ## 使用方式
 
@@ -60,6 +60,7 @@ socai topic_scan "运营爆款思路" --num-notes 30 --filter publish_time=一�
 socai topic_scan "运营爆款思路" --num-notes 10 --download-media       # 下载图片/视频并输出 media_manifest_path
 socai search_notes "运营爆款思路" --num-notes 100 --filter sort=最新          # 只打开搜索结果页，拿帖子标题/点赞/封面，不读正文
 socai extract_note --note-id <id>                                          # 从当前结果页抽取某个帖子
+socai config set chrome.profile managed                                    # 以后默认使用 socai 独立 chrome 资料目录
 socai stop                                                                 # 停止 daemon（关闭工具标签页）
 ```
 
@@ -85,6 +86,34 @@ Options:
 `extract_note` is a
 continuation command: a prior `search_notes` / `topic_scan` must have left the
 tool tab on a waterfall containing the target card.
+
+Browser profile:
+
+- `chrome.profile` values: `existing`, `managed`, `auto`.
+- Default: `existing` — attach to your existing browser/profile with CDP enabled.
+- To opt into socai's isolated profile persistently:
+
+  ```bash
+  socai config set chrome.profile managed
+  socai stop   # only needed if the daemon is already running
+  ```
+
+  The default managed profile path is `~/.socai/chrome-profile`; sign in to
+  xiaohongshu once there and future sessions reuse that login/cookies.
+- To use a custom managed profile directory:
+
+  ```bash
+  socai config set chrome.profile_dir ~/.socai/profiles/xhs-test
+  ```
+
+- To switch back to your existing browser profile:
+
+  ```bash
+  socai config set chrome.profile existing
+  ```
+
+- Config lives in `~/.socai/config.json`. Advanced endpoint overrides still use
+  `SOCAI_CDP_WS` / `SOCAI_CDP_URL`.
 
 ## TUI
 

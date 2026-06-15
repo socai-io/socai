@@ -778,7 +778,7 @@ separate *agentless* tool CLI, which land in different patterns.
 
 `socai` with **no subcommand** drops into the Rust interactive TUI, which is
 structurally a browser-use-style agent CLI:
-- Single Rust process owns `SocaiRuntime`, including Chrome's CDP connection.
+- Single Rust process owns `SocaiRuntime`, including chrome's CDP connection.
 - Interactive TUI — many tasks can share the process-local runtime.
 - The LLM agent loop runs **inside** the process. It dies when the user exits
   the TUI.
@@ -793,21 +793,21 @@ granularity (domain tool calls, not `click @e1`):
   `~/.socai/daemon.sock` → print result → exit.
 - A long-lived **daemon** owns one persistent "tool tab" plus a cached
   `XhsRuntime`. It auto-spawns on the first tool call and auto-shuts after
-  3h idle, so Chrome stays warm across invocations (`socai stop` ends it early).
+  3h idle, so chrome stays warm across invocations (`socai stop` ends it early).
 - **No internal LLM loop.** The caller — a human, a script, or an external
   agent (Claude Code, Codex) — decides which tool to invoke. This *is* socai's
   external-agent surface (see §7.4).
-- Like the TUI, the daemon attaches to the user's already-logged-in Chrome
-  via `discover_existing_chrome_endpoint` rather than spawning a fresh
-  Chromium — so its blast radius is the user's full profile (a Pattern C
-  trait), not an isolated one.
+- Like the TUI, the daemon defaults to attaching to the user's already-logged-in
+  browser/profile through `discover_existing_chrome_endpoint`. Users can opt into
+  socai's managed chrome user-data-dir (`~/.socai/chrome-profile`) persistently
+  with `socai config set chrome.profile managed`.
 
 ### 7.3 Desktop mode — Pattern E (integrated product)
 
 The Tauri desktop app integrates everything:
-- Rust shell + socai-core own Chrome's CDP WebSocket, task state, site tools,
+- Rust shell + socai-core own chrome's CDP WebSocket, task state, site tools,
   and the agent loop.
-- Chrome lives as long as the app window is open.
+- chrome lives as long as the app window is open.
 - No MCP boundary; agent is part of the product.
 
 ### 7.4 Strategic differentiation
@@ -833,15 +833,13 @@ opens to do work."
   Claude Code / Codex via MCP? If yes, socai becomes a *platform* on top
   of being a product. If no, socai stays a pure product. Different
   roadmaps.
-- **Profile model.** Fresh user-data-dir on every CLI run (safe, fresh
-  state) or persistent profile by default (sticky logins)? Check current
-  behavior in `SocaiRuntime` / CDP endpoint discovery.
-- **Isolated-profile option?** socai *already* attaches to the user's daily
-  Chrome by default (`discover_existing_chrome_endpoint`), so it's
-  browser-harness-style out of the box — full blast radius included. The open
-  question is the inverse: should socai *also* offer a fresh-Chromium /
-  isolated-profile mode for users who want the safer default, or stay
-  attach-only?
+- **Profile model.** socai defaults to existing-browser attach for best login
+  continuity, and now offers a persistent isolated user-data-dir
+  (`~/.socai/chrome-profile`) as an opt-in config mode. The open question is
+  whether to add per-task throwaway profiles for high-risk tasks.
+- **Existing-browser attach blast radius.** Because the default can access the
+  user's full browser profile over CDP, keep managed mode visible for users who
+  prefer isolation.
 - **Agent loop ownership.** socai ships its own loop in `core/src/agent/`.
   As external agent harnesses (Claude Code, Codex) grow more capable,
   will the integrated agent stay primary, or will users want socai's
@@ -905,9 +903,9 @@ Things worth verifying or exploring further when the topic comes up again.
   token efficiency on a representative page (login form, search results,
   Gmail inbox).
 
-- **socai profile-persistence behavior** — confirm whether `SocaiRuntime` /
-  CDP endpoint discovery attaches to the user's existing browser profile or
-  launches an isolated profile by default.
+- **socai profile lifecycle behavior** — verify how the opt-in managed
+  `~/.socai/chrome-profile` behaves across crashes, multiple entrypoints, and
+  explicit existing-browser attach endpoints.
 
 - **Where Anthropic computer-use and Microsoft Playwright MCP fit** —
   two paths not deeply covered. computer-use is purely vision-based

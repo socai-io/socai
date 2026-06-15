@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,15 +8,24 @@ use chromiumoxide::cdp::browser_protocol::target::{
     EventTargetCreated, EventTargetDestroyed, EventTargetInfoChanged, GetTargetsParams,
     SetDiscoverTargetsParams,
 };
-use chromiumoxide::Browser;
+use chromiumoxide::{Browser, BrowserConfig, Handler};
 use futures::StreamExt;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
-use crate::cdp::connection::{BrowserEvent, Cdp, CdpState, StatusPayload, TargetInfo};
+use crate::cdp::connection::{
+    BrowserEvent, Cdp, CdpState, ChromeConnectOptions, ChromeProfile, StatusPayload, TargetInfo,
+};
 use crate::cdp::endpoint::{self, Endpoint};
 
 const MAX_ATTEMPTS: u8 = 3;
 const ATTEMPT_DELAY: Duration = Duration::from_millis(500);
+const MANAGED_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct OpenBrowser {
+    endpoint: Endpoint,
+    browser: Browser,
+    handler: Handler,
+}
 
 impl Cdp {
     /// Trigger an asynchronous connect attempt. Idempotent: if already
@@ -22,7 +33,18 @@ impl Cdp {
     pub fn connect(&self) {
         let cdp = self.clone();
         tokio::spawn(async move {
-            run_connect(cdp).await;
+            run_connect(cdp, None).await;
+        });
+    }
+
+    /// Trigger a connect attempt with explicit chrome profile selection.
+    /// `connect()` uses ~/.socai/config.json (or the default existing-profile
+    /// attach mode); this method is for internal callers that have already
+    /// resolved a chrome profile preference.
+    pub fn connect_with_options(&self, options: ChromeConnectOptions) {
+        let cdp = self.clone();
+        tokio::spawn(async move {
+            run_connect(cdp, Some(options)).await;
         });
     }
 
@@ -37,7 +59,7 @@ impl Cdp {
     }
 }
 
-async fn run_connect(cdp: Cdp) {
+async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
     {
         let state = cdp.state();
         let guard = state.lock().await;
@@ -50,7 +72,7 @@ async fn run_connect(cdp: Cdp) {
         if !transition_if_eligible(&cdp, CdpState::Connecting { attempt }).await {
             return;
         }
-        match try_connect_once(&cdp).await {
+        match try_connect_once(&cdp, options.clone()).await {
             Ok(()) => return,
             Err(err) => {
                 warn!(attempt, error = %err, "cdp connect attempt failed");
@@ -70,17 +92,12 @@ async fn run_connect(cdp: Cdp) {
     }
 }
 
-async fn try_connect_once(cdp: &Cdp) -> anyhow::Result<()> {
-    let endpoint: Endpoint = endpoint::discover_existing_chrome_endpoint()
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no running chrome with --remote-debugging-port found. \
-                 launch chrome with the debug flag, or set SOCAI_CDP_WS."
-            )
-        })?;
-
-    let (browser, mut handler) = Browser::connect(&endpoint.browser_ws_url).await?;
+async fn try_connect_once(cdp: &Cdp, options: Option<ChromeConnectOptions>) -> anyhow::Result<()> {
+    let OpenBrowser {
+        endpoint,
+        browser,
+        mut handler,
+    } = open_browser(options).await?;
 
     let cdp_for_pump = cdp.clone();
     let pump = tokio::spawn(async move {
@@ -139,6 +156,118 @@ async fn try_connect_once(cdp: &Cdp) -> anyhow::Result<()> {
     spawn_target_event_loop(Arc::clone(&browser), cdp.clone());
 
     Ok(())
+}
+
+async fn open_browser(options: Option<ChromeConnectOptions>) -> anyhow::Result<OpenBrowser> {
+    let options = match options {
+        Some(options) => options,
+        None => ChromeConnectOptions::from_config()?,
+    };
+
+    if !matches!(options.profile, ChromeProfile::Managed) {
+        if let Some(endpoint) = endpoint::resolve_explicit_endpoint(None, None).await? {
+            return connect_to_endpoint(endpoint).await;
+        }
+    }
+
+    match options.profile {
+        ChromeProfile::Managed => open_managed_browser(&options).await,
+        ChromeProfile::Existing => open_existing_browser().await,
+        ChromeProfile::Auto => match open_managed_browser(&options).await {
+            Ok(connection) => Ok(connection),
+            Err(managed_err) => {
+                warn!(error = %managed_err, "managed chrome launch failed; falling back to existing browser discovery");
+                open_existing_browser().await.map_err(|existing_err| {
+                    anyhow::anyhow!(
+                        "managed chrome launch failed: {managed_err:#}; existing-browser fallback failed: {existing_err:#}"
+                    )
+                })
+            }
+        },
+    }
+}
+
+async fn connect_to_endpoint(endpoint: Endpoint) -> anyhow::Result<OpenBrowser> {
+    let (browser, handler) = Browser::connect(&endpoint.browser_ws_url).await?;
+    Ok(OpenBrowser {
+        endpoint,
+        browser,
+        handler,
+    })
+}
+
+async fn open_existing_browser() -> anyhow::Result<OpenBrowser> {
+    let endpoint: Endpoint = endpoint::discover_running_chrome_endpoint()
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no running chrome with --remote-debugging-port found. \
+                 start chrome with the debug flag, set SOCAI_CDP_WS, \
+                 or run `socai config set chrome.profile managed` to use socai's managed chrome profile."
+            )
+        })?;
+    connect_to_endpoint(endpoint).await
+}
+
+async fn open_managed_browser(options: &ChromeConnectOptions) -> anyhow::Result<OpenBrowser> {
+    let user_data_dir = match &options.managed_user_data_dir {
+        Some(path) => path.clone(),
+        None => endpoint::managed_chrome_user_data_dir()?,
+    };
+    tokio::fs::create_dir_all(&user_data_dir).await?;
+
+    // if another socai entrypoint already launched the isolated profile, reuse
+    // it instead of attempting a second chrome process with the same profile.
+    if let Some(endpoint) = endpoint::endpoint_from_active_port(&user_data_dir).await {
+        match connect_to_endpoint(endpoint::mark_managed_endpoint(endpoint, &user_data_dir)).await {
+            Ok(connection) => return Ok(connection),
+            Err(err) => {
+                warn!(profile = %user_data_dir.display(), error = %err, "managed chrome active-port marker was stale");
+            }
+        }
+    }
+
+    let mut builder = BrowserConfig::builder()
+        .with_head()
+        .user_data_dir(&user_data_dir)
+        .launch_timeout(MANAGED_LAUNCH_TIMEOUT)
+        .viewport(None)
+        .window_size(1280, 900)
+        .arg("--disable-blink-features=AutomationControlled")
+        .arg("--no-default-browser-check")
+        .arg("--no-first-run");
+
+    if let Some(executable) = chrome_executable_override() {
+        builder = builder.chrome_executable(executable);
+    }
+
+    info!(profile = %user_data_dir.display(), "launching managed chrome profile");
+    let (browser, handler) = Browser::launch(builder.build().map_err(anyhow::Error::msg)?).await?;
+    let endpoint = Endpoint {
+        source: format!("managed_profile:{}", user_data_dir.display()),
+        browser_ws_url: browser.websocket_address().clone(),
+        http_version_url: None,
+        version: None,
+        managed: true,
+        user_data_dir: Some(user_data_dir.display().to_string()),
+    };
+    Ok(OpenBrowser {
+        endpoint,
+        browser,
+        handler,
+    })
+}
+
+fn chrome_executable_override() -> Option<PathBuf> {
+    env::var("SOCAI_CHROME_EXECUTABLE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env::var("CHROME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .map(PathBuf::from)
 }
 
 async fn on_connection_dropped(cdp: Cdp) {

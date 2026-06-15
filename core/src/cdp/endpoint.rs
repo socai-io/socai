@@ -15,6 +15,12 @@ pub struct Endpoint {
     pub browser_ws_url: String,
     pub http_version_url: Option<String>,
     pub version: Option<VersionInfo>,
+    /// True when socai owns or reuses its isolated chrome user-data-dir rather
+    /// than attaching to the user's daily browser profile.
+    pub managed: bool,
+    /// User-data-dir backing the browser, when known. For managed chrome this
+    /// is the persistent isolated profile under ~/.socai by default.
+    pub user_data_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -44,6 +50,8 @@ pub async fn resolve_explicit_endpoint(
             browser_ws_url: url.into(),
             http_version_url: None,
             version: None,
+            managed: false,
+            user_data_dir: None,
         }));
     }
     if let Some(url) = non_empty(http_url) {
@@ -55,6 +63,8 @@ pub async fn resolve_explicit_endpoint(
             browser_ws_url: url,
             http_version_url: None,
             version: None,
+            managed: false,
+            user_data_dir: None,
         }));
     }
     if let Some(url) = env_var("SOCAI_CDP_URL") {
@@ -69,6 +79,14 @@ pub async fn discover_existing_chrome_endpoint() -> anyhow::Result<Option<Endpoi
     if let Some(endpoint) = resolve_explicit_endpoint(None, None).await? {
         return Ok(Some(endpoint));
     }
+    discover_running_chrome_endpoint().await
+}
+
+/// One-shot discovery for already-running browsers only. Unlike
+/// [`discover_existing_chrome_endpoint`], this intentionally ignores explicit
+/// SOCAI_CDP_* overrides; callers that need explicit endpoints should resolve
+/// them first.
+pub(crate) async fn discover_running_chrome_endpoint() -> anyhow::Result<Option<Endpoint>> {
     for profile in chrome_profile_roots() {
         if let Some(endpoint) = endpoint_from_active_port(&profile).await {
             return Ok(Some(endpoint));
@@ -84,8 +102,8 @@ pub async fn discover_existing_chrome_endpoint() -> anyhow::Result<Option<Endpoi
 }
 
 /// Poll `discover_existing_chrome_endpoint` until it succeeds or `timeout`
-/// elapses. Intended for the first-run path where we opened chrome://inspect
-/// and now wait for the user to approve remote debugging.
+/// elapses. Used by the existing-browser attach flow; the opt-in
+/// managed-profile flow launches chrome itself and does not need this prompt.
 pub async fn wait_for_existing_chrome_endpoint(
     timeout: Duration,
     poll: Duration,
@@ -104,8 +122,8 @@ pub async fn wait_for_existing_chrome_endpoint(
 }
 
 /// Open the chrome://inspect remote-debugging page in the user's default
-/// Chrome. Best-effort; failures are swallowed so first-run UX still degrades
-/// gracefully to a printed instruction.
+/// chrome for the existing-browser attach flow. Best-effort; failures
+/// are swallowed so setup UX still degrades gracefully to printed instructions.
 pub fn open_remote_debugging_page() {
     #[cfg(target_os = "macos")]
     {
@@ -139,10 +157,12 @@ async fn endpoint_from_http_url(url: &str, source: &str) -> anyhow::Result<Endpo
         browser_ws_url: ws,
         http_version_url: Some(version_url),
         version: Some(version),
+        managed: false,
+        user_data_dir: None,
     })
 }
 
-async fn endpoint_from_active_port(profile: &Path) -> Option<Endpoint> {
+pub(crate) async fn endpoint_from_active_port(profile: &Path) -> Option<Endpoint> {
     let marker = profile.join("DevToolsActivePort");
     let contents = fs::read_to_string(&marker).ok()?;
     let mut lines = contents.lines();
@@ -165,7 +185,26 @@ async fn endpoint_from_active_port(profile: &Path) -> Option<Endpoint> {
         browser_ws_url: format!("ws://127.0.0.1:{port}{ws_path}"),
         http_version_url: None,
         version: None,
+        managed: false,
+        user_data_dir: None,
     })
+}
+
+pub(crate) fn managed_chrome_user_data_dir() -> anyhow::Result<PathBuf> {
+    if let Some(home) = env_var("SOCAI_HOME") {
+        return Ok(PathBuf::from(shellexpand(&home)).join("chrome-profile"));
+    }
+    if let Some(home) = home_dir() {
+        return Ok(home.join(".socai/chrome-profile"));
+    }
+    Ok(PathBuf::from(".socai/chrome-profile"))
+}
+
+pub(crate) fn mark_managed_endpoint(mut endpoint: Endpoint, user_data_dir: &Path) -> Endpoint {
+    endpoint.source = format!("managed_profile:{}", user_data_dir.display());
+    endpoint.managed = true;
+    endpoint.user_data_dir = Some(user_data_dir.display().to_string());
+    endpoint
 }
 
 fn chrome_profile_roots() -> Vec<PathBuf> {

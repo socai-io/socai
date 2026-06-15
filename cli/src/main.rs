@@ -6,6 +6,7 @@ mod version;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
+use socai_core::config as socai_config;
 
 #[derive(Parser, Debug)]
 #[command(name = "socai")]
@@ -88,10 +89,40 @@ enum Command {
     },
     /// Update the macOS release-binary install to the latest version.
     Update,
+    /// Read and write persistent socai preferences.
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommand>,
+    },
     /// Stop the background socai rust daemon.
     Stop,
     #[command(name = "__daemon", hide = true)]
     Daemon,
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigCommand {
+    /// Print the config file path.
+    Path,
+    /// Print the full config, or a single config key.
+    Get {
+        /// Key to read, e.g. chrome.profile.
+        key: Option<String>,
+    },
+    /// Print the full config as JSON.
+    List,
+    /// Persist a config key.
+    Set {
+        /// Key to set, e.g. chrome.profile.
+        key: String,
+        /// Value to store.
+        value: String,
+    },
+    /// Remove a config key.
+    Unset {
+        /// Key to remove, e.g. chrome.profile.
+        key: String,
+    },
 }
 
 #[tokio::main]
@@ -169,18 +200,17 @@ async fn main() -> Result<()> {
             pretty,
             debug_snapshot,
         } => {
-            let result = daemon::send_or_spawn(
-                "extract_note",
-                serde_json::json!({ "note_id": note_id, "debug_snapshot": debug_snapshot }),
-                daemon::DEFAULT_COMMAND_TIMEOUT,
-            )
-            .await?;
+            let input = serde_json::json!({ "note_id": note_id, "debug_snapshot": debug_snapshot });
+            let result =
+                daemon::send_or_spawn("extract_note", input, daemon::DEFAULT_COMMAND_TIMEOUT)
+                    .await?;
             print_command_result(&result, pretty)?;
         }
         Command::Version { no_check, json } => {
             version::print_version_command(no_check, json).await?
         }
         Command::Update => version::run_update_command().await?,
+        Command::Config { command } => run_config_command(command.unwrap_or(ConfigCommand::List))?,
         Command::Stop => {
             if daemon::stop_daemon().await? {
                 eprintln!("socai rust daemon stopped");
@@ -191,6 +221,46 @@ async fn main() -> Result<()> {
         Command::Daemon => daemon::run_daemon().await?,
     }
 
+    Ok(())
+}
+
+fn run_config_command(command: ConfigCommand) -> Result<()> {
+    match command {
+        ConfigCommand::Path => {
+            println!("{}", socai_config::config_path()?.display());
+        }
+        ConfigCommand::Get { key: None } | ConfigCommand::List => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&socai_config::load_config_value()?)?
+            );
+        }
+        ConfigCommand::Get { key: Some(key) } => match socai_config::get_config_key(&key)? {
+            Some(Value::String(value)) => println!("{value}"),
+            Some(value) => println!("{}", serde_json::to_string_pretty(&value)?),
+            None => anyhow::bail!("config key is not set: {key}"),
+        },
+        ConfigCommand::Set { key, value } => {
+            let canonical = socai_config::canonical_config_key(&key)?;
+            let path = socai_config::set_config_key(&key, &value)?;
+            println!("set {canonical} in {}", path.display());
+            if canonical.starts_with("chrome.") {
+                eprintln!(
+                    "If the socai daemon is already running, run `socai stop` once so the next session uses the new chrome preference."
+                );
+            }
+        }
+        ConfigCommand::Unset { key } => {
+            let canonical = socai_config::canonical_config_key(&key)?;
+            let path = socai_config::unset_config_key(&key)?;
+            println!("unset {canonical} in {}", path.display());
+            if canonical.starts_with("chrome.") {
+                eprintln!(
+                    "If the socai daemon is already running, run `socai stop` once so the next session uses the new chrome preference."
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -214,7 +284,7 @@ fn parse_filters(filters: &[String]) -> Result<serde_json::Map<String, Value>> {
 fn should_warn_for_update(command: &Command) -> bool {
     !matches!(
         command,
-        Command::Daemon | Command::Update | Command::Version { .. }
+        Command::Daemon | Command::Update | Command::Version { .. } | Command::Config { .. }
     )
 }
 

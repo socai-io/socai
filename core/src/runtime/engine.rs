@@ -8,7 +8,10 @@ use crate::agent::{
     run_agent_with_events, AgentEvent, AgentOptions, AgentOutcome, AnthropicBackend, Backend,
     Message, OpenAICompatBackend, Provider, Tool,
 };
-use crate::cdp::{BrowserEvent, Cdp, PageSession, PageSessionManager, StatusPayload, TargetInfo};
+use crate::cdp::{
+    BrowserEvent, Cdp, ChromeConnectOptions, ChromeProfile, PageSession, PageSessionManager,
+    StatusPayload, TargetInfo,
+};
 use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, Mutex};
 use tokio::time::{sleep, Instant};
@@ -44,6 +47,10 @@ impl SocaiRuntime {
 
     pub fn connect_browser(&self) {
         self.cdp.connect();
+    }
+
+    pub fn connect_browser_with_options(&self, options: ChromeConnectOptions) {
+        self.cdp.connect_with_options(options);
     }
 
     pub async fn disconnect_browser(&self) {
@@ -82,9 +89,35 @@ impl SocaiRuntime {
         site_id: &str,
         start_url: &str,
     ) -> Result<Arc<PageSession>> {
+        self.ensure_site_page_inner(site_id, start_url, None).await
+    }
+
+    pub async fn ensure_site_page_with_browser_options(
+        &self,
+        site_id: &str,
+        start_url: &str,
+        options: ChromeConnectOptions,
+    ) -> Result<Arc<PageSession>> {
+        self.ensure_site_page_inner(site_id, start_url, Some(options))
+            .await
+    }
+
+    async fn ensure_site_page_inner(
+        &self,
+        site_id: &str,
+        start_url: &str,
+        options: Option<ChromeConnectOptions>,
+    ) -> Result<Arc<PageSession>> {
         let site_id = site_id.trim();
         if site_id.is_empty() {
             anyhow::bail!("site_id is empty");
+        }
+
+        if let Some(options) = options.as_ref() {
+            if !browser_status_matches_options(&self.browser_status().await, options) {
+                let _ = self.close_all_site_sessions().await;
+                self.disconnect_browser().await;
+            }
         }
 
         let mut pages = self.site_pages.lock().await;
@@ -95,7 +128,10 @@ impl SocaiRuntime {
             pages.remove(site_id);
         }
 
-        wait_browser_connected(self).await?;
+        match options {
+            Some(options) => wait_browser_connected_with_options(self, options).await?,
+            None => wait_browser_connected(self).await?,
+        }
         let page = Arc::new(self.create_page("about:blank").await?);
         if !start_url.trim().is_empty() {
             page.navigate_with_timeout(start_url, 60.0).await?;
@@ -132,18 +168,67 @@ impl Default for SocaiRuntime {
     }
 }
 
+fn browser_status_matches_options(status: &StatusPayload, options: &ChromeConnectOptions) -> bool {
+    let StatusPayload::Connected {
+        managed,
+        user_data_dir,
+        ..
+    } = status
+    else {
+        return true;
+    };
+
+    match options.profile {
+        ChromeProfile::Existing => !managed,
+        ChromeProfile::Managed => {
+            if !managed {
+                return false;
+            }
+            match &options.managed_user_data_dir {
+                Some(expected) => {
+                    let expected = expected.to_string_lossy();
+                    user_data_dir.as_deref() == Some(expected.as_ref())
+                }
+                None => true,
+            }
+        }
+        ChromeProfile::Auto => true,
+    }
+}
+
 /// Wait until the runtime reports a connected browser, kicking off a connect
 /// if it isn't already in flight. Times out after 90s.
 pub async fn wait_browser_connected(runtime: &SocaiRuntime) -> Result<()> {
-    runtime.connect_browser();
+    wait_browser_connected_inner(runtime, None).await
+}
+
+pub async fn wait_browser_connected_with_options(
+    runtime: &SocaiRuntime,
+    options: ChromeConnectOptions,
+) -> Result<()> {
+    wait_browser_connected_inner(runtime, Some(options)).await
+}
+
+async fn wait_browser_connected_inner(
+    runtime: &SocaiRuntime,
+    options: Option<ChromeConnectOptions>,
+) -> Result<()> {
+    match options {
+        Some(options) => runtime.connect_browser_with_options(options),
+        None => runtime.connect_browser(),
+    }
     let deadline = Instant::now() + CONNECT_TIMEOUT;
+    let mut saw_connect_attempt = false;
     loop {
         match runtime.browser_status().await {
             BrowserStatus::Connected { .. } => return Ok(()),
-            BrowserStatus::Disconnected { reason } if reason != "not_yet_connected" => {
+            BrowserStatus::Connecting { .. } => saw_connect_attempt = true,
+            BrowserStatus::Disconnected { reason }
+                if reason != "not_yet_connected" && saw_connect_attempt =>
+            {
                 return Err(anyhow!("CDP disconnected: {reason}"));
             }
-            BrowserStatus::Disconnected { .. } | BrowserStatus::Connecting { .. } => {}
+            BrowserStatus::Disconnected { .. } => {}
         }
         if Instant::now() >= deadline {
             return Err(anyhow!("CDP did not connect within {:?}", CONNECT_TIMEOUT));

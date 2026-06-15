@@ -110,10 +110,11 @@ xiaohongshu-mcp 则接受"需要开调试端口"以换取无插件依赖。
 
 **子轴三 · 用谁的浏览器 profile**
 
-- **附着用户日常 Chrome**（真实登录态/指纹，反检测最好）：socai
+- **附着用户日常 Chrome**（真实登录态/指纹，反检测最好）：socai 默认
   （`discover_existing_chrome_endpoint`）、autoclaw/x-mcp（插件天然如此）。
 - **自起独立 Chrome**（专用 user-data-dir，需自己扫码）：可隔离、可多账号并行。
-  xiaohongshu-mcp（headless + cookie 文件）、XiaohongshuSkills（按账号隔离）。
+  socai（`socai config set chrome.profile managed`）、xiaohongshu-mcp
+  （headless + cookie 文件）、XiaohongshuSkills（按账号隔离）。
 
 ### 1.3 两条路线如何随时间分化
 
@@ -342,10 +343,10 @@ interact/content-ops）+ 统一 CLI。
 
 ### 4.8 socai（本仓库）— 内容研究 + 多模态富集的集成产品
 
-- **路线 B：裸 CDP（Rust）+ 读 `__INITIAL_STATE__` + 附着用户真实 Chrome**
-  （`discover_existing_chrome_endpoint`，需用户开 `--remote-debugging-port`，配套
-  `chrome://inspect` 引导）。JS 抽取器集中在 `page_scripts.js`，经 `Runtime.evaluate`
-  注入、返回 JSON——取数哲学与 xiaohongshu-mcp/autoclaw 同类。
+- **路线 B：裸 CDP（Rust）+ 读 `__INITIAL_STATE__` + 默认附着用户真实 Chrome**
+  （`discover_existing_chrome_endpoint`；也可通过 `socai config set chrome.profile managed`
+  持久切到独立 profile，默认路径 `~/.socai/chrome-profile`）。JS 抽取器集中在 `page_scripts.js`，经
+  `Runtime.evaluate` 注入、返回 JSON——取数哲学与 xiaohongshu-mcp/autoclaw 同类。
 - **能力重心是"读/研究"而非"写/运营"**：`search_notes`、`topic_scan`、
   `extract_note`、`extract_comments`、`extract_profile`、`scroll_in_note`、
   `collect_carousel_images` 等，**目前没有发布/互动的写工具**——与 publish 重的
@@ -397,10 +398,11 @@ interact/content-ops）+ 统一 CLI。
   需要人来重置。
 
 按这个标准看，差异很大：纯 HTTP 工具配通后人工成分低，但**停更后"配通"本身就难且
-易碎**；浏览器路线首次要扫码登录（之后复用登录态），附着真实浏览器的（socai、
-autoclaw、x-mcp）登录态最持久、扫码最少；而**任何工具一旦触发验证码/风控，都会把
-"剩余人工"瞬间拉高**——这又回到 §5.1：少做高频写，才能少被打断。socai 当前要求用户
-用 `--remote-debugging-port` 起 Chrome（一次性配置），属"中等首配成本、低持续人工"。
+易碎**；浏览器路线首次要扫码登录（之后复用登录态），独立 profile 或附着真实浏览器的
+登录态最持久、扫码最少；而**任何工具一旦触发验证码/风控，都会把"剩余人工"瞬间拉高**——
+这又回到 §5.1：少做高频写，才能少被打断。socai 默认附着已有 chrome profile，登录态
+最顺；如需隔离，可通过 `socai config set chrome.profile managed` 启用 managed profile
+（需要在独立 profile 里首次扫码登录）。
 
 ### 5.3 与灰产群控的技术分界
 

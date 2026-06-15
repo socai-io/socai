@@ -9,7 +9,15 @@ import { agentPanel } from "./panels/tasks";
 export type Status =
   | { state: "disconnected"; reason: string }
   | { state: "connecting"; attempt: number }
-  | { state: "connected"; endpoint: string; browser_version: string; page_count: number };
+  | {
+      state: "connected";
+      endpoint: string;
+      browser_version: string;
+      page_count: number;
+      source?: string;
+      managed?: boolean;
+      user_data_dir?: string | null;
+    };
 
 export interface ModelInfo {
   provider: string;
@@ -205,6 +213,15 @@ function renderConnectionDialog(connected: Extract<Status, { state: "connected" 
           <p class="t-eyebrow">${htmlEsc(t("chrome.browser"))}</p>
           <p class="t-mono">${htmlEsc(connected.browser_version)}</p>
         </div>
+        <div>
+          <p class="t-eyebrow">${htmlEsc(t("chrome.source"))}</p>
+          <p class="t-mono">${htmlEsc(connected.managed ? t("chrome.sourceManaged") : t("chrome.sourceExisting"))}</p>
+        </div>
+        ${connected.user_data_dir ? `
+        <div class="connection-meta-wide">
+          <p class="t-eyebrow">${htmlEsc(t("chrome.profile"))}</p>
+          <p class="t-mono connection-endpoint">${htmlEsc(connected.user_data_dir)}</p>
+        </div>` : ""}
         <div class="connection-meta-wide">
           <p class="t-eyebrow">${htmlEsc(t("chrome.endpoint"))}</p>
           <p class="t-mono connection-endpoint">${htmlEsc(connected.endpoint)}</p>

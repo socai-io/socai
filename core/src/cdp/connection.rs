@@ -1,13 +1,84 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chromiumoxide::Browser;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::cdp::endpoint::Endpoint;
 
 const EVENT_CHANNEL_CAPACITY: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChromeProfile {
+    /// Attach to an already-running browser/profile that exposes CDP.
+    Existing,
+    /// Launch or reuse socai's isolated chrome user-data-dir.
+    Managed,
+    /// Try managed first, then fall back to existing-browser discovery.
+    Auto,
+}
+
+impl ChromeProfile {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "existing" => Ok(Self::Existing),
+            "managed" => Ok(Self::Managed),
+            "auto" => Ok(Self::Auto),
+            other => Err(anyhow::anyhow!(
+                "invalid chrome profile {other:?}; expected existing, managed, or auto"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Existing => "existing",
+            Self::Managed => "managed",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+impl Default for ChromeProfile {
+    fn default() -> Self {
+        Self::Existing
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChromeConnectOptions {
+    pub profile: ChromeProfile,
+    pub managed_user_data_dir: Option<PathBuf>,
+}
+
+impl ChromeConnectOptions {
+    pub fn existing() -> Self {
+        Self {
+            profile: ChromeProfile::Existing,
+            managed_user_data_dir: None,
+        }
+    }
+
+    pub fn managed(user_data_dir: Option<PathBuf>) -> Self {
+        Self {
+            profile: ChromeProfile::Managed,
+            managed_user_data_dir: user_data_dir,
+        }
+    }
+
+    pub fn from_config() -> anyhow::Result<Self> {
+        Ok(crate::config::load_config()?.chrome_connect_options())
+    }
+}
+
+impl Default for ChromeConnectOptions {
+    fn default() -> Self {
+        Self::existing()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TargetInfo {
@@ -68,6 +139,9 @@ pub enum StatusPayload {
         endpoint: String,
         browser_version: String,
         page_count: usize,
+        source: String,
+        managed: bool,
+        user_data_dir: Option<String>,
     },
 }
 
@@ -87,6 +161,9 @@ impl From<&CdpState> for StatusPayload {
                 endpoint: endpoint.browser_ws_url.clone(),
                 browser_version: browser_version.clone(),
                 page_count: targets.values().filter(|t| t.r#type == "page").count(),
+                source: endpoint.source.clone(),
+                managed: endpoint.managed,
+                user_data_dir: endpoint.user_data_dir.clone(),
             },
         }
     }
