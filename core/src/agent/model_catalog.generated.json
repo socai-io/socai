@@ -1,0 +1,425 @@
+{
+  "version": 1,
+  "providers": {
+    "anthropic": [
+      {
+        "id": "claude-fable-5",
+        "display_name": "Claude Fable 5",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-opus-4-8",
+        "display_name": "Claude Opus 4.8",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-opus-4-7",
+        "display_name": "Claude Opus 4.7",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-opus-4-6",
+        "display_name": "Claude Opus 4.6",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-sonnet-4-6",
+        "display_name": "Claude Sonnet 4.6",
+        "source": "pi-ai",
+        "recommended": true
+      },
+      {
+        "id": "claude-opus-4-5-20251101",
+        "display_name": "Claude Opus 4.5",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-haiku-4-5-20251001",
+        "display_name": "Claude Haiku 4.5",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-sonnet-4-5-20250929",
+        "display_name": "Claude Sonnet 4.5",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-opus-4-5",
+        "display_name": "Claude Opus 4.5 (latest)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-sonnet-4-5",
+        "display_name": "Claude Sonnet 4.5 (latest)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-haiku-4-5",
+        "display_name": "Claude Haiku 4.5 (latest)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-opus-4-1-20250805",
+        "display_name": "Claude Opus 4.1",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-opus-4-1",
+        "display_name": "Claude Opus 4.1 (latest)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-opus-4-20250514",
+        "display_name": "Claude Opus 4",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-sonnet-4-20250514",
+        "display_name": "Claude Sonnet 4",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-opus-4-0",
+        "display_name": "Claude Opus 4 (latest)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-sonnet-4-0",
+        "display_name": "Claude Sonnet 4 (latest)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-3-7-sonnet-20250219",
+        "display_name": "Claude Sonnet 3.7",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-3-5-sonnet-20241022",
+        "display_name": "Claude Sonnet 3.5 v2",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-3-5-haiku-20241022",
+        "display_name": "Claude Haiku 3.5",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-3-5-sonnet-20240620",
+        "display_name": "Claude Sonnet 3.5",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-3-5-haiku-latest",
+        "display_name": "Claude Haiku 3.5 (latest)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-3-haiku-20240307",
+        "display_name": "Claude Haiku 3",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-3-opus-20240229",
+        "display_name": "Claude Opus 3",
+        "source": "pi-ai"
+      },
+      {
+        "id": "claude-3-sonnet-20240229",
+        "display_name": "Claude Sonnet 3",
+        "source": "pi-ai"
+      }
+    ],
+    "openai": [
+      {
+        "id": "gpt-5.5-pro",
+        "display_name": "GPT-5.5 Pro",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.5",
+        "display_name": "GPT-5.5",
+        "source": "pi-ai",
+        "recommended": true
+      },
+      {
+        "id": "gpt-5.4-pro",
+        "display_name": "GPT-5.4 Pro",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.4-mini",
+        "display_name": "GPT-5.4 mini",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.4-nano",
+        "display_name": "GPT-5.4 nano",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.4",
+        "display_name": "GPT-5.4",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.3-codex-spark",
+        "display_name": "GPT-5.3 Codex Spark",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.3-codex",
+        "display_name": "GPT-5.3 Codex",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.3-chat-latest",
+        "display_name": "GPT-5.3 Chat (latest)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.2-pro",
+        "display_name": "GPT-5.2 Pro",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.2-codex",
+        "display_name": "GPT-5.2 Codex",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.2-chat-latest",
+        "display_name": "GPT-5.2 Chat",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.2",
+        "display_name": "GPT-5.2",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.1-codex-max",
+        "display_name": "GPT-5.1 Codex Max",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.1-codex-mini",
+        "display_name": "GPT-5.1 Codex mini",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.1-codex",
+        "display_name": "GPT-5.1 Codex",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.1-chat-latest",
+        "display_name": "GPT-5.1 Chat",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5.1",
+        "display_name": "GPT-5.1",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5-pro",
+        "display_name": "GPT-5 Pro",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5-codex",
+        "display_name": "GPT-5-Codex",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5-mini",
+        "display_name": "GPT-5 Mini",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5-nano",
+        "display_name": "GPT-5 Nano",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5-chat-latest",
+        "display_name": "GPT-5 Chat Latest",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-5",
+        "display_name": "GPT-5",
+        "source": "pi-ai"
+      },
+      {
+        "id": "o4-mini",
+        "display_name": "o4-mini",
+        "source": "pi-ai"
+      },
+      {
+        "id": "o3-pro",
+        "display_name": "o3-pro",
+        "source": "pi-ai"
+      },
+      {
+        "id": "o3-mini",
+        "display_name": "o3-mini",
+        "source": "pi-ai"
+      },
+      {
+        "id": "o3",
+        "display_name": "o3",
+        "source": "pi-ai"
+      },
+      {
+        "id": "o1-pro",
+        "display_name": "o1-pro",
+        "source": "pi-ai"
+      },
+      {
+        "id": "o1",
+        "display_name": "o1",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4o-2024-11-20",
+        "display_name": "GPT-4o (2024-11-20)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4o-2024-08-06",
+        "display_name": "GPT-4o (2024-08-06)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4o-2024-05-13",
+        "display_name": "GPT-4o (2024-05-13)",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4o-mini",
+        "display_name": "GPT-4o mini",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4o",
+        "display_name": "GPT-4o",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4.1-mini",
+        "display_name": "GPT-4.1 mini",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4.1-nano",
+        "display_name": "GPT-4.1 nano",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4.1",
+        "display_name": "GPT-4.1",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4-turbo",
+        "display_name": "GPT-4 Turbo",
+        "source": "pi-ai"
+      },
+      {
+        "id": "gpt-4",
+        "display_name": "GPT-4",
+        "source": "pi-ai"
+      }
+    ],
+    "kimi": [
+      {
+        "id": "kimi-k2.7-code",
+        "display_name": "Kimi K2.7 Code",
+        "source": "fallback"
+      },
+      {
+        "id": "kimi-k2.6",
+        "display_name": "Kimi K2.6",
+        "source": "pi-ai",
+        "recommended": true
+      },
+      {
+        "id": "kimi-k2.5",
+        "display_name": "Kimi K2.5",
+        "source": "pi-ai"
+      },
+      {
+        "id": "kimi-k2-0905-preview",
+        "display_name": "Kimi K2 0905",
+        "source": "pi-ai"
+      },
+      {
+        "id": "kimi-k2-0711-preview",
+        "display_name": "Kimi K2 0711",
+        "source": "pi-ai"
+      },
+      {
+        "id": "kimi-k2-turbo-preview",
+        "display_name": "Kimi K2 Turbo",
+        "source": "pi-ai"
+      },
+      {
+        "id": "kimi-k2-thinking-turbo",
+        "display_name": "Kimi K2 Thinking Turbo",
+        "source": "pi-ai"
+      },
+      {
+        "id": "kimi-k2-thinking",
+        "display_name": "Kimi K2 Thinking",
+        "source": "pi-ai"
+      }
+    ],
+    "qwen": [
+      {
+        "id": "qwen3.7-max",
+        "display_name": "Qwen 3.7 Max",
+        "source": "pi-ai"
+      },
+      {
+        "id": "qwen3.7-plus",
+        "display_name": "Qwen 3.7 Plus",
+        "source": "pi-ai"
+      },
+      {
+        "id": "qwen3.6-plus-2026-04-02",
+        "display_name": "Qwen 3.6 Plus (2026-04-02)",
+        "source": "fallback",
+        "recommended": true
+      },
+      {
+        "id": "qwen3.6-max-preview",
+        "display_name": "Qwen 3.6 Max Preview",
+        "source": "pi-ai"
+      },
+      {
+        "id": "qwen3.6-plus",
+        "display_name": "Qwen 3.6 Plus",
+        "source": "pi-ai"
+      },
+      {
+        "id": "qwen3.6-flash",
+        "display_name": "Qwen 3.6 Flash",
+        "source": "pi-ai"
+      }
+    ],
+    "deepseek": [
+      {
+        "id": "deepseek-v4-pro",
+        "display_name": "DeepSeek V4 Pro",
+        "source": "pi-ai",
+        "recommended": true
+      },
+      {
+        "id": "deepseek-v4-flash",
+        "display_name": "DeepSeek V4 Flash",
+        "source": "pi-ai"
+      }
+    ]
+  }
+}

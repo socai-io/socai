@@ -1,7 +1,8 @@
 mod engine;
 
 pub use self::engine::{
-    create_llm_provider, ensure_llm_provider_configured, resolve_llm_model, run_agent_task,
+    create_llm_provider, create_llm_provider_for, ensure_llm_provider_configured,
+    ensure_llm_provider_configured_for, resolve_llm_model, resolve_llm_model_for, run_agent_task,
     wait_browser_connected, wait_browser_connected_with_options, AgentRunConfig, SocaiRuntime,
 };
 pub use crate::cdp::{

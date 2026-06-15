@@ -54,6 +54,22 @@ For app build targets, icon regeneration, the Tauri version-pinning rule, the
 monochrome design system, and macOS icon-cache gotchas, see the
 [Desktop app section in AGENTS.md](./AGENTS.md#desktop-app--app).
 
+### LLM model catalog
+
+The desktop app and TUI read selectable model versions from the generated
+catalog at `core/src/agent/model_catalog.generated.json`. The app does **not**
+discover models from provider APIs at runtime. Refresh the catalog at maintainer
+time instead:
+
+```bash
+node scripts/sync-model-catalog.mjs --no-official --write  # pi/fallback only
+pnpm --dir app sync-models                                # official APIs if keys exist, else pi/fallback
+```
+
+The sync script prefers official provider `/models` APIs, then pi's generated
+`@earendil-works/pi-ai` catalog, then socai fallback entries. AI agents should
+use the `socai-model-sync` skill for model-list refreshes and validation.
+
 ### Website
 
 The marketing/download website lives in `site/` and builds as a static Astro

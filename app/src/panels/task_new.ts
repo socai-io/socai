@@ -91,8 +91,10 @@ function renderInlineGuard(mode: TaskMode, toolCommand: ToolCommand, selected: M
 }
 
 function renderAgentSummary(selected: ModelInfo | undefined): string {
+  const modelId = selected?.model_id || selected?.default_model || "";
+  const provider = selected?.provider_display_name || selected?.provider || "";
   const summary = selected
-    ? `${esc(t("agent.label"))} · <span class="t-mono">${esc(selected.default_model)}</span>`
+    ? `${esc(t("agent.label"))} · ${esc(provider)} · <span class="t-mono">${esc(modelId)}</span>`
     : `${esc(t("agent.label"))} · ${esc(t("agent.loading"))}`;
   return `<p class="t-small subtle task-context">${summary}</p>`;
 }

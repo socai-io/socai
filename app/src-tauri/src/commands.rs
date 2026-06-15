@@ -3,12 +3,14 @@ use crate::timeline::{agent_event_to_timeline, AgentTaskEventKind, AgentTaskEven
 use anyhow::Result;
 use serde_json::{json, Value};
 use socai_core::agent::{
-    configured_default_model_for, make_run_dir, provider_credential_kind, resolve_provider,
-    save_default_model, AgentEvent, CredentialKind, Provider,
+    catalog_models_for, configured_default_model_for, configured_default_provider, make_run_dir,
+    provider_credential_kind, resolve_provider, save_default_model, AgentEvent, CredentialKind,
+    ModelCatalogEntry, Provider,
 };
 use socai_core::runtime::{
-    create_llm_provider, ensure_llm_provider_configured, run_agent_task as run_agent_with_tools,
-    AgentRunConfig, BrowserStatus, RuntimePageSession, SocaiRuntime,
+    create_llm_provider_for, ensure_llm_provider_configured_for,
+    run_agent_task as run_agent_with_tools, AgentRunConfig, BrowserStatus, RuntimePageSession,
+    SocaiRuntime,
 };
 use socai_core::sites::xhs::{
     search_notes_command, topic_scan_command, xhs_agent_instructions, xhs_agent_tools,
@@ -220,10 +222,18 @@ pub async fn agent_save_api_key(provider: String, api_key: String) -> Result<(),
 #[tauri::command]
 pub async fn agent_list_models() -> Result<Vec<Value>, String> {
     use socai_core::agent::PROVIDERS;
-    // The provider that would be used right now (honors the persisted
-    // `defaults.provider`, else first provider with a key). The frontend uses
-    // `is_default` to restore the last-chosen model across relaunches.
-    let default_provider = resolve_provider(None, None).ok();
+    // The provider/model that would be used right now. Environment overrides
+    // win when present; otherwise the desktop restores persisted defaults even
+    // if the selected provider still needs a key. The frontend uses
+    // `is_default` to restore this choice across relaunches.
+    let default_provider = if provider_env_override_present() {
+        resolve_provider(None, None)
+            .ok()
+            .or_else(configured_default_provider)
+    } else {
+        configured_default_provider().or_else(|| resolve_provider(None, None).ok())
+    };
+    let env_model = model_env_override();
     let mut out = Vec::new();
     for cfg in PROVIDERS {
         let credential_kind = provider_credential_kind(cfg.provider);
@@ -232,16 +242,69 @@ pub async fn agent_list_models() -> Result<Vec<Value>, String> {
             Some(CredentialKind::CodexOAuth) => Some("codex_oauth"),
             None => None,
         };
-        out.push(serde_json::json!({
-            "provider": cfg.provider.as_str(),
-            "display_name": cfg.display_name,
-            "default_model": configured_default_model_for(cfg.provider),
-            "has_key": credential_kind.is_some(),
-            "credential_kind": credential_kind_label,
-            "is_default": default_provider == Some(cfg.provider),
-        }));
+        let selected_model = if Some(cfg.provider) == default_provider {
+            env_model
+                .clone()
+                .unwrap_or_else(|| configured_default_model_for(cfg.provider))
+        } else {
+            configured_default_model_for(cfg.provider)
+        };
+        let mut models = catalog_models_for(cfg.provider);
+        if !selected_model.trim().is_empty()
+            && !models.iter().any(|model| model.id == selected_model)
+        {
+            models.insert(
+                0,
+                ModelCatalogEntry {
+                    id: selected_model.clone(),
+                    display_name: Some(selected_model.clone()),
+                    source: Some("saved-default".into()),
+                    recommended: false,
+                },
+            );
+        }
+        for model in models {
+            let model_id = model.id.trim().to_string();
+            if model_id.is_empty() {
+                continue;
+            }
+            let display_name = model.label().to_string();
+            let is_default = default_provider == Some(cfg.provider) && model_id == selected_model;
+            out.push(serde_json::json!({
+                "provider": cfg.provider.as_str(),
+                "provider_display_name": cfg.display_name,
+                "display_name": display_name,
+                // Back-compat name kept for the existing frontend model state:
+                // each row is now a concrete model version rather than a provider.
+                "default_model": model_id,
+                "model_id": model_id,
+                "selected_model": selected_model,
+                "has_key": credential_kind.is_some(),
+                "credential_kind": credential_kind_label,
+                "is_default": is_default,
+                "recommended": model.recommended,
+                "source": model.source,
+            }));
+        }
     }
     Ok(out)
+}
+
+fn provider_env_override_present() -> bool {
+    ["SOCAI_LLM_PROVIDER", "SOCAI_MODEL"]
+        .into_iter()
+        .any(|key| {
+            std::env::var(key)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        })
+}
+
+fn model_env_override() -> Option<String> {
+    std::env::var("SOCAI_MODEL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Persist the user's model choice so it survives a relaunch. Writes
@@ -356,6 +419,7 @@ pub async fn agent_task_start(
     runtime: State<'_, SocaiRuntime>,
     tasks: State<'_, AgentTaskRegistry>,
     task: String,
+    provider: Option<String>,
     model: Option<String>,
 ) -> Result<AgentTaskSnapshot, String> {
     require_connected(&runtime).await?;
@@ -363,7 +427,8 @@ pub async fn agent_task_start(
     if task_text.is_empty() {
         return Err("task is empty".into());
     }
-    ensure_llm_provider_configured(model.as_deref()).map_err(|e| format!("{e:#}"))?;
+    ensure_llm_provider_configured_for(provider.as_deref(), model.as_deref())
+        .map_err(|e| format!("{e:#}"))?;
 
     let run_dir = make_run_dir(&task_text);
     let _ = std::fs::create_dir_all(&run_dir);
@@ -391,6 +456,7 @@ pub async fn agent_task_start(
             runtime,
             task_id_for_spawn,
             task_text,
+            provider,
             model,
             run_dir,
         )
@@ -488,6 +554,7 @@ pub async fn agent_run(
         "legacy-agent-run".into(),
         runtime.inner().clone(),
         &task,
+        None,
         model.as_deref(),
         None,
         None,
@@ -503,6 +570,7 @@ async fn run_agent_task_background(
     runtime: SocaiRuntime,
     task_id: String,
     task: String,
+    provider: Option<String>,
     model: Option<String>,
     run_dir: PathBuf,
 ) {
@@ -544,6 +612,7 @@ async fn run_agent_task_background(
         task_id.clone(),
         runtime,
         &task,
+        provider.as_deref(),
         model.as_deref(),
         Some(run_dir),
         Some(registry.clone()),
@@ -603,6 +672,7 @@ async fn run_agent_task_on_fresh_page(
     task_id: String,
     runtime: SocaiRuntime,
     task: &str,
+    provider: Option<&str>,
     model: Option<&str>,
     run_dir: Option<PathBuf>,
     registry: Option<AgentTaskRegistry>,
@@ -613,8 +683,8 @@ async fn run_agent_task_on_fresh_page(
         anyhow::bail!("task is empty");
     }
 
-    ensure_llm_provider_configured(model)?;
-    let llm_provider = create_llm_provider(model)?;
+    ensure_llm_provider_configured_for(provider, model)?;
+    let llm_provider = create_llm_provider_for(provider, model)?;
     let page = Arc::new(runtime.create_page(XHS_HOME_URL).await?);
     let target_id = page.target_id().to_string();
     label_controlled_page(&page, &title_label).await;
@@ -721,4 +791,71 @@ async fn emit_timeline_payload(
         AgentTaskEventPayload::ephemeral(task_id, payload, snapshot)
     };
     let _ = app.emit("agent_task:event", event);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let previous = vars
+                .iter()
+                .map(|(key, _)| (*key, std::env::var(key).ok()))
+                .collect();
+            for (key, value) in vars {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_list_models_honors_socai_model_as_selected_row() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(&[("SOCAI_LLM_PROVIDER", None), ("SOCAI_MODEL", Some("o3"))]);
+
+        let models = agent_list_models().await.unwrap();
+        let selected: Vec<&Value> = models
+            .iter()
+            .filter(|model| model.get("is_default").and_then(Value::as_bool) == Some(true))
+            .collect();
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].get("provider").and_then(Value::as_str),
+            Some("openai")
+        );
+        assert_eq!(
+            selected[0].get("model_id").and_then(Value::as_str),
+            Some("o3")
+        );
+        assert_eq!(
+            selected[0].get("selected_model").and_then(Value::as_str),
+            Some("o3")
+        );
+    }
 }

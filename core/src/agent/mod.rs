@@ -24,10 +24,12 @@ pub use self::llm::{
     OpenAICompatBackend, StopReason, ToolCall, ToolResultContent, ToolSchema,
 };
 pub use self::provider::{
-    config_for, configured_default_model_for, default_model_for, list_available_providers,
-    load_api_key, load_openai_credential, load_provider_credential, provider_credential_kind,
-    resolve_provider, save_api_key, save_default_model, Credential, CredentialKind, Provider,
-    ProviderConfig, PROVIDERS,
+    catalog_model_display_name, catalog_models_for, config_for, configured_default_model_for,
+    configured_default_provider, default_model_for, list_available_providers, load_api_key,
+    load_openai_credential,
+    load_provider_credential, provider_credential_kind, resolve_provider, save_api_key,
+    save_default_model, Credential, CredentialKind, ModelCatalogEntry, Provider, ProviderConfig,
+    PROVIDERS,
 };
 pub use self::file_bash_tools::{local_agent_tools, BashTool, ReadFileTool};
 pub use self::r#loop::{run_agent, run_agent_with_events, AgentEvent, AgentOptions, AgentOutcome};

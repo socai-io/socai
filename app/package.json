@@ -14,6 +14,8 @@
     "build:mac:apple-silicon": "tauri build --ci --target aarch64-apple-darwin --bundles app,dmg --config '{\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}'",
     "build:mac:intel": "tauri build --ci --target x86_64-apple-darwin --bundles app,dmg --config '{\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}'",
     "preview": "vite preview",
+    "sync-models": "node ../scripts/sync-model-catalog.mjs --write",
+    "check-models": "node ../scripts/sync-model-catalog.mjs --no-official --check",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -22,6 +24,7 @@
     "marked": "^18.0.5"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.79.3",
     "@tauri-apps/cli": "^2.11.1",
     "typescript": "~5.6.2",
     "vite": "^6.0.3"

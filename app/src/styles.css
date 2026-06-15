@@ -266,6 +266,7 @@ body.has-paper > * { position: relative; z-index: 1; }
 .connection-meta .t-mono { margin-top: var(--sp-2); }
 .connection-meta-wide { grid-column: 1 / -1; }
 .connection-endpoint { word-break: break-all; }
+.agent-config-popover { width: min(420px, calc(100vw - var(--sp-6))); }
 .agent-config-title { margin: 0; }
 .agent-config-field,
 .agent-config-key {
@@ -280,6 +281,7 @@ body.has-paper > * { position: relative; z-index: 1; }
   border-radius: var(--r-3);
 }
 .agent-config-key p { margin: 0; }
+.agent-config-key-ready { background: var(--surface); }
 .agent-config-actions {
   display: flex;
   align-items: center;
@@ -300,7 +302,22 @@ body.has-paper > * { position: relative; z-index: 1; }
   border: var(--hairline);
   border-radius: var(--r-3);
   overflow: hidden;
+  max-height: min(56vh, 520px);
+  overflow-y: auto;
 }
+.agent-provider-list { max-height: min(42vh, 260px); }
+.agent-model-select {
+  width: 100%;
+  font-family: var(--font-mono);
+}
+.agent-picker-empty { padding: var(--sp-3); }
+.agent-model-provider {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--canvas);
+  border-bottom: var(--hairline);
+  color: var(--fg-muted);
+}
+.agent-provider-option,
 .agent-model-option {
   appearance: none;
   display: flex;
@@ -315,11 +332,30 @@ body.has-paper > * { position: relative; z-index: 1; }
   cursor: pointer;
   transition: background var(--t-fast) var(--ease);
 }
+.agent-provider-option:last-child,
 .agent-model-option:last-child { border-bottom: none; }
+.agent-provider-option:hover,
 .agent-model-option:hover { background: var(--canvas); }
+.agent-provider-option:disabled,
 .agent-model-option:disabled { cursor: wait; color: var(--fg-soft); }
+.agent-provider-option.is-active,
 .agent-model-option.is-active { background: var(--canvas); }
-.agent-model-name { flex: 1; min-width: 0; }
+.agent-model-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.agent-model-name,
+.agent-model-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-model-id { color: var(--fg-muted); }
+.agent-provider-option.is-active .agent-model-name,
 .agent-model-option.is-active .agent-model-name { font-weight: 600; }
 
 /* ── Stacked sections ──────────────────────────────────────────── */

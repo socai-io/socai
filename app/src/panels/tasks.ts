@@ -29,6 +29,8 @@ export namespace agentPanel {
   let mode: TaskMode = "agent";
   let toolCommand: ToolCommand = "search_notes";
   let model = "";
+  let modelProvider = "";
+  let modelByProvider = new Map<string, string>();
   let submittingTask = false;
   let toolInFlight = false;
   let toolResult: unknown = null;
@@ -49,13 +51,18 @@ export namespace agentPanel {
 
   export function setModels(models: ModelInfo[]): void {
     modelsCache = models;
-    if (!model || !models.some((m) => m.default_model === model)) {
-      // Restore the persisted choice (`is_default`); otherwise fall back to the
-      // first provider that has a key.
-      const persisted = models.find((m) => m.is_default && m.has_key);
-      const withKey = models.find((m) => m.has_key);
-      model = (persisted ?? withKey ?? models[0])?.default_model ?? "";
+    rememberConfiguredModels(models);
+    const current = models.find((m) => sameModel(m, modelProvider, model));
+    if (current) {
+      modelProvider = current.provider;
+      return;
     }
+
+    // Restore the persisted choice (`is_default`); otherwise fall back to the
+    // first provider that has a key.
+    const persisted = models.find((m) => m.is_default);
+    const withKey = models.find((m) => m.has_key);
+    selectModelInfo(persisted ?? withKey ?? models[0]);
   }
 
   export async function refreshModels(): Promise<ModelInfo[]> {
@@ -109,26 +116,34 @@ export namespace agentPanel {
       shell.rerender();
     });
 
-    document.querySelectorAll<HTMLButtonElement>(".agent-model-option").forEach((opt) => {
+    document.querySelectorAll<HTMLButtonElement>(".agent-provider-option").forEach((opt) => {
       opt.addEventListener("click", () => {
-        const next = opt.dataset.model;
-        if (!next || next === model) return;
-        model = next;
+        const nextProvider = opt.dataset.provider;
+        if (!nextProvider || nextProvider === modelProvider) return;
         keyMessage = "";
         keyError = "";
         pendingKey = "";
-        // Persist the choice so it survives a relaunch.
-        const picked = modelsCache.find((m) => m.default_model === next);
-        if (picked) {
-          invoke("agent_set_default_model", { provider: picked.provider, model: next }).catch(
-            (err) => console.error("agent_set_default_model failed:", err),
-          );
-        }
-        // Close the popover when the picked model is ready; keep it open to
-        // collect a credential when the model still needs one.
-        configOpen = false;
+        const picked = preferredModelForProvider(nextProvider);
+        selectModelInfo(picked);
+        if (picked) persistModelChoice(picked);
+        configOpen = true;
         shell.rerender();
       });
+    });
+
+    const modelSelect = document.getElementById("agent-model-select") as HTMLSelectElement | null;
+    modelSelect?.addEventListener("change", () => {
+      const next = modelSelect.value;
+      const nextProvider = modelSelect.dataset.provider;
+      if (!next || !nextProvider || (next === model && nextProvider === modelProvider)) return;
+      keyMessage = "";
+      keyError = "";
+      pendingKey = "";
+      const picked = modelsCache.find((m) => sameModel(m, nextProvider, next));
+      selectModelInfo(picked);
+      if (picked) persistModelChoice(picked);
+      configOpen = true;
+      shell.rerender();
     });
 
     const keyInput = document.getElementById("agent-header-key-input") as HTMLInputElement | null;
@@ -193,43 +208,89 @@ export namespace agentPanel {
     if (!selected) {
       return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-muted" aria-hidden="true"></i>${esc(t("agent.label"))} · ${esc(t("agent.loading"))}</button>`;
     }
+    const label = modelDisplayLabel(selected);
     if (!selected.has_key) {
-      return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-hollow" aria-hidden="true"></i>${esc(t("agent.label"))} · ${esc(selected.display_name)} · ${esc(t("agent.keyNeeded"))}</button>`;
+      return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-hollow" aria-hidden="true"></i>${esc(t("agent.label"))} · ${esc(label)} · ${esc(t("agent.keyNeeded"))}</button>`;
     }
-    return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${esc(t("agent.label"))} · ${esc(selected.display_name)}</button>`;
+    return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${esc(t("agent.label"))} · ${esc(label)}</button>`;
   }
 
   function renderConfigPopover(): string {
     const selected = selectedModel();
     const disabled = savingKey || submittingTask;
-    const options = modelsCache
-      .map((m) => {
-        const active = model === m.default_model;
+    const activeProvider = modelProvider || selected?.provider || providerSummaries()[0]?.provider || "";
+    const activeModel = selected?.provider === activeProvider ? selected : preferredModelForProvider(activeProvider);
+    const selectedModelId = modelId(activeModel);
+    const providerOptions = providerSummaries()
+      .map((provider) => {
+        const active = provider.provider === activeProvider;
         const dotClass = active ? "badge-dot-ink" : "badge-dot-hollow";
-        const flag = m.has_key ? "" : `<span class="t-small subtle">${esc(t("agent.keyNeeded"))}</span>`;
+        const flag = provider.hasKey ? "" : `<span class="t-small subtle">${esc(t("agent.keyNeeded"))}</span>`;
+        const selectedForProvider = preferredModelForProvider(provider.provider);
+        const hint = selectedForProvider ? modelNameLabel(selectedForProvider) : t("common.loading");
         return `
           <button
             type="button"
-            class="agent-model-option${active ? " is-active" : ""}"
-            data-model="${esc(m.default_model)}"
+            class="agent-provider-option${active ? " is-active" : ""}"
+            data-provider="${esc(provider.provider)}"
             role="option"
             aria-selected="${active ? "true" : "false"}"
             ${disabled ? "disabled" : ""}
           >
             <i class="badge-dot ${dotClass}" aria-hidden="true"></i>
-            <span class="agent-model-name">${esc(m.display_name)}</span>
+            <span class="agent-model-copy">
+              <span class="agent-model-name">${esc(provider.displayName)}</span>
+              <span class="agent-model-id">${esc(hint)}</span>
+            </span>
             ${flag}
           </button>
         `;
       })
       .join("");
 
+    const modelRows = modelsForProvider(activeProvider);
+    const modelOptions = modelRows
+      .map((m) => {
+        const id = modelId(m);
+        return `<option value="${esc(id)}" ${id === selectedModelId ? "selected" : ""}>${esc(modelOptionLabel(m))}</option>`;
+      })
+      .join("");
+
     return `
       <div class="topbar-popover agent-config-popover" role="dialog" aria-label="${esc(t("agent.configurationAria"))}">
-        <div class="agent-model-list" role="listbox" aria-label="${esc(t("agent.selectModelAria"))}">
-          ${options || `<p class="t-small subtle">${esc(t("common.loading"))}</p>`}
-        </div>
-        ${selected && !selected.has_key ? renderHeaderKeyEntry(selected) : ""}
+        <section class="agent-config-field">
+          <p class="t-eyebrow agent-config-title">${esc(t("agent.provider"))}</p>
+          <div class="agent-model-list agent-provider-list" role="listbox" aria-label="${esc(t("agent.selectProviderAria"))}">
+            ${providerOptions || `<p class="t-small subtle agent-picker-empty">${esc(t("common.loading"))}</p>`}
+          </div>
+        </section>
+        ${renderCredentialSection(activeModel)}
+        <section class="agent-config-field">
+          <label class="t-eyebrow agent-config-title" for="agent-model-select">${esc(t("agent.modelVersion"))}</label>
+          <select
+            id="agent-model-select"
+            class="input-field agent-model-select"
+            data-provider="${esc(activeProvider)}"
+            aria-label="${esc(t("agent.selectModelAria"))}"
+            ${disabled || modelRows.length === 0 ? "disabled" : ""}
+          >
+            ${modelOptions}
+          </select>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderCredentialSection(selected: ModelInfo | undefined): string {
+    if (!selected) return "";
+    return selected.has_key ? renderCredentialConfigured(selected) : renderHeaderKeyEntry(selected);
+  }
+
+  function renderCredentialConfigured(selected: ModelInfo): string {
+    return `
+      <div class="agent-config-key agent-config-key-ready">
+        <p class="t-eyebrow agent-config-title">${esc(t("agent.apiKey"))}</p>
+        <p class="t-small subtle">${esc(t("agent.credentialConfigured", { provider: providerDisplayLabel(selected) }))}</p>
       </div>
     `;
   }
@@ -238,7 +299,8 @@ export namespace agentPanel {
     const openai = selected.provider === "openai";
     return `
       <div class="agent-config-key">
-        <p class="t-small subtle">${esc(t("agent.needsCredential", { model: selected.display_name }))}</p>
+        <p class="t-eyebrow agent-config-title">${esc(t("agent.apiKey"))}</p>
+        <p class="t-small subtle">${esc(t("agent.needsCredential", { model: providerDisplayLabel(selected) }))}</p>
         ${openai ? `
           <div class="agent-config-actions">
             <button id="agent-header-codex-login" type="button" class="btn-primary btn-compact" ${codexStarting ? "disabled" : ""}>
@@ -267,8 +329,90 @@ export namespace agentPanel {
     `;
   }
 
+  function modelId(info: ModelInfo | undefined): string {
+    return info?.model_id || info?.default_model || "";
+  }
+
+  function sameModel(info: ModelInfo, provider: string, id: string): boolean {
+    return info.provider === provider && modelId(info) === id;
+  }
+
+  function rememberConfiguredModels(models: ModelInfo[]): void {
+    for (const info of models) {
+      if (!info.provider || modelByProvider.has(info.provider)) continue;
+      const preferred = models.find((m) => m.provider === info.provider && modelId(m) === m.selected_model)
+        ?? models.find((m) => m.provider === info.provider && m.recommended)
+        ?? info;
+      const id = modelId(preferred);
+      if (id) modelByProvider.set(info.provider, id);
+    }
+  }
+
+  function selectModelInfo(info: ModelInfo | undefined): void {
+    model = modelId(info);
+    modelProvider = info?.provider || "";
+    if (info && model) modelByProvider.set(info.provider, model);
+  }
+
+  function persistModelChoice(info: ModelInfo): void {
+    const id = modelId(info);
+    if (!id) return;
+    invoke("agent_set_default_model", { provider: info.provider, model: id }).catch(
+      (err) => console.error("agent_set_default_model failed:", err),
+    );
+  }
+
+  function providerSummaries(): Array<{ provider: string; displayName: string; hasKey: boolean }> {
+    const seen = new Set<string>();
+    const providers: Array<{ provider: string; displayName: string; hasKey: boolean }> = [];
+    for (const info of modelsCache) {
+      if (seen.has(info.provider)) continue;
+      seen.add(info.provider);
+      providers.push({
+        provider: info.provider,
+        displayName: providerDisplayLabel(info),
+        hasKey: info.has_key,
+      });
+    }
+    return providers;
+  }
+
+  function modelsForProvider(provider: string): ModelInfo[] {
+    return modelsCache.filter((m) => m.provider === provider);
+  }
+
+  function preferredModelForProvider(provider: string): ModelInfo | undefined {
+    const rows = modelsForProvider(provider);
+    const remembered = modelByProvider.get(provider);
+    return rows.find((m) => modelId(m) === remembered)
+      ?? rows.find((m) => modelId(m) === m.selected_model)
+      ?? rows.find((m) => m.recommended)
+      ?? rows[0];
+  }
+
+  function providerDisplayLabel(info: ModelInfo): string {
+    return info.provider_display_name || info.provider;
+  }
+
+  function modelNameLabel(info: ModelInfo): string {
+    return info.display_name || modelId(info);
+  }
+
+  function modelOptionLabel(info: ModelInfo): string {
+    const id = modelId(info);
+    const name = modelNameLabel(info);
+    const recommended = info.recommended ? ` (${t("agent.defaultModel")})` : "";
+    return name === id ? `${name}${recommended}` : `${name} — ${id}${recommended}`;
+  }
+
+  function modelDisplayLabel(info: ModelInfo): string {
+    const provider = providerDisplayLabel(info);
+    const name = modelNameLabel(info);
+    return name.startsWith(provider) ? name : `${provider} · ${name}`;
+  }
+
   function selectedModel(): ModelInfo | undefined {
-    return modelsCache.find((m) => m.default_model === model);
+    return modelsCache.find((m) => sameModel(m, modelProvider, model));
   }
 
   function selectedNeedsKey(): boolean {
@@ -465,9 +609,11 @@ export namespace agentPanel {
     submitError = "";
     shell.rerender();
     try {
+      const selected = selectedModel();
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_start", {
         task: value,
-        model: model || null,
+        provider: selected?.provider || modelProvider || null,
+        model: selected ? modelId(selected) : model || null,
       });
       upsertTask(snapshot);
       selectedTaskId = snapshot.task_id;

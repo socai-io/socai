@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -55,6 +56,49 @@ pub struct ProviderConfig {
     pub base_url: Option<&'static str>,
     /// Model id prefix → provider matching (e.g. "claude-" → Anthropic).
     pub model_prefixes: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelCatalogEntry {
+    pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub recommended: bool,
+}
+
+impl ModelCatalogEntry {
+    pub fn label(&self) -> &str {
+        self.display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.id)
+    }
+
+    fn fallback(id: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            display_name: Some(display_name.into()),
+            source: Some("compiled-default".into()),
+            recommended: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelCatalogFile {
+    providers: HashMap<String, Vec<ModelCatalogEntry>>,
+}
+
+static MODEL_CATALOG: OnceLock<Option<ModelCatalogFile>> = OnceLock::new();
+
+fn generated_model_catalog() -> Option<&'static ModelCatalogFile> {
+    MODEL_CATALOG
+        .get_or_init(|| serde_json::from_str(include_str!("model_catalog.generated.json")).ok())
+        .as_ref()
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +171,47 @@ pub fn config_for(provider: Provider) -> &'static ProviderConfig {
 
 pub fn default_model_for(provider: Provider) -> &'static str {
     config_for(provider).default_model
+}
+
+/// Curated model versions for a provider, loaded from the generated model
+/// catalog. The catalog is refreshed by maintainer tooling, not at app runtime.
+/// The provider's compiled default is always present so persisted/default model
+/// selection cannot point at an invisible row after a stale catalog sync.
+pub fn catalog_models_for(provider: Provider) -> Vec<ModelCatalogEntry> {
+    let cfg = config_for(provider);
+    let mut models = generated_model_catalog()
+        .and_then(|catalog| catalog.providers.get(cfg.provider.as_str()))
+        .cloned()
+        .unwrap_or_default();
+
+    models.retain(|model| !model.id.trim().is_empty());
+    if models.is_empty() {
+        models.push(ModelCatalogEntry::fallback(
+            cfg.default_model,
+            cfg.display_name,
+        ));
+        return models;
+    }
+
+    if !models.iter().any(|model| model.id == cfg.default_model) {
+        models.insert(
+            0,
+            ModelCatalogEntry::fallback(cfg.default_model, cfg.display_name),
+        );
+    }
+    models
+}
+
+pub fn catalog_model_display_name(provider: Provider, model_id: &str) -> String {
+    let trimmed = model_id.trim();
+    if trimmed.is_empty() {
+        return config_for(provider).display_name.to_string();
+    }
+    catalog_models_for(provider)
+        .into_iter()
+        .find(|model| model.id == trimmed)
+        .map(|model| model.label().to_string())
+        .unwrap_or_else(|| trimmed.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -356,6 +441,22 @@ pub fn save_default_model(provider: Provider, model: &str) -> anyhow::Result<std
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(path)
+}
+
+/// Default provider saved in `~/.socai/auth.json`, if present. Unlike
+/// `resolve_provider`, this intentionally ignores credential availability so
+/// UI pickers can restore a provider that still needs an API key.
+pub fn configured_default_provider() -> Option<Provider> {
+    for (_path, blob) in &auth_blobs() {
+        if let Some(defaults) = blob.get("defaults").and_then(Value::as_object) {
+            if let Some(name) = defaults.get("provider").and_then(Value::as_str) {
+                if let Some(provider) = Provider::from_name(name) {
+                    return Some(provider);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Default model for `provider`, honoring `defaults.{provider}_model`

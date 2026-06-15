@@ -16,8 +16,9 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Cmd, CompletionType, Config, Editor, EventHandler, Helper, KeyEvent, Modifiers};
 use socai_core::agent::{
-    config_for, configured_default_model_for, provider_credential_kind, resolve_provider,
-    save_api_key, save_default_model, AgentEvent, Backend, CredentialKind, Provider, PROVIDERS,
+    catalog_models_for, config_for, configured_default_model_for, provider_credential_kind,
+    resolve_provider, save_api_key, save_default_model, AgentEvent, Backend, CredentialKind,
+    ModelCatalogEntry, Provider, PROVIDERS,
 };
 use socai_core::agent::{local_agent_tools, make_run_dir, Session};
 use socai_core::runtime::{
@@ -317,20 +318,48 @@ struct ModelOption {
 fn model_options() -> Vec<ModelOption> {
     PROVIDER_ORDER
         .iter()
-        .map(|provider| {
+        .flat_map(|provider| {
             let cfg = config_for(*provider);
-            let model = configured_default_model_for(*provider);
+            let selected_model = configured_default_model_for(*provider);
             let key_status = match provider_credential_kind(*provider) {
                 Some(CredentialKind::ApiKey) => "api key set",
                 Some(CredentialKind::CodexOAuth) => "codex oauth set",
                 None => "api key missing",
             };
-            let label = format!("{} — {} ({})", cfg.display_name, model, key_status);
-            ModelOption {
-                label,
-                provider: *provider,
-                model,
+            let mut models = catalog_models_for(*provider);
+            if !selected_model.trim().is_empty()
+                && !models.iter().any(|model| model.id == selected_model)
+            {
+                models.insert(
+                    0,
+                    ModelCatalogEntry {
+                        id: selected_model.clone(),
+                        display_name: Some(selected_model.clone()),
+                        source: Some("saved-default".into()),
+                        recommended: false,
+                    },
+                );
             }
+            models.into_iter().map(move |model| {
+                let active = if model.id == selected_model {
+                    " · current"
+                } else {
+                    ""
+                };
+                let label = format!(
+                    "{} — {} · {} ({}{})",
+                    cfg.display_name,
+                    model.label(),
+                    model.id,
+                    key_status,
+                    active
+                );
+                ModelOption {
+                    label,
+                    provider: *provider,
+                    model: model.id,
+                }
+            })
         })
         .collect()
 }

@@ -238,7 +238,14 @@ async fn wait_browser_connected_inner(
 }
 
 pub fn resolve_llm_model(model: Option<&str>) -> Result<(Provider, String)> {
-    let provider = resolve_provider(None, model)?;
+    resolve_llm_model_for(None, model)
+}
+
+pub fn resolve_llm_model_for(
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> Result<(Provider, String)> {
+    let provider = resolve_provider(provider, model)?;
     let effective_model = model
         .map(str::trim)
         .filter(|model| !model.is_empty())
@@ -248,7 +255,14 @@ pub fn resolve_llm_model(model: Option<&str>) -> Result<(Provider, String)> {
 }
 
 pub fn create_llm_provider(model: Option<&str>) -> Result<Arc<dyn Backend>> {
-    let (provider, effective_model) = resolve_llm_model(model)?;
+    create_llm_provider_for(None, model)
+}
+
+pub fn create_llm_provider_for(
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> Result<Arc<dyn Backend>> {
+    let (provider, effective_model) = resolve_llm_model_for(provider, model)?;
     let llm_provider: Arc<dyn Backend> = match provider {
         Provider::Anthropic => Arc::new(AnthropicBackend::new(&effective_model)?),
         other => Arc::new(OpenAICompatBackend::new(other, &effective_model)?),
@@ -257,7 +271,14 @@ pub fn create_llm_provider(model: Option<&str>) -> Result<Arc<dyn Backend>> {
 }
 
 pub fn ensure_llm_provider_configured(model: Option<&str>) -> Result<Provider> {
-    let provider = resolve_provider(None, model)?;
+    ensure_llm_provider_configured_for(None, model)
+}
+
+pub fn ensure_llm_provider_configured_for(
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> Result<Provider> {
+    let provider = resolve_provider(provider, model)?;
     if load_provider_credential(provider).is_none() {
         let cfg = config_for(provider);
         if provider == Provider::OpenAI {
@@ -325,4 +346,17 @@ pub async fn run_agent_task(
         seed_messages: config.seed_messages,
     };
     run_agent_with_events(task, llm_provider, tools, options, events_tx).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_llm_model_for_prefers_explicit_provider_over_model_prefix() {
+        let (provider, model) = resolve_llm_model_for(Some("qwen"), Some("custom-model")).unwrap();
+
+        assert_eq!(provider, Provider::Qwen);
+        assert_eq!(model, "custom-model");
+    }
 }

@@ -21,11 +21,18 @@ export type Status =
 
 export interface ModelInfo {
   provider: string;
+  provider_display_name?: string;
   display_name: string;
+  /** Concrete executable model id. Kept alongside default_model while older backend rows migrate. */
+  model_id?: string;
+  /** Back-compat: now also carries the concrete executable model id for each row. */
   default_model: string;
+  selected_model?: string;
   has_key: boolean;
   credential_kind?: "api_key" | "codex_oauth" | null;
   is_default?: boolean;
+  recommended?: boolean;
+  source?: string | null;
 }
 
 export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
