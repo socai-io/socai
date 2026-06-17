@@ -1139,6 +1139,36 @@ impl Tool for TopicScanTool {
         // re-runs the search and would drop them), so don't pass them here.
         let search = xhs.search_notes(&query, None, 2.0, None).await?;
 
+        // If the search never landed on a results page (search box not found,
+        // login required, …) bail before the browse loop. Otherwise
+        // extract_search_cards would read whatever feed is on screen — the
+        // /explore recommendations — and silently return notes unrelated to the
+        // query. Surface the failure so callers see why instead of bad data.
+        if !search.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            let reason = search
+                .get("reason")
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.is_empty())
+                .unwrap_or("search_failed")
+                .to_string();
+            let payload = json!({
+                "ok": false,
+                "query": query,
+                "search": search,
+                "selected_cards": [],
+                "notes": [],
+                "reason": reason,
+                "sampling": {
+                    "num_notes": num_notes,
+                    "selected": 0,
+                    "comments_per_note": TOPIC_SCAN_COMMENTS,
+                    "include_media": include_media,
+                    "download_media": download_media,
+                },
+            });
+            return Ok(json_result(&payload));
+        }
+
         // Optional tab switch (re-runs the search under the chosen tab), then
         // optional filter application.
         let mut tab_result = Value::Object(serde_json::Map::new());

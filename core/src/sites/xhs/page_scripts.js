@@ -71,7 +71,18 @@ const SocaiXhsPageScripts = (() => {
   // (a chat-style composer with an AI helper "问点点" below). The
   // legacy <input> selectors are kept as fallback in case XHS rolls
   // the old UI back to some users.
+  //
+  // 2026-06: the composer placeholder now rotates trending hot-search
+  // phrases (e.g. "世界杯L组7点直播") instead of containing "搜索", so
+  // `placeholder*="搜索"` matches nothing and search silently no-ops.
+  // Anchor on the textarea's stable structural role instead:
+  // `.search-input textarea` works on both the home feed and the
+  // /search_result page; `#search-input-in-feeds textarea` is the
+  // explicit home-feed container. The placeholder match is demoted to
+  // a fallback.
   const SEARCH_INPUT_SELECTORS = [
+    '.search-input textarea',
+    '#search-input-in-feeds textarea',
     'textarea[placeholder*="搜索"]',
     'input#search-input',
     'input[type="search"]',
