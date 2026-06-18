@@ -47,7 +47,8 @@ A helper script wraps this command, finds the created run, watches it, and print
 - Do not cancel an in-progress production release unless the user explicitly asks.
 - Do not delete tags/releases unless the workflow failed and the user explicitly approves cleanup.
 - If local files are dirty, do not include unrelated changes in release work. The workflow publishes from the remote ref, not local uncommitted files.
-- Treat the website deploy as a separate, optional follow-up task. Do not block, alter, or rerun the release workflow just to update `socai.io`.
+- The website redeploys automatically: Vercel Git integration is connected to `socai-io/socai` with production branch `main`, so the `chore: release socai vX.Y.Z` push triggers a production `socai-site` build with no manual step. Do not alter or rerun the release workflow to update `socai.io`.
+- Verifying `socai.io` (visible version + `/download` and `/github` redirects) is a **mandatory** part of every production release — the release is not done until the live site is confirmed serving the new version. Fall back to a manual `socai-site-deployment` redeploy only if that verification fails.
 
 ## Preflight checks
 
@@ -123,15 +124,26 @@ gh run watch "${run_id}" --repo socai-io/socai --exit-status
 
 Use `minor` or `major` instead of `patch` only when requested.
 
-## Prompt for website deployment after release
+## Verify the website deployment (mandatory)
 
-After a successful production release and release verification, prompt the user to deploy the static website immediately afterward. Use wording like:
+The website is **not** an optional follow-up — verifying it is a required release gate.
 
-> Release `vX.Y.Z` is published. `socai.io` is a separate static Vercel deployment and may still show the previous version until it is redeployed. Do you want me to deploy `socai.io` now with `SOCAI_RELEASE_VERSION=X.Y.Z`?
+Vercel Git integration is connected to `socai-io/socai` with production branch `main` (project `socai-site`, scope `socai-d83824c8`). The release workflow's push of `chore: release socai vX.Y.Z` to `main` therefore triggers a production `socai-site` build automatically; the site resolves the version from the bumped `app/src-tauri/tauri.conf.json` (falling back to the GitHub latest release), so no `SOCAI_RELEASE_VERSION` override is normally needed.
 
-If the user says yes, switch to the `socai-site-deployment` skill and run the production site deployment with `SOCAI_RELEASE_VERSION` set to the published version. If the user says no, stop after noting that `/download` already points to GitHub's latest release asset.
+After the GitHub release verification, confirm the live site has caught up to the new version. The auto-deploy usually finishes within ~1 minute of the `main` push; allow for that and re-check if it is still mid-build.
 
-Do not make site deployment mandatory and do not change the GitHub release workflow to deploy the website automatically.
+```bash
+# visible version on the live pages must equal the just-published X.Y.Z
+for p in "" "contact"; do printf "/%s -> " "$p"; curl -s "https://socai.io/$p" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | sort -u | tr '\n' ' '; echo; done
+curl -sI https://socai.io/         | grep -iE '^HTTP'              # 200
+curl -sI https://www.socai.io/     | grep -iE '^HTTP|^location'   # 308 -> https://socai.io/
+curl -sI https://socai.io/download | grep -iE '^HTTP|^location'   # 307 -> GitHub latest DMG
+curl -sI https://socai.io/github   | grep -iE '^HTTP|^location'   # 307 -> github.com/socai-io/socai
+```
+
+The release is complete only when the live `socai.io` version equals the published `X.Y.Z` **and** all four checks above pass.
+
+If the site has **not** updated after the auto-deploy should have finished, fall back to a manual redeploy: switch to the `socai-site-deployment` skill and deploy the production `socai-site` project with `SOCAI_RELEASE_VERSION=X.Y.Z`. Do not rerun the GitHub release workflow to fix a site-only lag, and do not add website-deploy steps to the release workflow — the Git integration already performs the deploy.
 
 ## Test the release workflow without publishing
 
@@ -204,7 +216,7 @@ curl -I -L --max-time 30 -o /dev/null -w 'code=%{http_code}\nfinal=%{url_effecti
 curl -sSI https://github.com/socai-io/socai/releases/latest/download/socai-macos-universal.dmg | grep -F "/releases/download/${tag}/socai-macos-universal.dmg"
 ```
 
-Expected final URL should resolve through GitHub latest release download and produce a successful response. The visible `socai.io` version is only expected to update after the separate site deployment follow-up.
+Expected final URL should resolve through GitHub latest release download and produce a successful response. The visible `socai.io` version updates automatically once the Git-integration site build finishes — confirm it as a mandatory step (see [Verify the website deployment](#verify-the-website-deployment-mandatory)).
 
 Optional artifact check:
 
@@ -229,6 +241,6 @@ Include:
 - Published tag/version and release URL
 - Asset presence (`socai-macos-universal.dmg`)
 - `/download` verification summary
-- Whether the user was prompted to deploy `socai.io`, and whether they accepted or deferred
-- If site deployment was accepted, include the `socai.io` deployment/visible version verification summary from the site deployment skill
+- `socai.io` site verification summary (mandatory): live visible version equals `X.Y.Z`, and `/`, `www`, `/download`, `/github` all behave as expected
+- Whether the Git-integration auto-deploy was sufficient, or a manual `socai-site-deployment` redeploy fallback was needed
 - Any failures, cleanup performed, or manual blockers
