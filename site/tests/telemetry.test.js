@@ -107,3 +107,91 @@ test('sanitizeEvent flattens legacy properties without leaking disallowed fields
   assert.equal(Object.hasOwn(sanitized, 'event'), false);
   assert.equal(Object.hasOwn(sanitized, 'created_at_ms'), false);
 });
+
+test('sanitizeEvent keeps desktop agent-task fields', () => {
+  const sanitized = __testing.sanitizeEvent({
+    event: 'socai_desktop_agent_task_end',
+    install_id: 'install-1',
+    source: 'desktop',
+    task_id: 'task-1730000000000-3',
+    run_id: '20260621-101010-000042',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    outcome: 'completed',
+    turns: 7,
+    input_tokens: 1234,
+    output_tokens: 567,
+    duration_ms: 42130,
+    tool_name: 'topic_scan',
+    turn: 3,
+    sequence: 5,
+    ok: true,
+  });
+
+  assert.equal(sanitized.source, 'desktop');
+  assert.equal(sanitized.task_id, 'task-1730000000000-3');
+  assert.equal(sanitized.run_id, '20260621-101010-000042');
+  assert.equal(sanitized.provider, 'anthropic');
+  assert.equal(sanitized.model, 'claude-sonnet-4-6');
+  assert.equal(sanitized.outcome, 'completed');
+  assert.equal(sanitized.turns, 7);
+  assert.equal(sanitized.input_tokens, 1234);
+  assert.equal(sanitized.output_tokens, 567);
+  assert.equal(sanitized.turn, 3);
+  assert.equal(sanitized.sequence, 5);
+  assert.equal(sanitized.duration_ms, 42130);
+  assert.equal(sanitized.tool_name, 'topic_scan');
+  assert.equal(sanitized.ok, true);
+});
+
+test('sanitizeEvent keeps desktop app_open setup fields', () => {
+  const sanitized = __testing.sanitizeEvent({
+    event: 'socai_desktop_app_open',
+    install_id: 'install-1',
+    source: 'desktop',
+    has_api_key: true,
+    default_provider: 'anthropic',
+    default_model: 'claude-sonnet-4-6',
+  });
+
+  assert.equal(sanitized.has_api_key, true);
+  assert.equal(sanitized.default_provider, 'anthropic');
+  assert.equal(sanitized.default_model, 'claude-sonnet-4-6');
+});
+
+test('sanitizeEvent allows task_text up to the 8000-char cap', () => {
+  const longPrompt = 'x'.repeat(5000);
+  const sanitized = __testing.sanitizeEvent({
+    event: 'socai_desktop_agent_task_start',
+    install_id: 'install-1',
+    task_text: longPrompt,
+    task_len: 5000,
+  });
+  // 5000 chars survives intact — the default 2000 cap would have clipped it.
+  assert.equal(sanitized.task_text, longPrompt);
+  assert.equal(sanitized.task_len, 5000);
+
+  const hugePrompt = 'y'.repeat(9000);
+  const clipped = __testing.sanitizeEvent({
+    event: 'socai_desktop_agent_task_start',
+    install_id: 'install-1',
+    task_text: hugePrompt,
+  });
+  // Beyond 8000 it is truncated to 8000 chars plus a single ellipsis.
+  assert.equal(clipped.task_text.length, 8001);
+  assert.ok(clipped.task_text.endsWith('…'));
+});
+
+test('sanitizeEvent strips unknown desktop fields so result bodies never leak', () => {
+  const sanitized = __testing.sanitizeEvent({
+    event: 'socai_desktop_agent_task_end',
+    install_id: 'install-1',
+    task_id: 'task-1',
+    final_text: 'report body that must not reach axiom',
+    assistant_text: 'model output that must not reach axiom',
+  });
+
+  assert.equal(sanitized.task_id, 'task-1');
+  assert.equal(Object.hasOwn(sanitized, 'final_text'), false);
+  assert.equal(Object.hasOwn(sanitized, 'assistant_text'), false);
+});

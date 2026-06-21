@@ -1,4 +1,4 @@
-use crate::tracking::{query_text_enabled, telemetry_enabled, Telemetry};
+use socai_core::telemetry::{query_text_enabled, telemetry_enabled, Telemetry, TelemetrySource};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -122,7 +122,7 @@ pub async fn run_daemon() -> Result<()> {
     fs::write(&paths.pid, std::process::id().to_string()).await?;
 
     let runtime = SocaiRuntime::new();
-    let telemetry = Telemetry::new(&paths.home);
+    let telemetry = Telemetry::new(&paths.home, TelemetrySource::CliDaemon);
     let state = Arc::new(Mutex::new(DaemonState {
         runtime,
         telemetry,

@@ -15,6 +15,30 @@ const CHANNEL_CAPACITY: usize = 512;
 const REMOTE_BATCH_SIZE: usize = 25;
 const REMOTE_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Which socai surface is emitting telemetry. Carried verbatim into the `source`
+/// field of every event and used to decide which device context is meaningful
+/// (terminal/parent-process detection only applies to the CLI daemon).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelemetrySource {
+    CliDaemon,
+    Desktop,
+}
+
+impl TelemetrySource {
+    fn as_str(self) -> &'static str {
+        match self {
+            TelemetrySource::CliDaemon => "cli_daemon",
+            TelemetrySource::Desktop => "desktop",
+        }
+    }
+
+    /// Terminal/parent-process detection is a CLI concept. A desktop GUI has no
+    /// meaningful terminal, so those fields are skipped for `Desktop`.
+    fn collects_terminal_context(self) -> bool {
+        matches!(self, TelemetrySource::CliDaemon)
+    }
+}
+
 #[derive(Clone)]
 pub struct Telemetry {
     sender: mpsc::Sender<QueuedEvent>,
@@ -30,6 +54,7 @@ struct QueuedEvent {
 struct WorkerConfig {
     install_id: String,
     session_id: String,
+    source: TelemetrySource,
     local_path: PathBuf,
 }
 
@@ -49,7 +74,7 @@ struct IdentityFile {
 }
 
 impl Telemetry {
-    pub fn new(home: &Path) -> Self {
+    pub fn new(home: &Path, source: TelemetrySource) -> Self {
         let install_id = load_or_create_install_id(home);
         let session_id = new_session_id();
         let local_path = home.join("telemetry/events.jsonl");
@@ -58,9 +83,10 @@ impl Telemetry {
         let config = WorkerConfig {
             install_id,
             session_id,
+            source,
             local_path,
         };
-        tokio::spawn(worker_loop(receiver, config));
+        spawn_worker(receiver, config);
 
         Self { sender }
     }
@@ -70,6 +96,32 @@ impl Telemetry {
             name: name.into(),
             properties,
         });
+    }
+}
+
+/// Run the flush worker. When a Tokio runtime is already entered (the CLI daemon
+/// path) it spawns onto it; otherwise — e.g. the Tauri desktop shell constructs
+/// `Telemetry` from a plain synchronous `fn run()` with no ambient runtime — it
+/// owns a dedicated current-thread runtime so `capture()` stays fire-and-forget
+/// regardless of the caller's context.
+fn spawn_worker(receiver: mpsc::Receiver<QueuedEvent>, config: WorkerConfig) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(worker_loop(receiver, config));
+        }
+        Err(_) => {
+            let _ = std::thread::Builder::new()
+                .name("socai-telemetry".into())
+                .spawn(move || {
+                    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    else {
+                        return;
+                    };
+                    rt.block_on(worker_loop(receiver, config));
+                });
+        }
     }
 }
 
@@ -115,7 +167,7 @@ fn enrich_properties(properties: Value, config: &WorkerConfig, timestamp_ms: u64
     };
     map.insert("schema_version".into(), json!(EVENT_SCHEMA_VERSION));
     map.insert("app".into(), json!("socai"));
-    map.insert("source".into(), json!("cli_daemon"));
+    map.insert("source".into(), json!(config.source.as_str()));
     map.insert("app_version".into(), json!(env!("CARGO_PKG_VERSION")));
     map.insert("platform".into(), json!(std::env::consts::OS));
     map.insert("session_id".into(), json!(config.session_id));
@@ -124,8 +176,10 @@ fn enrich_properties(properties: Value, config: &WorkerConfig, timestamp_ms: u64
     let device = device_info();
     insert_nonempty(&mut map, "os_version", &device.os_version);
     insert_nonempty(&mut map, "os_kernel_version", &device.os_kernel_version);
-    insert_nonempty(&mut map, "terminal_app", &device.terminal_app);
-    insert_nonempty(&mut map, "parent_process", &device.parent_process);
+    if config.source.collects_terminal_context() {
+        insert_nonempty(&mut map, "terminal_app", &device.terminal_app);
+        insert_nonempty(&mut map, "parent_process", &device.parent_process);
+    }
     if let Some(memory_total_mb) = device.memory_total_mb {
         map.insert("memory_total_mb".into(), json!(memory_total_mb));
     }
@@ -499,6 +553,14 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[test]
+    fn source_strings_are_stable() {
+        assert_eq!(TelemetrySource::CliDaemon.as_str(), "cli_daemon");
+        assert_eq!(TelemetrySource::Desktop.as_str(), "desktop");
+        assert!(TelemetrySource::CliDaemon.collects_terminal_context());
+        assert!(!TelemetrySource::Desktop.collects_terminal_context());
     }
 
     #[test]

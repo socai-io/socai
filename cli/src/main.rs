@@ -1,5 +1,4 @@
 mod daemon;
-mod tracking;
 mod tui;
 mod version;
 

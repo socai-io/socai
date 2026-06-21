@@ -17,6 +17,8 @@ reqwest.workspace = true
 base64.workspace = true
 chromiumoxide.workspace = true
 dirs = "5"
+libc.workspace = true
+uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 # Image compositing/resizing for batching note images into 2x2 vision grids.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }

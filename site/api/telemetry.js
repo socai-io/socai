@@ -3,6 +3,9 @@ const DEFAULT_DATASET = 'socai-cli-prod';
 const MAX_BODY_BYTES = 128 * 1024;
 const MAX_EVENTS_PER_REQUEST = 100;
 const MAX_STRING_CHARS = 2_000;
+// Per-field overrides for the default string cap. The desktop sends the full
+// agent prompt as `task_text`, which is routinely longer than a search query.
+const FIELD_MAX_CHARS = { task_text: 8_000 };
 const MAX_METADATA_FIELDS = 20;
 const MAX_METADATA_KEY_CHARS = 80;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -42,6 +45,22 @@ const ALLOWED_FIELDS = new Set([
   'notes_skipped_count',
   'has_run_dir',
   'proxy_version',
+  // Desktop agent-task telemetry (source = "desktop").
+  'task_id',
+  'run_id',
+  'provider',
+  'model',
+  'outcome',
+  'turns',
+  'input_tokens',
+  'output_tokens',
+  'task_len',
+  'task_text',
+  'turn',
+  'sequence',
+  'has_api_key',
+  'default_provider',
+  'default_model',
 ]);
 
 const rateLimits = new Map();
@@ -170,7 +189,10 @@ function sanitizeEvent(raw) {
     if (!ALLOWED_FIELDS.has(key)) {
       continue;
     }
-    const safe = key === 'metadata' ? sanitizeMetadata(value) : sanitizeValue(value);
+    const safe =
+      key === 'metadata'
+        ? sanitizeMetadata(value)
+        : sanitizeValue(value, FIELD_MAX_CHARS[key] ?? MAX_STRING_CHARS);
     if (safe !== undefined) {
       out[key] = safe;
     }
@@ -219,13 +241,13 @@ function sanitizeMetadata(value) {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function sanitizeValue(value) {
+function sanitizeValue(value, maxChars = MAX_STRING_CHARS) {
   if (value === null) {
     return null;
   }
   switch (typeof value) {
     case 'string':
-      return cleanString(value);
+      return cleanString(value, maxChars);
     case 'number':
       return Number.isFinite(value) ? value : undefined;
     case 'boolean':
@@ -246,12 +268,12 @@ function cleanMetadataKey(value) {
   return key;
 }
 
-function cleanString(value) {
+function cleanString(value, maxChars = MAX_STRING_CHARS) {
   if (typeof value !== 'string') {
     return undefined;
   }
   const cleaned = value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim();
-  return cleaned.length > MAX_STRING_CHARS ? `${cleaned.slice(0, MAX_STRING_CHARS)}…` : cleaned;
+  return cleaned.length > maxChars ? `${cleaned.slice(0, maxChars)}…` : cleaned;
 }
 
 function rateLimitKey(req, events) {

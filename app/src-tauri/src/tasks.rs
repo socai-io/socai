@@ -30,6 +30,7 @@ struct AgentTaskRegistryInner {
 pub struct AgentTaskSnapshot {
     pub(crate) task_id: String,
     pub(crate) task: String,
+    pub(crate) provider: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) status: String,
     pub(crate) created_at: u64,
@@ -79,6 +80,7 @@ impl AgentTaskRegistry {
     pub(crate) async fn create(
         &self,
         task: String,
+        provider: Option<String>,
         model: Option<String>,
         run_dir: String,
     ) -> AgentTaskSnapshot {
@@ -88,6 +90,7 @@ impl AgentTaskRegistry {
         let snapshot = AgentTaskSnapshot {
             task_id,
             task,
+            provider,
             model,
             status: "queued".into(),
             created_at: now_ms(),
@@ -296,6 +299,29 @@ impl AgentTaskRegistry {
         persist_task_index(&guard.tasks);
         Some(hydrate_task_snapshot(snapshot))
     }
+
+    /// Apply a terminal transition only if the task is still active (queued or
+    /// running). Returns the updated snapshot when THIS call won the
+    /// running→terminal race, or `None` when another path (cancel/interrupt)
+    /// already finalized it. This is the single guard that keeps one task from
+    /// emitting two terminal events.
+    pub(crate) async fn finalize_if_active<F>(&self, task_id: &str, f: F) -> Option<AgentTaskSnapshot>
+    where
+        F: FnOnce(&mut AgentTaskSnapshot),
+    {
+        let mut guard = self.inner.lock().await;
+        let task = guard
+            .tasks
+            .iter_mut()
+            .find(|task| task.task_id == task_id)?;
+        if !matches!(task.status.as_str(), "queued" | "running") {
+            return None;
+        }
+        f(task);
+        let snapshot = task.clone();
+        persist_task_index(&guard.tasks);
+        Some(hydrate_task_snapshot(snapshot))
+    }
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -322,7 +348,7 @@ fn final_text_from_run_dir(run_dir: &str) -> Option<String> {
     }
 }
 
-fn app_data_dir() -> PathBuf {
+pub(crate) fn app_data_dir() -> PathBuf {
     if let Ok(home) = std::env::var("SOCAI_HOME") {
         return PathBuf::from(home).join("app");
     }
@@ -360,6 +386,7 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
             serde_json::json!({
                 "task_id": &task.task_id,
                 "task": &task.task,
+                "provider": &task.provider,
                 "model": &task.model,
                 "status": &task.status,
                 "created_at": task.created_at,

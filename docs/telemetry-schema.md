@@ -1,11 +1,17 @@
-# CLI telemetry schema
+# socai telemetry schema
 
 This document is the current schema, privacy, and configuration contract for
-socai CLI daemon telemetry. It describes the implementation merged in PR #63.
+socai telemetry across both surfaces that emit events:
 
-The finalized model is **one sanitized trace per top-level CLI tool command**.
-Telemetry is not a stream of lifecycle events, and the public CLI does not talk
-to PostHog or Axiom directly.
+- the **CLI daemon** (`source: "cli_daemon"`) — one sanitized trace per
+  top-level CLI tool command (introduced in PR #63), and
+- the **desktop app** (`source: "desktop"`) — agent-task lifecycle and per-tool
+  events for tasks the user runs in the Tauri app.
+
+Both surfaces share the same `Telemetry` client in `core/src/telemetry/mod.rs`,
+the same first-party proxy at `https://socai.io/v1/events`, and the same Axiom
+dataset; the `source` field distinguishes them. The public clients never talk to
+PostHog or Axiom directly.
 
 ## Transport and ownership
 
@@ -27,9 +33,11 @@ socai CLI daemon
 
 Source references:
 
-- CLI enrichment, identity, endpoint, and local JSONL:
-  `cli/src/tracking.rs`
-- Command trace shape and safe result metrics: `cli/src/daemon.rs`
+- Shared telemetry client (enrichment, identity, endpoint, local JSONL):
+  `core/src/telemetry/mod.rs`
+- CLI command trace shape and safe result metrics: `cli/src/daemon.rs`
+- Desktop agent-task instrumentation: `app/src-tauri/src/telemetry.rs`,
+  `app/src-tauri/src/commands.rs`, `app/src-tauri/src/lib.rs`
 - Proxy allowlist, sanitization, and Axiom forwarding: `site/api/telemetry.js`
 
 ## User controls
@@ -88,15 +96,15 @@ assumed unavailable in Axiom.
 | Field | Type | Description |
 | --- | --- | --- |
 | `app` | string | Always `socai`. |
-| `source` | string | Current source is `cli_daemon`. |
+| `source` | string | Emitting surface: `cli_daemon` or `desktop`. |
 | `app_version` | string | CLI crate version. |
 | `platform` | string | Rust target OS, such as `macos` or `linux`. |
 | `os_version` | string | OS version, for example macOS product version or Linux `PRETTY_NAME`. |
 | `os_kernel_version` | string | Kernel version when available. |
 | `memory_total_mb` | number | Total device memory in MiB when available. |
 | `cpu_count` | number | Available CPU parallelism when available. |
-| `terminal_app` | string | Best-effort terminal/app detection, such as Terminal, Ghostty, WezTerm, kitty, VS Code, Codex-related parent process, or `$TERM`. |
-| `parent_process` | string | Best-effort parent process command name on Unix. |
+| `terminal_app` | string | Best-effort terminal/app detection, such as Terminal, Ghostty, WezTerm, kitty, VS Code, Codex-related parent process, or `$TERM`. CLI daemon only. |
+| `parent_process` | string | Best-effort parent process command name on Unix. CLI daemon only. |
 
 ### Command, query, and explicit parameters
 
@@ -133,6 +141,46 @@ Current metadata keys:
 | `notes_skipped_count` | number | Count of notes marked skipped when present. |
 | `has_run_dir` | boolean | Whether the command returned a run directory. |
 | `proxy_version` | number | Added by the proxy. Current value: `1`. |
+
+## Desktop events
+
+The desktop app emits lifecycle events rather than a single per-command trace.
+Each event carries the shared identity and context fields above with
+`source: "desktop"`; terminal/parent-process fields are omitted because a GUI has
+no meaningful terminal.
+
+| Event | Emitted when | Event-specific fields |
+| --- | --- | --- |
+| `socai_desktop_app_open` | App launch | `default_provider`, `default_model`, `has_api_key` |
+| `socai_desktop_browser_connect` | User connects Chrome | — |
+| `socai_desktop_api_key_set` | User saves an API key | `provider`, `ok` |
+| `socai_desktop_model_set` | User sets the default model | `provider`, `model` |
+| `socai_desktop_codex_login` | User starts Codex login | `ok` |
+| `socai_desktop_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
+| `socai_desktop_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `turns`, `input_tokens`, `output_tokens`, `duration_ms`, `error` |
+| `socai_desktop_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error` |
+
+Desktop field semantics:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `task_id` | string | Stable desktop task identifier (`task-<ms>-<seq>`). Primary correlation key. |
+| `run_id` | string | Core agent run id, attached once the run starts. |
+| `provider` | string | LLM provider requested for the task. |
+| `model` | string | Model id requested for the task. |
+| `outcome` | string | Terminal state: `completed`, `failed`, `cancelled`, or `interrupted`. |
+| `turns` | number | Agent loop turns when known. |
+| `input_tokens` / `output_tokens` | number | Token usage for the run when known. |
+| `task_len` | number | Agent prompt length in Unicode scalar values. |
+| `task_text` | string | Full agent prompt. Always sent on desktop; see privacy boundaries. |
+| `turn` / `sequence` | number | Position of a tool call within the run. |
+| `has_api_key` | boolean | Whether a credential exists for the default provider at app open. |
+| `default_provider` / `default_model` | string | Persisted defaults at app open. |
+
+Unlike the CLI's `query_text`, **the desktop has no opt-out for `task_text`**: it
+is sent whenever desktop telemetry is enabled. `SOCAI_TELEMETRY=off` is the only
+switch and disables the entire desktop pipeline. The proxy caps `task_text` at
+8,000 characters (other strings stay capped at 2,000).
 
 ## Fields intentionally not forwarded to Axiom
 
@@ -182,9 +230,19 @@ The telemetry contract must never send:
 - API keys, bearer tokens, Axiom tokens, or other secrets
 - raw tool output bodies
 - raw note ids or note-id presence flags in forwarded Axiom rows
+- desktop agent results or model output: `report.md` / `final_text`, assistant or
+  reasoning text, and raw tool arguments/results
 
-Approved content-bearing telemetry is limited to query text, which is included by
-default and can be omitted with `SOCAI_TELEMETRY_QUERY_TEXT=off`.
+Approved content-bearing telemetry is limited to:
+
+- the CLI search `query_text` — included by default, omit with
+  `SOCAI_TELEMETRY_QUERY_TEXT=off`; and
+- the desktop agent `task_text` (the prompt the user submits) — always sent when
+  desktop telemetry is enabled, with no per-field opt-out. Only
+  `SOCAI_TELEMETRY=off` suppresses it.
+
+Desktop tool telemetry is limited to tool name, timing, success, and a truncated
+error string — never tool arguments or output bodies.
 
 ## Sanitization and limits
 
@@ -196,7 +254,8 @@ Proxy behavior in `site/api/telemetry.js`:
 - Requires the internal validation event name to start with `socai_`.
 - Uses an allowlist for forwarded fields.
 - Removes ASCII control characters from strings, trims whitespace, and truncates
-  strings longer than 2,000 characters with an ellipsis.
+  strings longer than 2,000 characters with an ellipsis. `task_text` uses a higher
+  cap of 8,000 characters.
 - Accepts `metadata` as a shallow object only.
 - Limits `metadata` to 20 entries.
 - Allows metadata keys up to 80 characters matching `[A-Za-z0-9_.-]+`.
