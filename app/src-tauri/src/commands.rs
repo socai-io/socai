@@ -582,34 +582,6 @@ pub async fn agent_task_cancel(
     Ok(snapshot)
 }
 
-// Compatibility command for the old one-shot UI path. New desktop UI should
-// use agent_task_start/list/get plus agent_task:event.
-#[tauri::command]
-pub async fn agent_run(
-    app: AppHandle,
-    runtime: State<'_, SocaiRuntime>,
-    task: String,
-    model: Option<String>,
-) -> Result<AgentRunOutcome, String> {
-    require_connected(&runtime).await?;
-    // Legacy/compat path: it runs outside the start/end-bracketed lifecycle, so
-    // it emits no telemetry of its own to avoid orphan tool_call rows.
-    run_agent_task_on_fresh_page(
-        app,
-        "legacy-agent-run".into(),
-        runtime.inner().clone(),
-        &task,
-        None,
-        model.as_deref(),
-        None,
-        None,
-        DesktopTelemetry::disabled(),
-        "agent".into(),
-    )
-    .await
-    .map_err(|e| format!("{e:#}"))
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_task_background(
     app: AppHandle,

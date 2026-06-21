@@ -94,7 +94,6 @@ pub fn run() {
             commands::agent_task_get,
             commands::agent_task_events,
             commands::agent_task_cancel,
-            commands::agent_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running socai");

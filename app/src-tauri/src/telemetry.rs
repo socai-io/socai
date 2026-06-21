@@ -28,13 +28,6 @@ impl DesktopTelemetry {
         )))
     }
 
-    /// A no-op handle that never emits. Used by legacy/compat paths that run a
-    /// task outside the start/end-bracketed lifecycle and must not produce
-    /// orphan telemetry of their own.
-    pub(crate) fn disabled() -> Self {
-        Self(None)
-    }
-
     pub(crate) fn capture(&self, name: &str, properties: Value) {
         if let Some(telemetry) = &self.0 {
             telemetry.capture(name, properties);
