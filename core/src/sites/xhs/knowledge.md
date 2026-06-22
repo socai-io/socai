@@ -19,7 +19,8 @@ user's task and ground your answer in tool output.
 `search_notes`, `extract_search_cards`, `list_search_tabs`,
 `click_search_tab`, `reset_search_filters`, `apply_search_filters`,
 `open_note`, `close_note`, `read_note`, `extract_note`, `extract_comments`, `scroll_in_note`,
-`collect_carousel_images`, `extract_profile`, `topic_scan`, `page_state`.
+`collect_carousel_images`, `extract_profile`, `author_scan`, `topic_scan`,
+`page_state`.
 
 Prefer `topic_scan` for any "research a topic" task — it bundles search,
 sample, and read in one call. `topic_scan` is equivalent to calling
@@ -51,8 +52,12 @@ searching again.
   note cards with cover, title, author, likes, and type.
 - `note_detail`: modal or full detail. Left side is carousel/video, right side
   is author, title/body, hashtags, comments, and engagement bar.
-- `profile_page`: author avatar/name/XHS ID/bio/stats and note-card grid. Use
-  `extract_profile`; scroll loads more cards.
+- `profile_page`: author avatar/name/XHS ID/bio/IP location/stats and note-card
+  grid. Use `author_scan` (opens the profile by id) when you have the author id,
+  or `extract_profile` when already on the page; scroll loads more cards. The
+  grid renders many cards at once (often dozens), so a small `num_notes` returns
+  the first render without scrolling. Profile note cards open the same note
+  detail (modal/full) as search cards, so `read_note`/`open_note` work on them.
 
 ## Entity Fields
 
@@ -64,8 +69,9 @@ Note fields: `note_id`, `url`, `type`, `title`, `author`, `author_id`,
 Comment fields: `username`, `text`, `likes`, `like_count`, `time`,
 `is_author_reply`, `is_pinned`, `reply_count`, `sub_comments`.
 
-Author fields: `display_name`, `xhs_id`, `profile_url`, `bio`, `followers`,
-`following`, `likes_and_collections`, `note_cards`.
+Author fields: `display_name`, `xhs_id`, `profile_url`, `bio`, `ip_location`,
+`followers`, `following`, `likes_and_collections` (each `*_value` is the parsed
+integer, e.g. `5.6万` → `56000`), `note_count`, `note_cards`.
 
 Image fields: `url`, `index`, `is_cover`, optional `ocr_text`,
 `vision_description`, `local_path`.
@@ -89,42 +95,37 @@ Video fields: `url`, `resolved_url`, `poster_url`, optional `transcript`,
   reading note bodies. Or use `extract_search_cards` to inspect already-loaded
   cards without opening notes.
 - Manual note read: use `read_note(index=N)` or `read_note(note_id=...)`.
-  Use `level="card"` for metadata only, `level="lite"` for body/comments, and
-  `level="deep"` plus `include_media=true` only when images, OCR, video, or
-  visual evidence materially matters. Use `download_media=true` when the user
-  explicitly wants local image/video files rather than OCR/vision enrichment.
-- Creator analysis: navigate/open a profile, then use `extract_profile`.
+  Pass `include_media=true` only when images, OCR, video, or visual evidence
+  materially matters. Use `download_media=true` when the user explicitly wants
+  local image/video files rather than OCR/vision enrichment.
+- Creator analysis: call `author_scan(author_id=..., num_notes=N)`. It opens
+  the author's profile, reads the header (bio, xhs id, IP location,
+  follower/following/liked-&-collected counts), and collects their note summary
+  cards in page order (scrolling for `num_notes`; omit for the first render).
+  Pass `read_notes=true` to also open each note and read its body + top
+  comments — that makes it the profile-scoped analog of `topic_scan` (latency
+  scales with the card count, so keep `num_notes` modest when combining with
+  details). Use `extract_profile` instead only when already on the profile page.
   Keep creator inventory/style analysis separate from keyword/topic sampling
   unless the user explicitly asks for both.
-- Comment sentiment: use lite/deep note reads first; call `scroll_in_note`
-  then `extract_comments` when more visible comments are needed.
-- Media-heavy tasks: use deep reads sparingly. OCR, vision, transcription, and
-  frame extraction depend on optional local/cloud capabilities and can be slow.
-  `download_media=true` only downloads files into the run dir and avoids those
-  expensive enrichment steps.
-
-## Reading Levels
-
-- `card`: note metadata and engagement only. Low latency; no comments/media.
-- `lite`: title, author, body, hashtags, publish metadata, engagement, and a
-  small hot-comment sample. Best default for most search/research tasks.
-- `deep`: lite fields plus optional image OCR/vision, video transcript, sampled
-  frame descriptions, and a larger comment sample. Use only when the user asks
-  for media evidence, screenshots/OCR, video narration, or high-confidence
-  evidence.
+- Comment sentiment: a note read already returns top comments; call
+  `scroll_in_note` then `extract_comments` when more visible comments are needed.
+- Media-heavy tasks: enable `include_media` sparingly. OCR, vision,
+  transcription, and frame extraction depend on optional local/cloud
+  capabilities and can be slow. `download_media=true` only downloads files into
+  the run dir and avoids those expensive enrichment steps.
 
 ## Evidence Rules
 
 - Preserve real XHS post links from cards when available, including
   `xsec_token` query parameters. Fall back to bare `/explore/<note_id>` only
   when no real tokenized URL exists.
-- Cards carry `already_analyzed` / `history_level` / `history_include_media`
-  flags when a prior run already read them. `read_note` and `topic_scan`
-  short-circuit notes already covered at the requested level and media
-  setting — the returned payload has `skipped: true` plus the prior
-  `history` entry. To deepen prior analysis, request a higher `level` (e.g.
-  `deep` after a `lite`) or set `include_media: true`. Media downloads are not
-  cache-skipped because fresh local files are expected in the current run dir.
+- Cards carry `already_analyzed` / `history_include_media` flags when a prior
+  run already read them. `read_note` and `topic_scan` short-circuit notes
+  already covered at the same media setting — the returned payload has
+  `skipped: true` plus the prior `history` entry. To deepen prior analysis, set
+  `include_media: true`. Media downloads are not cache-skipped because fresh
+  local files are expected in the current run dir.
 - Keep DOM text, comment evidence, image OCR/vision, and video transcript/frame
   evidence labeled separately in final answers.
 - If a read returns a stale-note warning or note-id mismatch, close the current

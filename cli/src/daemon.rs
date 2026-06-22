@@ -419,10 +419,13 @@ impl DaemonState {
             // daemon restarts. Falls back to a direct connect when the bridge
             // can't start.
             crate::bridge::ensure_bridge_env().await;
-            let page = self
-                .runtime
-                .ensure_site_page(site.id, site.home_url)
-                .await?;
+            // Create the session tab blank and let the command navigate itself:
+            // every site command either opens its own entry URL (e.g. `author`
+            // opens the profile directly) or has a `before` hook that reaches
+            // the right page (search/topic_scan via ensure_search_ready). Passing
+            // home_url here would force an extra `/explore` load before the
+            // command then navigates again — wasted time for no benefit.
+            let page = self.runtime.ensure_site_page(site.id, "").await?;
             (spec.run)(page, args.clone(), debug_snapshot).await
         }
         .await;

@@ -25,11 +25,16 @@ use crate::sites::xhs::media_manifest::{
 };
 use crate::sites::xhs::page::XHS_SEARCH_FILTERS;
 use crate::sites::xhs::{
-    ReadNoteOptions, XhsHistoryStore, XhsNoteCard, XhsPageRuntime, XHS_HOME_URL,
+    ReadNoteOptions, XhsAuthorProfile, XhsHistoryStore, XhsNoteCard, XhsPageRuntime, XHS_HOME_URL,
 };
 
 /// Default number of notes `topic_scan` reads when the caller doesn't specify.
 const DEFAULT_NUM_NOTES: i64 = 10;
+
+/// Top comments attached to every note read (read_note, extract_note,
+/// topic_scan, author_scan). Comments are read from the already-open note's DOM
+/// (one extra JS read, no extra navigation), so every note read includes them.
+const TOP_COMMENTS_PER_NOTE: i64 = 12;
 
 /// XHS agent playbook: browser-lock rule, tool inventory, anti-bot rules,
 /// page states, entity fields, workflows, reading levels, evidence rules,
@@ -80,6 +85,10 @@ pub fn xhs_tools_with_llm_provider(
         Arc::new(TopicScanTool {
             page: page.clone(),
             llm_provider,
+            history: history.clone(),
+        }),
+        Arc::new(AuthorScanTool {
+            page: page.clone(),
             history,
         }),
         Arc::new(PageStateTool { page }),
@@ -206,6 +215,44 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
             run: run_topic_scan,
         },
         SiteCommand {
+            name: "author",
+            tool_name: "author_scan",
+            about: "Open a Xiaohongshu author's profile and print their header (bio, xhs id, \
+                    IP location, follower/following/like counts) plus their note cards as JSON.",
+            args: &[
+                CommandArg {
+                    key: "author_id",
+                    long: None,
+                    value_name: "AUTHOR_ID",
+                    help: "Author id — the trailing segment of /user/profile/<id>.",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "num_notes",
+                    long: Some("num-notes"),
+                    value_name: "N",
+                    help: "Scroll the profile grid to collect at least this many note cards \
+                           (titles/likes/covers only). Omit for the first screen.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "read_notes",
+                    long: Some("read-notes"),
+                    value_name: "READ_NOTES",
+                    help: "Open each collected note and read its body + top comments \
+                           (like topic_scan; latency scales with the card count).",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+            ],
+            // Scrolling for a large num_notes or opening each note for details
+            // can take a while; give it the longer budget.
+            slow: SlowWhen::Always,
+            run: run_author_scan,
+        },
+        SiteCommand {
             name: "extract_note",
             tool_name: "read_note",
             about: "Open a note from the current search/topic page and print the parsed note.",
@@ -258,6 +305,18 @@ fn run_topic_scan(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> 
     })
 }
 
+fn run_author_scan(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+    Box::pin(async move {
+        let author_id = required_string(&args, "author_id")?;
+        let num_notes = args.get("num_notes").and_then(Value::as_i64);
+        let read_notes = args
+            .get("read_notes")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        author_scan_command(page, &author_id, num_notes, read_notes, debug_snapshot).await
+    })
+}
+
 fn run_extract_note(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
     Box::pin(async move {
         let note_id = required_string(&args, "note_id")?;
@@ -292,6 +351,15 @@ const TOPIC_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
     tool_name: "topic_scan",
     before: CommandPageAction::SearchReady,
     after: CommandPageAction::None,
+};
+
+const AUTHOR_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
+    command_name: "author",
+    tool_name: "author_scan",
+    // The tool navigates to the profile URL itself; just make sure no stale
+    // note modal is left open before/after.
+    before: CommandPageAction::CloseOpenNote,
+    after: CommandPageAction::CloseOpenNote,
 };
 
 const EXTRACT_NOTE_COMMAND: XhsCommandSpec = XhsCommandSpec {
@@ -330,6 +398,22 @@ pub async fn topic_scan_command(
         page,
         TOPIC_SCAN_COMMAND,
         topic_scan_input(query, tab_label, filters, num_notes, download_media)?,
+        debug_snapshot,
+    )
+    .await
+}
+
+pub async fn author_scan_command(
+    page: Arc<PageSession>,
+    author_id: &str,
+    num_notes: Option<i64>,
+    read_notes: bool,
+    debug_snapshot: bool,
+) -> anyhow::Result<Value> {
+    run_xhs_tool_command(
+        page,
+        AUTHOR_SCAN_COMMAND,
+        author_scan_input(author_id, num_notes, read_notes)?,
         debug_snapshot,
     )
     .await
@@ -386,6 +470,23 @@ fn topic_scan_input(
     }
     if download_media {
         input["download_media"] = json!(true);
+    }
+    Ok(input)
+}
+
+fn author_scan_input(
+    author_id: &str,
+    num_notes: Option<i64>,
+    read_notes: bool,
+) -> anyhow::Result<Value> {
+    let mut input = json!({
+        "author_id": trimmed_required(author_id, "author_id")?,
+    });
+    if let Some(n) = num_notes {
+        input["num_notes"] = json!(n.max(1));
+    }
+    if read_notes {
+        input["read_notes"] = json!(true);
     }
     Ok(input)
 }
@@ -473,7 +574,10 @@ pub async fn close_open_note(page: &PageSession) {
 
 fn read_note_options(input: &Value) -> ReadNoteOptions {
     ReadNoteOptions {
-        level: get_str(input, "level").unwrap_or("lite").to_string(),
+        // `level` is no longer a user-facing knob (body content is identical
+        // across tiers; media is gated by include_media/download_media). It now
+        // only feeds the cosmetic extraction_level label + cross-run dedup.
+        level: "lite".to_string(),
         include_media: get_bool(input, "include_media", false),
         download_media: get_bool(input, "download_media", false),
         max_images: get_i64(input, "max_images", 12).max(1) as usize,
@@ -498,6 +602,168 @@ fn media_for(
     } else {
         Ok(None)
     }
+}
+
+/// Read up to `TOP_COMMENTS_PER_NOTE` top comments from the currently open note
+/// and insert them under `note["top_comments"]`. Best-effort: on failure the
+/// note is left without the field. Shared by `read_note` and `extract_note`.
+async fn attach_top_comments(xhs: &XhsPageRuntime<'_>, note: &mut Value) {
+    let Ok(payload) = xhs
+        .extract_comments_with_wait(TOP_COMMENTS_PER_NOTE, 5.0)
+        .await
+    else {
+        return;
+    };
+    let comments = payload
+        .get("comments")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(map) = note.as_object_mut() {
+        map.insert("top_comments".into(), Value::Array(comments));
+    }
+}
+
+/// Open one already-selected card, read its body at `level`, attach top
+/// comments, and record it in run + cross-run history. Shared by `topic_scan`
+/// (cards from search) and `author_scan` (cards from a profile page) — the only
+/// difference between those macros is where the cards come from, not how each
+/// note is read. Returns the per-note entry; the caller pushes it and closes
+/// the modal.
+#[allow(clippy::too_many_arguments)]
+async fn scan_card_note(
+    xhs: &XhsPageRuntime<'_>,
+    history: &XhsHistoryStore,
+    ctx: &ToolContext,
+    card: &XhsNoteCard,
+    level: &str,
+    comment_count: i64,
+    include_media: bool,
+    download_media: bool,
+) -> Value {
+    let requested_media = include_media;
+    let can_use_cached_reads = !download_media;
+
+    // Dedup: skip notes already processed at this level or deeper within the
+    // same run OR in a previous run (cross-run history). Media downloads are
+    // never cache-skipped: the caller expects fresh files under the run_dir.
+    if can_use_cached_reads
+        && !card.note_id.is_empty()
+        && ctx.has_processed_note(&card.note_id, level, requested_media)
+    {
+        return json!({
+            "scan_level": level,
+            "source_position": card.position,
+            "skipped": {"reason": "already_processed"},
+            "entity": card,
+        });
+    }
+    if can_use_cached_reads
+        && !card.note_id.is_empty()
+        && history.is_satisfied_by(&card.note_id, level, requested_media)
+    {
+        let entry = history.get(&card.note_id).unwrap_or_default();
+        ctx.mark_processed_note(&card.note_id, level, requested_media);
+        return json!({
+            "scan_level": level,
+            "source_position": card.position,
+            "skipped": {"reason": "already_analyzed", "history": entry},
+            "entity": card,
+        });
+    }
+
+    let read_result = xhs
+        .read_note_with_options(
+            &card.note_id,
+            None,
+            6.0,
+            ReadNoteOptions {
+                level: level.to_string(),
+                include_media,
+                download_media,
+                // Pure downloads are cheap compared with OCR/vision, so allow
+                // full XHS carousels instead of the enrichment-oriented default.
+                max_images: if download_media { 100 } else { 12 },
+                max_video_frames: 4,
+                poster_url_fallback: card.cover_url.clone(),
+                note_id_fallback: card.note_id.clone(),
+            },
+        )
+        .await;
+    let mut entry = match read_result {
+        Ok(payload) => {
+            let ok = payload.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            let mut entity = payload.get("entity").cloned().unwrap_or(Value::Null);
+            ensure_entity_note_id(&mut entity, card);
+            // When the read failed (modal never opened, stale note, …), fall
+            // back to the card so the entry still carries note_id/title, and
+            // surface the failure reason for debugging.
+            if entity.is_null() {
+                entity = serde_json::to_value(card).unwrap_or(Value::Null);
+            }
+            let mut entry = json!({
+                "scan_level": level,
+                "source_position": card.position,
+                "ok": ok,
+                "entity": entity,
+            });
+            if !ok {
+                if let Some(map) = entry.as_object_mut() {
+                    if let Some(err) = payload.get("error") {
+                        map.insert("error".into(), err.clone());
+                    }
+                    if let Some(open) = payload.get("open") {
+                        map.insert("open".into(), open.clone());
+                    }
+                }
+            }
+            entry
+        }
+        Err(e) => json!({
+            "scan_level": level,
+            "source_position": card.position,
+            "ok": false,
+            "entity": card,
+            "error": format!("{e:#}"),
+        }),
+    };
+
+    // Pull comments separately after waiting for the slower comment list to
+    // hydrate. Body content often appears before comments. Scans always include
+    // comments — there is no longer a level gate.
+    if comment_count > 0 {
+        if let Ok(comments_payload) = xhs.extract_comments_with_wait(comment_count, 5.0).await {
+            let comments = comments_payload
+                .get("comments")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(map) = entry.get_mut("entity").and_then(|v| v.as_object_mut()) {
+                map.insert("top_comments".into(), Value::Array(comments));
+                map.insert(
+                    "top_comments_wait".into(),
+                    json!({
+                        "ready": comments_payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
+                        "reason": comments_payload.get("reason").and_then(Value::as_str).unwrap_or(""),
+                        "waited_ms": comments_payload.get("waited_ms").and_then(Value::as_i64).unwrap_or(0),
+                        "attempts": comments_payload.get("attempts").and_then(Value::as_i64).unwrap_or(0),
+                    }),
+                );
+            }
+        }
+    }
+
+    // Mark processed in-run + record in cross-run history.
+    if !card.note_id.is_empty() {
+        ctx.mark_processed_note(&card.note_id, level, requested_media);
+    }
+    if entry.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if let Some(entity) = entry.get("entity") {
+            history.record(entity, level, requested_media);
+        }
+    }
+
+    entry
 }
 
 /// search_notes(query, wait_seconds) -> {query, cards: [...]}
@@ -673,7 +939,6 @@ impl Tool for ReadNoteTool {
                 "note_id": { "type": "string" },
                 "index": { "type": "integer", "minimum": 0 },
                 "wait_seconds": { "type": "number", "default": 6.0 },
-                "level": { "type": "string", "enum": ["card", "lite", "deep"], "default": "lite" },
                 "include_media": { "type": "boolean", "default": false },
                 "download_media": { "type": "boolean", "default": false },
                 "max_images": { "type": "integer", "default": 12, "minimum": 1 },
@@ -723,7 +988,7 @@ impl Tool for ReadNoteTool {
                 options.include_media || options.download_media,
             )?,
         );
-        let value = xhs
+        let mut value = xhs
             .read_note_with_options(
                 note_id.as_deref().unwrap_or(""),
                 index,
@@ -732,6 +997,11 @@ impl Tool for ReadNoteTool {
             )
             .await?;
         if value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            // The note modal is still open here (the command's `after` hook
+            // closes it), so always attach top comments before recording.
+            if let Some(entity) = value.get_mut("entity") {
+                attach_top_comments(&xhs, entity).await;
+            }
             if let Some(entity) = value.get("entity") {
                 self.history
                     .record(entity, &options.level, options.include_media);
@@ -755,8 +1025,9 @@ impl Tool for ExtractNoteTool {
     }
 
     fn description(&self) -> &str {
-        "Extract the currently visible note body from the page. Assumes the \
-         user already navigated to a note URL or has the detail modal open."
+        "Extract the currently visible note from the page (body + top comments). \
+         Assumes the user already navigated to a note URL or has the detail \
+         modal open."
     }
 
     fn input_schema(&self) -> Value {
@@ -764,7 +1035,6 @@ impl Tool for ExtractNoteTool {
             "type": "object",
             "properties": {
                 "wait_seconds": { "type": "number", "default": 8.0 },
-                "level": { "type": "string", "enum": ["card", "lite", "deep"], "default": "lite" },
                 "include_media": { "type": "boolean", "default": false },
                 "download_media": { "type": "boolean", "default": false },
                 "max_images": { "type": "integer", "default": 12, "minimum": 1 },
@@ -787,7 +1057,10 @@ impl Tool for ExtractNoteTool {
         let note = xhs
             .extract_note_with_options(wait_seconds, options.clone())
             .await?;
-        let value = serde_json::to_value(&note)?;
+        let mut value = serde_json::to_value(&note)?;
+        // Always attach top comments — the note is already open, so reading them
+        // is one extra DOM read with no extra navigation.
+        attach_top_comments(&xhs, &mut value).await;
         self.history
             .record(&value, &options.level, options.include_media);
         Ok(json_result(&value))
@@ -1143,11 +1416,6 @@ pub struct TopicScanTool {
     history: Arc<XhsHistoryStore>,
 }
 
-/// Number of top comments pulled per scanned note. Comments are read for free
-/// from the already-open note modal's DOM (one extra JS read, no extra
-/// navigation), so every scan includes them.
-const TOPIC_SCAN_COMMENTS: i64 = 12;
-
 #[async_trait]
 impl Tool for TopicScanTool {
     fn name(&self) -> &str {
@@ -1251,7 +1519,7 @@ impl Tool for TopicScanTool {
                 "sampling": {
                     "num_notes": num_notes,
                     "selected": 0,
-                    "comments_per_note": TOPIC_SCAN_COMMENTS,
+                    "comments_per_note": TOP_COMMENTS_PER_NOTE,
                     "include_media": include_media,
                     "download_media": download_media,
                 },
@@ -1274,9 +1542,7 @@ impl Tool for TopicScanTool {
         // Every sampled note is read with the same extraction level (body +
         // top comments).
         let level = "deep";
-        let comment_count = TOPIC_SCAN_COMMENTS;
-        let requested_media = include_media;
-        let can_use_cached_reads = !download_media;
+        let comment_count = TOP_COMMENTS_PER_NOTE;
         let want = num_notes.max(1) as usize;
 
         // Read top-to-bottom: pull cards from the results state (which only
@@ -1319,114 +1585,17 @@ impl Tool for TopicScanTool {
             }
             selected.push(card.clone());
 
-            // Dedup: skip notes already processed at this level or deeper
-            // within the same run OR in a previous run (cross-run history).
-            // Media downloads are never cache-skipped: the caller expects
-            // fresh files under this command's run_dir.
-            if can_use_cached_reads
-                && !card.note_id.is_empty()
-                && ctx.has_processed_note(&card.note_id, level, requested_media)
-            {
-                notes.push(json!({
-                    "scan_level": level,
-                    "source_position": card.position,
-                    "skipped": {"reason": "already_processed"},
-                    "entity": &card,
-                }));
-                continue;
-            }
-            if can_use_cached_reads
-                && !card.note_id.is_empty()
-                && self
-                    .history
-                    .is_satisfied_by(&card.note_id, level, requested_media)
-            {
-                let entry = self.history.get(&card.note_id).unwrap_or_default();
-                notes.push(json!({
-                    "scan_level": level,
-                    "source_position": card.position,
-                    "skipped": {"reason": "already_analyzed", "history": entry},
-                    "entity": &card,
-                }));
-                ctx.mark_processed_note(&card.note_id, level, requested_media);
-                continue;
-            }
-            let read_result = xhs
-                .read_note_with_options(
-                    &card.note_id,
-                    None,
-                    6.0,
-                    ReadNoteOptions {
-                        level: level.to_string(),
-                        include_media,
-                        download_media,
-                        // Pure downloads are cheap compared with OCR/vision,
-                        // so allow full XHS carousels instead of the smaller
-                        // enrichment-oriented default.
-                        max_images: if download_media { 100 } else { 12 },
-                        max_video_frames: 4,
-                        poster_url_fallback: card.cover_url.clone(),
-                        note_id_fallback: card.note_id.clone(),
-                    },
-                )
-                .await;
-            let mut entry = match read_result {
-                Ok(payload) => {
-                    let mut entity = payload.get("entity").cloned().unwrap_or(Value::Null);
-                    ensure_entity_note_id(&mut entity, &card);
-                    json!({
-                        "scan_level": level,
-                        "source_position": card.position,
-                        "ok": payload.get("ok").and_then(Value::as_bool).unwrap_or(false),
-                        "entity": entity,
-                    })
-                }
-                Err(e) => json!({
-                    "scan_level": level,
-                    "source_position": card.position,
-                    "ok": false,
-                    "entity": &card,
-                    "error": format!("{e:#}"),
-                }),
-            };
-
-            // Pull comments separately after waiting for the slower comment
-            // list to hydrate. Body content often appears before comments.
-            if level == "deep" && comment_count > 0 {
-                if let Ok(comments_payload) =
-                    xhs.extract_comments_with_wait(comment_count, 5.0).await
-                {
-                    let comments = comments_payload
-                        .get("comments")
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default();
-                    let entity_map = entry.get_mut("entity").and_then(|v| v.as_object_mut());
-                    if let Some(map) = entity_map {
-                        map.insert("top_comments".into(), Value::Array(comments));
-                        map.insert(
-                            "top_comments_wait".into(),
-                            json!({
-                                "ready": comments_payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
-                                "reason": comments_payload.get("reason").and_then(Value::as_str).unwrap_or(""),
-                                "waited_ms": comments_payload.get("waited_ms").and_then(Value::as_i64).unwrap_or(0),
-                                "attempts": comments_payload.get("attempts").and_then(Value::as_i64).unwrap_or(0),
-                            }),
-                        );
-                    }
-                }
-            }
-
-            // Mark processed in-run + record in cross-run history.
-            if !card.note_id.is_empty() {
-                ctx.mark_processed_note(&card.note_id, level, requested_media);
-            }
-            if entry.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-                if let Some(entity) = entry.get("entity") {
-                    self.history.record(entity, level, requested_media);
-                }
-            }
-
+            let entry = scan_card_note(
+                &xhs,
+                &self.history,
+                ctx,
+                &card,
+                level,
+                comment_count,
+                include_media,
+                download_media,
+            )
+            .await;
             notes.push(entry);
             let _ = xhs.close_note(0.6).await;
         }
@@ -1474,7 +1643,7 @@ impl Tool for TopicScanTool {
             "sampling": {
                 "num_notes": num_notes,
                 "selected": selected.len(),
-                "comments_per_note": TOPIC_SCAN_COMMENTS,
+                "comments_per_note": TOP_COMMENTS_PER_NOTE,
                 "include_media": include_media,
                 "download_media": download_media,
             },
@@ -1512,6 +1681,187 @@ impl Tool for TopicScanTool {
                     .unwrap_or(0)
             ),
             json!({"site": "xhs", "category": "topic_scan"}),
+        );
+
+        Ok(json_result(&payload))
+    }
+}
+
+/// author_scan(author_id, num_notes?, read_notes?) -> author profile bundle
+///
+/// Composite macro mirroring `topic_scan`, but entered from an author's profile
+/// page instead of a search query: open `…/user/profile/<id>` → read the author
+/// header (bio, xhs id, IP location, follower/following/like counts) → collect
+/// note summary cards in page order (scrolling to reach `num_notes`) → when
+/// `read_notes` is set, open each note and read its body + top comments.
+pub struct AuthorScanTool {
+    page: Arc<PageSession>,
+    history: Arc<XhsHistoryStore>,
+}
+
+#[async_trait]
+impl Tool for AuthorScanTool {
+    fn name(&self) -> &str {
+        "author_scan"
+    }
+
+    fn description(&self) -> &str {
+        "Xiaohongshu author/creator scan: open an author's profile page by id → \
+         read the author header (display name, xhs id, bio, IP location, \
+         follower/following/liked-&-collected counts) → collect their note \
+         summary cards in page order (titles/likes/covers only; pass `num_notes` \
+         to scroll the grid for more, omit for just the first screen). Pass \
+         `read_notes=true` to also open each collected note and read its body \
+         + top comments (like topic_scan; latency scales with the card count). \
+         Use this for creator research — it's search_notes + topic_scan but \
+         scoped to one author instead of a query."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "author_id": {
+                    "type": "string",
+                    "description": "Xiaohongshu user id — the trailing segment of /user/profile/<id>."
+                },
+                "num_notes": {
+                    "type": "integer",
+                    "description": "Collect at least this many note cards, scrolling the profile grid (lazy-loaded). Omit for the first screen only.",
+                    "minimum": 1
+                },
+                "read_notes": {
+                    "type": "boolean",
+                    "description": "Open each collected note and read its body + top comments. Off by default (summaries only).",
+                    "default": false
+                }
+            },
+            "required": ["author_id"]
+        })
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let author_id = get_str(&input, "author_id")
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("missing author_id"))?
+            .to_string();
+        let read_notes = get_bool(&input, "read_notes", false);
+        let num_notes = input
+            .get("num_notes")
+            .and_then(Value::as_i64)
+            .filter(|n| *n > 0)
+            .map(|n| n as usize);
+
+        let xhs = XhsPageRuntime::new(&self.page);
+        // Snapshot history before reading so card annotations reflect "known
+        // before this scan" rather than this scan's own writes.
+        let history_snapshot = self.history.snapshot();
+
+        let open = xhs.open_profile(&author_id, 8.0).await?;
+        if !open.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            let reason = open
+                .get("reason")
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.is_empty())
+                .unwrap_or("open_profile_failed")
+                .to_string();
+            return Ok(json_result(&json!({
+                "ok": false,
+                "author_id": author_id,
+                "open": open,
+                "profile": Value::Null,
+                "notes": [],
+                "reason": reason,
+            })));
+        }
+
+        let info = xhs.profile_info().await?;
+        let cards = match num_notes {
+            Some(target) => xhs.collect_profile_cards(target).await?,
+            None => xhs.extract_profile_cards_once().await?,
+        };
+
+        let profile_url = {
+            let candidate = get_str(&info, "profile_url").unwrap_or("");
+            if candidate.is_empty() {
+                open.get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                candidate.to_string()
+            }
+        };
+        let display_name = get_str(&info, "display_name").unwrap_or("").to_string();
+        let profile = XhsAuthorProfile {
+            display_name: display_name.clone(),
+            xhs_id: get_str(&info, "xhs_id").unwrap_or("").to_string(),
+            profile_url,
+            bio: get_str(&info, "bio").unwrap_or("").to_string(),
+            ip_location: get_str(&info, "ip_location").unwrap_or("").to_string(),
+            followers: get_str(&info, "followers").unwrap_or("").to_string(),
+            following: get_str(&info, "following").unwrap_or("").to_string(),
+            likes_and_collections: get_str(&info, "likes_and_collections")
+                .unwrap_or("")
+                .to_string(),
+            note_cards: cards.clone(),
+        };
+        let mut profile_value = profile.to_value();
+        if let Some(cards_value) = profile_value.get_mut("note_cards") {
+            history_snapshot.annotate_cards(cards_value);
+        }
+
+        // Optionally open each collected note and read body + top comments.
+        let mut notes: Vec<Value> = Vec::new();
+        if read_notes {
+            for card in &cards {
+                if !card.note_id.is_empty() {
+                    ctx.add_topic_scan_note_ids(std::slice::from_ref(&card.note_id));
+                }
+                let entry = scan_card_note(
+                    &xhs,
+                    &self.history,
+                    ctx,
+                    card,
+                    "deep",
+                    TOP_COMMENTS_PER_NOTE,
+                    false,
+                    false,
+                )
+                .await;
+                notes.push(entry);
+                let _ = xhs.close_note(0.6).await;
+            }
+        }
+
+        let payload = json!({
+            "ok": true,
+            "author_id": author_id,
+            "profile": profile_value,
+            "notes": notes,
+            "sampling": {
+                "num_notes": num_notes,
+                "collected": cards.len(),
+                "read_notes": read_notes,
+                "comments_per_note": if read_notes { TOP_COMMENTS_PER_NOTE } else { 0 },
+            },
+        });
+
+        // Persist as artifact so it shows up in the run dir + working memory.
+        let label = if display_name.is_empty() {
+            author_id.clone()
+        } else {
+            display_name
+        };
+        let _ = ctx.write_json_artifact(
+            &format!("xhs_author_scan_{}", sanitize_for_filename(&author_id)),
+            &payload,
+            "artifacts",
+            "author_scan",
+            "json",
+            &format!("Author scan: {label} ({} notes)", cards.len()),
+            json!({"site": "xhs", "category": "author_scan"}),
         );
 
         Ok(json_result(&payload))

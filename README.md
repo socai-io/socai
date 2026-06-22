@@ -59,6 +59,8 @@ cargo install --path cli --force
 socai xhs topic_scan "运营爆款思路" --num-notes 30 --filter publish_time=一周内   # 搜索并逐个打开帖子，获取内容
 socai xhs topic_scan "运营爆款思路" --num-notes 10 --download-media       # 下载图片/视频并输出 media_manifest_path
 socai xhs search_notes "运营爆款思路" --num-notes 100 --filter sort=最新          # 只打开搜索结果页，拿帖子标题/点赞/封面，不读正文
+socai xhs author <作者id> --num-notes 30                                       # 打开作者主页，拿作者简介 + 帖子概要
+socai xhs author <作者id> --num-notes 10 --read-notes                          # 再逐个打开帖子读正文 + 评论
 socai xhs extract_note --note-id <id>                                          # 从当前结果页抽取某个帖子
 socai stop                                                                 # 停止 daemon（关闭工具标签页）
 ```
@@ -74,8 +76,10 @@ Options:
 - `--tab <TAB>` — search tab to switch to, `topic_scan` only (`全部` / `图文` / `视频` / `用户`).
 - `--num-notes <N>` — `topic_scan`: notes to read (opens each, body + comments).
   `search_notes`: cards to collect by auto-scrolling (titles/likes/covers only,
-  no bodies — stays fast). Both scroll only if the first page holds fewer; omit
-  for the first page only (~19).
+  no bodies — stays fast). `author`: note cards to collect from the profile grid.
+  Scrolls only if the first page holds fewer; omit for the first page only (~19).
+- `--read-notes` — `author` only: after collecting cards, open each note and read
+  its body + top comments (like `topic_scan`; latency scales with the card count).
 - `--download-media` — `topic_scan` only: download note images/videos into the
   printed `run_dir` (`site_media/`), add `local_path` fields, emit top-level
   `media_manifest_path` / `media_manifest_count`, and write `<run_dir>/media_manifest.json`.

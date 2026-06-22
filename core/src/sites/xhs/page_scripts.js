@@ -903,6 +903,7 @@ const SocaiXhsPageScripts = (() => {
     const bio = firstVisibleText(['.user-desc', '.profile-desc', '.desc', '.bio'], document);
     const body = norm(text(document.body));
     const xhsId = (body.match(/小红书号[:：]?\s*([A-Za-z0-9_.-]+)/) || [])[1] || profileIdFromUrl();
+    const ipLocation = (body.match(/IP属地[:：]?\s*([^\s,，。]+)/i) || [])[1] || '';
     const statText = (label) => {
       const re = new RegExp(`([0-9.,万wWkK+]+)\\s*(?:${label})`);
       return (body.match(re) || [])[1] || '';
@@ -913,6 +914,7 @@ const SocaiXhsPageScripts = (() => {
       xhs_id: xhsId,
       profile_url: location.href,
       bio,
+      ip_location: ipLocation,
       followers: statText('粉丝'),
       following: statText('关注'),
       likes_and_collections: statText('获赞与收藏|获赞|赞与收藏'),

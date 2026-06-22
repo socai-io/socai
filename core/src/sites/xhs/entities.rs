@@ -48,6 +48,7 @@ pub struct XhsAuthorProfile {
     pub xhs_id: String,
     pub profile_url: String,
     pub bio: String,
+    pub ip_location: String,
     pub followers: String,
     pub following: String,
     pub likes_and_collections: String,
@@ -67,6 +68,7 @@ impl XhsAuthorProfile {
         );
         map.insert("url".into(), json!(normalize_url(&self.profile_url)));
         map.insert("bio".into(), json!(self.bio));
+        map.insert("ip_location".into(), json!(self.ip_location));
         map.insert("followers".into(), json!(self.followers));
         map.insert(
             "followers_value".into(),

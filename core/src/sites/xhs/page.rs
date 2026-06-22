@@ -949,6 +949,7 @@ impl<'a> XhsPageRuntime<'a> {
                 }
             },
             bio: string_field(&info, "bio"),
+            ip_location: string_field(&info, "ip_location"),
             followers: string_field(&info, "followers"),
             following: string_field(&info, "following"),
             likes_and_collections: string_field(&info, "likes_and_collections"),
@@ -1014,6 +1015,111 @@ impl<'a> XhsPageRuntime<'a> {
         }
         cards.truncate(limit);
         Ok(cards)
+    }
+
+    /// Navigate directly to an author's profile page by id and wait for the
+    /// page to settle on a `profile_page` state. This is the single allowed
+    /// direct-URL navigation — it's the entry point of an author scan; every
+    /// subsequent action (scrolling, opening notes) is DOM-driven like the
+    /// rest of the site. Stops early if a login wall appears.
+    pub async fn open_profile(&self, author_id: &str, wait_seconds: f64) -> Result<Value> {
+        let id = author_id.trim();
+        if id.is_empty() {
+            anyhow::bail!("author id is required");
+        }
+        let url = format!("https://www.xiaohongshu.com/user/profile/{id}");
+        self.page.navigate_with_timeout(&url, 60.0).await?;
+
+        let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.max(1.0));
+        let mut state = self.expect_object("pageState", None).await?;
+        loop {
+            let kind = state.get("state").and_then(Value::as_str).unwrap_or("");
+            let login = state
+                .get("login_required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if kind == "profile_page" || login || Instant::now() >= deadline {
+                break;
+            }
+            sleep_ms(300).await;
+            state = self.expect_object("pageState", None).await?;
+        }
+
+        let kind = state.get("state").and_then(Value::as_str).unwrap_or("");
+        let login = state
+            .get("login_required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Ok(json!({
+            "ok": kind == "profile_page",
+            "author_id": id,
+            "url": self.current_url().await?,
+            "login_required": login,
+            "state": state,
+            "reason": if kind == "profile_page" {
+                ""
+            } else if login {
+                "login_required"
+            } else {
+                "not_profile_page"
+            },
+        }))
+    }
+
+    /// Collect note cards from the current profile page, scrolling the window
+    /// to lazy-load more until `target` unique cards are gathered or the feed
+    /// stops growing across a few consecutive scrolls (real end of the grid).
+    /// Returns at most `target` cards in feed order.
+    pub async fn collect_profile_cards(&self, target: usize) -> Result<Vec<XhsNoteCard>> {
+        const MAX_STALLS: usize = 3;
+        let limit = target.max(1);
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut cards: Vec<XhsNoteCard> = Vec::new();
+        let mut stalls = 0usize;
+        loop {
+            let raw = self.expect_array("profileCards", None).await?;
+            let before = cards.len();
+            for card in parse_cards(&raw) {
+                let key = if !card.note_id.is_empty() {
+                    card.note_id.clone()
+                } else if !card.link.is_empty() {
+                    card.link.clone()
+                } else {
+                    format!("pos:{}", card.position)
+                };
+                if key.is_empty() || !seen.insert(key) {
+                    continue;
+                }
+                cards.push(card);
+                if cards.len() >= limit {
+                    return Ok(cards);
+                }
+            }
+            if cards.len() <= before {
+                stalls += 1;
+                if stalls >= MAX_STALLS {
+                    break;
+                }
+            } else {
+                stalls = 0;
+            }
+            self.page.scroll(900).await?;
+            sleep_ms(900).await;
+        }
+        Ok(cards)
+    }
+
+    /// Read the note cards currently rendered on the profile page without
+    /// scrolling (the cheap first-page-only path).
+    pub async fn extract_profile_cards_once(&self) -> Result<Vec<XhsNoteCard>> {
+        let raw = self.expect_array("profileCards", None).await?;
+        Ok(parse_cards(&raw))
+    }
+
+    /// Extract just the author header (display name, xhs id, bio, IP location,
+    /// follower/following/like counts) from the current profile page.
+    pub async fn profile_info(&self) -> Result<Value> {
+        self.expect_object("profileInfo", None).await
     }
 
     /// Extract the currently open note. Caller is responsible for having
