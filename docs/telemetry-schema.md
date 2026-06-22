@@ -38,7 +38,7 @@ Source references:
 - CLI command trace shape and safe result metrics: `cli/src/daemon.rs`
 - Desktop agent-task instrumentation: `app/src-tauri/src/telemetry.rs`,
   `app/src-tauri/src/commands.rs`, `app/src-tauri/src/lib.rs`
-- Proxy allowlist, sanitization, and Axiom forwarding: `site/api/telemetry.js`
+- Proxy validation, value sanitization, and Axiom forwarding: `site/api/telemetry.js`
 
 ## User controls
 
@@ -81,8 +81,10 @@ spans both the CLI daemon and the desktop app.
 
 ## Forwarded Axiom fields
 
-The proxy forwards only allowlisted fields. Fields not listed here should be
-assumed unavailable in Axiom.
+The proxy forwards **every field the client sends** — there is no field
+allowlist; it only sanitizes values. The fields below are what the clients
+currently emit, so use this as the reference for what to expect in Axiom (not as
+a filter the proxy enforces). Any new client field reaches Axiom automatically.
 
 ### Identity and correlation
 
@@ -181,29 +183,22 @@ is sent whenever desktop telemetry is enabled. `SOCAI_TELEMETRY=off` is the only
 switch and disables the entire desktop pipeline. The proxy caps `task_text` at
 8,000 characters (other strings stay capped at 2,000).
 
-## Fields intentionally not forwarded to Axiom
+## Value-level handling
 
-Current Axiom rows should not include these custom fields:
+There is **no field allowlist** — every key the client sends is forwarded. The
+proxy only sanitizes values:
 
-- `arch`
-- `created_at_ms`
-- `client_created_at_ms`
-- `received_at_ms`
-- `daemon_session_id`
-- `query_redacted`
-- raw `tab_label` or raw top-level `num_notes` outside `metadata`
-- `note_id_present`
+- Non-scalar values (objects / arrays) other than `metadata` are dropped.
+- Control characters are stripped from strings; strings are trimmed and truncated.
+- `metadata` is coerced to a shallow primitive object (see limits below).
+- `daemon_session_id` → `session_id` and `distinct_id` → `install_id` aliases are
+  applied; a nested `properties` object is flattened up to the top level.
 
-Axiom still has native time columns:
-
-- `_time`
-- `_sysTime`
-
-Those are Axiom-managed fields, not custom CLI telemetry fields. Historical rows
-in the existing dataset created older columns, so Axiom may still display fields
-such as `arch` or `created_at_ms` as `null` on new rows. `null` in those old
-columns does not mean the current proxy forwarded those values. (`event` is now
-forwarded, so it is populated on new rows rather than stripped.)
+Axiom also has native time columns (`_time`, `_sysTime`) that it manages itself.
+The client removes `created_at_ms` before sending, so it normally won't appear —
+but because the proxy no longer filters fields, **anything a client sends now
+reaches Axiom**, which is why the privacy boundaries below are enforced
+client-side.
 
 ## Local JSONL caveat
 
@@ -214,12 +209,14 @@ may contain local-only fields such as:
 - `properties.created_at_ms`
 - `properties.note_id_present`
 
-The CLI strips the local millisecond timestamp before sending to the proxy, and
-the proxy strips/ignores non-allowlisted fields before forwarding to Axiom.
+The CLI/desktop client strips the local millisecond timestamp before sending to
+the proxy; the proxy forwards every remaining field, sanitizing values only.
 
 ## Privacy boundaries
 
-The telemetry contract must never send:
+These boundaries are enforced **entirely by the clients** — the proxy no longer
+filters fields, so anything a client sends reaches Axiom. The clients must never
+send:
 
 - note body text
 - comments
@@ -249,9 +246,10 @@ Proxy behavior in `site/api/telemetry.js`:
 - Accepts only JSON `POST` requests.
 - Enforces a maximum request body size of 128 KiB.
 - Accepts at most 100 events/traces per request envelope.
-- Requires each event's `event` name to start with `socai_`, and forwards it as
-  the type discriminator (it is allowlisted, not stripped).
-- Uses an allowlist for forwarded fields.
+- Requires each event's `event` name to start with `socai_` (the routing gate);
+  `event` is forwarded as the type discriminator.
+- Forwards every other field the client sends — there is no field allowlist.
+- Drops non-scalar values (objects / arrays) other than `metadata`.
 - Removes ASCII control characters from strings, trims whitespace, and truncates
   strings longer than 2,000 characters with an ellipsis. `task_text` uses a higher
   cap of 8,000 characters.
@@ -362,7 +360,7 @@ analysis without storing the query string.
 
 - `schema_version=1` covers the one-trace-per-tool-command schema described in
   this document.
-- Additive fields may be introduced through the proxy allowlist and documented
-  here.
+- Additive fields flow through automatically (no allowlist); document them here
+  so Axiom consumers know to expect them.
 - Removing or renaming fields should update this document and any dashboard or
   release-smoke-test queries that depend on the old names.

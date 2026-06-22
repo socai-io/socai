@@ -108,9 +108,10 @@ tail -n 5 ~/.socai/telemetry/events.jsonl
 tail -n 5 ~/.socai/app/telemetry/events.jsonl
 ```
 
-The local buffer is a debugging aid. It can contain internal fields, such as the
-client-side validation event name and local creation timestamp, that the proxy
-strips before forwarding to Axiom.
+The local buffer is a debugging aid. It can contain a local creation timestamp
+(`created_at_ms`) that the client removes before sending to the proxy. The proxy
+itself no longer filters fields — it forwards everything the client sends,
+sanitizing values only.
 
 ## Upgrade note: restart old daemons
 

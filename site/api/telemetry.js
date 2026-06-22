@@ -11,58 +11,6 @@ const MAX_METADATA_KEY_CHARS = 80;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_EVENTS = 1_200;
 
-const ALLOWED_FIELDS = new Set([
-  // Event type discriminator (e.g. socai_tool_call). The surface lives in
-  // `source`, not the event name, so the same event spans CLI and desktop.
-  'event',
-  'install_id',
-  'distinct_id',
-  'session_id',
-  'request_id',
-  'schema_version',
-  'app',
-  'source',
-  'app_version',
-  'platform',
-  'os_version',
-  'os_kernel_version',
-  'memory_total_mb',
-  'cpu_count',
-  'terminal_app',
-  'parent_process',
-  'command',
-  'site',
-  'tool_name',
-  'query_text',
-  'query_len',
-  'query_text_enabled',
-  'metadata',
-  'duration_ms',
-  'ok',
-  'error',
-  'result_ok',
-  'cards_count',
-  'search_cards_count',
-  'selected_cards_count',
-  'notes_count',
-  'notes_skipped_count',
-  'has_run_dir',
-  'proxy_version',
-  // Desktop agent-task telemetry (source = "desktop").
-  'task_id',
-  'run_id',
-  'provider',
-  'model',
-  'outcome',
-  'turns',
-  'input_tokens',
-  'output_tokens',
-  'task_len',
-  'task_text',
-  'turn',
-  'sequence',
-]);
-
 const rateLimits = new Map();
 
 export default async function handler(req, res) {
@@ -181,14 +129,13 @@ function sanitizeEvent(raw) {
     return null;
   }
 
-  const out = {
-    proxy_version: 1,
-  };
+  // No field allowlist: forward every key the client sent, sanitizing values
+  // only (control chars, length caps, metadata shape). Non-scalar values other
+  // than `metadata` are still dropped by sanitizeValue. Privacy is now the
+  // client's responsibility — the proxy no longer gates which fields may be sent.
+  const out = {};
 
   for (const [key, value] of Object.entries(flattened)) {
-    if (!ALLOWED_FIELDS.has(key)) {
-      continue;
-    }
     const safe =
       key === 'metadata'
         ? sanitizeMetadata(value)
@@ -198,6 +145,8 @@ function sanitizeEvent(raw) {
     }
   }
 
+  // Stamp proxy_version after the loop so a client-sent value can't override it.
+  out.proxy_version = 1;
   return out;
 }
 
