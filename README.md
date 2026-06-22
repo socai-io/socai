@@ -1,8 +1,6 @@
 # socai
 
 [![release](https://img.shields.io/github/v/release/socai-io/socai?style=flat-square&color=blue&label=release)](https://github.com/socai-io/socai/releases/latest)
-[![rust](https://img.shields.io/badge/built%20with-Rust-orange?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](https://github.com/socai-io/socai/blob/main/LICENSE)
 [![website](https://img.shields.io/badge/website-socai.io-blue?style=flat-square)](https://socai.io)
 
 专为小红书优化的 web use agent，执行小红书调研、内容抽取和自定义 agent 任务。
@@ -22,12 +20,13 @@ socai 有三种用法，内核相同，按你的场景选：
 | [**TUI**](#tui) | 终端里的交互界面，手动跑任务 | 安装 CLI 后运行 `socai` |
 | [**GUI**](#desktop-app-gui) | 图形桌面应用（macOS），点击即用 | [下载 .dmg](https://github.com/socai-io/socai/releases/latest/download/socai-macos-universal.dmg) |
 
-## CLI
+## 1. CLI
 
 socai 的核心，给 Claude Code、Codex 等 AI agent 提供开箱即用的小红书工具。
 
 https://github.com/user-attachments/assets/8aebcded-f365-4f12-b9c4-102cc1fa964d
 
+### CLI安装
 优先安装预编译 CLI binary（不需要 Rust/Cargo）：
 
 macOS:
@@ -53,20 +52,16 @@ cd socai
 cargo install --path cli --force
 ```
 
-常用命令：
+### CLI使用
+小红书常用命令：
 
 ```bash
 socai xhs topic_scan "运营爆款思路" --num-notes 30 --filter publish_time=一周内   # 搜索并逐个打开帖子，获取内容
 socai xhs topic_scan "运营爆款思路" --num-notes 10 --download-media       # 下载图片/视频并输出 media_manifest_path
 socai xhs search_notes "运营爆款思路" --num-notes 100 --filter sort=最新          # 只打开搜索结果页，拿帖子标题/点赞/封面，不读正文
 socai xhs extract_note --note-id <id>                                          # 从当前结果页抽取某个帖子
-socai dy search_videos "咖啡" --num-videos 30                                  # 搜索抖音并拿视频卡片信息
-socai config set chrome.profile managed                                    # 以后默认使用 socai 独立 chrome 资料目录
 socai stop                                                                 # 停止 daemon（关闭工具标签页）
 ```
-
-> 命令按站点分组（例如小红书 `xhs`、抖音 `dy`）。旧的不带站点的写法（如
-> `socai topic_scan …`）仍然可用，但已废弃并会打印警告，请迁移到 `socai xhs …`。
 
 Options:
 
@@ -91,14 +86,21 @@ Options:
 continuation command: a prior `search_notes` / `topic_scan` must have left the
 tool tab on a waterfall containing the target card.
 
-Browser profile:
+
+**新增了抖音支持**：
+```bash
+socai dy search "咖啡" --num 30         # 搜索关键词并拿n条视频的信息
+```
+
+
+### 控制浏览器profile:
 
 - `chrome.profile` values: `existing`, `managed`, `auto`.
 - Default: `existing` — attach to your existing browser/profile with CDP enabled.
 - To opt into socai's isolated profile persistently:
 
   ```bash
-  socai config set chrome.profile managed
+  socai config set chrome.profile managed # 以后默认使用 socai 独立 chrome 资料目录
   socai stop   # only needed if the daemon is already running
   ```
 
@@ -119,7 +121,7 @@ Browser profile:
 - Config lives in `~/.socai/config.json`. Advanced endpoint overrides still use
   `SOCAI_CDP_WS` / `SOCAI_CDP_URL`.
 
-## TUI
+## 2. TUI
 
 安装方式与 CLI 相同，安装后不带子命令运行 `socai` 即可打开终端交互界面：
 
@@ -127,7 +129,7 @@ Browser profile:
 socai   # 不带子命令即打开 TUI
 ```
 
-## Desktop App (GUI)
+## 3. Desktop App (GUI)
 
 [Download .dmg for Mac](https://github.com/socai-io/socai/releases/latest/download/socai-macos-universal.dmg).
 

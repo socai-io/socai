@@ -8,9 +8,9 @@
 - Current first-step tool: `page_state`. Use it with `--debug-snapshot` to
   verify whether the homepage/search UI is visible before implementing or
   relying on deeper workflows.
-- `search_videos` starts from the homepage/top search box, enters the keyword,
+- `search` starts from the homepage/top search box, enters the keyword,
   submits with Enter, then extracts cards from the search-result waterfall.
-  Use `--num-videos` to scroll for more cards; default is 30.
+  Use `--num` to scroll for more cards; default is 10.
 - Observed stable-ish selectors on 2026-06-11:
   `data-e2e="searchbar-input"`, `data-e2e="searchbar-button"`,
   `.search-result-card`, parent ids like `waterfall_item_<video_id>`,

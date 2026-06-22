@@ -22,7 +22,7 @@ pub fn dy_tools_with_llm_provider(
     _llm_provider: Option<Arc<dyn LlmProvider>>,
 ) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(SearchVideosTool { page: page.clone() }) as Arc<dyn Tool>,
+        Arc::new(SearchTool { page: page.clone() }) as Arc<dyn Tool>,
         Arc::new(PageStateTool { page }),
     ]
 }
@@ -57,8 +57,8 @@ pub static DY_SITE: SiteSpec = SiteSpec {
     agent_instructions: dy_agent_instructions,
     commands: &[
         SiteCommand {
-            name: "search_videos",
-            tool_name: "search_videos",
+            name: "search",
+            tool_name: "search",
             about: "Search Douyin and print video result cards as JSON.",
             args: &[
                 CommandArg {
@@ -70,10 +70,10 @@ pub static DY_SITE: SiteSpec = SiteSpec {
                     kind: ArgKind::Str,
                 },
                 CommandArg {
-                    key: "num_videos",
-                    long: Some("num-videos"),
+                    key: "num",
+                    long: Some("num"),
                     value_name: "N",
-                    help: "Number of video cards to collect by scrolling. Defaults to 30.",
+                    help: "Number of video cards to collect by scrolling. Defaults to 10.",
                     required: false,
                     kind: ArgKind::Int,
                 },
@@ -87,7 +87,7 @@ pub static DY_SITE: SiteSpec = SiteSpec {
                 },
             ],
             slow: SlowWhen::Always,
-            run: run_search_videos,
+            run: run_search,
         },
         SiteCommand {
             name: "page_state",
@@ -107,17 +107,13 @@ pub static DY_SITE: SiteSpec = SiteSpec {
     ],
 };
 
-fn run_search_videos(
-    page: Arc<PageSession>,
-    args: Value,
-    debug_snapshot: bool,
-) -> BoxFuture<Value> {
+fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
     Box::pin(async move {
         run_tool_command(
             ToolCommand {
                 site_id: "dy",
-                command_name: "search_videos",
-                tool_name: "search_videos",
+                command_name: "search",
+                tool_name: "search",
                 before: None,
                 after: None,
             },
@@ -157,20 +153,20 @@ fn run_page_state(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> 
     })
 }
 
-pub struct SearchVideosTool {
+pub struct SearchTool {
     page: Arc<PageSession>,
 }
 
 #[async_trait]
-impl Tool for SearchVideosTool {
+impl Tool for SearchTool {
     fn name(&self) -> &str {
-        "search_videos"
+        "search"
     }
 
     fn description(&self) -> &str {
         "Search Douyin for videos matching `query` and return visible result \
          cards (video id, URL, title, author, cover, and any engagement text \
-         the page exposes). Defaults to 30 cards and may wait several minutes \
+         the page exposes). Defaults to 10 cards and may wait several minutes \
          if Douyin web is throttled."
     }
 
@@ -179,10 +175,10 @@ impl Tool for SearchVideosTool {
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "Search query" },
-                "num_videos": {
+                "num": {
                     "type": "integer",
                     "description": "Number of video cards to collect by scrolling.",
-                    "default": 30,
+                    "default": 10,
                     "minimum": 1
                 },
                 "wait_seconds": {
@@ -198,7 +194,7 @@ impl Tool for SearchVideosTool {
     async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         let query = required_string(&input, "query")?;
         let wait_seconds = get_f64(&input, "wait_seconds", 330.0);
-        let num_videos = get_i64(&input, "num_videos", 30).max(1) as usize;
+        let num_videos = get_i64(&input, "num", 10).max(1) as usize;
         let runtime = DouyinPageRuntime::new(&self.page);
         let value = runtime
             .search_videos(&query, wait_seconds, num_videos)
