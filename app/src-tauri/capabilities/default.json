@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Capability for the main socai window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "updater:default", "process:default"]
 }

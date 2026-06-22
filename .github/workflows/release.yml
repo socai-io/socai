@@ -347,6 +347,8 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
@@ -431,6 +433,22 @@ jobs:
             echo "using ad-hoc signing for branch test build; Gatekeeper will still warn"
           fi
 
+          # Desktop auto-updater signing (minisign) — independent of Apple signing.
+          # The updater verifies each release against the pubkey baked into
+          # tauri.conf.json, so the matching private key must sign the tarball.
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then
+            add_env TAURI_SIGNING_PRIVATE_KEY "${TAURI_SIGNING_PRIVATE_KEY}"
+            add_env TAURI_SIGNING_PRIVATE_KEY_PASSWORD "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}"
+            echo "TAURI_UPDATER_SIGNING=enabled" >> "${GITHUB_ENV}"
+            echo "updater artifact signing enabled"
+          elif [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "main releases require TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets for the desktop auto-updater" >&2
+            exit 1
+          else
+            echo "TAURI_UPDATER_SIGNING=disabled" >> "${GITHUB_ENV}"
+            echo "no updater signing key for this branch build; updater artifacts will be skipped"
+          fi
+
       - name: build app bundle and dmg
         working-directory: app
         run: |
@@ -440,19 +458,25 @@ jobs:
             --bundles app,dmg \
             --config tauri.release-signing.conf.json
 
-      - name: notarize and staple dmg
+      - name: notarize and staple app and dmg
         shell: bash
         run: |
           set -euo pipefail
 
           if [ "${MACOS_SIGNING_MODE}" != "developer-id" ]; then
-            echo "skipping dmg notarization for ${MACOS_SIGNING_MODE} build"
+            echo "skipping notarization for ${MACOS_SIGNING_MODE} build"
             exit 0
           fi
 
           bundle_dir="target/${TARGET}/release/bundle"
+          app_bundle="${bundle_dir}/macos/socai.app"
           dmg_dir="${bundle_dir}/dmg"
           dmg="$(find "${dmg_dir}" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+
+          if [ ! -d "${app_bundle}" ]; then
+            echo "no app bundle found at ${app_bundle}" >&2
+            exit 1
+          fi
 
           if [ -z "${dmg}" ]; then
             echo "no dmg found in ${dmg_dir}" >&2
@@ -465,9 +489,19 @@ jobs:
           elif [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ] && [ -n "${APPLE_API_KEY_PATH:-}" ]; then
             auth_args=(--key "${APPLE_API_KEY_PATH}" --key-id "${APPLE_API_KEY}" --issuer "${APPLE_API_ISSUER}")
           else
-            echo "developer-id dmg notarization requires Apple ID or App Store Connect API credentials" >&2
+            echo "developer-id notarization requires Apple ID or App Store Connect API credentials" >&2
             exit 1
           fi
+
+          # Notarize + staple the .app first: the auto-updater swaps in this
+          # bundle directly (outside the dmg), so the staple must live in the app.
+          app_zip="${RUNNER_TEMP}/socai-app-notarize.zip"
+          rm -f "${app_zip}"
+          echo "submitting ${app_bundle} for app notarization"
+          ditto -c -k --keepParent "${app_bundle}" "${app_zip}"
+          xcrun notarytool submit "${app_zip}" "${auth_args[@]}" --wait
+          xcrun stapler staple "${app_bundle}"
+          xcrun stapler validate "${app_bundle}"
 
           echo "submitting ${dmg} for dmg notarization"
           xcrun notarytool submit "${dmg}" "${auth_args[@]}" --wait
@@ -555,6 +589,62 @@ jobs:
           fi
 
           cp "${dmg}" "dist-artifacts/socai-macos-universal.dmg"
+          ls -lah dist-artifacts
+
+      - name: build and sign updater artifact
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ "${MACOS_SIGNING_MODE}" != "developer-id" ] || [ "${TAURI_UPDATER_SIGNING:-disabled}" != "enabled" ]; then
+            echo "skipping updater artifact (mode=${MACOS_SIGNING_MODE:-unset}, signing=${TAURI_UPDATER_SIGNING:-disabled})"
+            exit 0
+          fi
+
+          bundle_dir="target/${TARGET}/release/bundle"
+          mkdir -p dist-artifacts
+
+          # Tar the notarized + stapled .app into the updater bundle the plugin expects.
+          tarball="dist-artifacts/socai-macos-universal.app.tar.gz"
+          tar -C "${bundle_dir}/macos" -czf "${tarball}" socai.app
+
+          (cd app && pnpm exec tauri signer sign \
+            --private-key "${TAURI_SIGNING_PRIVATE_KEY}" \
+            --password "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" \
+            "${GITHUB_WORKSPACE}/${tarball}")
+
+          if [ ! -f "${tarball}.sig" ]; then
+            echo "expected ${tarball}.sig from tauri signer sign" >&2
+            exit 1
+          fi
+
+          # latest.json: the universal bundle serves both arches, so both darwin
+          # keys point at the same tarball (pinned to this release's tag).
+          signature="$(cat "${tarball}.sig")"
+          pub_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          download_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/socai-macos-universal.app.tar.gz"
+
+          python3 - "${VERSION}" "${pub_date}" "${download_url}" "${signature}" > dist-artifacts/latest.json <<'PY'
+          import json
+          import sys
+
+          version, pub_date, url, signature = sys.argv[1:5]
+          platform = {"signature": signature, "url": url}
+          print(json.dumps({
+              "version": version,
+              "notes": "See the release notes on GitHub.",
+              "pub_date": pub_date,
+              "platforms": {
+                  "darwin-aarch64": platform,
+                  "darwin-x86_64": platform,
+              },
+          }, indent=2))
+          PY
+
+          echo "generated dist-artifacts/latest.json:"
+          cat dist-artifacts/latest.json
           ls -lah dist-artifacts
 
       - name: upload build artifacts
@@ -755,6 +845,9 @@ jobs:
 
           required_artifacts=(
             dist-artifacts/socai-macos-universal.dmg
+            dist-artifacts/socai-macos-universal.app.tar.gz
+            dist-artifacts/socai-macos-universal.app.tar.gz.sig
+            dist-artifacts/latest.json
             dist-artifacts/socai-cli-macos-universal.tar.gz
             dist-artifacts/socai-cli-macos-universal.tar.gz.sha256
             dist-artifacts/install.sh
@@ -940,3 +1033,55 @@ jobs:
           }
           & $socai --help | Out-Null
           & $socai version --no-check
+
+  verify-desktop-updater:
+    name: verify desktop updater manifest
+    if: github.ref == 'refs/heads/main'
+    needs:
+      - prepare
+      - release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: verify latest.json
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          manifest_url="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.json"
+
+          manifest=""
+          for attempt in {1..12}; do
+            echo "fetch attempt ${attempt}: ${manifest_url}"
+            if manifest="$(curl -fsSL "${manifest_url}")"; then
+              break
+            fi
+            manifest=""
+            sleep 10
+          done
+
+          if [ -z "${manifest}" ]; then
+            echo "failed to fetch latest.json from latest release" >&2
+            exit 1
+          fi
+
+          echo "${manifest}"
+
+          manifest_version="$(printf '%s' "${manifest}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          if [ "${manifest_version}" != "${VERSION}" ]; then
+            echo "latest.json version ${manifest_version} does not match release ${VERSION}" >&2
+            exit 1
+          fi
+
+          for arch in darwin-aarch64 darwin-x86_64; do
+            tarball_url="$(printf '%s' "${manifest}" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['${arch}']['url'])")"
+            signature="$(printf '%s' "${manifest}" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['${arch}']['signature'])")"
+            if [ -z "${signature}" ]; then
+              echo "latest.json ${arch} signature is empty" >&2
+              exit 1
+            fi
+            echo "checking ${arch} updater tarball: ${tarball_url}"
+            curl -fsSL -I "${tarball_url}" > /dev/null
+          done

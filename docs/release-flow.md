@@ -26,7 +26,8 @@ prepare
 
 release                    # waits for all platform build jobs
   ├─ verify-cli-installer          # macOS latest-release installer smoke
-  └─ verify-windows-cli-installer  # Windows latest-release installer smoke
+  ├─ verify-windows-cli-installer  # Windows latest-release installer smoke
+  └─ verify-desktop-updater        # desktop latest.json manifest check
 ```
 
 The macOS app/DMG, macOS CLI, and Windows CLI build jobs run in parallel. The
@@ -60,6 +61,11 @@ and tags that commit as `vX.Y.Z`.
 
 - signed/notarized universal desktop DMG
 - `socai-macos-universal.dmg`
+- `socai-macos-universal.app.tar.gz` — the auto-updater bundle (the notarized +
+  stapled `.app`, tarred)
+- `socai-macos-universal.app.tar.gz.sig` — its minisign signature
+- `latest.json` — the updater manifest the desktop app polls (both
+  `darwin-aarch64` and `darwin-x86_64` point at the one universal tarball)
 
 The job verifies:
 
@@ -67,6 +73,23 @@ The job verifies:
 - DMG can be mounted
 - mounted app bundle verifies successfully
 - app binary contains both `arm64` and `x86_64`
+
+The `.app` is notarized **and stapled** in its own right (not just inside the
+DMG) because the in-app updater swaps the bundle in directly — see
+[Update behavior](#update-behavior).
+
+#### Updater signing secrets
+
+On `main`, in addition to the Apple Developer ID / notarization secrets, the job
+**requires** a Tauri minisign keypair for the desktop auto-updater:
+
+- `TAURI_SIGNING_PRIVATE_KEY` — minisign private key (from `tauri signer generate`)
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — its password
+
+The matching public key is committed in
+[`app/src-tauri/tauri.conf.json`](../app/src-tauri/tauri.conf.json) under
+`plugins.updater.pubkey`. `fix/release-*` test branches skip the updater
+artifacts when the key is absent.
 
 ### macOS CLI build job
 
@@ -116,10 +139,15 @@ install.ps1
 socai-cli-windows-x86_64.zip
 socai-cli-windows-x86_64.zip.sha256
 socai-macos-universal.dmg
+socai-macos-universal.app.tar.gz
+socai-macos-universal.app.tar.gz.sig
+latest.json
 ```
 
 The release notes link to the app DMG, macOS CLI installer/archive/checksum, and
-Windows CLI installer/archive/checksum.
+Windows CLI installer/archive/checksum. `latest.json`,
+`socai-macos-universal.app.tar.gz`, and its `.sig` back the in-app auto-updater
+and are served via the same `releases/latest/download/...` alias.
 
 ## Installer smoke tests
 
@@ -154,9 +182,24 @@ with a temporary `SOCAI_INSTALL_DIR`. It verifies:
 - `socai.exe --help` works
 - `socai.exe version --no-check` works
 
+### Desktop updater verification
+
+`verify-desktop-updater` runs on `ubuntu-latest` and fetches
+`releases/latest/download/latest.json`. It verifies:
+
+- the manifest `version` matches the release version
+- each `darwin-*` platform has a non-empty signature
+- each platform's updater tarball URL resolves (HTTP `HEAD`)
+
 ## Update behavior
 
-- macOS managed installs can use `socai update`.
+- **Desktop app (macOS):** the app checks `latest.json` on launch via the Tauri
+  updater plugin and surfaces an "update available" affordance in the header.
+  Accepting it downloads the signed `socai-macos-universal.app.tar.gz`, verifies
+  it against the bundled minisign public key, swaps the bundle in place, and
+  relaunches. The first updater-enabled release cannot be auto-updated *to* — it
+  must be installed manually; every release after it auto-updates.
+- macOS managed CLI installs can use `socai update`.
 - Windows managed installs should rerun the PowerShell installer for now. Native
   Windows `socai update` is intentionally not enabled until we add a detached
   updater that can safely replace a running `socai.exe`.

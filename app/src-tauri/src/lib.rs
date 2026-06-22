@@ -13,6 +13,8 @@ pub fn run() {
     let runtime = SocaiRuntime::new();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(runtime)
         .manage(AgentTaskRegistry::default())
         .setup(|app| {

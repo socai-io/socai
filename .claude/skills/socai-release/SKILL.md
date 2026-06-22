@@ -27,10 +27,10 @@ A helper script wraps this command, finds the created run, watches it, and print
 - Production ref: `main`
 - Test ref: `fix/release-*` branches only; build runs but publish job is skipped
 - Version source: latest strict semver tag matching `vMAJOR.MINOR.PATCH`; if no tag exists, app version from `app/src-tauri/tauri.conf.json`
-- Artifact: `socai-macos-universal.dmg`
+- Desktop artifacts: `socai-macos-universal.dmg`, plus the auto-updater set `socai-macos-universal.app.tar.gz` + `.sig` + `latest.json`
 - Production publish steps on `main`:
   1. Build universal macOS app + DMG on GitHub Actions.
-  2. Require Developer ID signing and notarization secrets.
+  2. Require Developer ID signing + notarization secrets, and the updater minisign keypair (`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`).
   3. Update app version files with `.github/scripts/set-app-version.py`.
   4. Commit `chore: release socai vX.Y.Z` to `main` if needed.
   5. Tag the release commit as `vX.Y.Z`.
@@ -205,7 +205,7 @@ Expected:
 
 - `isDraft: false`
 - `isPrerelease: false`
-- Asset list includes `socai-macos-universal.dmg`
+- Asset list includes `socai-macos-universal.dmg`, `socai-macos-universal.app.tar.gz`, `socai-macos-universal.app.tar.gz.sig`, and `latest.json`
 
 Verify download redirects:
 
@@ -239,7 +239,7 @@ Include:
 - Ref used (`main` for production)
 - GitHub Actions run URL and conclusion
 - Published tag/version and release URL
-- Asset presence (`socai-macos-universal.dmg`)
+- Asset presence (`socai-macos-universal.dmg`, plus updater `socai-macos-universal.app.tar.gz` + `.sig` + `latest.json`)
 - `/download` verification summary
 - `socai.io` site verification summary (mandatory): live visible version equals `X.Y.Z`, and `/`, `www`, `/download`, `/github` all behave as expected
 - Whether the Git-integration auto-deploy was sufficient, or a manual `socai-site-deployment` redeploy fallback was needed

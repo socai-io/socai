@@ -180,7 +180,8 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .language-toggle__button[aria-pressed="true"]:hover { color: var(--ink-9); }
 .connection-status,
-.agent-status {
+.agent-status,
+.update-status {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -267,6 +268,17 @@ body.has-paper > * { position: relative; z-index: 1; }
 .connection-meta-wide { grid-column: 1 / -1; }
 .connection-endpoint { word-break: break-all; }
 .agent-config-popover { width: min(420px, calc(100vw - var(--sp-6))); }
+.update-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+.update-notes {
+  margin: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .agent-config-title { margin: 0; }
 .agent-config-field,
 .agent-config-key {
