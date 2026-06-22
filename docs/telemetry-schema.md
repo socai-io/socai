@@ -181,7 +181,8 @@ Desktop field semantics:
 `socai_tool_call` mirrors the CLI tool trace's argument summary: the tool's
 `query` argument is lifted to `query_text` + `query_len`, a `note_id` argument
 collapses to a `note_id_present` boolean (the raw id is not sent), and any other
-scalar arguments go under `metadata`. The tool's **output** (note bodies,
+scalar arguments go under `metadata` — with the `tab_label` arg renamed to `tab`
+and empty strings dropped, matching the CLI. The tool's **output** (note bodies,
 comments, scraped content) is never included — only the arguments.
 
 Unlike the CLI's `query_text`, **the desktop has no opt-out for `task_text`**: it

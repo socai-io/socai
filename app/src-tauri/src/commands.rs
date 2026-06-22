@@ -891,10 +891,28 @@ fn merge_tool_input(props: &mut Map<String, Value>, input: &Value) {
                     props.insert("note_id_present".into(), json!(true));
                 }
             }
-            _ if value.is_string() || value.is_number() || value.is_boolean() => {
-                metadata.insert(key.clone(), value.clone());
+            // Other scalar args go under metadata, mirroring the CLI summarizer:
+            // `tab_label` is renamed to `tab`, and string values are trimmed with
+            // empty/whitespace-only ones dropped. Non-scalar values are skipped.
+            _ => {
+                let meta_key = if key.as_str() == "tab_label" {
+                    "tab"
+                } else {
+                    key.as_str()
+                };
+                match value {
+                    Value::String(text) => {
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            metadata.insert(meta_key.to_string(), json!(text));
+                        }
+                    }
+                    Value::Number(_) | Value::Bool(_) => {
+                        metadata.insert(meta_key.to_string(), value.clone());
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
         }
     }
     if !metadata.is_empty() {
