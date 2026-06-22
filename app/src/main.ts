@@ -351,7 +351,7 @@ function renderUpdateDialog(): string {
     case "downloading":
       body = `
         <div>
-          <p class="t-eyebrow">${htmlEsc(t("update.installing"))}</p>
+          <p class="t-eyebrow">${htmlEsc(t("update.downloading"))}</p>
           <p class="t-mono" data-update-progress>${htmlEsc(formatUpdateProgress())}</p>
         </div>`;
       break;

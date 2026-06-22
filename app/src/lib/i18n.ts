@@ -45,7 +45,6 @@ const messages = {
   "update.newVersion": { en: "new version", zh: "新版本" },
   "update.upgradeAndRestart": { en: "upgrade & restart", zh: "升级并重启" },
   "update.downloading": { en: "downloading…", zh: "下载中…" },
-  "update.installing": { en: "installing…", zh: "安装中…" },
   "update.readyTitle": { en: "update ready", zh: "更新就绪" },
   "update.readyHint": { en: "restart to finish the update.", zh: "重启以完成更新。" },
   "update.restartToFinish": { en: "restart to finish", zh: "待重启" },
