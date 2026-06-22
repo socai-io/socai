@@ -333,6 +333,9 @@ fn print_command_result(result: &Value, pretty: bool) -> Result<()> {
     }
 
     let data = result.get("data").unwrap_or(result);
+    if let Some(msg) = data.get("deprecation").and_then(Value::as_str) {
+        eprintln!("⚠️  {msg}");
+    }
     if pretty {
         println!("{}", serde_json::to_string_pretty(data)?);
     } else {

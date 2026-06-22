@@ -16,8 +16,7 @@ user's task and ground your answer in tool output.
 
 ## Tools
 
-`search_notes`, `extract_search_cards`, `list_search_tabs`,
-`click_search_tab`, `reset_search_filters`, `apply_search_filters`,
+`search_notes`, `extract_search_cards`, `reset_search_filters`, `apply_search_filters`,
 `open_note`, `close_note`, `read_note`, `extract_note`, `extract_comments`, `scroll_in_note`,
 `collect_carousel_images`, `extract_profile`, `author_scan`, `topic_scan`,
 `page_state`.
@@ -48,8 +47,8 @@ searching again.
 ## Page States
 
 - `homepage`: left navigation and top search input. Use `search_notes`.
-- `search_results`: query input, tabs `全部` / `图文` / `视频` / `用户`, waterfall
-  note cards with cover, title, author, likes, and type.
+- `search_results`: query input and a waterfall of note cards with cover,
+  title, author, likes, and type.
 - `note_detail`: modal or full detail. Left side is carousel/video, right side
   is author, title/body, hashtags, comments, and engagement bar.
 - `profile_page`: author avatar/name/XHS ID/bio/IP location/stats and note-card
@@ -82,7 +81,7 @@ Video fields: `url`, `resolved_url`, `poster_url`, optional `transcript`,
 ## Workflows
 
 - Topic research: call `topic_scan(query=..., num_notes=N)`. It
-  searches, optionally switches tab, optionally applies search-result filters,
+  searches, optionally applies search-result filters,
   then reads notes top-to-bottom in feed order — opening each (which pages the
   next cards in as it scrolls), reading its body + top comments, writing
   artifacts, closing note modals, and marking already analyzed posts. Default
@@ -137,7 +136,6 @@ Video fields: `url`, `resolved_url`, `poster_url`, optional `transcript`,
 
 ## Chinese UI Hints
 
-- Search tabs: `全部`, `图文`, `视频`, `用户`.
 - No-result copy often contains: `没有找到相关内容`, `换个词试试`, `暂无相关内容`.
 - Engagement labels: `赞`, `收藏`, `评论`, `分享`.
 - Count suffixes: `万` and `w` mean 10000; `k` means 1000.

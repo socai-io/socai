@@ -56,37 +56,25 @@ cargo install --path cli --force
 小红书常用命令：
 
 ```bash
-socai xhs topic_scan "运营爆款思路" --num-notes 30 --filter publish_time=一周内 --download-media  # 搜索并逐个打开帖子，获取内容，并下载图片/视频
-socai xhs search_notes "运营爆款思路" --num-notes 100 --filter sort=最新  # 只打开搜索结果页，拿帖子标题/点赞/封面，不读正文
-socai xhs author <作者id> --num-notes 10 --read-notes                   # 打开作者主页，拿作者简介 + 帖子信息，加了--read-notes会逐个打开帖子读正文和评论，不加则是拿帖子概要
-socai xhs extract_note --note-id <id>                                  # 从当前结果页抽取某个帖子，必须从瀑布流页发起
+socai xhs search "运营爆款思路" --num-notes 30 --filter publish_time=一周内 --download-media  # 搜索并逐个打开帖子，获取正文+评论，并下载图片/视频
+socai xhs author <作者id> --num-notes 10 --preview                               # 打开作者主页，拿作者简介，并逐个打开帖子读正文+评论；加 --preview 则只拿帖子概要
 socai stop                                                             # 停止 daemon（关闭工具标签页）
 ```
 
 Options:
 
-- `--filter <GROUP=OPTION>` — search-result filter, repeatable
-  (`topic_scan` & `search_notes`). Groups & options:
+- `--filter <GROUP=OPTION>` — 对应搜索页右上角的“筛选”，仅适用于`search`命令。
+  以下几个筛选条件可以叠加：
   `sort` (综合/最新/最多点赞/最多评论/最多收藏), `note_type` (不限/视频/图文),
   `publish_time` (不限/一天内/一周内/半年内), `search_scope` (不限/已看过/未看过/已关注),
-  `distance` (不限/同城/附近). Omitted groups reset to default.
+  `distance` (不限/同城/附近). 不写则按默认.
   e.g. `--filter publish_time=一天内 --filter note_type=图文`
-- `--tab <TAB>` — search tab to switch to, `topic_scan` only (`全部` / `图文` / `视频` / `用户`).
-- `--num-notes <N>` — `topic_scan`: notes to read (opens each, body + comments).
-  `search_notes`: cards to collect by auto-scrolling (titles/likes/covers only,
-  no bodies — stays fast). `author`: note cards to collect from the profile grid.
-  Scrolls only if the first page holds fewer; omit for the first page only (~19).
-- `--read-notes` — `author` only: after collecting cards, open each note and read
-  its body + top comments (like `topic_scan`; latency scales with the card count).
-- `--download-media` — `topic_scan` only: download note images/videos into the
-  printed `run_dir` (`site_media/`), add `local_path` fields, emit top-level
-  `media_manifest_path` / `media_manifest_count`, and write `<run_dir>/media_manifest.json`.
-- `--pretty` — indented JSON (any tool command).
-- `--debug-snapshot` — record DOM + a11y tree + screenshots per page change.
-
-`extract_note` is a
-continuation command: a prior `search_notes` / `topic_scan` must have left the
-tool tab on a waterfall containing the target card.
+- `--num-notes <N>` — 返回多少个帖子。如果设置的数量大，socia会自动往下翻页，获取更多帖子。
+- `--preview` — 只拿帖子概要（标题、封面等等），不逐个打开帖子拿详情。
+- `--download-media` — 打开每篇帖子的时候 (不加`--preview`时): 把图像和视频下载到 `run_dir`
+  (`site_media/`), 并创建列表 `<run_dir>/media_manifest.json`.
+- `--pretty` — 输出JSON按换行格式.
+- `--debug-snapshot` — 把网页 DOM + a11y tree + screenshots 写入文件，用于开发调试
 
 
 **新增了抖音支持**：

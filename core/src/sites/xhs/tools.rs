@@ -17,7 +17,7 @@ use crate::sites::registry::{
     required_string, ArgKind, BoxFuture, CommandArg, SiteCommand, SiteSpec, SlowWhen,
 };
 use crate::sites::runner::{
-    get_bool, get_f64, get_i64, get_str, insert_optional_str, json_result, run_tool_command,
+    get_bool, get_f64, get_i64, get_str, json_result, run_tool_command,
     trimmed_required, PageHook, ToolCommand,
 };
 use crate::sites::xhs::media_manifest::{
@@ -62,8 +62,6 @@ pub fn xhs_tools_with_llm_provider(
             page: page.clone(),
             history: history.clone(),
         }),
-        Arc::new(ListSearchTabsTool { page: page.clone() }),
-        Arc::new(ClickSearchTabTool { page: page.clone() }),
         Arc::new(ResetSearchFiltersTool { page: page.clone() }),
         Arc::new(ApplySearchFiltersTool { page: page.clone() }),
         Arc::new(OpenNoteTool { page: page.clone() }),
@@ -123,9 +121,11 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
     agent_instructions: xhs_agent_instructions,
     commands: &[
         SiteCommand {
-            name: "search_notes",
-            tool_name: "search_notes",
-            about: "Search Xiaohongshu and print the first results page's note cards as JSON.",
+            name: "search",
+            tool_name: "search",
+            about: "Search Xiaohongshu. By default opens each result and returns note bodies \
+                    + top comments (a topic scan). With --preview, returns only the result \
+                    cards (titles/likes/covers) without opening any note.",
             args: &[
                 CommandArg {
                     key: "query",
@@ -149,55 +149,8 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     key: "num_notes",
                     long: Some("num-notes"),
                     value_name: "N",
-                    help: "Auto-scroll the feed to collect at least this many cards \
-                           (titles/likes/covers only — note bodies are not opened). Omit for \
-                           the first page only (~19 cards).",
-                    required: false,
-                    kind: ArgKind::Int,
-                },
-            ],
-            // Scrolling for a large `num_notes` can take a while; give it the
-            // longer budget rather than the default single-action timeout.
-            slow: SlowWhen::ArgPresent("num_notes"),
-            run: run_search_notes,
-        },
-        SiteCommand {
-            name: "topic_scan",
-            tool_name: "topic_scan",
-            about: "Run a Xiaohongshu topic scan (note body + top comments per note).",
-            args: &[
-                CommandArg {
-                    key: "query",
-                    long: None,
-                    value_name: "QUERY",
-                    help: "Search query",
-                    required: true,
-                    kind: ArgKind::Str,
-                },
-                CommandArg {
-                    key: "tab_label",
-                    long: Some("tab"),
-                    value_name: "TAB",
-                    help: "Search tab to scan (e.g. 最新)",
-                    required: false,
-                    kind: ArgKind::Str,
-                },
-                CommandArg {
-                    key: "filters",
-                    long: Some("filter"),
-                    value_name: "GROUP=OPTION",
-                    help: "Search-result filter as `group=option` (repeatable), e.g. \
-                           `--filter publish_time=一天内 --filter note_type=图文`. Groups: \
-                           sort, note_type, publish_time, search_scope, distance.",
-                    required: false,
-                    kind: ArgKind::KeyValueMap,
-                },
-                CommandArg {
-                    key: "num_notes",
-                    long: Some("num-notes"),
-                    value_name: "N",
-                    help: "Number of notes to read; scrolls the feed only if the first page \
-                           holds fewer.",
+                    help: "How many notes/cards to collect, scrolling the feed to reach it. \
+                           Omit for the first page only.",
                     required: false,
                     kind: ArgKind::Int,
                 },
@@ -205,20 +158,31 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     key: "download_media",
                     long: Some("download-media"),
                     value_name: "DOWNLOAD_MEDIA",
-                    help: "Download note images/videos into the command run_dir and include \
-                           local_path fields in the JSON output.",
+                    help: "Download note images/videos into the run_dir and include \
+                           local_path fields. Ignored with --preview.",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+                CommandArg {
+                    key: "preview",
+                    long: Some("preview"),
+                    value_name: "PREVIEW",
+                    help: "Preview mode: return result cards only (titles/likes/covers), \
+                           without opening notes or reading bodies/comments.",
                     required: false,
                     kind: ArgKind::Flag,
                 },
             ],
             slow: SlowWhen::Always,
-            run: run_topic_scan,
+            run: run_search,
         },
         SiteCommand {
             name: "author",
             tool_name: "author_scan",
             about: "Open a Xiaohongshu author's profile and print their header (bio, xhs id, \
-                    IP location, follower/following/like counts) plus their note cards as JSON.",
+                    IP location, follower/following/like counts) plus their notes. By default \
+                    opens each note for its body + top comments; with --preview, returns only \
+                    the note cards.",
             args: &[
                 CommandArg {
                     key: "author_id",
@@ -232,17 +196,25 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     key: "num_notes",
                     long: Some("num-notes"),
                     value_name: "N",
-                    help: "Scroll the profile grid to collect at least this many note cards \
-                           (titles/likes/covers only). Omit for the first screen.",
+                    help: "Scroll the profile grid to collect this many notes (default 10).",
                     required: false,
                     kind: ArgKind::Int,
                 },
                 CommandArg {
-                    key: "read_notes",
-                    long: Some("read-notes"),
-                    value_name: "READ_NOTES",
-                    help: "Open each collected note and read its body + top comments \
-                           (like topic_scan; latency scales with the card count).",
+                    key: "download_media",
+                    long: Some("download-media"),
+                    value_name: "DOWNLOAD_MEDIA",
+                    help: "Download each note's images/videos into the run_dir and include \
+                           local_path fields. Only applies when notes are opened (not --preview).",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+                CommandArg {
+                    key: "preview",
+                    long: Some("preview"),
+                    value_name: "PREVIEW",
+                    help: "Preview mode: return note cards only (titles/likes/covers), without \
+                           opening each note for its body + comments.",
                     required: false,
                     kind: ArgKind::Flag,
                 },
@@ -252,75 +224,217 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
             slow: SlowWhen::Always,
             run: run_author_scan,
         },
+        // ── Deprecated aliases (kept so existing scripts keep working) ──
+        // Both delegate to the `search` paths and inject a `deprecation` field
+        // into the returned JSON (the CLI client also echoes it to stderr).
         SiteCommand {
-            name: "extract_note",
-            tool_name: "read_note",
-            about: "Open a note from the current search/topic page and print the parsed note.",
-            args: &[CommandArg {
-                key: "note_id",
-                long: Some("note-id"),
-                value_name: "NOTE_ID",
-                help: "Note id to open",
-                required: true,
-                kind: ArgKind::Str,
-            }],
-            slow: SlowWhen::Never,
-            run: run_extract_note,
+            name: "search_notes",
+            tool_name: "search_notes",
+            about: "[DEPRECATED] Use `search --preview`. Returns result cards only.",
+            args: &[
+                CommandArg {
+                    key: "query",
+                    long: None,
+                    value_name: "QUERY",
+                    help: "Search query",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "filters",
+                    long: Some("filter"),
+                    value_name: "GROUP=OPTION",
+                    help: "Search-result filter as `group=option` (repeatable).",
+                    required: false,
+                    kind: ArgKind::KeyValueMap,
+                },
+                CommandArg {
+                    key: "num_notes",
+                    long: Some("num-notes"),
+                    value_name: "N",
+                    help: "Cards to collect by auto-scrolling; omit for the first page only.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_search_notes_deprecated,
+        },
+        SiteCommand {
+            name: "topic_scan",
+            tool_name: "topic_scan",
+            about: "[DEPRECATED] Use `search`. Opens each result and returns body + comments.",
+            args: &[
+                CommandArg {
+                    key: "query",
+                    long: None,
+                    value_name: "QUERY",
+                    help: "Search query",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "filters",
+                    long: Some("filter"),
+                    value_name: "GROUP=OPTION",
+                    help: "Search-result filter as `group=option` (repeatable).",
+                    required: false,
+                    kind: ArgKind::KeyValueMap,
+                },
+                CommandArg {
+                    key: "num_notes",
+                    long: Some("num-notes"),
+                    value_name: "N",
+                    help: "Number of notes to read; scrolls only if the first page holds fewer.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "download_media",
+                    long: Some("download-media"),
+                    value_name: "DOWNLOAD_MEDIA",
+                    help: "Download note images/videos into the run_dir; add local_path fields.",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_topic_scan_deprecated,
         },
     ],
 };
 
-fn run_search_notes(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+/// `search` dispatches on `--preview`: default opens each result (topic scan,
+/// body + comments); `--preview` returns result cards only (search_notes).
+fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
     Box::pin(async move {
         let query = required_string(&args, "query")?;
         let filters = args.get("filters").cloned();
-        let num_notes = args.get("num_notes").and_then(Value::as_i64);
-        search_notes_command(page, &query, filters.as_ref(), num_notes, debug_snapshot).await
+        // Default to DEFAULT_NUM_NOTES so omitting --num-notes collects a fixed
+        // batch (scrolling as needed), not just whatever the first page renders.
+        let num_notes = args
+            .get("num_notes")
+            .and_then(Value::as_i64)
+            .or(Some(DEFAULT_NUM_NOTES));
+        let preview = args.get("preview").and_then(Value::as_bool).unwrap_or(false);
+        if preview {
+            // Cards only — download_media doesn't apply to a card-only read.
+            search_notes_command(page, &query, filters.as_ref(), num_notes, debug_snapshot).await
+        } else {
+            let download_media = args
+                .get("download_media")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            topic_scan_command(
+                page,
+                &query,
+                filters.as_ref(),
+                num_notes,
+                download_media,
+                debug_snapshot,
+            )
+            .await
+        }
     })
 }
 
-fn run_topic_scan(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+/// Inject a `deprecation` notice into a command's result. The CLI prints the
+/// envelope's `data` object to stdout, so the notice goes *inside* `data` to be
+/// visible to an AI consuming the output (the CLI client also echoes it to
+/// stderr for humans).
+fn with_deprecation(mut envelope: Value, message: &str) -> Value {
+    let notice = Value::String(message.to_string());
+    if let Some(data) = envelope.get_mut("data").and_then(Value::as_object_mut) {
+        data.insert("deprecation".into(), notice);
+    } else if let Some(map) = envelope.as_object_mut() {
+        map.insert("deprecation".into(), notice);
+    }
+    envelope
+}
+
+fn run_search_notes_deprecated(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+) -> BoxFuture<Value> {
     Box::pin(async move {
         let query = required_string(&args, "query")?;
-        let tab_label = args
-            .get("tab_label")
-            .and_then(Value::as_str)
-            .map(str::to_string);
         let filters = args.get("filters").cloned();
-        let num_notes = args.get("num_notes").and_then(Value::as_i64);
+        // Default to DEFAULT_NUM_NOTES so omitting --num-notes collects a fixed
+        // batch (scrolling as needed), not just whatever the first page renders.
+        let num_notes = args
+            .get("num_notes")
+            .and_then(Value::as_i64)
+            .or(Some(DEFAULT_NUM_NOTES));
+        let envelope =
+            search_notes_command(page, &query, filters.as_ref(), num_notes, debug_snapshot).await?;
+        Ok(with_deprecation(
+            envelope,
+            "`search_notes` is deprecated and will be removed in a future release. \
+             Use `socai xhs search --preview` instead (same result cards).",
+        ))
+    })
+}
+
+fn run_topic_scan_deprecated(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+) -> BoxFuture<Value> {
+    Box::pin(async move {
+        let query = required_string(&args, "query")?;
+        let filters = args.get("filters").cloned();
+        // Default to DEFAULT_NUM_NOTES so omitting --num-notes collects a fixed
+        // batch (scrolling as needed), not just whatever the first page renders.
+        let num_notes = args
+            .get("num_notes")
+            .and_then(Value::as_i64)
+            .or(Some(DEFAULT_NUM_NOTES));
         let download_media = args
             .get("download_media")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        topic_scan_command(
+        let envelope = topic_scan_command(
             page,
             &query,
-            tab_label.as_deref(),
             filters.as_ref(),
             num_notes,
             download_media,
             debug_snapshot,
         )
-        .await
+        .await?;
+        Ok(with_deprecation(
+            envelope,
+            "`topic_scan` is deprecated and will be removed in a future release. \
+             Use `socai xhs search` instead (same behavior).",
+        ))
     })
 }
 
 fn run_author_scan(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
     Box::pin(async move {
         let author_id = required_string(&args, "author_id")?;
-        let num_notes = args.get("num_notes").and_then(Value::as_i64);
-        let read_notes = args
-            .get("read_notes")
+        // Default to DEFAULT_NUM_NOTES so omitting --num-notes collects a fixed
+        // batch (scrolling as needed), not just whatever the first page renders.
+        let num_notes = args
+            .get("num_notes")
+            .and_then(Value::as_i64)
+            .or(Some(DEFAULT_NUM_NOTES));
+        // Default reads each note; --preview returns cards only.
+        let preview = args.get("preview").and_then(Value::as_bool).unwrap_or(false);
+        let download_media = args
+            .get("download_media")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        author_scan_command(page, &author_id, num_notes, read_notes, debug_snapshot).await
-    })
-}
-
-fn run_extract_note(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
-    Box::pin(async move {
-        let note_id = required_string(&args, "note_id")?;
-        extract_note_command(page, &note_id, debug_snapshot).await
+        author_scan_command(
+            page,
+            &author_id,
+            num_notes,
+            !preview,
+            download_media,
+            debug_snapshot,
+        )
+        .await
     })
 }
 
@@ -362,13 +476,6 @@ const AUTHOR_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
     after: CommandPageAction::CloseOpenNote,
 };
 
-const EXTRACT_NOTE_COMMAND: XhsCommandSpec = XhsCommandSpec {
-    command_name: "extract_note",
-    tool_name: "read_note",
-    before: CommandPageAction::CloseOpenNote,
-    after: CommandPageAction::CloseOpenNote,
-};
-
 pub async fn search_notes_command(
     page: Arc<PageSession>,
     query: &str,
@@ -388,7 +495,6 @@ pub async fn search_notes_command(
 pub async fn topic_scan_command(
     page: Arc<PageSession>,
     query: &str,
-    tab_label: Option<&str>,
     filters: Option<&Value>,
     num_notes: Option<i64>,
     download_media: bool,
@@ -397,7 +503,7 @@ pub async fn topic_scan_command(
     run_xhs_tool_command(
         page,
         TOPIC_SCAN_COMMAND,
-        topic_scan_input(query, tab_label, filters, num_notes, download_media)?,
+        topic_scan_input(query, filters, num_notes, download_media)?,
         debug_snapshot,
     )
     .await
@@ -408,26 +514,13 @@ pub async fn author_scan_command(
     author_id: &str,
     num_notes: Option<i64>,
     read_notes: bool,
+    download_media: bool,
     debug_snapshot: bool,
 ) -> anyhow::Result<Value> {
     run_xhs_tool_command(
         page,
         AUTHOR_SCAN_COMMAND,
-        author_scan_input(author_id, num_notes, read_notes)?,
-        debug_snapshot,
-    )
-    .await
-}
-
-pub async fn extract_note_command(
-    page: Arc<PageSession>,
-    note_id: &str,
-    debug_snapshot: bool,
-) -> anyhow::Result<Value> {
-    run_xhs_tool_command(
-        page,
-        EXTRACT_NOTE_COMMAND,
-        extract_note_input(note_id)?,
+        author_scan_input(author_id, num_notes, read_notes, download_media)?,
         debug_snapshot,
     )
     .await
@@ -453,7 +546,6 @@ fn search_notes_input(
 
 fn topic_scan_input(
     query: &str,
-    tab_label: Option<&str>,
     filters: Option<&Value>,
     num_notes: Option<i64>,
     download_media: bool,
@@ -461,7 +553,6 @@ fn topic_scan_input(
     let mut input = json!({
         "query": trimmed_required(query, "query")?,
     });
-    insert_optional_str(&mut input, "tab_label", tab_label);
     if let Some(filters) = filters {
         input["filters"] = filters.clone();
     }
@@ -478,6 +569,7 @@ fn author_scan_input(
     author_id: &str,
     num_notes: Option<i64>,
     read_notes: bool,
+    download_media: bool,
 ) -> anyhow::Result<Value> {
     let mut input = json!({
         "author_id": trimmed_required(author_id, "author_id")?,
@@ -488,14 +580,10 @@ fn author_scan_input(
     if read_notes {
         input["read_notes"] = json!(true);
     }
+    if download_media {
+        input["download_media"] = json!(true);
+    }
     Ok(input)
-}
-
-fn extract_note_input(note_id: &str) -> anyhow::Result<Value> {
-    Ok(json!({
-        "note_id": trimmed_required(note_id, "note_id")?,
-        "wait_seconds": 6.0,
-    }))
 }
 
 async fn run_xhs_tool_command(
@@ -1145,7 +1233,7 @@ impl Tool for ExtractSearchCardsTool {
 
     fn description(&self) -> &str {
         "Return the note cards currently visible on the search results page \
-         (without re-running the search). Useful after `click_search_tab` to \
+         (without re-running the search). Useful after applying filters to \
          re-read the filtered card list."
     }
 
@@ -1158,74 +1246,6 @@ impl Tool for ExtractSearchCardsTool {
         let cards = xhs.extract_search_cards().await?;
         let mut value = serde_json::to_value(&cards)?;
         self.history.annotate_cards(&mut value);
-        Ok(json_result(&value))
-    }
-}
-
-/// list_search_tabs() -> [tab] — list filter tabs on a search results page.
-pub struct ListSearchTabsTool {
-    page: Arc<PageSession>,
-}
-
-#[async_trait]
-impl Tool for ListSearchTabsTool {
-    fn name(&self) -> &str {
-        "list_search_tabs"
-    }
-
-    fn description(&self) -> &str {
-        "List the search-filter tabs visible on the current search page \
-         (e.g. 全部 / 图文 / 视频 / 用户). Each entry has a label and an \
-         `active` flag."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({"type": "object", "properties": {}})
-    }
-
-    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-        let xhs = XhsPageRuntime::new(&self.page);
-        let tabs = xhs.list_search_tabs().await?;
-        Ok(json_result(&Value::Array(tabs)))
-    }
-}
-
-/// click_search_tab(label, wait_seconds?) -> {ok, label, active_filter, tabs}
-pub struct ClickSearchTabTool {
-    page: Arc<PageSession>,
-}
-
-#[async_trait]
-impl Tool for ClickSearchTabTool {
-    fn name(&self) -> &str {
-        "click_search_tab"
-    }
-
-    fn description(&self) -> &str {
-        "Click the named search-filter tab to narrow results. Tab labels: \
-         全部 / 图文 / 视频 / 用户 (or any active tab returned by \
-         list_search_tabs). After clicking, follow up with \
-         extract_search_cards to see the filtered cards."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "label": { "type": "string", "description": "Tab label (e.g. 全部, 图文, 视频, 用户)" },
-                "wait_seconds": { "type": "number", "default": 1.5 }
-            },
-            "required": ["label"]
-        })
-    }
-
-    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-        let label = get_str(&input, "label")
-            .ok_or_else(|| anyhow::anyhow!("missing label"))?
-            .to_string();
-        let wait_seconds = get_f64(&input, "wait_seconds", 1.5);
-        let xhs = XhsPageRuntime::new(&self.page);
-        let value = xhs.click_search_tab(&label, wait_seconds).await?;
         Ok(json_result(&value))
     }
 }
@@ -1399,9 +1419,9 @@ impl Tool for ExtractProfileTool {
     }
 }
 
-/// topic_scan(query, tab_label?, filters?, num_notes?, download_media?) -> aggregated topic bundle
+/// topic_scan(query, filters?, num_notes?, download_media?) -> aggregated topic bundle
 ///
-/// Composite macro: search → optional tab switch → optional search filters →
+/// Composite macro: search → optional search filters →
 /// collect up to `num_notes` cards in page order (scrolling the feed only when
 /// the first page is too small) → open each note and extract its body + top
 /// comments → bundle into one artifact. Prefer this for any "research a topic
@@ -1423,8 +1443,7 @@ impl Tool for TopicScanTool {
     }
 
     fn description(&self) -> &str {
-        "Xiaohongshu topic research macro: search → optional tab switch → \
-         optional search filters → \
+        "Xiaohongshu topic research macro: search → optional search filters → \
          collect up to `num_notes` cards in page order (scrolling only if the \
          first page is too small) → open each note and read its body + top \
          comments → return one compact bundle (search results + selected cards \
@@ -1442,10 +1461,6 @@ impl Tool for TopicScanTool {
             "type": "object",
             "properties": {
                 "query": { "type": "string" },
-                "tab_label": {
-                    "type": "string",
-                    "enum": ["全部", "图文", "视频", "用户"]
-                },
                 "filters": search_filters_schema(),
                 "num_notes": {
                     "type": "integer",
@@ -1468,7 +1483,6 @@ impl Tool for TopicScanTool {
             .ok_or_else(|| anyhow::anyhow!("missing query"))?
             .to_string();
         let num_notes = get_i64(&input, "num_notes", DEFAULT_NUM_NOTES).max(1);
-        let tab_label = get_str(&input, "tab_label").unwrap_or("").to_string();
         let filters = input
             .get("filters")
             .filter(|value| !value.is_null())
@@ -1493,8 +1507,8 @@ impl Tool for TopicScanTool {
         // labels its own freshly-read cards as `already_analyzed`.
         let history_snapshot = self.history.snapshot();
 
-        // Filters are applied after the optional tab switch below (tab switch
-        // re-runs the search and would drop them), so don't pass them here.
+        // Filters are applied after the initial search below, so don't pass
+        // them here.
         let search = xhs.search_notes(&query, None, 2.0, None).await?;
 
         // If the search never landed on a results page (search box not found,
@@ -1527,13 +1541,7 @@ impl Tool for TopicScanTool {
             return Ok(json_result(&payload));
         }
 
-        // Optional tab switch (re-runs the search under the chosen tab), then
-        // optional filter application.
-        let mut tab_result = Value::Object(serde_json::Map::new());
-        if !tab_label.is_empty() {
-            tab_result = xhs.click_search_tab(&tab_label, 1.5).await?;
-        }
-
+        // Optional filter application.
         let mut filter_result = Value::Object(serde_json::Map::new());
         if let Some(filters) = filters {
             filter_result = xhs.apply_search_filters(&filters, 1.5).await?;
@@ -1635,7 +1643,6 @@ impl Tool for TopicScanTool {
         let mut payload = json!({
             "ok": search.get("ok").and_then(Value::as_bool).unwrap_or(false),
             "query": query,
-            "tab": tab_result,
             "filters": filter_result,
             "search": search,
             "selected_cards": selected_cards,
@@ -1734,6 +1741,11 @@ impl Tool for AuthorScanTool {
                     "type": "boolean",
                     "description": "Open each collected note and read its body + top comments. Off by default (summaries only).",
                     "default": false
+                },
+                "download_media": {
+                    "type": "boolean",
+                    "description": "When reading notes, download their images/videos into the run dir, include local_path fields, and emit a stable media_manifest_path.",
+                    "default": false
                 }
             },
             "required": ["author_id"]
@@ -1747,13 +1759,18 @@ impl Tool for AuthorScanTool {
             .ok_or_else(|| anyhow::anyhow!("missing author_id"))?
             .to_string();
         let read_notes = get_bool(&input, "read_notes", false);
+        let download_media = get_bool(&input, "download_media", false);
         let num_notes = input
             .get("num_notes")
             .and_then(Value::as_i64)
             .filter(|n| *n > 0)
             .map(|n| n as usize);
 
-        let xhs = XhsPageRuntime::new(&self.page);
+        // Media processor only needed when downloading note media (no vision,
+        // so no LLM provider required).
+        let media = media_for(ctx, None, download_media)?;
+        let media_baseline: Option<TimingSnapshot> = media.as_ref().map(|m| m.timing().snapshot());
+        let xhs = XhsPageRuntime::new_with_media(&self.page, media.clone());
         // Snapshot history before reading so card annotations reflect "known
         // before this scan" rather than this scan's own writes.
         let history_snapshot = self.history.snapshot();
@@ -1827,7 +1844,7 @@ impl Tool for AuthorScanTool {
                     "deep",
                     TOP_COMMENTS_PER_NOTE,
                     false,
-                    false,
+                    download_media,
                 )
                 .await;
                 notes.push(entry);
@@ -1835,7 +1852,25 @@ impl Tool for AuthorScanTool {
             }
         }
 
-        let payload = json!({
+        let media_timing = match (&media, &media_baseline) {
+            (Some(media), Some(before)) => timing_delta(before, &media.timing().snapshot()),
+            _ => json!({}),
+        };
+
+        // Build the media manifest from `notes` before they move into payload.
+        let media_manifest_metadata = if download_media {
+            let media_manifest = topic_scan_media_manifest(&notes, &ctx.run_dir);
+            let media_manifest_count = media_manifest.as_array().map(Vec::len).unwrap_or_default();
+            let (path, error) = match write_media_manifest_file(ctx, &media_manifest) {
+                Ok(path) => (Some(path), None),
+                Err(err) => (None, Some(format!("{err:#}"))),
+            };
+            Some((media_manifest_count, path, error))
+        } else {
+            None
+        };
+
+        let mut payload = json!({
             "ok": true,
             "author_id": author_id,
             "profile": profile_value,
@@ -1845,8 +1880,22 @@ impl Tool for AuthorScanTool {
                 "collected": cards.len(),
                 "read_notes": read_notes,
                 "comments_per_note": if read_notes { TOP_COMMENTS_PER_NOTE } else { 0 },
+                "download_media": download_media,
             },
+            "timing": { "media": media_timing },
         });
+
+        if let Some((count, path, error)) = media_manifest_metadata {
+            if let Some(map) = payload.as_object_mut() {
+                map.insert("media_manifest_count".into(), json!(count));
+                if let Some(path) = path {
+                    map.insert("media_manifest_path".into(), json!(path));
+                }
+                if let Some(error) = error {
+                    map.insert("media_manifest_error".into(), json!(error));
+                }
+            }
+        }
 
         // Persist as artifact so it shows up in the run dir + working memory.
         let label = if display_name.is_empty() {

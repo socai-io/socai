@@ -875,7 +875,6 @@ async fn connect_daemon(paths: &DaemonPaths) -> Result<(DaemonStream, Option<Str
     Ok((stream, Some(endpoint.token)))
 }
 
-#[cfg(unix)]
 /// Give a just-stopped daemon a moment to unlink its IPC endpoint so the
 /// successor's pre-spawn cleanup doesn't race its exit cleanup.
 async fn wait_for_daemon_exit() {
@@ -890,6 +889,7 @@ async fn wait_for_daemon_exit() {
     }
 }
 
+#[cfg(unix)]
 async fn cleanup_stale_ipc(paths: &DaemonPaths) -> Result<()> {
     // A just-stopped daemon races us removing the same socket (its exit
     // cleanup vs our pre-spawn cleanup), so a missing file is success.

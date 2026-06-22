@@ -99,7 +99,6 @@ pub async fn tool_topic_scan(
         page.clone(),
         &query,
         None,
-        None,
         num_notes,
         download_media.unwrap_or(false),
         false,

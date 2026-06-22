@@ -180,7 +180,6 @@ const SocaiXhsPageScripts = (() => {
     const input = findSearchInput();
     const url = new URL(location.href);
     const bodyText = text(document.body);
-    const tabs = searchTabs();
     const loading = $$('.loading, .spinner, [class*="loading"]').some((el) => isVisible(el));
     const hasNoResults = /暂无|没有找到|无结果|换个词试试|no result/i.test(bodyText);
     return {
@@ -190,8 +189,6 @@ const SocaiXhsPageScripts = (() => {
       url_keyword: url.searchParams.get('keyword') || '',
       input_keyword: input ? String(input.value || input.textContent || '').trim() : '',
       card_count: cards.length,
-      tabs,
-      active_filter: tabs.find((t) => t.active)?.label || '',
       loading,
       has_no_results: hasNoResults,
       login_required: hasLoginModal(),
@@ -277,37 +274,6 @@ const SocaiXhsPageScripts = (() => {
         link,
       };
     }).filter((c) => c.note_id || c.title || c.link);
-  }
-
-  // ── search tabs (categories: 全部/图文/视频/用户) ─────────────
-  const SEARCH_TAB_LABELS = ['全部', '图文', '视频', '用户'];
-
-  function searchTabs() {
-    const seen = new Set();
-    const out = [];
-    for (const el of $$('button, a, div, span')) {
-      const label = text(el);
-      if (!SEARCH_TAB_LABELS.includes(label) || seen.has(label)) continue;
-      if (!(el instanceof HTMLElement)) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 24 || rect.height < 18) continue;
-      seen.add(label);
-      const cls = el.className || '';
-      const active = el.getAttribute('aria-selected') === 'true'
-        || /\bactive\b|current|selected/.test(cls)
-        || el.getAttribute('data-active') === 'true';
-      out.push({ label, active, ...elementCenter(el) });
-    }
-    return out;
-  }
-
-  function clickSearchTab(label) {
-    if (!SEARCH_TAB_LABELS.includes(String(label || ''))) {
-      return { ok: false, error: `unsupported_tab:${label}` };
-    }
-    const tab = searchTabs().find((t) => t.label === label);
-    if (!tab) return { ok: false, error: 'tab_not_found' };
-    return { ok: true, label, x: tab.x, y: tab.y, was_active: tab.active };
   }
 
   // ── search filter popup (hover-triggered 筛选 panel) ─────────
@@ -1227,8 +1193,6 @@ const SocaiXhsPageScripts = (() => {
     searchInput,
     setSearchInput,
     searchState,
-    searchTabs,
-    clickSearchTab,
     searchFilterTrigger,
     searchFilters,
     clickCard,

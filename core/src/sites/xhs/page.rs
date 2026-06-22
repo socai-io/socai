@@ -27,8 +27,6 @@ const XHS_PAGE_SCRIPT_FUNCTIONS: &[&str] = &[
     "searchInput",
     "setSearchInput",
     "searchState",
-    "searchTabs",
-    "clickSearchTab",
     "searchFilterTrigger",
     "searchFilters",
     "clickCard",
@@ -690,66 +688,6 @@ impl<'a> XhsPageRuntime<'a> {
         self.ensure_xhs(false).await?;
         self.expect_object("scrollInNote", Some(&json!({ "pixels": pixels })))
             .await
-    }
-
-    pub async fn list_search_tabs(&self) -> Result<Vec<Value>> {
-        self.ensure_xhs(false).await?;
-        let raw = self.expect_array("searchTabs", None).await?;
-        Ok(raw.into_iter().filter(Value::is_object).collect())
-    }
-
-    /// Click the search-filter tab with the given label (e.g. "全部" / "图文").
-    /// JS finds the tab and returns click coordinates, then we issue a CDP
-    /// click and poll for the new active tab.
-    pub async fn click_search_tab(&self, label: &str, wait_seconds: f64) -> Result<Value> {
-        self.ensure_xhs(false).await?;
-        let loc = self
-            .expect_object("clickSearchTab", Some(&Value::String(label.to_string())))
-            .await?;
-        let ok = script_ok(&loc);
-        if !ok {
-            let error = loc
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            return Ok(json!({
-                "ok": false,
-                "label": label,
-                "error": error,
-            }));
-        }
-        if loc
-            .get("was_active")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(json!({
-                "ok": true,
-                "label": label,
-                "skipped": true,
-                "reason": "already_active",
-            }));
-        }
-        let x = loc.get("x").and_then(Value::as_f64).unwrap_or(0.0);
-        let y = loc.get("y").and_then(Value::as_f64).unwrap_or(0.0);
-        self.page.click(x, y).await?;
-        if wait_seconds > 0.0 {
-            tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
-        }
-        let tabs = self.list_search_tabs().await?;
-        let active_filter = tabs
-            .iter()
-            .find(|t| t.get("active").and_then(Value::as_bool).unwrap_or(false))
-            .and_then(|t| t.get("label").and_then(Value::as_str))
-            .unwrap_or("")
-            .to_string();
-        Ok(json!({
-            "ok": true,
-            "label": label,
-            "active_filter": active_filter,
-            "tabs": tabs,
-        }))
     }
 
     /// Apply search-result filters from the hover popup and return the
