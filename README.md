@@ -56,13 +56,11 @@ cargo install --path cli --force
 小红书常用命令：
 
 ```bash
-socai xhs topic_scan "运营爆款思路" --num-notes 30 --filter publish_time=一周内   # 搜索并逐个打开帖子，获取内容
-socai xhs topic_scan "运营爆款思路" --num-notes 10 --download-media       # 下载图片/视频并输出 media_manifest_path
-socai xhs search_notes "运营爆款思路" --num-notes 100 --filter sort=最新          # 只打开搜索结果页，拿帖子标题/点赞/封面，不读正文
-socai xhs author <作者id> --num-notes 30                                       # 打开作者主页，拿作者简介 + 帖子概要
-socai xhs author <作者id> --num-notes 10 --read-notes                          # 再逐个打开帖子读正文 + 评论
-socai xhs extract_note --note-id <id>                                          # 从当前结果页抽取某个帖子
-socai stop                                                                 # 停止 daemon（关闭工具标签页）
+socai xhs topic_scan "运营爆款思路" --num-notes 30 --filter publish_time=一周内 --download-media  # 搜索并逐个打开帖子，获取内容，并下载图片/视频
+socai xhs search_notes "运营爆款思路" --num-notes 100 --filter sort=最新  # 只打开搜索结果页，拿帖子标题/点赞/封面，不读正文
+socai xhs author <作者id> --num-notes 10 --read-notes                   # 打开作者主页，拿作者简介 + 帖子信息，加了--read-notes会逐个打开帖子读正文和评论，不加则是拿帖子概要
+socai xhs extract_note --note-id <id>                                  # 从当前结果页抽取某个帖子，必须从瀑布流页发起
+socai stop                                                             # 停止 daemon（关闭工具标签页）
 ```
 
 Options:
@@ -135,7 +133,7 @@ socai   # 不带子命令即打开 TUI
 
 ## 3. Desktop App (GUI)
 
-[Download .dmg for Mac](https://github.com/socai-io/socai/releases/latest/download/socai-macos-universal.dmg).
+[下载Mac版 .dmg](https://github.com/socai-io/socai/releases/latest/download/socai-macos-universal.dmg).
 
 ## 添加自定义功能和网站
 socai具有自我迭代能力，如果你是AI（Claude Code, Codex, Cursor等），遵循`core/src/sites/creation/SKILL.md`中的步骤，和你的用户详细确认需求，并按照skill一步步新增代码，从而增加新功能或新网站。
