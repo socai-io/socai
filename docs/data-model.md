@@ -6,7 +6,8 @@ history replay.
 
 ## Guiding rule
 
-`~/.socai/runs/...` is the source of truth for task results.
+`~/.socai/runs/...` (or the root configured by `runs.dir` / `SOCAI_RUNS_DIR`)
+is the source of truth for task results.
 
 The desktop app may keep an index in `~/.socai/app/tasks.json`, but it should not
 persist duplicate task result payloads such as final answers or event timelines.
@@ -16,7 +17,7 @@ The app can hydrate those fields from the run directory when serving the UI.
 
 | Data | Default path | Override | Owner |
 | --- | --- | --- | --- |
-| Core run artifacts | `~/.socai/runs/agent_<timestamp>_<task-slug>/` | `SOCAI_RUNS_DIR` | `socai-core` |
+| Core run artifacts | `~/.socai/runs/<timestamp>_<task-slug>/` | `SOCAI_RUNS_DIR`, else `socai config set runs.dir <path>` | `socai-core` |
 | Desktop task index | `~/.socai/app/tasks.json` | `SOCAI_HOME` (`$SOCAI_HOME/app/tasks.json`) | Tauri app |
 
 Do not add a second persistent task-result store under `~/.socai/app/`. If the
@@ -57,7 +58,7 @@ Created before starting the core run and passed into `socai-core`.
 Example:
 
 ```txt
-~/.socai/runs/agent_20260518_142233_find_xhs_coffee_notes
+~/.socai/runs/20260518_142233_find_xhs_coffee_notes
 ```
 
 This directory is the source of truth for final answer and timeline replay.
@@ -115,7 +116,7 @@ snapshots with fields like:
   "started_at": 1790000000200,
   "finished_at": 1790000060000,
   "run_id": "20260518-142233-123456",
-  "run_dir": "/Users/alice/.socai/runs/agent_20260518_142233_find_popular_xhs_coffee_notes",
+  "run_dir": "/Users/alice/.socai/runs/20260518_142233_find_popular_xhs_coffee_notes",
   "target_id": null,
   "error": null,
   "turns": 4,

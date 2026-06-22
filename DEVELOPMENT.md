@@ -43,7 +43,10 @@ pnpm exec tauri build --bundles app   # → target/release/bundle/macos/socai.ap
 ```
 
 `dev:desktop:local` points `SOCAI_HOME` / `SOCAI_RUNS_DIR` at the repo's
-`.socai/` directory, so runs and the task index land alongside the checkout:
+`.socai/` directory, so runs and the task index land alongside the checkout.
+For normal CLI usage, the equivalent persistent run-artifact setting is
+`socai config set runs.dir <path>`; the environment variable remains the highest
+precedence override for local/dev scripts:
 
 ```text
 .socai/app/tasks.json

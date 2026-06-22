@@ -11,6 +11,8 @@ use crate::cdp::{ChromeConnectOptions, ChromeProfile};
 pub struct SocaiConfig {
     #[serde(default)]
     pub chrome: ChromeConfig,
+    #[serde(default)]
+    pub runs: RunsConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -23,6 +25,15 @@ pub struct ChromeConfig {
     /// `managed` or `auto`.
     #[serde(default)]
     pub profile_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunsConfig {
+    /// Root directory where socai creates per-run artifact directories. Missing
+    /// means the product default: `~/.socai/runs` (or `SOCAI_RUNS_DIR` when the
+    /// environment override is set).
+    #[serde(default)]
+    pub dir: Option<String>,
 }
 
 impl SocaiConfig {
@@ -43,12 +54,22 @@ impl SocaiConfig {
             managed_user_data_dir,
         }
     }
+
+    pub fn runs_root(&self) -> Option<PathBuf> {
+        self.runs
+            .dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(expand_tilde_path)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 enum ConfigKey {
     ChromeProfile,
     ChromeProfileDir,
+    RunsDir,
 }
 
 impl ConfigKey {
@@ -56,8 +77,10 @@ impl ConfigKey {
         match key.trim() {
             "chrome.profile" => Ok(Self::ChromeProfile),
             "chrome.profile_dir" | "chrome.profile-dir" => Ok(Self::ChromeProfileDir),
+            "runs.dir" | "runs_dir" | "runs-dir" | "output.dir" | "output_dir"
+            | "output-dir" => Ok(Self::RunsDir),
             other => anyhow::bail!(
-                "unknown config key {other:?}; supported keys: chrome.profile, chrome.profile_dir"
+                "unknown config key {other:?}; supported keys: chrome.profile, chrome.profile_dir, runs.dir"
             ),
         }
     }
@@ -66,6 +89,7 @@ impl ConfigKey {
         match self {
             Self::ChromeProfile => &["chrome", "profile"],
             Self::ChromeProfileDir => &["chrome", "profile_dir"],
+            Self::RunsDir => &["runs", "dir"],
         }
     }
 
@@ -73,6 +97,7 @@ impl ConfigKey {
         match self {
             Self::ChromeProfile => "chrome.profile",
             Self::ChromeProfileDir => "chrome.profile_dir",
+            Self::RunsDir => "runs.dir",
         }
     }
 }
@@ -156,6 +181,7 @@ fn parse_key_value(key: ConfigKey, raw_value: &str) -> Result<Value> {
     match key {
         ConfigKey::ChromeProfile => Ok(Value::String(ChromeProfile::parse(value)?.as_str().into())),
         ConfigKey::ChromeProfileDir => Ok(Value::String(value.to_string())),
+        ConfigKey::RunsDir => Ok(Value::String(normalized_path_value(value)?)),
     }
 }
 
@@ -217,6 +243,16 @@ fn prune_empty_objects(value: &mut Value) -> bool {
     object.is_empty()
 }
 
+fn normalized_path_value(value: &str) -> Result<String> {
+    let path = expand_tilde_path(value);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn expand_tilde_path(value: &str) -> PathBuf {
     if value == "~" {
         if let Some(home) = dirs::home_dir() {
@@ -264,5 +300,21 @@ mod tests {
     fn parse_chrome_profile_config_is_strict() {
         assert!(parse_key_value(ConfigKey::ChromeProfile, "managed").is_ok());
         assert!(parse_key_value(ConfigKey::ChromeProfile, "isolated").is_err());
+    }
+
+    #[test]
+    fn runs_root_uses_configured_dir() {
+        let mut config = SocaiConfig::default();
+        config.runs.dir = Some("/tmp/socai-runs".into());
+        assert_eq!(config.runs_root(), Some(PathBuf::from("/tmp/socai-runs")));
+    }
+
+    #[test]
+    fn runs_dir_config_accepts_output_dir_alias_and_normalizes_relative_path() {
+        let parsed = parse_key_value(ConfigKey::RunsDir, "relative-runs").unwrap();
+        let value = parsed.as_str().expect("runs dir string");
+        assert!(PathBuf::from(value).is_absolute());
+        assert!(value.ends_with("relative-runs"));
+        assert_eq!(canonical_config_key("output-dir").unwrap(), "runs.dir");
     }
 }

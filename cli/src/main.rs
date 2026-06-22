@@ -45,7 +45,7 @@ fn build_cli() -> clap::Command {
                 .subcommand(
                     clap::Command::new("get")
                         .about("Print the full config, or a single config key.")
-                        .arg(Arg::new("key").help("Key to read, e.g. chrome.profile.")),
+                        .arg(Arg::new("key").help("Key to read, e.g. runs.dir or chrome.profile.")),
                 )
                 .subcommand(clap::Command::new("list").about("Print the full config as JSON."))
                 .subcommand(
@@ -54,7 +54,7 @@ fn build_cli() -> clap::Command {
                         .arg(
                             Arg::new("key")
                                 .required(true)
-                                .help("Key to set, e.g. chrome.profile."),
+                                .help("Key to set, e.g. runs.dir or chrome.profile."),
                         )
                         .arg(Arg::new("value").required(true).help("Value to store.")),
                 )
@@ -64,7 +64,7 @@ fn build_cli() -> clap::Command {
                         .arg(
                             Arg::new("key")
                                 .required(true)
-                                .help("Key to remove, e.g. chrome.profile."),
+                                .help("Key to remove, e.g. runs.dir or chrome.profile."),
                         ),
                 ),
         )

@@ -116,6 +116,7 @@ fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxF
                 tool_name: "search",
                 before: None,
                 after: None,
+                include_run_metadata: false,
             },
             page.clone(),
             &dy_tools(page),
@@ -143,6 +144,7 @@ fn run_page_state(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> 
                     })
                 })),
                 after: None,
+                include_run_metadata: false,
             },
             page.clone(),
             &dy_tools(page),

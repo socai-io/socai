@@ -7,7 +7,7 @@
 //! modules supply only the tool set and optional page-state hooks — do not
 //! copy this scaffolding into a site folder.
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use serde_json::{json, Value};
 
@@ -28,6 +28,10 @@ pub struct ToolCommand<'a> {
     pub tool_name: &'a str,
     pub before: Option<PageHook>,
     pub after: Option<PageHook>,
+    /// Include run metadata in the command envelope and data payload. Keep this
+    /// opt-in so existing command stdout shapes stay stable unless a command
+    /// explicitly promises run metadata.
+    pub include_run_metadata: bool,
 }
 
 pub async fn run_tool_command(
@@ -76,12 +80,19 @@ pub async fn run_tool_command(
     })
     .await?;
 
-    Ok(json!({
+    let mut response = json!({
         "command": cmd.command_name,
         "run_dir": run_dir,
         "input": invocation.get("input").cloned().unwrap_or(Value::Null),
         "data": data,
-    }))
+    });
+    if cmd.include_run_metadata {
+        let run = run_metadata(&ctx, input_downloads_media(&invocation["input"]));
+        response["run"] = run.clone();
+        response["data"] = attach_run_metadata(response["data"].take(), &run);
+    }
+
+    Ok(response)
 }
 
 /// Invoke one tool by name and parse its text reply as JSON (falling back to
@@ -106,6 +117,35 @@ pub async fn call_site_tool(
 /// run-dir name (`<ts>_<site>_<command>[_<query>]`).
 pub fn command_context(site_id: &str, label: &str) -> (String, ToolContext) {
     command_context_for_label(site_id, &format!("{site_id}_{label}"))
+}
+
+pub fn run_metadata(ctx: &ToolContext, include_media_dir: bool) -> Value {
+    let mut run = json!({
+        "id": ctx.run_id.clone(),
+        "dir": path_string(&ctx.run_dir),
+    });
+    if include_media_dir {
+        run["media_dir"] = json!(path_string(&ctx.run_dir.join("site_media")));
+    }
+    run
+}
+
+fn path_string(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn input_downloads_media(input: &Value) -> bool {
+    input
+        .get("download_media")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub(crate) fn attach_run_metadata(mut data: Value, run: &Value) -> Value {
+    if let Some(map) = data.as_object_mut() {
+        map.entry("run").or_insert_with(|| run.clone());
+    }
+    data
 }
 
 fn command_context_for_label(site_id: &str, label: &str) -> (String, ToolContext) {

@@ -17,7 +17,7 @@ use crate::sites::registry::{
     required_string, ArgKind, BoxFuture, CommandArg, SiteCommand, SiteSpec, SlowWhen,
 };
 use crate::sites::runner::{
-    get_bool, get_f64, get_i64, get_str, json_result, run_tool_command,
+    get_bool, get_f64, get_i64, get_str, json_result, run_metadata, run_tool_command,
     trimmed_required, PageHook, ToolCommand,
 };
 use crate::sites::xhs::media_manifest::{
@@ -316,7 +316,10 @@ fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxF
             .get("num_notes")
             .and_then(Value::as_i64)
             .or(Some(DEFAULT_NUM_NOTES));
-        let preview = args.get("preview").and_then(Value::as_bool).unwrap_or(false);
+        let preview = args
+            .get("preview")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         if preview {
             // Cards only — download_media doesn't apply to a card-only read.
             search_notes_command(page, &query, filters.as_ref(), num_notes, debug_snapshot).await
@@ -421,7 +424,10 @@ fn run_author_scan(page: Arc<PageSession>, args: Value, debug_snapshot: bool) ->
             .and_then(Value::as_i64)
             .or(Some(DEFAULT_NUM_NOTES));
         // Default reads each note; --preview returns cards only.
-        let preview = args.get("preview").and_then(Value::as_bool).unwrap_or(false);
+        let preview = args
+            .get("preview")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let download_media = args
             .get("download_media")
             .and_then(Value::as_bool)
@@ -451,6 +457,7 @@ struct XhsCommandSpec {
     tool_name: &'static str,
     before: CommandPageAction,
     after: CommandPageAction,
+    include_run_metadata: bool,
 }
 
 const SEARCH_NOTES_COMMAND: XhsCommandSpec = XhsCommandSpec {
@@ -458,6 +465,7 @@ const SEARCH_NOTES_COMMAND: XhsCommandSpec = XhsCommandSpec {
     tool_name: "search_notes",
     before: CommandPageAction::SearchReady,
     after: CommandPageAction::None,
+    include_run_metadata: false,
 };
 
 const TOPIC_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
@@ -465,6 +473,7 @@ const TOPIC_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
     tool_name: "topic_scan",
     before: CommandPageAction::SearchReady,
     after: CommandPageAction::None,
+    include_run_metadata: true,
 };
 
 const AUTHOR_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
@@ -474,6 +483,7 @@ const AUTHOR_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
     // note modal is left open before/after.
     before: CommandPageAction::CloseOpenNote,
     after: CommandPageAction::CloseOpenNote,
+    include_run_metadata: false,
 };
 
 pub async fn search_notes_command(
@@ -600,6 +610,7 @@ async fn run_xhs_tool_command(
             tool_name: spec.tool_name,
             before: page_action_hook(spec.before),
             after: page_action_hook(spec.after),
+            include_run_metadata: spec.include_run_metadata,
         },
         page,
         &tools,
@@ -1643,6 +1654,7 @@ impl Tool for TopicScanTool {
         let mut payload = json!({
             "ok": search.get("ok").and_then(Value::as_bool).unwrap_or(false),
             "query": query,
+            "run": run_metadata(ctx, download_media),
             "filters": filter_result,
             "search": search,
             "selected_cards": selected_cards,
@@ -1978,5 +1990,32 @@ mod tests {
 
         assert!(options.include_media);
         assert!(!options.download_media);
+    }
+
+    #[test]
+    fn run_metadata_includes_media_dir_only_when_requested() {
+        let ctx = ToolContext::new("run-1", "/tmp/socai-run");
+
+        let without_media = run_metadata(&ctx, false);
+        assert_eq!(without_media["id"], json!("run-1"));
+        assert_eq!(without_media["dir"], json!("/tmp/socai-run"));
+        assert!(without_media.get("media_dir").is_none());
+
+        let with_media = run_metadata(&ctx, true);
+        assert_eq!(with_media["media_dir"], json!("/tmp/socai-run/site_media"));
+    }
+
+    #[test]
+    fn attach_run_metadata_preserves_existing_run_object() {
+        let run = json!({"id": "outer", "dir": "/tmp/outer"});
+        let data = crate::sites::runner::attach_run_metadata(json!({"run": {"id": "inner"}}), &run);
+        assert_eq!(data["run"]["id"], json!("inner"));
+    }
+
+    #[test]
+    fn standalone_run_metadata_is_topic_scan_only() {
+        assert!(!SEARCH_NOTES_COMMAND.include_run_metadata);
+        assert!(TOPIC_SCAN_COMMAND.include_run_metadata);
+        assert!(!AUTHOR_SCAN_COMMAND.include_run_metadata);
     }
 }

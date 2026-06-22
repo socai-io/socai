@@ -11,7 +11,10 @@
 // args match the persisted debug payload directly.
 #![allow(clippy::too_many_arguments)]
 
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use chrono::Local;
 use serde_json::{json, Map, Value};
@@ -44,11 +47,44 @@ fn safe_slug(text: &str, max_chars: usize) -> String {
     final_slug.chars().take(max_chars).collect()
 }
 
+/// Root for generated run directories. Precedence: `SOCAI_RUNS_DIR`, then
+/// `socai config set runs.dir <path>`, then `~/.socai/runs`.
 pub fn default_runs_root() -> PathBuf {
-    if let Ok(env) = std::env::var("SOCAI_RUNS_DIR") {
-        return PathBuf::from(env);
+    if let Some(root) = env_runs_root(std::env::var_os("SOCAI_RUNS_DIR")) {
+        return root;
     }
-    if let Some(home) = dirs::home_dir() {
+    let config_root = match crate::config::load_config() {
+        Ok(config) => config.runs_root(),
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to load socai config for runs.dir; using default runs root");
+            None
+        }
+    };
+    default_runs_root_from_parts(None, config_root, dirs::home_dir())
+}
+
+fn env_runs_root(value: Option<OsString>) -> Option<PathBuf> {
+    let value = value?;
+    let trimmed = value.to_string_lossy().trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+fn default_runs_root_from_parts(
+    env_root: Option<OsString>,
+    config_root: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(root) = env_runs_root(env_root) {
+        return root;
+    }
+    if let Some(root) = config_root {
+        return root;
+    }
+    if let Some(home) = home {
         return home.join(".socai/runs");
     }
     PathBuf::from(".socai/runs")
@@ -59,9 +95,13 @@ pub fn default_runs_root() -> PathBuf {
 /// exists. The timestamp is local time, matching the per-frame snapshot
 /// folder names.
 pub fn make_run_dir(task: &str) -> PathBuf {
+    make_run_dir_in_root(default_runs_root(), task)
+}
+
+fn make_run_dir_in_root(root: impl AsRef<Path>, task: &str) -> PathBuf {
     let ts = Local::now().format("%Y%m%d_%H%M%S").to_string();
     let slug = safe_slug(task, 48);
-    let base = default_runs_root().join(format!("{ts}_{slug}"));
+    let base = root.as_ref().join(format!("{ts}_{slug}"));
     if !base.exists() {
         return base;
     }
@@ -273,5 +313,53 @@ mod tests {
         let v = json!({"type": "image", "source": {"data": "aGVsbG8="}});
         let safe = json_safe_for_log(&v, 1000);
         assert_eq!(safe.get("omitted"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn default_runs_root_uses_configured_runs_dir() {
+        let home = PathBuf::from("/tmp/socai-home");
+        let configured_runs_dir = PathBuf::from("/tmp/socai-configured-runs");
+
+        assert_eq!(
+            default_runs_root_from_parts(None, Some(configured_runs_dir.clone()), Some(home)),
+            configured_runs_dir
+        );
+        let run_dir = make_run_dir_in_root(&configured_runs_dir, "topic scan");
+        assert!(run_dir.starts_with(&configured_runs_dir));
+        let file_name = run_dir.file_name().and_then(|name| name.to_str()).unwrap();
+        assert!(file_name.ends_with("topic_scan"));
+    }
+
+    #[test]
+    fn default_runs_root_prefers_env_over_configured_runs_dir() {
+        let home = PathBuf::from("/tmp/socai-home");
+        let configured_runs_dir = PathBuf::from("/tmp/socai-configured-runs");
+        let env_runs_dir = PathBuf::from("/tmp/socai-env-runs");
+
+        assert_eq!(
+            default_runs_root_from_parts(
+                Some(OsString::from(env_runs_dir.to_string_lossy().to_string())),
+                Some(configured_runs_dir),
+                Some(home),
+            ),
+            env_runs_dir
+        );
+        let run_dir = make_run_dir_in_root(&env_runs_dir, "topic scan");
+        assert!(run_dir.starts_with(&env_runs_dir));
+    }
+
+    #[test]
+    fn default_runs_root_ignores_empty_env_override() {
+        let home = PathBuf::from("/tmp/socai-home");
+        let configured_runs_dir = PathBuf::from("/tmp/socai-configured-runs");
+
+        assert_eq!(
+            default_runs_root_from_parts(
+                Some(OsString::from("  \t  ")),
+                Some(configured_runs_dir.clone()),
+                Some(home),
+            ),
+            configured_runs_dir
+        );
     }
 }

@@ -72,22 +72,34 @@ Options:
 - `--num-notes <N>` — 返回多少个帖子。如果设置的数量大，socia会自动往下翻页，获取更多帖子。
 - `--preview` — 只拿帖子概要（标题、封面等等），不逐个打开帖子拿详情。
 - `--download-media` — 打开每篇帖子的时候 (不加`--preview`时): 把图像和视频下载到 `run_dir`
-  (`site_media/`), 并创建列表 `<run_dir>/media_manifest.json`.
+  (`site_media/`), 输出 top-level `run` (`id`, `dir`, `media_dir`), 并创建列表
+  `<run_dir>/media_manifest.json`.
 - `--pretty` — 输出JSON按换行格式.
 - `--debug-snapshot` — 把网页 DOM + a11y tree + screenshots 写入文件，用于开发调试
-
 
 **新增了抖音支持**：
 ```bash
 socai dy search "咖啡" --num 30         # 搜索关键词并拿n条视频的信息
 ```
 
+### 配置 (`socai config`)
 
-### 控制浏览器profile:
+Config lives in `~/.socai/config.json`. 常用配置项：
 
-- `chrome.profile` values: `existing`, `managed`, `auto`.
-- Default: `existing` — attach to your existing browser/profile with CDP enabled.
-- To opt into socai's isolated profile persistently:
+- `runs.dir` — generated run/artifact root. By default, runs are written under
+  `~/.socai/runs/<timestamp>_<slug>/`. Set it when another system needs to own
+  or clean up socai artifacts:
+
+  ```bash
+  socai config set runs.dir "$(pwd)/.data/beta-agent/runs"
+  ```
+
+  Relative paths passed to `socai config set runs.dir` are stored as absolute
+  paths from the current directory. `SOCAI_RUNS_DIR` still takes precedence when
+  set.
+- `chrome.profile` — browser profile mode: `existing`, `managed`, or `auto`.
+  Default is `existing`, which attaches to your existing browser/profile with
+  CDP enabled. To opt into socai's isolated profile persistently:
 
   ```bash
   socai config set chrome.profile managed # 以后默认使用 socai 独立 chrome 资料目录
@@ -96,20 +108,19 @@ socai dy search "咖啡" --num 30         # 搜索关键词并拿n条视频的�
 
   The default managed profile path is `~/.socai/chrome-profile`; sign in to
   xiaohongshu once there and future sessions reuse that login/cookies.
-- To use a custom managed profile directory:
+- `chrome.profile_dir` — custom managed chrome user-data-dir:
 
   ```bash
   socai config set chrome.profile_dir ~/.socai/profiles/xhs-test
   ```
 
-- To switch back to your existing browser profile:
+To switch back to your existing browser profile:
 
-  ```bash
-  socai config set chrome.profile existing
-  ```
+```bash
+socai config set chrome.profile existing
+```
 
-- Config lives in `~/.socai/config.json`. Advanced endpoint overrides still use
-  `SOCAI_CDP_WS` / `SOCAI_CDP_URL`.
+Advanced endpoint overrides still use `SOCAI_CDP_WS` / `SOCAI_CDP_URL`.
 
 ## 2. TUI
 
