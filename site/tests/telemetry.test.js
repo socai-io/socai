@@ -5,7 +5,7 @@ import { __testing } from '../api/telemetry.js';
 
 test('sanitizeEvent strips fields that should not reach Axiom', () => {
   const sanitized = __testing.sanitizeEvent({
-    event: 'socai_cli_tool_trace',
+    event: 'socai_tool_call',
     install_id: 'install-1',
     daemon_session_id: 'legacy-session-1',
     request_id: 'request-1',
@@ -36,9 +36,10 @@ test('sanitizeEvent strips fields that should not reach Axiom', () => {
     tab: 'latest',
     debug_snapshot: true,
   });
+  // `event` is the type discriminator and is now forwarded (source carries the surface).
+  assert.equal(sanitized.event, 'socai_tool_call');
 
   for (const key of [
-    'event',
     'arch',
     'created_at_ms',
     'client_created_at_ms',
@@ -54,7 +55,7 @@ test('sanitizeEvent strips fields that should not reach Axiom', () => {
 
 test('sanitizeEvent preserves shallow primitive metadata and rejects unsafe metadata', () => {
   const sanitized = __testing.sanitizeEvent({
-    event: 'socai_cli_tool_trace',
+    event: 'socai_tool_call',
     install_id: 'install-1',
     command: 'topic_scan',
     metadata: {
@@ -88,7 +89,7 @@ test('sanitizeEvent rejects missing or non-socai event names', () => {
 
 test('sanitizeEvent flattens legacy properties without leaking disallowed fields', () => {
   const sanitized = __testing.sanitizeEvent({
-    event: 'socai_cli_tool_trace',
+    event: 'socai_tool_call',
     distinct_id: 'install-from-distinct',
     properties: {
       request_id: 'request-1',
@@ -104,13 +105,13 @@ test('sanitizeEvent flattens legacy properties without leaking disallowed fields
   assert.equal(sanitized.command, 'search_notes');
   assert.equal(sanitized.query_text, 'Bloc1 V4');
   assert.deepEqual(sanitized.metadata, { tab: 'discover' });
-  assert.equal(Object.hasOwn(sanitized, 'event'), false);
+  assert.equal(sanitized.event, 'socai_tool_call');
   assert.equal(Object.hasOwn(sanitized, 'created_at_ms'), false);
 });
 
 test('sanitizeEvent keeps desktop agent-task fields', () => {
   const sanitized = __testing.sanitizeEvent({
-    event: 'socai_desktop_agent_task_end',
+    event: 'socai_agent_task_end',
     install_id: 'install-1',
     source: 'desktop',
     task_id: 'task-1730000000000-3',
@@ -128,6 +129,7 @@ test('sanitizeEvent keeps desktop agent-task fields', () => {
     ok: true,
   });
 
+  assert.equal(sanitized.event, 'socai_agent_task_end');
   assert.equal(sanitized.source, 'desktop');
   assert.equal(sanitized.task_id, 'task-1730000000000-3');
   assert.equal(sanitized.run_id, '20260621-101010-000042');
@@ -146,7 +148,7 @@ test('sanitizeEvent keeps desktop agent-task fields', () => {
 
 test('sanitizeEvent keeps desktop app_open setup fields', () => {
   const sanitized = __testing.sanitizeEvent({
-    event: 'socai_desktop_app_open',
+    event: 'socai_app_open',
     install_id: 'install-1',
     source: 'desktop',
     has_api_key: true,
@@ -162,7 +164,7 @@ test('sanitizeEvent keeps desktop app_open setup fields', () => {
 test('sanitizeEvent allows task_text up to the 8000-char cap', () => {
   const longPrompt = 'x'.repeat(5000);
   const sanitized = __testing.sanitizeEvent({
-    event: 'socai_desktop_agent_task_start',
+    event: 'socai_agent_task_start',
     install_id: 'install-1',
     task_text: longPrompt,
     task_len: 5000,
@@ -173,7 +175,7 @@ test('sanitizeEvent allows task_text up to the 8000-char cap', () => {
 
   const hugePrompt = 'y'.repeat(9000);
   const clipped = __testing.sanitizeEvent({
-    event: 'socai_desktop_agent_task_start',
+    event: 'socai_agent_task_start',
     install_id: 'install-1',
     task_text: hugePrompt,
   });
@@ -184,7 +186,7 @@ test('sanitizeEvent allows task_text up to the 8000-char cap', () => {
 
 test('sanitizeEvent strips unknown desktop fields so result bodies never leak', () => {
   const sanitized = __testing.sanitizeEvent({
-    event: 'socai_desktop_agent_task_end',
+    event: 'socai_agent_task_end',
     install_id: 'install-1',
     task_id: 'task-1',
     final_text: 'report body that must not reach axiom',

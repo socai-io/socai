@@ -49,7 +49,7 @@ impl DesktopTelemetry {
             None => (None, None, false),
         };
         self.capture(
-            "socai_desktop_app_open",
+            "socai_app_open",
             json!({
                 "default_provider": default_provider,
                 "default_model": default_model,

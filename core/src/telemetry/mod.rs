@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn remote_event_drops_client_timestamp_before_proxy_send() {
         let event = remote_event(
-            "socai_cli_tool_trace",
+            "socai_tool_call",
             "install-1",
             &json!({
                 "created_at_ms": 123,
@@ -575,7 +575,7 @@ mod tests {
             }),
         );
         let object = event.as_object().expect("remote event is an object");
-        assert_eq!(object.get("event"), Some(&json!("socai_cli_tool_trace")));
+        assert_eq!(object.get("event"), Some(&json!("socai_tool_call")));
         assert_eq!(object.get("install_id"), Some(&json!("install-1")));
         assert!(!object.contains_key("created_at_ms"));
     }

@@ -34,7 +34,7 @@ pub async fn cdp_connect(
     telemetry: State<'_, DesktopTelemetry>,
 ) -> Result<(), String> {
     runtime.connect_browser();
-    telemetry.capture("socai_desktop_browser_connect", json!({}));
+    telemetry.capture("socai_browser_connect", json!({}));
     Ok(())
 }
 
@@ -226,7 +226,7 @@ pub async fn agent_save_api_key(
     // Only the provider name and outcome are recorded — never the key material.
     let result = socai_core::agent::save_api_key(provider_enum, api_key.trim()).map(|_| ());
     telemetry.capture(
-        "socai_desktop_api_key_set",
+        "socai_api_key_set",
         json!({ "provider": provider_enum.as_str(), "ok": result.is_ok() }),
     );
     result.map_err(|e| format!("{e:#}"))
@@ -332,7 +332,7 @@ pub async fn agent_set_default_model(
         .ok_or_else(|| format!("unknown provider: {provider}"))?;
     let result = save_default_model(provider_enum, model.trim()).map(|_| ());
     telemetry.capture(
-        "socai_desktop_model_set",
+        "socai_model_set",
         json!({ "provider": provider_enum.as_str(), "model": model.trim(), "ok": result.is_ok() }),
     );
     result.map_err(|e| format!("{e:#}"))
@@ -380,7 +380,7 @@ pub async fn agent_open_codex_login(
     let result = tokio::task::spawn_blocking(start_codex_login)
         .await
         .map_err(|e| format!("codex login task failed: {e}"))?;
-    telemetry.capture("socai_desktop_codex_login", json!({ "ok": result.is_ok() }));
+    telemetry.capture("socai_codex_login", json!({ "ok": result.is_ok() }));
     result
 }
 
@@ -556,7 +556,7 @@ pub async fn agent_task_cancel(
     }
     if changed {
         telemetry.capture(
-            "socai_desktop_agent_task_end",
+            "socai_agent_task_end",
             json!({
                 "task_id": task_id.clone(),
                 "provider": snapshot.provider.clone(),
@@ -605,7 +605,7 @@ async fn run_agent_task_background(
             .await
         {
             telemetry.capture(
-                "socai_desktop_agent_task_end",
+                "socai_agent_task_end",
                 json!({
                     "task_id": task_id.clone(),
                     "provider": provider.clone(),
@@ -639,7 +639,7 @@ async fn run_agent_task_background(
     }
 
     telemetry.capture(
-        "socai_desktop_agent_task_start",
+        "socai_agent_task_start",
         json!({
             "task_id": task_id.clone(),
             "provider": provider.clone(),
@@ -683,7 +683,7 @@ async fn run_agent_task_background(
                 .await
             {
                 telemetry.capture(
-                    "socai_desktop_agent_task_end",
+                    "socai_agent_task_end",
                     json!({
                         "task_id": task_id.clone(),
                         "run_id": outcome.run_id.clone(),
@@ -718,7 +718,7 @@ async fn run_agent_task_background(
                 .await
             {
                 telemetry.capture(
-                    "socai_desktop_agent_task_end",
+                    "socai_agent_task_end",
                     json!({
                         "task_id": task_id.clone(),
                         "provider": provider.clone(),
@@ -846,7 +846,7 @@ fn pump_agent_task_events(
                     ..
                 } => {
                     telemetry.capture(
-                        "socai_desktop_tool_call",
+                        "socai_tool_call",
                         json!({
                             "task_id": task_id.clone(),
                             "run_id": run_id.clone(),

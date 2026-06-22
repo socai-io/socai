@@ -34,7 +34,7 @@ API keys, raw tool output bodies, or Axiom credentials.
 ### Desktop app
 
 The desktop app (`source: "desktop"`) emits agent-task lifecycle events —
-`socai_desktop_agent_task_start` / `_end`, one `socai_desktop_tool_call` per tool
+`socai_agent_task_start` / `_end`, one `socai_tool_call` per tool
 invocation, plus setup events (app open, browser connect, API-key / model /
 codex config). Unlike the CLI, the desktop sends the full agent prompt as
 `task_text` with **no per-field opt-out**; `SOCAI_TELEMETRY=off` disables the
@@ -45,7 +45,7 @@ when set). Desktop events route to the same `socai-cli-prod` dataset; filter by
 `source == "desktop"`.
 
 Delivery is best-effort: `capture()` is fire-and-forget over a bounded in-process
-queue, so under a heavy burst of `socai_desktop_tool_call` events a few may be
+queue, so under a heavy burst of `socai_tool_call` events a few may be
 dropped without backpressure. Lifecycle start/end events are very unlikely to be
 lost given the single-concurrent-task limit. Treat tool-call counts as
 near-complete, not exact.
@@ -207,9 +207,10 @@ axiom query "['socai-cli-prod'] | where request_id == '${request_id}' | limit 1"
   --no-spinner
 ```
 
-The resulting row should include `request_id`, `command`, `tool_name`, `ok`, and
-`metadata.num_notes`. It should not include non-null custom `event`, `arch`,
-`created_at_ms`, `client_created_at_ms`, or `received_at_ms` values.
+The resulting row should include `event` (`socai_runbook_smoke_test`),
+`request_id`, `command`, `tool_name`, `ok`, and `metadata.num_notes`. It should
+not include non-null custom `arch`, `created_at_ms`, `client_created_at_ms`, or
+`received_at_ms` values.
 
 ## CLI smoke checks
 

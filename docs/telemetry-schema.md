@@ -73,9 +73,11 @@ Supported command/tool mapping:
 | `topic_scan` | `topic_scan` | `topic_scan` |
 | `extract_note` | `extract_note` | `read_note` |
 
-The internal client-to-proxy payload currently includes an internal event name
-for proxy validation. The proxy strips that before forwarding to Axiom. Axiom
-rows for the current schema should not contain a custom `event` value.
+Every event carries a top-level `event` field naming its type — the CLI tool
+trace is `socai_tool_call`. The proxy validates that it starts with `socai_` and
+forwards it to Axiom as the type discriminator. The emitting surface is carried
+separately in `source`, so the same `event` value (for example `socai_tool_call`)
+spans both the CLI daemon and the desktop app.
 
 ## Forwarded Axiom fields
 
@@ -86,8 +88,9 @@ assumed unavailable in Axiom.
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `event` | string | Event type, for example `socai_tool_call`, `socai_agent_task_end`, or `socai_app_open`. The surface lives in `source`, not the event name. |
 | `install_id` | string UUID | Stable anonymous install identity stored in `telemetry/identity.json`. |
-| `session_id` | string UUID | One daemon process lifetime. |
+| `session_id` | string UUID | One daemon/app process lifetime. |
 | `request_id` | string | One CLI request/daemon command invocation. Treat as opaque. |
 | `schema_version` | number | Telemetry schema version. Current value: `1`. |
 
@@ -151,14 +154,14 @@ no meaningful terminal.
 
 | Event | Emitted when | Event-specific fields |
 | --- | --- | --- |
-| `socai_desktop_app_open` | App launch | `default_provider`, `default_model`, `has_api_key` |
-| `socai_desktop_browser_connect` | User connects Chrome | — |
-| `socai_desktop_api_key_set` | User saves an API key | `provider`, `ok` |
-| `socai_desktop_model_set` | User sets the default model | `provider`, `model`, `ok` |
-| `socai_desktop_codex_login` | User starts Codex login | `ok` |
-| `socai_desktop_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
-| `socai_desktop_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `turns`, `input_tokens`, `output_tokens`, `duration_ms`, `error` |
-| `socai_desktop_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error` |
+| `socai_app_open` | App launch | `default_provider`, `default_model`, `has_api_key` |
+| `socai_browser_connect` | User connects Chrome | — |
+| `socai_api_key_set` | User saves an API key | `provider`, `ok` |
+| `socai_model_set` | User sets the default model | `provider`, `model`, `ok` |
+| `socai_codex_login` | User starts Codex login | `ok` |
+| `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
+| `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `turns`, `input_tokens`, `output_tokens`, `duration_ms`, `error` |
+| `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error` |
 
 Desktop field semantics:
 
@@ -186,7 +189,6 @@ switch and disables the entire desktop pipeline. The proxy caps `task_text` at
 
 Current Axiom rows should not include these custom fields:
 
-- `event`
 - `arch`
 - `created_at_ms`
 - `client_created_at_ms`
@@ -203,15 +205,15 @@ Axiom still has native time columns:
 
 Those are Axiom-managed fields, not custom CLI telemetry fields. Historical rows
 in the existing dataset created older columns, so Axiom may still display fields
-such as `event`, `arch`, or `created_at_ms` as `null` on new rows. `null` in
-those old columns does not mean the current proxy forwarded those values.
+such as `arch` or `created_at_ms` as `null` on new rows. `null` in those old
+columns does not mean the current proxy forwarded those values. (`event` is now
+forwarded, so it is populated on new rows rather than stripped.)
 
 ## Local JSONL caveat
 
 The local JSONL buffer is a debug/replay aid, not the forwarded Axiom schema. It
 may contain local-only fields such as:
 
-- `event`
 - `created_at_ms`
 - `properties.created_at_ms`
 - `properties.note_id_present`
@@ -251,7 +253,8 @@ Proxy behavior in `site/api/telemetry.js`:
 - Accepts only JSON `POST` requests.
 - Enforces a maximum request body size of 128 KiB.
 - Accepts at most 100 events/traces per request envelope.
-- Requires the internal validation event name to start with `socai_`.
+- Requires each event's `event` name to start with `socai_`, and forwards it as
+  the type discriminator (it is allowlisted, not stripped).
 - Uses an allowlist for forwarded fields.
 - Removes ASCII control characters from strings, trims whitespace, and truncates
   strings longer than 2,000 characters with an ellipsis. `task_text` uses a higher
@@ -281,6 +284,7 @@ Representative Axiom row after proxy sanitization:
 
 ```json
 {
+  "event": "socai_tool_call",
   "install_id": "11111111-1111-4111-8111-111111111111",
   "session_id": "22222222-2222-4222-8222-222222222222",
   "request_id": "12345-1780616790123",
@@ -331,6 +335,7 @@ Representative Axiom row:
 
 ```json
 {
+  "event": "socai_tool_call",
   "install_id": "11111111-1111-4111-8111-111111111111",
   "session_id": "22222222-2222-4222-8222-222222222222",
   "request_id": "12345-1780616790456",

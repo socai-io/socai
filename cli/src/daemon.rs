@@ -402,7 +402,7 @@ impl DaemonState {
         }
 
         self.telemetry
-            .capture("socai_cli_tool_trace", Value::Object(props));
+            .capture("socai_tool_call", Value::Object(props));
     }
 
     async fn shutdown(&mut self) -> Result<()> {

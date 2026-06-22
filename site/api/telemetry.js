@@ -12,6 +12,9 @@ const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_EVENTS = 1_200;
 
 const ALLOWED_FIELDS = new Set([
+  // Event type discriminator (e.g. socai_tool_call). The surface lives in
+  // `source`, not the event name, so the same event spans CLI and desktop.
+  'event',
   'install_id',
   'distinct_id',
   'session_id',
