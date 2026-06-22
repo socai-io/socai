@@ -97,7 +97,7 @@ assumed unavailable in Axiom.
 | --- | --- | --- |
 | `app` | string | Always `socai`. |
 | `source` | string | Emitting surface: `cli_daemon` or `desktop`. |
-| `app_version` | string | CLI crate version. |
+| `app_version` | string | socai-core (workspace) version, shared by the CLI daemon and desktop. |
 | `platform` | string | Rust target OS, such as `macos` or `linux`. |
 | `os_version` | string | OS version, for example macOS product version or Linux `PRETTY_NAME`. |
 | `os_kernel_version` | string | Kernel version when available. |
@@ -154,7 +154,7 @@ no meaningful terminal.
 | `socai_desktop_app_open` | App launch | `default_provider`, `default_model`, `has_api_key` |
 | `socai_desktop_browser_connect` | User connects Chrome | — |
 | `socai_desktop_api_key_set` | User saves an API key | `provider`, `ok` |
-| `socai_desktop_model_set` | User sets the default model | `provider`, `model` |
+| `socai_desktop_model_set` | User sets the default model | `provider`, `model`, `ok` |
 | `socai_desktop_codex_login` | User starts Codex login | `ok` |
 | `socai_desktop_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
 | `socai_desktop_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `turns`, `input_tokens`, `output_tokens`, `duration_ms`, `error` |

@@ -46,7 +46,7 @@ pub fn run() {
                                 telemetry.capture(
                                     "socai_desktop_agent_task_end",
                                     json!({
-                                        "task_id": task_id,
+                                        "task_id": task_id.clone(),
                                         "provider": snapshot.provider.clone(),
                                         "run_id": snapshot.run_id.clone(),
                                         "model": snapshot.model.clone(),

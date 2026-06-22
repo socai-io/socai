@@ -333,7 +333,7 @@ pub async fn agent_set_default_model(
     let result = save_default_model(provider_enum, model.trim()).map(|_| ());
     telemetry.capture(
         "socai_desktop_model_set",
-        json!({ "provider": provider_enum.as_str(), "model": model.trim() }),
+        json!({ "provider": provider_enum.as_str(), "model": model.trim(), "ok": result.is_ok() }),
     );
     result.map_err(|e| format!("{e:#}"))
 }
@@ -848,7 +848,7 @@ fn pump_agent_task_events(
                     telemetry.capture(
                         "socai_desktop_tool_call",
                         json!({
-                            "task_id": task_id,
+                            "task_id": task_id.clone(),
                             "run_id": run_id.clone(),
                             "tool_name": name,
                             "turn": turn,
