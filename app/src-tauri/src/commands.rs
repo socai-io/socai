@@ -216,20 +216,12 @@ pub struct AgentRunOutcome {
 }
 
 #[tauri::command]
-pub async fn agent_save_api_key(
-    telemetry: State<'_, DesktopTelemetry>,
-    provider: String,
-    api_key: String,
-) -> Result<(), String> {
+pub async fn agent_save_api_key(provider: String, api_key: String) -> Result<(), String> {
     let provider_enum = Provider::from_name(provider.trim())
         .ok_or_else(|| format!("unknown provider: {provider}"))?;
-    // Only the provider name and outcome are recorded — never the key material.
-    let result = socai_core::agent::save_api_key(provider_enum, api_key.trim()).map(|_| ());
-    telemetry.capture(
-        "socai_api_key_set",
-        json!({ "provider": provider_enum.as_str(), "ok": result.is_ok() }),
-    );
-    result.map_err(|e| format!("{e:#}"))
+    socai_core::agent::save_api_key(provider_enum, api_key.trim())
+        .map(|_| ())
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -323,19 +315,12 @@ fn model_env_override() -> Option<String> {
 /// Persist the user's model choice so it survives a relaunch. Writes
 /// `defaults.provider` + `defaults.{provider}_model` to `~/.socai/auth.json`.
 #[tauri::command]
-pub async fn agent_set_default_model(
-    telemetry: State<'_, DesktopTelemetry>,
-    provider: String,
-    model: String,
-) -> Result<(), String> {
+pub async fn agent_set_default_model(provider: String, model: String) -> Result<(), String> {
     let provider_enum = Provider::from_name(provider.trim())
         .ok_or_else(|| format!("unknown provider: {provider}"))?;
-    let result = save_default_model(provider_enum, model.trim()).map(|_| ());
-    telemetry.capture(
-        "socai_model_set",
-        json!({ "provider": provider_enum.as_str(), "model": model.trim(), "ok": result.is_ok() }),
-    );
-    result.map_err(|e| format!("{e:#}"))
+    save_default_model(provider_enum, model.trim())
+        .map(|_| ())
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// Open a web URL in the user's default browser. Tauri's webview does not hand
@@ -374,14 +359,10 @@ pub fn open_external(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn agent_open_codex_login(
-    telemetry: State<'_, DesktopTelemetry>,
-) -> Result<Value, String> {
-    let result = tokio::task::spawn_blocking(start_codex_login)
+pub async fn agent_open_codex_login() -> Result<Value, String> {
+    tokio::task::spawn_blocking(start_codex_login)
         .await
-        .map_err(|e| format!("codex login task failed: {e}"))?;
-    telemetry.capture("socai_codex_login", json!({ "ok": result.is_ok() }));
-    result
+        .map_err(|e| format!("codex login task failed: {e}"))?
 }
 
 fn start_codex_login() -> Result<Value, String> {

@@ -146,21 +146,6 @@ test('sanitizeEvent keeps desktop agent-task fields', () => {
   assert.equal(sanitized.ok, true);
 });
 
-test('sanitizeEvent keeps desktop app_open setup fields', () => {
-  const sanitized = __testing.sanitizeEvent({
-    event: 'socai_app_open',
-    install_id: 'install-1',
-    source: 'desktop',
-    has_api_key: true,
-    default_provider: 'anthropic',
-    default_model: 'claude-sonnet-4-6',
-  });
-
-  assert.equal(sanitized.has_api_key, true);
-  assert.equal(sanitized.default_provider, 'anthropic');
-  assert.equal(sanitized.default_model, 'claude-sonnet-4-6');
-});
-
 test('sanitizeEvent allows task_text up to the 8000-char cap', () => {
   const longPrompt = 'x'.repeat(5000);
   const sanitized = __testing.sanitizeEvent({

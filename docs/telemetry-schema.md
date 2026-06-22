@@ -88,7 +88,7 @@ assumed unavailable in Axiom.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `event` | string | Event type, for example `socai_tool_call`, `socai_agent_task_end`, or `socai_app_open`. The surface lives in `source`, not the event name. |
+| `event` | string | Event type, for example `socai_tool_call`, `socai_agent_task_start`, or `socai_agent_task_end`. The surface lives in `source`, not the event name. |
 | `install_id` | string UUID | Stable anonymous install identity stored in `telemetry/identity.json`. |
 | `session_id` | string UUID | One daemon/app process lifetime. |
 | `request_id` | string | One CLI request/daemon command invocation. Treat as opaque. |
@@ -147,18 +147,16 @@ Current metadata keys:
 
 ## Desktop events
 
-The desktop app emits lifecycle events rather than a single per-command trace.
-Each event carries the shared identity and context fields above with
-`source: "desktop"`; terminal/parent-process fields are omitted because a GUI has
-no meaningful terminal.
+The desktop app emits agent-task lifecycle events rather than a single
+per-command trace. Each event carries the shared identity and context fields
+above with `source: "desktop"`; terminal/parent-process fields are omitted
+because a GUI has no meaningful terminal. Setup/config actions (API-key save,
+model pick, Codex login, app open) are not tracked on their own — the provider
+and model in use are captured on `socai_agent_task_start`.
 
 | Event | Emitted when | Event-specific fields |
 | --- | --- | --- |
-| `socai_app_open` | App launch | `default_provider`, `default_model`, `has_api_key` |
 | `socai_browser_connect` | User connects Chrome | — |
-| `socai_api_key_set` | User saves an API key | `provider`, `ok` |
-| `socai_model_set` | User sets the default model | `provider`, `model`, `ok` |
-| `socai_codex_login` | User starts Codex login | `ok` |
 | `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
 | `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `turns`, `input_tokens`, `output_tokens`, `duration_ms`, `error` |
 | `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error` |
@@ -177,8 +175,6 @@ Desktop field semantics:
 | `task_len` | number | Agent prompt length in Unicode scalar values. |
 | `task_text` | string | Full agent prompt. Always sent on desktop; see privacy boundaries. |
 | `turn` / `sequence` | number | Position of a tool call within the run. |
-| `has_api_key` | boolean | Whether a credential exists for the default provider at app open. |
-| `default_provider` / `default_model` | string | Persisted defaults at app open. |
 
 Unlike the CLI's `query_text`, **the desktop has no opt-out for `task_text`**: it
 is sent whenever desktop telemetry is enabled. `SOCAI_TELEMETRY=off` is the only

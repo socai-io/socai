@@ -15,7 +15,6 @@ pub fn run() {
     // Tauri owns its own in-process runtime.
     let runtime = SocaiRuntime::new();
     let telemetry = DesktopTelemetry::new();
-    telemetry.emit_app_open();
 
     tauri::Builder::default()
         .manage(runtime)

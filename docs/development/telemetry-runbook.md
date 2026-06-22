@@ -34,9 +34,11 @@ API keys, raw tool output bodies, or Axiom credentials.
 ### Desktop app
 
 The desktop app (`source: "desktop"`) emits agent-task lifecycle events —
-`socai_agent_task_start` / `_end`, one `socai_tool_call` per tool
-invocation, plus setup events (app open, browser connect, API-key / model /
-codex config). Unlike the CLI, the desktop sends the full agent prompt as
+`socai_agent_task_start` / `_end`, one `socai_tool_call` per tool invocation,
+plus `socai_browser_connect` when the user connects Chrome. Setup/config actions
+(API-key save, model pick, Codex login, app open) are not tracked; the provider
+and model in use are captured on `socai_agent_task_start`. Unlike the CLI, the
+desktop sends the full agent prompt as
 `task_text` with **no per-field opt-out**; `SOCAI_TELEMETRY=off` disables the
 whole desktop pipeline. It never sends agent results (`report.md` / `final_text`),
 assistant/reasoning text, or raw tool arguments/output. Desktop identity and the

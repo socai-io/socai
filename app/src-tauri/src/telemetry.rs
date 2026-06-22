@@ -1,7 +1,4 @@
-use serde_json::{json, Value};
-use socai_core::agent::{
-    configured_default_model_for, configured_default_provider, provider_credential_kind,
-};
+use serde_json::Value;
 use socai_core::telemetry::{telemetry_enabled, Telemetry, TelemetrySource};
 
 use crate::tasks::app_data_dir;
@@ -32,30 +29,6 @@ impl DesktopTelemetry {
         if let Some(telemetry) = &self.0 {
             telemetry.capture(name, properties);
         }
-    }
-
-    /// One event per app launch. Carries the persisted default provider/model and
-    /// whether a credential is present — no content, just setup state.
-    pub(crate) fn emit_app_open(&self) {
-        if self.0.is_none() {
-            return;
-        }
-        let (default_provider, default_model, has_api_key) = match configured_default_provider() {
-            Some(provider) => (
-                Some(provider.as_str().to_string()),
-                Some(configured_default_model_for(provider)),
-                provider_credential_kind(provider).is_some(),
-            ),
-            None => (None, None, false),
-        };
-        self.capture(
-            "socai_app_open",
-            json!({
-                "default_provider": default_provider,
-                "default_model": default_model,
-                "has_api_key": has_api_key,
-            }),
-        );
     }
 }
 

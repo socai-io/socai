@@ -61,9 +61,6 @@ const ALLOWED_FIELDS = new Set([
   'task_text',
   'turn',
   'sequence',
-  'has_api_key',
-  'default_provider',
-  'default_model',
 ]);
 
 const rateLimits = new Map();
