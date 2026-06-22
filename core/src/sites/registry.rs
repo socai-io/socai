@@ -92,7 +92,7 @@ impl SiteSpec {
 }
 
 /// Every registered site. Site order is also CLI help order.
-static SITES: &[&SiteSpec] = &[&crate::sites::xhs::XHS_SITE];
+static SITES: &[&SiteSpec] = &[&crate::sites::xhs::XHS_SITE, &crate::sites::dy::DY_SITE];
 
 pub fn all_sites() -> &'static [&'static SiteSpec] {
     SITES

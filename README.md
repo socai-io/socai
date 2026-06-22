@@ -60,11 +60,12 @@ socai xhs topic_scan "运营爆款思路" --num-notes 30 --filter publish_time=�
 socai xhs topic_scan "运营爆款思路" --num-notes 10 --download-media       # 下载图片/视频并输出 media_manifest_path
 socai xhs search_notes "运营爆款思路" --num-notes 100 --filter sort=最新          # 只打开搜索结果页，拿帖子标题/点赞/封面，不读正文
 socai xhs extract_note --note-id <id>                                          # 从当前结果页抽取某个帖子
+socai dy search_videos "咖啡" --num-videos 30                                  # 搜索抖音并拿视频卡片信息
 socai config set chrome.profile managed                                    # 以后默认使用 socai 独立 chrome 资料目录
 socai stop                                                                 # 停止 daemon（关闭工具标签页）
 ```
 
-> 命令按站点分组（第一个站点是小红书 `xhs`）。旧的不带站点的写法（如
+> 命令按站点分组（例如小红书 `xhs`、抖音 `dy`）。旧的不带站点的写法（如
 > `socai topic_scan …`）仍然可用，但已废弃并会打印警告，请迁移到 `socai xhs …`。
 
 Options:

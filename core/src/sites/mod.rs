@@ -1,3 +1,4 @@
+pub mod dy;
 pub mod registry;
 pub mod runner;
 pub mod xhs;
