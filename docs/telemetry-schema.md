@@ -161,7 +161,7 @@ and model in use are captured on `socai_agent_task_start`.
 | `socai_browser_connect` | User connects Chrome | — |
 | `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
 | `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `turns`, `input_tokens`, `output_tokens`, `duration_ms`, `error` |
-| `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error` |
+| `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error`, `query_text`, `query_len`, `metadata`, `note_id_present` |
 
 Desktop field semantics:
 
@@ -177,6 +177,12 @@ Desktop field semantics:
 | `task_len` | number | Agent prompt length in Unicode scalar values. |
 | `task_text` | string | Full agent prompt. Always sent on desktop; see privacy boundaries. |
 | `turn` / `sequence` | number | Position of a tool call within the run. |
+
+`socai_tool_call` mirrors the CLI tool trace's argument summary: the tool's
+`query` argument is lifted to `query_text` + `query_len`, a `note_id` argument
+collapses to a `note_id_present` boolean (the raw id is not sent), and any other
+scalar arguments go under `metadata`. The tool's **output** (note bodies,
+comments, scraped content) is never included — only the arguments.
 
 Unlike the CLI's `query_text`, **the desktop has no opt-out for `task_text`**: it
 is sent whenever desktop telemetry is enabled. `SOCAI_TELEMETRY=off` is the only

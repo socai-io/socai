@@ -2,7 +2,7 @@ use crate::tasks::{now_ms, AgentTaskRegistry, AgentTaskSnapshot};
 use crate::telemetry::{duration_ms, short_error, DesktopTelemetry};
 use crate::timeline::{agent_event_to_timeline, AgentTaskEventKind, AgentTaskEventPayload};
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use socai_core::agent::{
     catalog_models_for, configured_default_model_for, configured_default_provider, make_run_dir,
     provider_credential_kind, resolve_provider, save_default_model, AgentEvent, CredentialKind,
@@ -833,23 +833,26 @@ fn pump_agent_task_events(
                     name,
                     turn,
                     sequence,
+                    input,
                     duration_ms: tool_duration_ms,
                     error,
                     ..
                 } => {
-                    telemetry.capture(
-                        "socai_tool_call",
-                        json!({
-                            "task_id": task_id.clone(),
-                            "run_id": run_id.clone(),
-                            "tool_name": name,
-                            "turn": turn,
-                            "sequence": sequence,
-                            "duration_ms": tool_duration_ms,
-                            "ok": error.is_none(),
-                            "error": error.as_deref().map(short_error),
-                        }),
-                    );
+                    let mut props = Map::new();
+                    props.insert("task_id".into(), json!(task_id.clone()));
+                    props.insert("run_id".into(), json!(run_id.clone()));
+                    props.insert("tool_name".into(), json!(name));
+                    props.insert("turn".into(), json!(turn));
+                    props.insert("sequence".into(), json!(sequence));
+                    props.insert("duration_ms".into(), json!(tool_duration_ms));
+                    props.insert("ok".into(), json!(error.is_none()));
+                    props.insert("error".into(), json!(error.as_deref().map(short_error)));
+                    // Mirror the CLI tool trace: lift the search query into
+                    // query_text/query_len and fold the rest of the args into
+                    // metadata (note_id reduced to a presence flag). Tool OUTPUT
+                    // (note bodies) is never included.
+                    merge_tool_input(&mut props, input);
+                    telemetry.capture("socai_tool_call", Value::Object(props));
                 }
                 _ => {}
             }
@@ -857,6 +860,46 @@ fn pump_agent_task_events(
             emit_timeline_payload(&app, registry.as_ref(), &task_id, payload, None).await;
         }
     })
+}
+
+/// Summarize a tool call's input arguments the way the CLI tool trace does: the
+/// search `query` becomes `query_text` + `query_len`, a `note_id` collapses to a
+/// `note_id_present` flag, and any other scalar args go under `metadata`. Only
+/// the arguments are summarized — tool output (note bodies) is never included.
+fn merge_tool_input(props: &mut Map<String, Value>, input: &Value) {
+    let Some(args) = input.as_object() else {
+        return;
+    };
+    let mut metadata = Map::new();
+    for (key, value) in args {
+        match key.as_str() {
+            "query" => {
+                if let Some(query) = value.as_str() {
+                    let query = query.trim();
+                    if !query.is_empty() {
+                        props.insert("query_len".into(), json!(query.chars().count()));
+                        props.insert("query_text".into(), json!(query));
+                    }
+                }
+            }
+            "note_id" => {
+                let present = value
+                    .as_str()
+                    .map(|id| !id.trim().is_empty())
+                    .unwrap_or(!value.is_null());
+                if present {
+                    props.insert("note_id_present".into(), json!(true));
+                }
+            }
+            _ if value.is_string() || value.is_number() || value.is_boolean() => {
+                metadata.insert(key.clone(), value.clone());
+            }
+            _ => {}
+        }
+    }
+    if !metadata.is_empty() {
+        props.insert("metadata".into(), Value::Object(metadata));
+    }
 }
 
 pub(crate) async fn emit_task_event(
