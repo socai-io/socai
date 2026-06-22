@@ -293,8 +293,3 @@ function setSecurityHeaders(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Cache-Control', 'no-store');
 }
-
-export const __testing = {
-  normalizeEvents,
-  sanitizeEvent,
-};
