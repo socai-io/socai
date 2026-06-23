@@ -866,16 +866,14 @@ fn default_runs_root_display() -> String {
 }
 
 /// Default managed chrome user-data-dir when `chrome.profile_dir` is unset.
-/// Mirrors `socai_core::cdp` endpoint resolution: `SOCAI_HOME/chrome-profile`,
-/// then `~/.socai/chrome-profile`.
+/// Delegates to the core resolver (`SOCAI_HOME/chrome-profile`, then
+/// `~/.socai/chrome-profile`) so the placeholder matches what chrome would
+/// actually launch with — including `~` expansion of a tilde-prefixed
+/// `SOCAI_HOME`, which a local reimplementation tends to drift on.
 fn default_managed_profile_dir() -> String {
-    if let Some(home) = non_empty_env("SOCAI_HOME") {
-        return PathBuf::from(home)
-            .join("chrome-profile")
-            .to_string_lossy()
-            .into_owned();
-    }
-    join_home(".socai/chrome-profile")
+    socai_core::cdp::managed_chrome_user_data_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn non_empty_env(key: &str) -> Option<String> {

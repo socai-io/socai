@@ -64,6 +64,7 @@ const GEAR_SVG = `
 export namespace settingsMenu {
   let open = false;
   let config: DesktopConfig | null = null;
+  let loadError = false;
   let draft: SettingsDraft | null = null;
   let status: SaveStatus = "";
   let statusTimer: number | null = null;
@@ -73,9 +74,11 @@ export namespace settingsMenu {
   export async function loadConfig(): Promise<void> {
     try {
       config = await invoke<DesktopConfig>("config_get");
+      loadError = false;
     } catch (err) {
       console.error("config_get failed:", err);
       config = null;
+      loadError = true;
     }
   }
 
@@ -106,6 +109,13 @@ export namespace settingsMenu {
   }
 
   function renderPopover(shell: ShellState): string {
+    if (loadError) {
+      return `
+        <div class="topbar-popover settings-popover" role="dialog" aria-label="${esc(t("settings.title"))}">
+          <p class="t-small subtle result-error">${esc(t("settings.loadFailed"))}</p>
+        </div>
+      `;
+    }
     if (!draft) seedDraft();
     if (!config || !draft) {
       return `
@@ -202,7 +212,7 @@ export namespace settingsMenu {
         <p class="settings-group-label">${esc(t("settings.chrome"))}</p>
         <div class="settings-field">
           <span class="t-small settings-field-label">${esc(t("settings.source"))}</span>
-          <div class="seg-toggle" role="group">
+          <div class="seg-toggle" role="group" aria-label="${esc(t("settings.source"))}">
             <button type="button" class="seg-toggle__button" data-settings-source="existing" aria-pressed="${managed ? "false" : "true"}">${esc(t("settings.sourceExisting"))}</button>
             <button type="button" class="seg-toggle__button" data-settings-source="managed" aria-pressed="${managed ? "true" : "false"}">${esc(t("settings.sourceManaged"))}</button>
           </div>
@@ -243,7 +253,17 @@ export namespace settingsMenu {
     document.getElementById("settings-toggle")?.addEventListener("click", (event) => {
       event.stopPropagation();
       open = !open;
-      if (open) seedDraft();
+      if (open) {
+        // Reopening retries a failed initial load so the error state isn't a
+        // dead-end (the in-menu controls that re-fetch don't render on failure).
+        if (loadError || !config) {
+          void loadConfig().then(() => {
+            seedDraft();
+            shell.rerender();
+          });
+        }
+        seedDraft();
+      }
       shell.rerender();
     });
 

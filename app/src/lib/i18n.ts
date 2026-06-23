@@ -44,6 +44,8 @@ const messages = {
     zh: "如何启用远程调试？↗",
   },
 
+  "status.capsuleAria": { en: "chrome and agent status", zh: "chrome 与智能体状态" },
+
   "update.restartToUpdate": { en: "restart to update", zh: "重启更新" },
   "update.taskRunningWarn": {
     en: "a task is running — restarting will interrupt it.",
@@ -82,6 +84,7 @@ const messages = {
   "settings.endpointDisconnected": { en: "not connected", zh: "未连接" },
   "settings.saved": { en: "saved", zh: "已保存" },
   "settings.saveFailed": { en: "could not save settings.", zh: "无法保存设置。" },
+  "settings.loadFailed": { en: "could not load settings.", zh: "无法加载设置。" },
   "settings.autosaveHint": { en: "changes are saved automatically.", zh: "更改会自动保存。" },
 
   "agent.label": { en: "model", zh: "模型" },

@@ -153,7 +153,7 @@ function render(): void {
         <div class="brand">${MARK_SVG}<span class="brand-name">socai</span></div>
         ${renderUpdateChip()}
         <div class="topbar-controls">
-          <div class="status-capsule" role="group" aria-label="${htmlEsc(t("chrome.dialogAria"))}">
+          <div class="status-capsule" role="group" aria-label="${htmlEsc(t("status.capsuleAria"))}">
             ${connectionStatusBar()}
             <span class="status-capsule__divider" aria-hidden="true"></span>
             ${agentPanel.renderHeader()}

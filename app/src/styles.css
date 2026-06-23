@@ -235,7 +235,8 @@ body.has-paper > * { position: relative; z-index: 1; }
     opacity var(--t-fast) var(--ease),
     transform var(--t-fast) var(--ease);
 }
-.update-chip-wrap:hover .update-tooltip { opacity: 1; transform: translateY(0); }
+.update-chip-wrap:hover .update-tooltip,
+.update-chip-wrap:focus-within .update-tooltip { opacity: 1; transform: translateY(0); }
 .update-tooltip-old { color: var(--ink-5); }
 .update-tooltip-arrow { color: var(--ink-4); }
 .update-tooltip-new { color: var(--ink-9); font-weight: 500; }
