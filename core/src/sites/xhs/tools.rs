@@ -322,7 +322,15 @@ fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxF
             .unwrap_or(false);
         if preview {
             // Cards only — download_media doesn't apply to a card-only read.
-            search_notes_command(page, &query, filters.as_ref(), num_notes, debug_snapshot).await
+            search_notes_command(
+                page,
+                "search",
+                &query,
+                filters.as_ref(),
+                num_notes,
+                debug_snapshot,
+            )
+            .await
         } else {
             let download_media = args
                 .get("download_media")
@@ -330,6 +338,7 @@ fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxF
                 .unwrap_or(false);
             topic_scan_command(
                 page,
+                "search",
                 &query,
                 filters.as_ref(),
                 num_notes,
@@ -369,8 +378,15 @@ fn run_search_notes_deprecated(
             .get("num_notes")
             .and_then(Value::as_i64)
             .or(Some(DEFAULT_NUM_NOTES));
-        let envelope =
-            search_notes_command(page, &query, filters.as_ref(), num_notes, debug_snapshot).await?;
+        let envelope = search_notes_command(
+            page,
+            "search_notes",
+            &query,
+            filters.as_ref(),
+            num_notes,
+            debug_snapshot,
+        )
+        .await?;
         Ok(with_deprecation(
             envelope,
             "`search_notes` is deprecated and will be removed in a future release. \
@@ -399,6 +415,7 @@ fn run_topic_scan_deprecated(
             .unwrap_or(false);
         let envelope = topic_scan_command(
             page,
+            "topic_scan",
             &query,
             filters.as_ref(),
             num_notes,
@@ -488,14 +505,22 @@ const AUTHOR_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
 
 pub async fn search_notes_command(
     page: Arc<PageSession>,
+    command_name: &'static str,
     query: &str,
     filters: Option<&Value>,
     num_notes: Option<i64>,
     debug_snapshot: bool,
 ) -> anyhow::Result<Value> {
+    // `command_name` decouples the user-facing command (e.g. `search --preview`)
+    // from the underlying tool, so the run-dir label and envelope show what was
+    // actually invoked rather than the internal `search_notes` op.
+    let spec = XhsCommandSpec {
+        command_name,
+        ..SEARCH_NOTES_COMMAND
+    };
     run_xhs_tool_command(
         page,
-        SEARCH_NOTES_COMMAND,
+        spec,
         search_notes_input(query, filters, num_notes)?,
         debug_snapshot,
     )
@@ -504,15 +529,23 @@ pub async fn search_notes_command(
 
 pub async fn topic_scan_command(
     page: Arc<PageSession>,
+    command_name: &'static str,
     query: &str,
     filters: Option<&Value>,
     num_notes: Option<i64>,
     download_media: bool,
     debug_snapshot: bool,
 ) -> anyhow::Result<Value> {
+    // The user-facing `search` command shares this operation with the
+    // deprecated `topic_scan` alias; record whichever name the caller invoked
+    // so the run-dir label and envelope reflect the actual command.
+    let spec = XhsCommandSpec {
+        command_name,
+        ..TOPIC_SCAN_COMMAND
+    };
     run_xhs_tool_command(
         page,
-        TOPIC_SCAN_COMMAND,
+        spec,
         topic_scan_input(query, filters, num_notes, download_media)?,
         debug_snapshot,
     )
