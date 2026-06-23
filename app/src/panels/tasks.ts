@@ -93,6 +93,11 @@ export namespace agentPanel {
     return task.events.length !== before && taskId === selectedTaskId;
   }
 
+  // Whether any task is running or queued — used to guard the app restart.
+  export function hasActiveTask(): boolean {
+    return tasks.some((task) => task.status === "running" || task.status === "queued");
+  }
+
   export function renderHeader(): string {
     const showConfig = configOpen || selectedNeedsKey();
     return `

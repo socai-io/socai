@@ -3,7 +3,13 @@ export type TaskStatusKey = "queued" | "running" | "completed" | "failed" | "can
 
 const DEFAULT_LANGUAGE: Language = "zh";
 const STORAGE_KEY = "socai-language";
+const TIMEZONE_STORAGE_KEY = "socai-timezone";
 const supportedLanguages: Language[] = ["zh", "en"];
+
+// Active IANA timezone for displaying task timestamps. `undefined` follows the
+// system local zone. This is a display-only preference (no backend field) — it
+// is persisted to localStorage and threaded into the timestamp formatters.
+let activeTimezone: string | undefined = readInitialTimezone();
 
 const messages = {
   "language.switcherAria": { en: "language", zh: "语言" },
@@ -25,7 +31,7 @@ const messages = {
   "chrome.browser": { en: "browser", zh: "浏览器" },
   "chrome.endpoint": { en: "endpoint", zh: "端点" },
   "chrome.source": { en: "source", zh: "来源" },
-  "chrome.sourceManaged": { en: "isolated profile", zh: "独立资料目录" },
+  "chrome.sourceManaged": { en: "isolated profile", zh: "独立配置文件" },
   "chrome.sourceExisting": { en: "existing browser", zh: "现有浏览器" },
   "chrome.profile": { en: "profile", zh: "资料目录" },
   "chrome.disconnect": { en: "disconnect", zh: "断开连接" },
@@ -38,20 +44,45 @@ const messages = {
     zh: "如何启用远程调试？↗",
   },
 
-  "update.available": { en: "update available", zh: "有可用更新" },
-  "update.toggleAria": { en: "show update status", zh: "显示更新状态" },
-  "update.dialogAria": { en: "app update", zh: "应用更新" },
-  "update.title": { en: "update", zh: "更新" },
-  "update.newVersion": { en: "new version", zh: "新版本" },
-  "update.upgradeAndRestart": { en: "upgrade & restart", zh: "升级并重启" },
-  "update.downloading": { en: "downloading…", zh: "下载中…" },
-  "update.readyTitle": { en: "update ready", zh: "更新就绪" },
-  "update.readyHint": { en: "restart to finish the update.", zh: "重启以完成更新。" },
-  "update.restartToFinish": { en: "restart to finish", zh: "待重启" },
-  "update.restartNow": { en: "restart now", zh: "立即重启" },
-  "update.failed": { en: "update failed", zh: "更新失败" },
-  "update.retry": { en: "try again", zh: "重试" },
-  "update.viewOnGithub": { en: "view on github ↗", zh: "在 github 查看 ↗" },
+  "update.restartToUpdate": { en: "restart to update", zh: "重启更新" },
+  "update.taskRunningWarn": {
+    en: "a task is running — restarting will interrupt it.",
+    zh: "有任务正在运行 — 重启会中断它。",
+  },
+  "update.restartAnyway": { en: "restart anyway", zh: "仍然重启" },
+  "update.later": { en: "later", zh: "稍后" },
+
+  "settings.aria": { en: "settings", zh: "设置" },
+  "settings.title": { en: "settings", zh: "设置" },
+  "settings.general": { en: "general", zh: "通用" },
+  "settings.language": { en: "language", zh: "语言" },
+  "settings.timezone": { en: "timezone", zh: "时区" },
+  "settings.timezoneSystem": { en: "system (local)", zh: "系统（本地）" },
+  "settings.output": { en: "output", zh: "输出" },
+  "settings.outputDir": { en: "output directory", zh: "输出目录" },
+  "settings.outputHint": {
+    en: "where run reports, traces, and screenshots are saved.",
+    zh: "运行报告、轨迹和截图的保存位置。",
+  },
+  "settings.browse": { en: "browse…", zh: "浏览…" },
+  "settings.chrome": { en: "chrome", zh: "chrome" },
+  "settings.source": { en: "source", zh: "来源" },
+  "settings.sourceManaged": { en: "isolated profile", zh: "独立配置文件" },
+  "settings.sourceExisting": { en: "existing browser", zh: "现有浏览器" },
+  "settings.profileDir": { en: "profile directory", zh: "资料目录" },
+  "settings.profileHint": {
+    en: "socai launches a throwaway chrome with this profile.",
+    zh: "socai 会用此资料目录启动临时 chrome。",
+  },
+  "settings.endpoint": { en: "debugging endpoint", zh: "调试端点" },
+  "settings.endpointHint": {
+    en: "socai auto-detects a chrome started with --remote-debugging-port.",
+    zh: "socai 会自动检测使用 --remote-debugging-port 启动的 chrome。",
+  },
+  "settings.endpointDisconnected": { en: "not connected", zh: "未连接" },
+  "settings.saved": { en: "saved", zh: "已保存" },
+  "settings.saveFailed": { en: "could not save settings.", zh: "无法保存设置。" },
+  "settings.autosaveHint": { en: "changes are saved automatically.", zh: "更改会自动保存。" },
 
   "agent.label": { en: "model", zh: "模型" },
   "agent.configurationAria": { en: "agent configuration", zh: "智能体设置" },
@@ -159,6 +190,25 @@ export function getLocale(): string {
   return toHtmlLanguage(currentLanguage);
 }
 
+// Timezone preference. "system" (or empty) clears the override and follows the
+// local zone; any other value is treated as an IANA id.
+export function getTimezone(): string {
+  return activeTimezone ?? "system";
+}
+
+export function setTimezone(timezone: string): void {
+  activeTimezone = timezone && timezone !== "system" ? timezone : undefined;
+  try {
+    if (activeTimezone) {
+      window.localStorage.setItem(TIMEZONE_STORAGE_KEY, activeTimezone);
+    } else {
+      window.localStorage.removeItem(TIMEZONE_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures; the active session still uses the chosen zone.
+  }
+}
+
 export function taskStatusLabel(status: TaskStatusKey): string {
   return taskStatusLabels[status][currentLanguage];
 }
@@ -194,10 +244,18 @@ export function formatTokenUsage(inputTokens: number, outputTokens: number): str
 export function formatTaskTimestamp(ms: number): string {
   if (!ms) return "";
   const date = new Date(ms);
-  const time = date.toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit" });
+  const time = date.toLocaleTimeString(getLocale(), {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: activeTimezone,
+  });
   return `${relativeDayLabel(date)} ${time}`;
 }
 
+// The today/yesterday bucket is computed in the system-local zone; the timezone
+// preference only re-anchors the clock time and the fallback date string. The
+// two can disagree within a few hours of midnight across distant zones, which
+// is an acceptable tradeoff for a display-only preference.
 function relativeDayLabel(date: Date): string {
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -209,6 +267,7 @@ function relativeDayLabel(date: Date): string {
   return date.toLocaleDateString(getLocale(), {
     month: "short",
     day: "numeric",
+    timeZone: activeTimezone,
     ...(sameYear ? {} : { year: "numeric" }),
   });
 }
@@ -222,6 +281,16 @@ function readInitialLanguage(): Language {
   }
 
   return DEFAULT_LANGUAGE;
+}
+
+function readInitialTimezone(): string | undefined {
+  try {
+    const stored = window.localStorage.getItem(TIMEZONE_STORAGE_KEY);
+    if (stored && stored !== "system") return stored;
+  } catch {
+    // Ignore storage errors and follow the system local zone.
+  }
+  return undefined;
 }
 
 function toHtmlLanguage(language: Language): string {

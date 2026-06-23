@@ -807,6 +807,93 @@ async fn emit_timeline_payload(
     let _ = app.emit("agent_task:event", event);
 }
 
+// ── App configuration (~/.socai/config.json) ───────────────────────────────
+// The desktop settings menu reads and writes the same config file the CLI
+// manages via `socai config set`. Only the keys the menu surfaces are exposed.
+// Persistence, validation, and key parsing all live in `socai_core::config`;
+// these commands are thin pass-throughs plus the resolved defaults the menu
+// shows as placeholders.
+
+#[derive(serde::Serialize)]
+pub struct DesktopConfig {
+    /// Chrome profile mode: "managed" | "existing" | "auto". Falls back to the
+    /// product default ("existing") when the config key is unset.
+    chrome_source: String,
+    /// Configured managed-profile directory, or "" when unset.
+    chrome_profile_dir: String,
+    /// Resolved default managed-profile directory (shown as the input placeholder).
+    chrome_profile_dir_default: String,
+    /// Configured run-artifact root, or "" when unset.
+    output_dir: String,
+    /// Resolved default run-artifact root (shown as the input placeholder).
+    output_dir_default: String,
+}
+
+#[tauri::command]
+pub fn config_get() -> Result<DesktopConfig, String> {
+    let config = socai_core::config::load_config().map_err(|err| format!("{err:#}"))?;
+    Ok(DesktopConfig {
+        chrome_source: config.chrome.profile.unwrap_or_default().as_str().to_string(),
+        chrome_profile_dir: config.chrome.profile_dir.unwrap_or_default(),
+        chrome_profile_dir_default: default_managed_profile_dir(),
+        output_dir: config.runs.dir.unwrap_or_default(),
+        output_dir_default: default_runs_root_display(),
+    })
+}
+
+#[tauri::command]
+pub fn config_set(key: String, value: String) -> Result<(), String> {
+    socai_core::config::set_config_key(&key, &value)
+        .map(|_| ())
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub fn config_unset(key: String) -> Result<(), String> {
+    socai_core::config::unset_config_key(&key)
+        .map(|_| ())
+        .map_err(|err| format!("{err:#}"))
+}
+
+/// Default run-artifact root when `runs.dir` is unset. Mirrors
+/// `socai_core::agent::run_logging::default_runs_root` for the no-config case:
+/// `SOCAI_RUNS_DIR`, then `~/.socai/runs`.
+fn default_runs_root_display() -> String {
+    if let Some(dir) = non_empty_env("SOCAI_RUNS_DIR") {
+        return dir;
+    }
+    join_home(".socai/runs")
+}
+
+/// Default managed chrome user-data-dir when `chrome.profile_dir` is unset.
+/// Mirrors `socai_core::cdp` endpoint resolution: `SOCAI_HOME/chrome-profile`,
+/// then `~/.socai/chrome-profile`.
+fn default_managed_profile_dir() -> String {
+    if let Some(home) = non_empty_env("SOCAI_HOME") {
+        return PathBuf::from(home)
+            .join("chrome-profile")
+            .to_string_lossy()
+            .into_owned();
+    }
+    join_home(".socai/chrome-profile")
+}
+
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var_os(key)
+        .map(|value| value.to_string_lossy().trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn join_home(relative: &str) -> String {
+    match std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+        Some(home) => PathBuf::from(home)
+            .join(relative)
+            .to_string_lossy()
+            .into_owned(),
+        None => relative.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

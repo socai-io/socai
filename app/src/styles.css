@@ -143,9 +143,125 @@ body.has-paper > * { position: relative; z-index: 1; }
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
+  gap: var(--sp-3);
+  flex-wrap: nowrap;
 }
+
+/* ── status capsule — merges chrome + agent into one monitor ────── */
+.status-capsule {
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  border: var(--hairline);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  transition: border-color var(--t-fast) var(--ease);
+}
+.status-capsule:hover { border-color: var(--line-strong); }
+.status-capsule .connection-status,
+.status-capsule .agent-status { position: relative; display: inline-flex; gap: 0; }
+/* badges become flush, borderless segments inside the capsule */
+.status-capsule .badge {
+  border: 0;
+  background: transparent;
+  border-radius: var(--r-pill);
+  padding: 5px 12px;
+}
+.status-capsule .badge-button:hover { border-color: transparent; background: var(--ink-7); }
+.status-capsule .connection-status .badge { border-radius: var(--r-pill) 0 0 var(--r-pill); }
+.status-capsule .agent-status .badge { border-radius: 0 var(--r-pill) var(--r-pill) 0; }
+.status-capsule__divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 5px 0;
+  background: var(--line);
+  flex: 0 0 auto;
+}
+
+/* ── update chip — solid-ink "restart to finish" (download is silent) ── */
+.update-chip-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
+.update-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--ink-0);
+  background: var(--ink-0);
+  color: var(--ink-9);
+  border-radius: var(--r-pill);
+  padding: 5px 12px 5px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  position: relative;
+  transition: opacity var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.update-chip:hover { opacity: 0.82; }
+.update-chip:disabled { cursor: wait; opacity: 0.6; }
+.update-chip-glyph { display: inline-flex; font-size: 12px; font-weight: 600; line-height: 1; }
+.update-chip-label { font-weight: 500; }
+
+/* running-task guard popover, anchored under the restart chip. The chip lives
+   on the left of the header, so open rightward to stay on-screen. */
+.update-warn { width: 248px; gap: var(--sp-2); left: 0; right: auto; }
+.update-warn p { margin: 0; }
+.update-warn-actions { display: flex; align-items: center; gap: var(--sp-2); }
+
+/* hover tooltip — current → latest, no log. Left-anchored to match the chip's
+   position on the left of the header. */
+.update-tooltip {
+  position: absolute;
+  top: calc(100% + var(--sp-2));
+  left: 0;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--ink-0);
+  color: var(--ink-9);
+  border-radius: var(--r-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: var(--shadow-pop);
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition:
+    opacity var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
+}
+.update-chip-wrap:hover .update-tooltip { opacity: 1; transform: translateY(0); }
+.update-tooltip-old { color: var(--ink-5); }
+.update-tooltip-arrow { color: var(--ink-4); }
+.update-tooltip-new { color: var(--ink-9); font-weight: 500; }
+
+/* ── icon button (settings gear) ───────────────────────────────── */
+.settings-menu { position: relative; display: inline-flex; flex: 0 0 auto; }
+.icon-button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: var(--hairline);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--fg-soft);
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease),
+    background-color var(--t-fast) var(--ease);
+}
+.icon-button:hover { color: var(--ink-0); border-color: var(--line-strong); }
+.icon-button-active { color: var(--ink-0); border-color: var(--line-strong); background: var(--ink-7); }
 .language-toggle {
   display: inline-flex;
   align-items: center;
@@ -180,8 +296,7 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .language-toggle__button[aria-pressed="true"]:hover { color: var(--ink-9); }
 .connection-status,
-.agent-status,
-.update-status {
+.agent-status {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -268,17 +383,6 @@ body.has-paper > * { position: relative; z-index: 1; }
 .connection-meta-wide { grid-column: 1 / -1; }
 .connection-endpoint { word-break: break-all; }
 .agent-config-popover { width: min(420px, calc(100vw - var(--sp-6))); }
-.update-actions {
-  display: flex;
-  gap: var(--sp-2);
-}
-.update-notes {
-  margin: 0;
-  max-height: 160px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
 .agent-config-title { margin: 0; }
 .agent-config-field,
 .agent-config-key {
@@ -308,6 +412,78 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex: 1;
   min-width: 0;
 }
+
+/* ── settings popover ──────────────────────────────────────────── */
+.settings-popover { width: 360px; gap: var(--sp-4); max-height: min(78vh, 620px); overflow-y: auto; }
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-4);
+  border-bottom: var(--hairline);
+}
+.settings-group:last-of-type { border-bottom: 0; padding-bottom: 0; }
+/* section header — sans + semibold + ink, distinct from the mono/eyebrow labels
+   elsewhere and from the lighter field/row labels below it. */
+.settings-group-label {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--ink-1);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.settings-row-label { color: var(--fg-muted); flex: 0 0 auto; }
+/* control on the right of a settings-row (e.g. the timezone select) fills the
+   remaining width so the full zone stays visible. */
+.settings-row-select { flex: 1 1 auto; min-width: 0; }
+.settings-field { display: flex; flex-direction: column; gap: 6px; }
+.settings-field-label { color: var(--fg-muted); }
+.settings-field-hint { margin: 0; line-height: 1.45; text-wrap: pretty; }
+.settings-input-mono { font-family: var(--font-mono); font-size: 12px; }
+.settings-path-row { display: flex; align-items: stretch; gap: var(--sp-2); }
+.settings-path-row .input-field { flex: 1; min-width: 0; }
+.settings-path-row .btn-ghost { flex: 0 0 auto; white-space: nowrap; }
+/* auto-save status line (saving… / saved / error / idle hint) */
+.settings-status { margin: 0; min-height: 16px; }
+
+/* segmented control (chrome source) */
+.seg-toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  border: var(--hairline);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+}
+.seg-toggle__button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  border-radius: var(--r-pill);
+  color: var(--fg-soft);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  padding: 6px 12px;
+  white-space: nowrap;
+  transition:
+    background-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.seg-toggle__button:hover { color: var(--ink-0); }
+.seg-toggle__button[aria-pressed="true"] { background: var(--ink-0); color: var(--ink-9); }
+.seg-toggle__button[aria-pressed="true"]:hover { color: var(--ink-9); }
 .agent-model-list {
   display: flex;
   flex-direction: column;

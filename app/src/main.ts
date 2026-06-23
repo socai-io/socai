@@ -1,12 +1,14 @@
 //! Tauri desktop entry — header status/configuration plus tools / agent panels.
 
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 
-import { applyLanguageToDocument, formatTabs, getLanguage, isSupportedLanguage, setLanguage, t } from "./lib/i18n";
+import { applyLanguageToDocument, formatTabs, t } from "./lib/i18n";
 import { agentPanel } from "./panels/tasks";
+import { settingsMenu } from "./panels/settings";
 
 export type Status =
   | { state: "disconnected"; reason: string }
@@ -149,42 +151,24 @@ function render(): void {
     <div class="shell">
       <header class="topbar">
         <div class="brand">${MARK_SVG}<span class="brand-name">socai</span></div>
+        ${renderUpdateChip()}
         <div class="topbar-controls">
-          ${updateStatusBar()}
-          ${renderLanguageSwitch()}
-          ${connectionStatusBar()}
-          ${agentPanel.renderHeader()}
+          <div class="status-capsule" role="group" aria-label="${htmlEsc(t("chrome.dialogAria"))}">
+            ${connectionStatusBar()}
+            <span class="status-capsule__divider" aria-hidden="true"></span>
+            ${agentPanel.renderHeader()}
+          </div>
+          ${settingsMenu.render(state)}
         </div>
       </header>
       <main class="stack">${sections}</main>
     </div>
   `;
-  bindLanguageSwitch();
   bindConnectionStatusBar();
-  bindUpdateStatusBar();
+  bindUpdateChip();
   agentPanel.bindHeader(state);
+  settingsMenu.bind(state);
   for (const p of PANELS) p.bind(state);
-}
-
-function renderLanguageSwitch(): string {
-  const language = getLanguage();
-  return `
-    <div class="language-toggle" role="group" aria-label="${htmlEsc(t("language.switcherAria"))}">
-      <button class="language-toggle__button" type="button" data-lang-option="zh" aria-pressed="${language === "zh" ? "true" : "false"}">中文</button>
-      <button class="language-toggle__button" type="button" data-lang-option="en" aria-pressed="${language === "en" ? "true" : "false"}">en</button>
-    </div>
-  `;
-}
-
-function bindLanguageSwitch(): void {
-  document.querySelectorAll<HTMLButtonElement>("[data-lang-option]").forEach((option) => {
-    option.addEventListener("click", () => {
-      const nextLanguage = option.dataset.langOption;
-      if (!isSupportedLanguage(nextLanguage) || getLanguage() === nextLanguage) return;
-      setLanguage(nextLanguage);
-      render();
-    });
-  });
 }
 
 function connectionStatusBar(): string {
@@ -267,177 +251,128 @@ function bindConnectionStatusBar(): void {
 }
 
 // ---------------------------------------------------------------------------
-// In-app updater (macOS). Mirrors the connection-status badge + popover above.
-// The updater plugin is configured in tauri.conf.json; check() is gated off in
-// dev because the plugin only truly downloads/installs in bundled builds.
+// In-app updater (macOS). Updates download + install silently in the background;
+// the only thing the user ever sees or clicks is a `restart to finish` chip once
+// an update is staged. Checks fire on launch, when the window returns to the
+// foreground, and when a task finishes — throttled, and skipped while an update
+// is already downloading or staged. The updater plugin is configured in
+// tauri.conf.json; check() is gated off in dev because it only installs in
+// bundled builds.
 // ---------------------------------------------------------------------------
 
-type UpdatePhase = "idle" | "available" | "downloading" | "ready" | "error";
+type UpdatePhase = "idle" | "downloading" | "ready";
 
 interface UpdateState {
   phase: UpdatePhase;
+  /** Latest available version — shown in the restart chip's hover tooltip. */
   version?: string;
-  notes?: string;
-  downloaded?: number;
-  total?: number;
-  error?: string;
 }
-
-const RELEASES_URL = "https://github.com/socai-io/socai/releases/latest";
 
 let updateState: UpdateState = { phase: "idle" };
 let updateHandle: Update | null = null;
-let updatePopoverOpen = false;
+// Installed app version — fetched once at startup for the chip's hover tooltip.
+let currentVersion = "";
+// Throttle so "check whenever the app foregrounds" can't hammer the endpoint.
+let lastUpdateCheck = 0;
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+// Inline warning shown when restart is clicked while a task is still running.
+let restartWarn = false;
 
-function updateStatusBar(): string {
-  if (updateState.phase === "idle") return "";
+// Only the `ready` state renders — downloading is silent, errors retry quietly.
+function renderUpdateChip(): string {
+  if (updateState.phase !== "ready") return "";
   return `
-    <div class="update-status" aria-live="polite">
-      ${updateBadge()}
-      ${updatePopoverOpen ? renderUpdateDialog() : ""}
+    <div class="update-chip-wrap">
+      <button id="update-chip" type="button" class="update-chip" aria-label="${htmlEsc(t("update.restartToUpdate"))}">
+        <span class="update-chip-glyph" aria-hidden="true">↑</span>
+        <span class="update-chip-label">${htmlEsc(t("update.restartToUpdate"))}</span>
+      </button>
+      ${restartWarn ? renderRestartWarn() : updateTooltip()}
     </div>
   `;
 }
 
-function updateBadge(): string {
-  const expanded = updatePopoverOpen ? "true" : "false";
-  const aria = htmlEsc(t("update.toggleAria"));
-  const open = `<button id="update-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}" aria-label="${aria}">`;
-  switch (updateState.phase) {
-    case "available":
-      return `${open}<i class="badge-dot badge-dot-hollow" aria-hidden="true"></i>${htmlEsc(t("update.available"))}</button>`;
-    case "downloading":
-      return `${open}<i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i>${htmlEsc(t("update.downloading"))} <span data-update-progress>${htmlEsc(formatUpdateProgress())}</span></button>`;
-    case "ready":
-      return `${open}<i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${htmlEsc(t("update.restartToFinish"))}</button>`;
-    case "error":
-      return `${open}<i class="badge-dot badge-dot-muted" aria-hidden="true"></i>${htmlEsc(t("update.failed"))}</button>`;
-    default:
-      return "";
-  }
-}
-
-function formatUpdateProgress(): string {
-  if (updateState.total && updateState.total > 0 && updateState.downloaded != null) {
-    const pct = Math.min(100, Math.round((updateState.downloaded / updateState.total) * 100));
-    return `${pct}%`;
-  }
-  return "…";
-}
-
-function renderUpdateDialog(): string {
-  const version = updateState.version ?? "";
-  const head = `
-    <div class="connection-dialog-head">
-      <p class="t-eyebrow connection-dialog-title">${htmlEsc(t("update.title"))}</p>
-      ${version ? `<span class="badge"><i class="badge-dot badge-dot-hollow" aria-hidden="true"></i>${htmlEsc(version)}</span>` : ""}
-    </div>`;
-
-  let body = "";
-  let actions = "";
-
-  switch (updateState.phase) {
-    case "available":
-      body = `
-        <div>
-          <p class="t-eyebrow">${htmlEsc(t("update.newVersion"))}</p>
-          <p class="t-mono">${htmlEsc(version)}</p>
-        </div>
-        ${updateState.notes ? `<p class="t-small subtle update-notes">${htmlEsc(updateState.notes)}</p>` : ""}`;
-      actions = `
-        <button id="update-start" type="button" class="btn-primary btn-compact">${htmlEsc(t("update.upgradeAndRestart"))}</button>
-        <button id="update-github" type="button" class="btn-ghost btn-compact">${htmlEsc(t("update.viewOnGithub"))}</button>`;
-      break;
-    case "downloading":
-      body = `
-        <div>
-          <p class="t-eyebrow">${htmlEsc(t("update.downloading"))}</p>
-          <p class="t-mono" data-update-progress>${htmlEsc(formatUpdateProgress())}</p>
-        </div>`;
-      break;
-    case "ready":
-      body = `<p class="t-small subtle">${htmlEsc(t("update.readyHint"))}</p>`;
-      actions = `<button id="update-restart" type="button" class="btn-primary btn-compact">${htmlEsc(t("update.restartNow"))}</button>`;
-      break;
-    case "error":
-      body = `<p class="t-small subtle update-notes">${htmlEsc(updateState.error ?? t("update.failed"))}</p>`;
-      actions = `
-        <button id="update-start" type="button" class="btn-primary btn-compact">${htmlEsc(t("update.retry"))}</button>
-        <button id="update-github" type="button" class="btn-ghost btn-compact">${htmlEsc(t("update.viewOnGithub"))}</button>`;
-      break;
-  }
-
+function updateTooltip(): string {
+  if (!currentVersion || !updateState.version) return "";
   return `
-    <div class="topbar-popover update-dialog" role="dialog" aria-label="${htmlEsc(t("update.dialogAria"))}">
-      ${head}
-      ${body}
-      ${actions ? `<div class="update-actions">${actions}</div>` : ""}
+    <span class="update-tooltip" role="tooltip">
+      <span class="update-tooltip-old">${htmlEsc(currentVersion)}</span>
+      <span class="update-tooltip-arrow" aria-hidden="true">→</span>
+      <span class="update-tooltip-new">${htmlEsc(updateState.version)}</span>
+    </span>
+  `;
+}
+
+function renderRestartWarn(): string {
+  return `
+    <div class="topbar-popover update-warn" role="dialog" aria-label="${htmlEsc(t("update.restartToUpdate"))}">
+      <p class="t-small">${htmlEsc(t("update.taskRunningWarn"))}</p>
+      <div class="update-warn-actions">
+        <button id="update-restart-anyway" type="button" class="btn-primary btn-compact">${htmlEsc(t("update.restartAnyway"))}</button>
+        <button id="update-restart-cancel" type="button" class="btn-ghost btn-compact">${htmlEsc(t("update.later"))}</button>
+      </div>
     </div>
   `;
 }
 
-function bindUpdateStatusBar(): void {
-  document.getElementById("update-toggle")?.addEventListener("click", () => {
-    updatePopoverOpen = !updatePopoverOpen;
+function bindUpdateChip(): void {
+  document.getElementById("update-chip")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    // Relaunching interrupts any running task, so guard it: warn first with an
+    // explicit escape hatch.
+    if (agentPanel.hasActiveTask()) {
+      restartWarn = true;
+      render();
+      return;
+    }
+    doRelaunch();
+  });
+  document.getElementById("update-restart-anyway")?.addEventListener("click", () => {
+    restartWarn = false;
+    doRelaunch();
+  });
+  document.getElementById("update-restart-cancel")?.addEventListener("click", () => {
+    restartWarn = false;
     render();
   });
-  document.getElementById("update-github")?.addEventListener("click", () => {
-    invoke("open_external", { url: RELEASES_URL }).catch((e) => console.error("open_external failed:", e));
-  });
-  document.getElementById("update-start")?.addEventListener("click", () => {
-    void startUpgrade();
-  });
-  document.getElementById("update-restart")?.addEventListener("click", () => {
-    relaunch().catch((e) => console.error("relaunch failed:", e));
-  });
 }
 
-async function startUpgrade(): Promise<void> {
+function doRelaunch(): void {
+  relaunch().catch((e) => console.error("relaunch failed:", e));
+}
+
+// Download + install the staged update silently. Surfaces the restart chip only
+// once it's installed; a failure resets to idle so the next trigger retries.
+async function startBackgroundUpgrade(): Promise<void> {
   if (!updateHandle) return;
-  updateState = { ...updateState, phase: "downloading", downloaded: 0, total: 0, error: undefined };
-  render();
+  updateState = { ...updateState, phase: "downloading" };
   try {
-    await updateHandle.downloadAndInstall((event) => {
-      switch (event.event) {
-        case "Started":
-          updateState.total = event.data.contentLength ?? 0;
-          updateState.downloaded = 0;
-          break;
-        case "Progress":
-          updateState.downloaded = (updateState.downloaded ?? 0) + event.data.chunkLength;
-          // Patch the readout in place so a chunky download doesn't trigger a
-          // full re-render per chunk (mirrors the appendTaskEvent precedent).
-          document.querySelectorAll("[data-update-progress]").forEach((el) => {
-            el.textContent = formatUpdateProgress();
-          });
-          break;
-        case "Finished":
-          break;
-      }
-    });
+    await updateHandle.downloadAndInstall();
     updateState = { ...updateState, phase: "ready" };
     render();
   } catch (e) {
-    console.error("update install failed:", e);
-    updateState = { ...updateState, phase: "error", error: `${e}` };
-    render();
+    console.error("update download/install failed:", e);
+    updateState = { phase: "idle" };
   }
 }
 
-async function scheduleUpdateCheck(): Promise<void> {
+// Check for an update and, if found, kick off the silent background download.
+// Triggered on launch, foreground, and task-finish; throttled, and skipped while
+// an update is already downloading or staged.
+async function maybeCheckForUpdate(): Promise<void> {
   // The updater only truly installs in a bundled build; skip the network check
   // in `tauri dev` so it never nags or errors during local development.
   if (import.meta.env.DEV) return;
+  if (updateState.phase !== "idle") return;
+  const now = Date.now();
+  if (now - lastUpdateCheck < UPDATE_CHECK_INTERVAL_MS) return;
+  lastUpdateCheck = now;
   try {
     const update = await check();
     if (!update) return;
     updateHandle = update;
-    updateState = {
-      phase: "available",
-      version: update.version,
-      notes: update.body || undefined,
-    };
-    render();
+    updateState = { phase: "idle", version: update.version };
+    void startBackgroundUpgrade();
   } catch (e) {
     // Update checks are best-effort; never block the app on a failed check.
     console.error("update check failed:", e);
@@ -460,11 +395,14 @@ function bindGlobalDismiss(): void {
       connectionDetailsOpen = false;
       changed = true;
     }
-    if (updatePopoverOpen && !eventPathHasClass(event, "update-status")) {
-      updatePopoverOpen = false;
+    if (!eventPathHasClass(event, "agent-status") && agentPanel.closeHeaderConfig()) {
       changed = true;
     }
-    if (!eventPathHasClass(event, "agent-status") && agentPanel.closeHeaderConfig()) {
+    if (settingsMenu.isOpen() && !eventPathHasClass(event, "settings-menu") && settingsMenu.closePopover()) {
+      changed = true;
+    }
+    if (restartWarn && !eventPathHasClass(event, "update-chip-wrap")) {
+      restartWarn = false;
       changed = true;
     }
 
@@ -490,6 +428,8 @@ async function main(): Promise<void> {
   // rows append in place to preserve scroll.
   await listen<AgentTaskEventPayload>("agent_task:event", (event) => {
     if (agentPanel.appendTaskEvent(event.payload)) render();
+    // A finished task is a good, quiet moment to check for an update.
+    if (isTaskFinishedEvent(event.payload)) void maybeCheckForUpdate();
   });
 
   let initialTasks: AgentTaskSnapshot[] = [];
@@ -510,21 +450,55 @@ async function main(): Promise<void> {
   } catch (e) {
     console.error("agent_task_list failed:", e);
   }
+  try {
+    currentVersion = await getVersion();
+  } catch (e) {
+    console.error("getVersion failed:", e);
+  }
+  await settingsMenu.loadConfig();
   render();
   bindGlobalDismiss();
+  installUpdatePreviewHook();
   void hydrateTaskEvents(initialTasks);
-  void scheduleUpdateCheck();
+  void maybeCheckForUpdate();
 
   const refresh = (): void => {
     invoke("cdp_refresh").catch((e) => console.error("cdp_refresh failed:", e));
     agentPanel.refreshModels()
       .then(() => render())
       .catch((e) => console.error("agent_list_models refresh failed:", e));
+    // Foreground is the primary update-check trigger; the check throttles itself.
+    void maybeCheckForUpdate();
   };
   window.addEventListener("focus", refresh);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") refresh();
   });
+}
+
+const TERMINAL_TASK_EVENT_KINDS = new Set<AgentTaskEventPayload["kind"]>([
+  "done",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
+function isTaskFinishedEvent(payload: AgentTaskEventPayload): boolean {
+  if (TERMINAL_TASK_EVENT_KINDS.has(payload.kind)) return true;
+  const status = payload.snapshot?.status;
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted";
+}
+
+// Dev-only: force the `restart to finish` chip so its appearance and the
+// running-task warning can be exercised without a bundled build + real feed.
+// `__previewUpdate()` in the webview console shows the chip; reload to clear.
+function installUpdatePreviewHook(): void {
+  if (!import.meta.env.DEV) return;
+  (window as Window & { __previewUpdate?: () => void }).__previewUpdate = () => {
+    updateState = { phase: "ready", version: "0.5.0" };
+    render();
+  };
 }
 
 async function hydrateTaskEvents(tasks: AgentTaskSnapshot[]): Promise<void> {
