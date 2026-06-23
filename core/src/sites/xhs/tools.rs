@@ -322,15 +322,8 @@ fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxF
             .unwrap_or(false);
         if preview {
             // Cards only — download_media doesn't apply to a card-only read.
-            search_notes_command(
-                page,
-                "search",
-                &query,
-                filters.as_ref(),
-                num_notes,
-                debug_snapshot,
-            )
-            .await
+            search_notes_command(page, "search", &query, filters.as_ref(), num_notes, debug_snapshot)
+                .await
         } else {
             let download_media = args
                 .get("download_media")
@@ -708,7 +701,7 @@ fn read_note_options(input: &Value) -> ReadNoteOptions {
     ReadNoteOptions {
         // `level` is no longer a user-facing knob (body content is identical
         // across tiers; media is gated by include_media/download_media). It now
-        // only feeds the cosmetic extraction_level label + cross-run dedup.
+        // only feeds the cross-run history dedup key.
         level: "lite".to_string(),
         include_media: get_bool(input, "include_media", false),
         download_media: get_bool(input, "download_media", false),
@@ -756,6 +749,32 @@ async fn attach_top_comments(xhs: &XhsPageRuntime<'_>, note: &mut Value) {
     }
 }
 
+/// Build a skipped-note entry. We return the full entity cached in history
+/// (body + comments + images + location) so a reused note keeps its data
+/// instead of degrading to the bare search card; the `skipped` block carries a
+/// compact provenance summary (no title/author/url repeat — those are in
+/// `entity`). Falls back to the card when history has no cached entity (e.g. a
+/// pre-upgrade entry, or one only ever seen as a card).
+fn skipped_note_entry(card: &XhsNoteCard, reason: &str, history: &XhsHistoryStore) -> Value {
+    let entry = history.get(&card.note_id);
+    let entity = entry
+        .as_ref()
+        .and_then(|e| e.entity.clone())
+        .unwrap_or_else(|| serde_json::to_value(card).unwrap_or(Value::Null));
+    let mut skipped = json!({ "reason": reason });
+    if let (Some(entry), Some(map)) = (entry.as_ref(), skipped.as_object_mut()) {
+        map.insert("level".into(), json!(entry.level));
+        map.insert("analysis_count".into(), json!(entry.analysis_count));
+        map.insert("first_seen_at".into(), json!(entry.first_seen_at));
+        map.insert("last_seen_at".into(), json!(entry.last_seen_at));
+    }
+    json!({
+        "source_position": card.position,
+        "skipped": skipped,
+        "entity": entity,
+    })
+}
+
 /// Open one already-selected card, read its body at `level`, attach top
 /// comments, and record it in run + cross-run history. Shared by `topic_scan`
 /// (cards from search) and `author_scan` (cards from a profile page) — the only
@@ -783,25 +802,18 @@ async fn scan_card_note(
         && !card.note_id.is_empty()
         && ctx.has_processed_note(&card.note_id, level, requested_media)
     {
-        return json!({
-            "scan_level": level,
-            "source_position": card.position,
-            "skipped": {"reason": "already_processed"},
-            "entity": card,
-        });
+        return skipped_note_entry(card, "already_processed", history);
     }
     if can_use_cached_reads
         && !card.note_id.is_empty()
         && history.is_satisfied_by(&card.note_id, level, requested_media)
+        // Only short-circuit when we actually have the cached entity to return;
+        // a pre-upgrade entry without one is re-read so it backfills the cache
+        // instead of degrading to a bare card.
+        && history.has_cached_entity(&card.note_id)
     {
-        let entry = history.get(&card.note_id).unwrap_or_default();
         ctx.mark_processed_note(&card.note_id, level, requested_media);
-        return json!({
-            "scan_level": level,
-            "source_position": card.position,
-            "skipped": {"reason": "already_analyzed", "history": entry},
-            "entity": card,
-        });
+        return skipped_note_entry(card, "already_analyzed", history);
     }
 
     let read_result = xhs
@@ -834,7 +846,6 @@ async fn scan_card_note(
                 entity = serde_json::to_value(card).unwrap_or(Value::Null);
             }
             let mut entry = json!({
-                "scan_level": level,
                 "source_position": card.position,
                 "ok": ok,
                 "entity": entity,
@@ -852,7 +863,6 @@ async fn scan_card_note(
             entry
         }
         Err(e) => json!({
-            "scan_level": level,
             "source_position": card.position,
             "ok": false,
             "entity": card,
@@ -896,6 +906,65 @@ async fn scan_card_note(
     }
 
     entry
+}
+
+/// Trim a topic_scan / author_scan bundle to the shape we hand back to the
+/// agent/CLI so it doesn't dominate an LLM context window. The full payload is
+/// still written to the run artifact (`<run_dir>/artifacts/…json`), which is the
+/// place to look for everything dropped here. Diagnostic blocks (`sampling`,
+/// `timing`) and the `search` result block are dropped; the opened `notes`
+/// (each trimmed by [`lean_scan_note`]) carry the per-note listing, so
+/// `author_scan`'s `profile.note_cards` — a duplicate of that listing — is
+/// dropped too once notes were read.
+fn lean_scan_payload(payload: &mut Value) {
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    obj.remove("search");
+    obj.remove("sampling");
+    obj.remove("timing");
+    let notes_read = obj
+        .get("notes")
+        .and_then(Value::as_array)
+        .is_some_and(|notes| !notes.is_empty());
+    // author_scan only: `profile.note_cards` repeats the note listing now
+    // carried by `notes`. Keep it only when no notes were opened (preview),
+    // where it's the sole listing.
+    if notes_read {
+        if let Some(profile) = obj.get_mut("profile").and_then(Value::as_object_mut) {
+            profile.remove("note_cards");
+        }
+    }
+    if let Some(notes) = obj.get_mut("notes").and_then(Value::as_array_mut) {
+        for note in notes.iter_mut() {
+            lean_scan_note(note);
+        }
+    }
+}
+
+/// Trim one scanned-note entry to the lean shape: drop the body-source marker
+/// (`content_source`) and the per-extract wait diagnostics (`wait`,
+/// `top_comments_wait`), and collapse `top_comments` to a plain array of comment
+/// texts. Applies to both freshly-read and reused (cached) entities; the full
+/// objects stay in the run artifact.
+fn lean_scan_note(note: &mut Value) {
+    let Some(entry) = note.as_object_mut() else {
+        return;
+    };
+    let Some(entity) = entry.get_mut("entity").and_then(Value::as_object_mut) else {
+        return;
+    };
+    entity.remove("content_source");
+    entity.remove("wait");
+    entity.remove("top_comments_wait");
+    if let Some(comments) = entity.get_mut("top_comments").and_then(Value::as_array_mut) {
+        let texts: Vec<Value> = comments
+            .iter()
+            .filter_map(|comment| comment.get("text").cloned())
+            .filter(|text| text.as_str().is_some_and(|s| !s.is_empty()))
+            .collect();
+        entity.insert("top_comments".into(), Value::Array(texts));
+    }
 }
 
 /// search_notes(query, wait_seconds) -> {query, cards: [...]}
@@ -963,6 +1032,15 @@ impl Tool for SearchNotesTool {
             .await?;
         if let Some(cards) = value.get_mut("cards") {
             self.history.annotate_cards(cards);
+        }
+        // `submit` is the search-submission diagnostic (strategy + page-state
+        // echo). The preview path writes no artifact, so keep it only when the
+        // search failed (where it explains why) and drop it on success.
+        let failed = value.get("ok").and_then(Value::as_bool) == Some(false);
+        if !failed {
+            if let Some(obj) = value.as_object_mut() {
+                obj.remove("submit");
+            }
         }
         Ok(json_result(&value))
     }
@@ -1567,11 +1645,10 @@ impl Tool for TopicScanTool {
                 .filter(|reason| !reason.is_empty())
                 .unwrap_or("search_failed")
                 .to_string();
-            let payload = json!({
+            let mut payload = json!({
                 "ok": false,
                 "query": query,
                 "search": search,
-                "selected_cards": [],
                 "notes": [],
                 "reason": reason,
                 "sampling": {
@@ -1582,6 +1659,9 @@ impl Tool for TopicScanTool {
                     "download_media": download_media,
                 },
             });
+            // `reason` already summarizes the failure; keep the failed scan
+            // compact too.
+            lean_scan_payload(&mut payload);
             return Ok(json_result(&payload));
         }
 
@@ -1657,15 +1737,14 @@ impl Tool for TopicScanTool {
             _ => json!({}),
         };
 
-        // Annotate cards in the search payload and selected_cards against
-        // the pre-call snapshot so flags reflect "known before this scan"
-        // rather than "known after this scan's own writes".
+        // Annotate cards in the search payload against the pre-call snapshot so
+        // flags reflect "known before this scan" rather than "known after this
+        // scan's own writes". (Only kept in the artifact; the opened notes are
+        // the returned listing.)
         let mut search = search;
         if let Some(cards) = search.get_mut("cards") {
             history_snapshot.annotate_cards(cards);
         }
-        let mut selected_cards = serde_json::to_value(&selected)?;
-        history_snapshot.annotate_cards(&mut selected_cards);
 
         let media_manifest_metadata = if download_media {
             let media_manifest = topic_scan_media_manifest(&notes, &ctx.run_dir);
@@ -1690,7 +1769,6 @@ impl Tool for TopicScanTool {
             "run": run_metadata(ctx, download_media),
             "filters": filter_result,
             "search": search,
-            "selected_cards": selected_cards,
             "notes": notes,
             "sampling": {
                 "num_notes": num_notes,
@@ -1735,6 +1813,9 @@ impl Tool for TopicScanTool {
             json!({"site": "xhs", "category": "topic_scan"}),
         );
 
+        // Artifact above keeps the full bundle; trim what we return so the
+        // agent/CLI output stays small.
+        lean_scan_payload(&mut payload);
         Ok(json_result(&payload))
     }
 }
@@ -1958,6 +2039,9 @@ impl Tool for AuthorScanTool {
             json!({"site": "xhs", "category": "author_scan"}),
         );
 
+        // Artifact above keeps the full bundle; trim what we return so the
+        // agent/CLI output stays small.
+        lean_scan_payload(&mut payload);
         Ok(json_result(&payload))
     }
 }

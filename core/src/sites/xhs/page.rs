@@ -1085,7 +1085,7 @@ impl<'a> XhsPageRuntime<'a> {
             .filter(Value::is_object)
             .unwrap_or_else(|| Value::Object(Map::new()));
 
-        let mut note = parse_note(&body, &options.level);
+        let mut note = parse_note(&body);
 
         if note.note_id.is_empty() && !options.note_id_fallback.trim().is_empty() {
             note.note_id = options.note_id_fallback.trim().to_string();
@@ -1377,7 +1377,7 @@ fn canonical_filter_state(raw: &Value) -> Value {
 
 /// Parse the JS-side `body` payload into a wire-ready XhsNote. Performs all
 /// normalization up front so serde Serialize alone produces stable output.
-fn parse_note(body: &Value, level: &str) -> XhsNote {
+fn parse_note(body: &Value) -> XhsNote {
     let s = |k: &str| {
         body.get(k)
             .and_then(Value::as_str)
@@ -1443,14 +1443,12 @@ fn parse_note(body: &Value, level: &str) -> XhsNote {
         hashtags,
         date: s("date"),
         location: s("location"),
-        ip_location: s("ip_location"),
         likes: s("likes"),
         favorites: s("favorites"),
         comments_count: s("comments_count"),
         image_count,
         images,
         video,
-        extraction_level: level.to_string(),
         wait_meta: None,
         stale_warning: None,
     }
@@ -1644,11 +1642,10 @@ mod tests {
 
     #[test]
     fn parse_empty_body_yields_defaults() {
-        let note = parse_note(&Value::Object(Map::new()), "lite");
+        let note = parse_note(&Value::Object(Map::new()));
         assert_eq!(note.note_id, "");
         assert_eq!(note.image_count, 0);
         assert!(note.images.is_empty());
-        assert_eq!(note.extraction_level, "lite");
     }
 
     #[test]
@@ -1660,7 +1657,7 @@ mod tests {
             "image_urls": ["https://img.example/1.jpg", "https://img.example/2.jpg"],
             "hashtags": ["#tag1", "#tag2"],
         });
-        let note = parse_note(&body, "lite");
+        let note = parse_note(&body);
         assert_eq!(note.note_id, "abc123");
         assert_eq!(note.title, "测试笔记");
         assert_eq!(note.author, "张三");
@@ -1675,20 +1672,20 @@ mod tests {
     fn hashtags_clipped_to_12() {
         let tags: Vec<String> = (0..20).map(|i| format!("#t{i}")).collect();
         let body = json!({ "hashtags": tags });
-        let note = parse_note(&body, "lite");
+        let note = parse_note(&body);
         assert_eq!(note.hashtags.len(), 12);
     }
 
     #[test]
     fn image_count_prefers_explicit_then_images_len() {
         let body = json!({ "image_count": 5, "image_urls": ["a", "b"] });
-        assert_eq!(parse_note(&body, "lite").image_count, 5);
+        assert_eq!(parse_note(&body).image_count, 5);
 
         let body = json!({ "image_urls": ["a", "b", "c"] });
-        assert_eq!(parse_note(&body, "lite").image_count, 3);
+        assert_eq!(parse_note(&body).image_count, 3);
 
         let body = json!({});
-        assert_eq!(parse_note(&body, "lite").image_count, 0);
+        assert_eq!(parse_note(&body).image_count, 0);
     }
 
     #[test]

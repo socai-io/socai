@@ -815,9 +815,17 @@ const SocaiXhsPageScripts = (() => {
     );
     const hashtags = $$('.hash-tag a, a[href*="/page/topics/"], #detail-desc a.tag', root)
       .filter(isVisible).map(text).filter(Boolean);
-    const rootText = norm(text(root));
-    const date = (rootText.match(/\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}-\d{1,2}\b/) || [''])[0];
-    const ipLocation = (rootText.match(/IP属地[:：]?\s*([\u4e00-\u9fffA-Za-z0-9_-]+)/) || [])[1] || '';
+    // Publish date lives in the note's bottom bar (`.bottom-container .date`),
+    // e.g. "编辑于 03-28" or "2024-03-28 北京". Scope to that element and pull the
+    // date token out of its short text — regexing the whole note body would
+    // grab things like "13-15" from the content. Comments also use `.date`,
+    // hence excludeComments.
+    const dateText = firstVisibleText(
+      ['.bottom-container .date', '.note-content .date', '.note-scroller .date', '.date'],
+      root,
+      { excludeComments: true },
+    );
+    const date = (dateText.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}/) || [''])[0];
     const locationText = cleanLocationText(
       firstVisibleText(['.location, .poi, [class*="location"], [class*="poi"]'], root, { excludeComments: true })
     );
@@ -838,7 +846,6 @@ const SocaiXhsPageScripts = (() => {
       content_source: contentSource,
       date,
       location: locationText,
-      ip_location: ipLocation,
       likes,
       favorites,
       comments_count: commentsCount,

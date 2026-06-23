@@ -4,10 +4,12 @@
 //!
 //! - In-run dedup still lives on `ToolContext::processed_notes`; this store
 //!   only handles cross-run persistence.
-//! - Schema is intentionally smaller — we keep `note_id`, `title`, `author`,
-//!   `url`, `level`, `include_media`, `analysis_count`, `first_seen_at`,
-//!   `last_seen_at`. Run dirs and artifact paths are dropped — they live in
-//!   the per-run logs and would mostly point at stale paths anyway.
+//! - Besides the lookup metadata (`note_id`, `title`, `author`, `url`, `level`,
+//!   `include_media`, `analysis_count`, `first_seen_at`, `last_seen_at`) we also
+//!   cache the full last-read `entity` (body + comments + images + location), so
+//!   a reused note returns its complete data instead of degrading to the bare
+//!   search card. Run dirs and artifact paths are dropped — they live in the
+//!   per-run logs and would mostly point at stale paths anyway.
 //! - File at `~/.socai/xhs/history.json` (overridable via `SOCAI_HOME`).
 
 use std::collections::BTreeMap;
@@ -40,6 +42,11 @@ pub struct HistoryEntry {
     pub first_seen_at: String,
     #[serde(default)]
     pub last_seen_at: String,
+    /// Full last-read entity (body, comments, images, location, …) so a reused
+    /// note can be returned complete without re-opening it. `None` for entries
+    /// written before this field existed or recorded from a card only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -86,6 +93,24 @@ impl XhsHistoryStore {
         }
         let guard = self.inner.lock().ok()?;
         guard.notes.get(id).cloned()
+    }
+
+    /// True when we have the full cached entity for a note (so a reuse can
+    /// return complete data). False for pre-upgrade entries that only stored
+    /// lookup metadata — those should be re-read to backfill the cache.
+    /// Cheap: checks presence without cloning the entity.
+    pub fn has_cached_entity(&self, note_id: &str) -> bool {
+        let id = note_id.trim();
+        if id.is_empty() {
+            return false;
+        }
+        let Ok(guard) = self.inner.lock() else {
+            return false;
+        };
+        guard
+            .notes
+            .get(id)
+            .is_some_and(|entry| entry.entity.is_some())
     }
 
     /// True when a prior analysis already covers what's being requested:
@@ -171,6 +196,8 @@ impl XhsHistoryStore {
             if include_media {
                 entry.include_media = true;
             }
+            // Cache the full entity so a later reuse returns complete data.
+            entry.entity = Some(entity.clone());
             entry.analysis_count = entry.analysis_count.saturating_add(1);
             entry.last_seen_at = now;
             guard.clone()

@@ -61,16 +61,21 @@ searching again.
 ## Entity Fields
 
 Note fields: `note_id`, `url`, `type`, `title`, `author`, `author_id`,
-`author_url`, `content`, `hashtags`, `date`, `location`, `ip_location`,
-`likes`, `favorites`, `comments_count`, `shares`, `image_count`, `images`,
-`video`, `top_comments`.
+`author_url`, `content`, `hashtags`, `date`, `location` (the note's POI/geo-tag;
+notes carry no `ip_location` — that is profile-only), `likes`, `favorites`,
+`comments_count`, `image_count`, `images`, `video`, `top_comments`. (Search /
+profile result *cards* — not opened notes — instead carry `link`/`xsec_token`
+for the tokenized URL.)
 
-Comment fields: `username`, `text`, `likes`, `like_count`, `time`,
-`is_author_reply`, `is_pinned`, `reply_count`, `sub_comments`.
+`top_comments` is a plain array of comment text strings. The full comment
+objects (`username`, `text`, `likes`, `like_count`, `time`, `is_author_reply`,
+`is_pinned`, `reply_count`, `sub_comments`) are kept in the run artifact
+(`<run_dir>/artifacts/…json`), which holds the complete untrimmed bundle.
 
 Author fields: `display_name`, `xhs_id`, `profile_url`, `bio`, `ip_location`,
-`followers`, `following`, `likes_and_collections` (each `*_value` is the parsed
-integer, e.g. `5.6万` → `56000`), `note_count`, `note_cards`.
+`followers`, `following`, `likes_and_collections` (raw displayed strings, e.g.
+`5.6万`), `note_count`, `note_cards` (only when notes weren't opened; once read,
+the listing lives in `notes`).
 
 Image fields: `url`, `index`, `is_cover`, optional `ocr_text`,
 `vision_description`, `local_path`.

@@ -20,15 +20,17 @@ pub struct XhsNote {
     pub content_source: String,
     pub hashtags: Vec<String>,
     pub date: String,
+    /// Note POI / geo-tag label (the place the author tagged on the note).
+    /// Distinct from the author's IP territory, which only appears on the
+    /// profile header — notes never expose it — so there is no note-level
+    /// `ip_location`.
     pub location: String,
-    pub ip_location: String,
     pub likes: String,
     pub favorites: String,
     pub comments_count: String,
     pub image_count: i64,
     pub images: Vec<Value>,
     pub video: Value,
-    pub extraction_level: String,
 
     /// Serialized as `"wait"` to keep the public note shape compact.
     #[serde(rename = "wait", skip_serializing_if = "Option::is_none", default)]
@@ -69,23 +71,13 @@ impl XhsAuthorProfile {
         map.insert("url".into(), json!(normalize_url(&self.profile_url)));
         map.insert("bio".into(), json!(self.bio));
         map.insert("ip_location".into(), json!(self.ip_location));
+        // Counts are kept as the raw displayed strings ("1.2万"); the parsed
+        // `*_value` integers were redundant, so they're no longer emitted.
         map.insert("followers".into(), json!(self.followers));
-        map.insert(
-            "followers_value".into(),
-            json!(parse_count_text(&self.followers)),
-        );
         map.insert("following".into(), json!(self.following));
-        map.insert(
-            "following_value".into(),
-            json!(parse_count_text(&self.following)),
-        );
         map.insert(
             "likes_and_collections".into(),
             json!(self.likes_and_collections),
-        );
-        map.insert(
-            "likes_and_collections_value".into(),
-            json!(parse_count_text(&self.likes_and_collections)),
         );
         map.insert("note_count".into(), json!(self.note_cards.len()));
         let cards: Vec<Value> = self
@@ -171,7 +163,6 @@ impl Default for XhsNote {
             hashtags: Vec::new(),
             date: String::new(),
             location: String::new(),
-            ip_location: String::new(),
             likes: String::new(),
             favorites: String::new(),
             comments_count: String::new(),
@@ -180,7 +171,6 @@ impl Default for XhsNote {
             // Keep video as {}, not null, so the wire shape stays consistent
             // for video-less notes.
             video: Value::Object(Default::default()),
-            extraction_level: "lite".into(),
             wait_meta: None,
             stale_warning: None,
         }
