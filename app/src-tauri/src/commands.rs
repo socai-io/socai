@@ -13,9 +13,6 @@ use socai_core::runtime::{
     run_agent_task as run_agent_with_tools, AgentRunConfig, BrowserStatus, RuntimePageSession,
     SocaiRuntime,
 };
-use socai_core::sites::xhs::{
-    search_notes_command, topic_scan_command, XhsPageRuntime, XHS_HOME_URL,
-};
 use socai_core::sites::{find_site, SiteSpec};
 use socai_core::telemetry::query_text_enabled;
 use socai_core::telemetry::tool_call::{summarize_tool_args, summarize_tool_result};
@@ -26,7 +23,6 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
 const TAURI_AGENT_PREAMBLE: &str = "You are running inside the socai desktop app.";
-const XHS_NOTE_BASE_URL: &str = "https://www.xiaohongshu.com/explore";
 
 /// Site the desktop agent runner drives. Becomes a runtime choice once the
 /// app grows a site switcher.
@@ -69,103 +65,11 @@ pub async fn cdp_refresh(_runtime: State<'_, SocaiRuntime>) -> Result<(), String
     Ok(())
 }
 
-// ── Tool-call tests ─────────────────────────────────────────────────────────
-//
-// These are testing helpers, not product tasks. Each invocation gets a fresh
-// temporary tab and closes it after the command returns so tool tests do not
-// share hidden browser state.
-
-#[tauri::command]
-pub async fn tool_search_notes(
-    runtime: State<'_, SocaiRuntime>,
-    query: String,
-    num_notes: Option<i64>,
-) -> Result<Value, String> {
-    require_connected(&runtime).await?;
-    let page = temporary_page(&runtime, XHS_HOME_URL, "tool · search_notes").await?;
-    let result = search_notes_command(page.clone(), &query, None, num_notes, false).await;
-    close_page(page).await;
-    result.map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
-pub async fn tool_topic_scan(
-    runtime: State<'_, SocaiRuntime>,
-    query: String,
-    num_notes: Option<i64>,
-    download_media: Option<bool>,
-) -> Result<Value, String> {
-    require_connected(&runtime).await?;
-    let page = temporary_page(&runtime, XHS_HOME_URL, "tool · topic_scan").await?;
-    let result = topic_scan_command(
-        page.clone(),
-        &query,
-        None,
-        num_notes,
-        download_media.unwrap_or(false),
-        false,
-    )
-    .await;
-    close_page(page).await;
-    result.map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
-pub async fn tool_extract_note(
-    runtime: State<'_, SocaiRuntime>,
-    note_id: String,
-) -> Result<Value, String> {
-    require_connected(&runtime).await?;
-    let note_target = note_url_or_id(&note_id)?;
-    let page = temporary_page(&runtime, &note_target, "tool · extract_note").await?;
-    let result = async {
-        let xhs = XhsPageRuntime::new(&page);
-        let note = xhs.extract_note(8.0).await?;
-        Ok::<Value, anyhow::Error>(json!({
-            "command": "extract_note",
-            "source": "temporary_page",
-            "url": note_target,
-            "data": {
-                "ok": true,
-                "entity": note,
-            }
-        }))
-    }
-    .await;
-    close_page(page).await;
-    result.map_err(|e| format!("{e:#}"))
-}
-
 async fn require_connected(runtime: &SocaiRuntime) -> Result<(), String> {
     match runtime.browser_status().await {
         BrowserStatus::Connected { .. } => Ok(()),
         _ => Err("chrome not connected — click connect first".into()),
     }
-}
-
-fn note_url_or_id(value: &str) -> Result<String, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("note id or url is empty".into());
-    }
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return Ok(trimmed.to_string());
-    }
-    Ok(format!("{XHS_NOTE_BASE_URL}/{trimmed}"))
-}
-
-async fn temporary_page(
-    runtime: &SocaiRuntime,
-    start_url: &str,
-    title_label: &str,
-) -> Result<Arc<RuntimePageSession>, String> {
-    let page = runtime
-        .create_page(start_url)
-        .await
-        .map(Arc::new)
-        .map_err(|e| format!("{e:#}"))?;
-    label_controlled_page(&page, title_label).await;
-    Ok(page)
 }
 
 async fn close_page(page: Arc<RuntimePageSession>) {
