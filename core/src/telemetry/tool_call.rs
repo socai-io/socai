@@ -1,0 +1,213 @@
+//! Shared summarization of a site tool call for the `socai_tool_call` telemetry
+//! event. Both the CLI daemon and the desktop app feed their tool invocations
+//! through here, so every site (xhs, dy, and any future site) is reported
+//! through one code path — there is no per-site or per-arg whitelist to keep in
+//! sync, and newly-added commands/params are captured automatically.
+
+use serde_json::{json, Map, Value};
+
+/// Summarize a tool call's input arguments. The search `query` is the one gated
+/// arg: its character length is always reported, but the raw text only when
+/// `include_query_text` is on. Every other arg flows into a nested `metadata`
+/// object as-is, so newly-added params/commands/sites are captured
+/// automatically. Only the arguments are summarized here — tool OUTPUT (note
+/// bodies, comments) is never included; see [`summarize_tool_result`] for the
+/// safe, count-only output summary.
+pub fn summarize_tool_args(args: &Value, include_query_text: bool) -> Map<String, Value> {
+    let mut props = Map::new();
+    let Some(obj) = args.as_object() else {
+        return props;
+    };
+    let mut metadata = Map::new();
+    for (key, value) in obj {
+        if key == "query" {
+            if let Some(query) = value.as_str() {
+                let query = query.trim();
+                if !query.is_empty() {
+                    props.insert("query_len".into(), json!(query.chars().count()));
+                    props.insert("query_text_enabled".into(), json!(include_query_text));
+                    if include_query_text {
+                        props.insert("query_text".into(), json!(query));
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some(value) = meaningful_metadata_value(value) {
+            metadata.insert(key.clone(), value);
+        }
+    }
+    if !metadata.is_empty() {
+        props.insert("metadata".into(), Value::Object(metadata));
+    }
+    props
+}
+
+/// Normalize an arg value for `metadata`, returning `None` for the
+/// "unset"/default shapes that shouldn't be reported: `null`, `false`,
+/// empty/whitespace-only strings, and empty arrays/objects. Strings are trimmed;
+/// every other value is reported verbatim.
+fn meaningful_metadata_value(value: &Value) -> Option<Value> {
+    match value {
+        Value::Null | Value::Bool(false) => None,
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                None
+            } else {
+                Some(json!(text))
+            }
+        }
+        Value::Array(items) if items.is_empty() => None,
+        Value::Object(map) if map.is_empty() => None,
+        other => Some(other.clone()),
+    }
+}
+
+/// Extract safe, count-only metrics from a tool call's output. Reports the size
+/// of well-known result collections plus a couple of presence flags — never the
+/// note bodies, comments, or any free text. The value may be the raw tool result
+/// or wrapped in a `data` envelope (CLI daemon); both shapes are handled.
+pub fn summarize_tool_result(value: &Value) -> Map<String, Value> {
+    let mut props = Map::new();
+    let data = value.get("data").unwrap_or(value);
+    if let Some(ok) = data.get("ok").and_then(Value::as_bool) {
+        props.insert("result_ok".into(), json!(ok));
+    }
+    if let Some(cards) = data.get("cards").and_then(Value::as_array) {
+        props.insert("cards_count".into(), json!(cards.len()));
+    }
+    if let Some(cards) = data
+        .get("search")
+        .and_then(|search| search.get("cards"))
+        .and_then(Value::as_array)
+    {
+        props.insert("search_cards_count".into(), json!(cards.len()));
+    }
+    if let Some(cards) = data.get("selected_cards").and_then(Value::as_array) {
+        props.insert("selected_cards_count".into(), json!(cards.len()));
+    }
+    if let Some(notes) = data.get("notes").and_then(Value::as_array) {
+        props.insert("notes_count".into(), json!(notes.len()));
+        let skipped = notes
+            .iter()
+            .filter(|note| note.get("skipped").is_some())
+            .count();
+        props.insert("notes_skipped_count".into(), json!(skipped));
+    }
+    if value.get("run_dir").is_some() {
+        props.insert("has_run_dir".into(), json!(true));
+    }
+    props
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn includes_query_text_when_enabled() {
+        let props = summarize_tool_args(&json!({ "query": "运营爆款思路" }), true);
+        assert_eq!(props.get("query_text"), Some(&json!("运营爆款思路")));
+        assert_eq!(props.get("query_text_enabled"), Some(&json!(true)));
+        assert_eq!(props.get("query_len"), Some(&json!(6)));
+    }
+
+    #[test]
+    fn redacts_query_text_when_disabled() {
+        let props = summarize_tool_args(&json!({ "query": "运营爆款思路" }), false);
+        assert!(!props.contains_key("query_text"));
+        assert_eq!(props.get("query_text_enabled"), Some(&json!(false)));
+        assert_eq!(props.get("query_len"), Some(&json!(6)));
+    }
+
+    #[test]
+    fn omits_defaulted_optional_params() {
+        let props = summarize_tool_args(&json!({ "query": "x", "debug_snapshot": false }), true);
+        assert!(!props.contains_key("metadata"));
+    }
+
+    #[test]
+    fn keeps_query_out_of_metadata_and_nests_other_params() {
+        let props = summarize_tool_args(
+            &json!({
+                "query": "x",
+                "author_id": "abc",
+                "num_notes": 12,
+                "debug_snapshot": true
+            }),
+            true,
+        );
+        assert!(props.contains_key("query_len"));
+        let metadata = props
+            .get("metadata")
+            .and_then(Value::as_object)
+            .expect("metadata object");
+        assert!(!metadata.contains_key("query"));
+        assert_eq!(metadata.get("author_id"), Some(&json!("abc")));
+        assert_eq!(metadata.get("num_notes"), Some(&json!(12)));
+        assert_eq!(metadata.get("debug_snapshot"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn reports_arbitrary_params_without_a_whitelist() {
+        // `author_id` (xhs) and any future site's params flow through generically;
+        // defaulted flags (`preview: false`) stay out of the payload.
+        let props = summarize_tool_args(
+            &json!({
+                "author_id": "5ff00000000000000000abcd",
+                "num_notes": 8,
+                "preview": false,
+                "download_media": true
+            }),
+            true,
+        );
+        let metadata = props
+            .get("metadata")
+            .and_then(Value::as_object)
+            .expect("metadata object");
+        assert_eq!(
+            metadata.get("author_id"),
+            Some(&json!("5ff00000000000000000abcd"))
+        );
+        assert_eq!(metadata.get("num_notes"), Some(&json!(8)));
+        assert_eq!(metadata.get("download_media"), Some(&json!(true)));
+        assert!(!metadata.contains_key("preview"), "defaulted false dropped");
+    }
+
+    #[test]
+    fn result_summary_reports_dy_and_xhs_card_counts() {
+        // dy search returns top-level `cards`; the same path covers any site that
+        // returns a `cards` array.
+        let props = summarize_tool_result(&json!({ "ok": true, "cards": [{}, {}, {}] }));
+        assert_eq!(props.get("result_ok"), Some(&json!(true)));
+        assert_eq!(props.get("cards_count"), Some(&json!(3)));
+    }
+
+    #[test]
+    fn result_summary_extracts_safe_counts_without_copying_text() {
+        let props = summarize_tool_result(&json!({
+            "run_dir": "/tmp/socai-run",
+            "data": {
+                "ok": true,
+                "cards": [{}, {}],
+                "search": { "cards": [{}, {}, {}] },
+                "selected_cards": [{}],
+                "notes": [
+                    { "id": "1", "body": "must not be copied" },
+                    { "skipped": "missing note" },
+                    { "skipped": true, "comments": ["must not be copied"] }
+                ]
+            }
+        }));
+        assert_eq!(props.get("result_ok"), Some(&json!(true)));
+        assert_eq!(props.get("cards_count"), Some(&json!(2)));
+        assert_eq!(props.get("search_cards_count"), Some(&json!(3)));
+        assert_eq!(props.get("selected_cards_count"), Some(&json!(1)));
+        assert_eq!(props.get("notes_count"), Some(&json!(3)));
+        assert_eq!(props.get("notes_skipped_count"), Some(&json!(2)));
+        assert_eq!(props.get("has_run_dir"), Some(&json!(true)));
+        assert!(!props.contains_key("body"));
+        assert!(!props.contains_key("comments"));
+    }
+}

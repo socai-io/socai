@@ -17,6 +17,8 @@ use socai_core::sites::xhs::{
     search_notes_command, topic_scan_command, XhsPageRuntime, XHS_HOME_URL,
 };
 use socai_core::sites::{find_site, SiteSpec};
+use socai_core::telemetry::query_text_enabled;
+use socai_core::telemetry::tool_call::{summarize_tool_args, summarize_tool_result};
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -833,6 +835,7 @@ fn pump_agent_task_events(
                     turn,
                     sequence,
                     input,
+                    content,
                     duration_ms: tool_duration_ms,
                     error,
                     ..
@@ -846,11 +849,13 @@ fn pump_agent_task_events(
                     props.insert("duration_ms".into(), json!(tool_duration_ms));
                     props.insert("ok".into(), json!(error.is_none()));
                     props.insert("error".into(), json!(error.as_deref().map(short_error)));
-                    // Mirror the CLI tool trace: lift the search query into
-                    // query_text/query_len and fold the rest of the args into
-                    // metadata (note_id reduced to a presence flag). Tool OUTPUT
-                    // (note bodies) is never included.
-                    merge_tool_input(&mut props, input);
+                    // Same shared summarizer the CLI daemon uses: the search
+                    // query is lifted into query_text/query_len (gated by
+                    // query_text_enabled) and every other arg folds into
+                    // metadata; result counts are extracted from the output.
+                    // Tool OUTPUT text (note bodies) is never included.
+                    props.extend(summarize_tool_args(input, query_text_enabled()));
+                    props.extend(summarize_tool_result(content));
                     telemetry.capture("socai_tool_call", Value::Object(props));
                 }
                 _ => {}
@@ -859,64 +864,6 @@ fn pump_agent_task_events(
             emit_timeline_payload(&app, registry.as_ref(), &task_id, payload, None).await;
         }
     })
-}
-
-/// Summarize a tool call's input arguments the way the CLI tool trace does: the
-/// search `query` becomes `query_text` + `query_len`, a `note_id` collapses to a
-/// `note_id_present` flag, and any other scalar args go under `metadata`. Only
-/// the arguments are summarized — tool output (note bodies) is never included.
-fn merge_tool_input(props: &mut Map<String, Value>, input: &Value) {
-    let Some(args) = input.as_object() else {
-        return;
-    };
-    let mut metadata = Map::new();
-    for (key, value) in args {
-        match key.as_str() {
-            "query" => {
-                if let Some(query) = value.as_str() {
-                    let query = query.trim();
-                    if !query.is_empty() {
-                        props.insert("query_len".into(), json!(query.chars().count()));
-                        props.insert("query_text".into(), json!(query));
-                    }
-                }
-            }
-            "note_id" => {
-                let present = value
-                    .as_str()
-                    .map(|id| !id.trim().is_empty())
-                    .unwrap_or(!value.is_null());
-                if present {
-                    props.insert("note_id_present".into(), json!(true));
-                }
-            }
-            // Other scalar args go under metadata, mirroring the CLI summarizer:
-            // `tab_label` is renamed to `tab`, and string values are trimmed with
-            // empty/whitespace-only ones dropped. Non-scalar values are skipped.
-            _ => {
-                let meta_key = if key.as_str() == "tab_label" {
-                    "tab"
-                } else {
-                    key.as_str()
-                };
-                match value {
-                    Value::String(text) => {
-                        let text = text.trim();
-                        if !text.is_empty() {
-                            metadata.insert(meta_key.to_string(), json!(text));
-                        }
-                    }
-                    Value::Number(_) | Value::Bool(_) => {
-                        metadata.insert(meta_key.to_string(), value.clone());
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    if !metadata.is_empty() {
-        props.insert("metadata".into(), Value::Object(metadata));
-    }
 }
 
 pub(crate) async fn emit_task_event(

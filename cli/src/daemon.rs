@@ -1,3 +1,4 @@
+use socai_core::telemetry::tool_call::{summarize_tool_args, summarize_tool_result};
 use socai_core::telemetry::{query_text_enabled, telemetry_enabled, Telemetry, TelemetrySource};
 
 use anyhow::{anyhow, Context, Result};
@@ -463,11 +464,14 @@ impl DaemonState {
             "duration_ms".into(),
             json!(started.elapsed().as_millis() as u64),
         );
-        merge_object(&mut props, command_arg_summary(telemetry, input));
+        merge_object(
+            &mut props,
+            Value::Object(summarize_tool_args(input, telemetry.include_query_text)),
+        );
         match result {
             Ok(value) => {
                 props.insert("ok".into(), json!(true));
-                merge_object(&mut props, result_metrics(value));
+                merge_object(&mut props, Value::Object(summarize_tool_result(value)));
             }
             Err(err) => {
                 props.insert("ok".into(), json!(false));
@@ -500,83 +504,6 @@ fn base_trace_props(
     props
 }
 
-fn command_arg_summary(telemetry: &DaemonTelemetry, args: &Value) -> Value {
-    let mut props = Map::new();
-    if let Some(query) = args.get("query").and_then(Value::as_str) {
-        insert_query_props(&mut props, telemetry, query);
-    }
-    if let Some(metadata) = explicit_param_metadata(args) {
-        props.insert("metadata".into(), Value::Object(metadata));
-    }
-    if args.get("note_id").and_then(Value::as_str).is_some() {
-        props.insert("note_id_present".into(), json!(true));
-    }
-    Value::Object(props)
-}
-
-fn explicit_param_metadata(args: &Value) -> Option<Map<String, Value>> {
-    let mut metadata = Map::new();
-    insert_optional_str_metadata(&mut metadata, args, "tab_label", "tab");
-    insert_optional_i64_metadata(&mut metadata, args, "num_notes", "num_notes");
-    insert_true_bool_metadata(&mut metadata, args, "debug_snapshot", "debug_snapshot");
-    if metadata.is_empty() {
-        None
-    } else {
-        Some(metadata)
-    }
-}
-
-fn insert_query_props(props: &mut Map<String, Value>, telemetry: &DaemonTelemetry, query: &str) {
-    props.insert("query_len".into(), json!(query.chars().count()));
-    props.insert(
-        "query_text_enabled".into(),
-        json!(telemetry.include_query_text),
-    );
-    if telemetry.include_query_text {
-        props.insert("query_text".into(), json!(query));
-    }
-}
-
-fn insert_optional_str_metadata(
-    metadata: &mut Map<String, Value>,
-    args: &Value,
-    arg_key: &str,
-    metadata_key: &str,
-) {
-    let Some(value) = args
-        .get(arg_key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-    metadata.insert(metadata_key.to_string(), json!(value));
-}
-
-fn insert_optional_i64_metadata(
-    metadata: &mut Map<String, Value>,
-    args: &Value,
-    arg_key: &str,
-    metadata_key: &str,
-) {
-    let Some(value) = args.get(arg_key).and_then(Value::as_i64) else {
-        return;
-    };
-    metadata.insert(metadata_key.to_string(), json!(value));
-}
-
-fn insert_true_bool_metadata(
-    metadata: &mut Map<String, Value>,
-    args: &Value,
-    arg_key: &str,
-    metadata_key: &str,
-) {
-    if args.get(arg_key).and_then(Value::as_bool) == Some(true) {
-        metadata.insert(metadata_key.to_string(), json!(true));
-    }
-}
-
 fn merge_object(target: &mut Map<String, Value>, value: Value) {
     let Value::Object(map) = value else {
         return;
@@ -586,134 +513,10 @@ fn merge_object(target: &mut Map<String, Value>, value: Value) {
     }
 }
 
-fn result_metrics(value: &Value) -> Value {
-    let mut props = Map::new();
-    let data = value.get("data").unwrap_or(value);
-    if let Some(ok) = data.get("ok").and_then(Value::as_bool) {
-        props.insert("result_ok".into(), json!(ok));
-    }
-    if let Some(cards) = data.get("cards").and_then(Value::as_array) {
-        props.insert("cards_count".into(), json!(cards.len()));
-    }
-    if let Some(cards) = data
-        .get("search")
-        .and_then(|search| search.get("cards"))
-        .and_then(Value::as_array)
-    {
-        props.insert("search_cards_count".into(), json!(cards.len()));
-    }
-    if let Some(cards) = data.get("selected_cards").and_then(Value::as_array) {
-        props.insert("selected_cards_count".into(), json!(cards.len()));
-    }
-    if let Some(notes) = data.get("notes").and_then(Value::as_array) {
-        props.insert("notes_count".into(), json!(notes.len()));
-        let skipped = notes
-            .iter()
-            .filter(|note| note.get("skipped").is_some())
-            .count();
-        props.insert("notes_skipped_count".into(), json!(skipped));
-    }
-    if value.get("run_dir").is_some() {
-        props.insert("has_run_dir".into(), json!(true));
-    }
-    Value::Object(props)
-}
-
 fn error_summary(err: &anyhow::Error) -> String {
     let rendered = format!("{err:#}");
     let first = rendered.lines().next().unwrap_or("command failed").trim();
     first.chars().take(240).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn command_summary_includes_query_text_by_default() {
-        let summary = command_arg_summary(
-            &DaemonTelemetry::default(),
-            &json!({ "query": "运营爆款思路" }),
-        );
-        let object = summary.as_object().expect("summary is an object");
-        assert_eq!(object.get("query_text"), Some(&json!("运营爆款思路")));
-        assert_eq!(object.get("query_text_enabled"), Some(&json!(true)));
-        assert_eq!(object.get("query_len"), Some(&json!(6)));
-    }
-
-    #[test]
-    fn command_summary_redacts_query_text_when_disabled() {
-        let telemetry = DaemonTelemetry {
-            enabled: true,
-            include_query_text: false,
-        };
-        let summary = command_arg_summary(&telemetry, &json!({ "query": "运营爆款思路" }));
-        let object = summary.as_object().expect("summary is an object");
-        assert!(!object.contains_key("query_text"));
-        assert_eq!(object.get("query_text_enabled"), Some(&json!(false)));
-        assert_eq!(object.get("query_len"), Some(&json!(6)));
-    }
-
-    #[test]
-    fn command_summary_omits_defaulted_optional_params() {
-        let summary = command_arg_summary(
-            &DaemonTelemetry::default(),
-            &json!({ "query": "x", "debug_snapshot": false }),
-        );
-        let object = summary.as_object().expect("summary is an object");
-        assert!(!object.contains_key("metadata"));
-    }
-
-    #[test]
-    fn command_summary_tracks_explicit_optional_params_as_metadata() {
-        let summary = command_arg_summary(
-            &DaemonTelemetry::default(),
-            &json!({
-                "query": "x",
-                "tab_label": "latest",
-                "num_notes": 12,
-                "debug_snapshot": true
-            }),
-        );
-        let object = summary.as_object().expect("summary is an object");
-        let metadata = object
-            .get("metadata")
-            .and_then(Value::as_object)
-            .expect("metadata object");
-        assert_eq!(metadata.get("tab"), Some(&json!("latest")));
-        assert_eq!(metadata.get("num_notes"), Some(&json!(12)));
-        assert_eq!(metadata.get("debug_snapshot"), Some(&json!(true)));
-        assert!(!object.contains_key("tab_label"));
-        assert!(!object.contains_key("num_notes"));
-    }
-
-    #[test]
-    fn result_metrics_extracts_safe_counts() {
-        let metrics = result_metrics(&json!({
-            "run_dir": "/tmp/socai-run",
-            "data": {
-                "ok": true,
-                "cards": [{}, {}],
-                "search": { "cards": [{}, {}, {}] },
-                "selected_cards": [{}],
-                "notes": [
-                    { "id": "1", "body": "must not be copied" },
-                    { "skipped": "missing note" },
-                    { "skipped": true, "comments": ["must not be copied"] }
-                ]
-            }
-        }));
-        let object = metrics.as_object().expect("metrics is an object");
-        assert_eq!(object.get("result_ok"), Some(&json!(true)));
-        assert_eq!(object.get("cards_count"), Some(&json!(2)));
-        assert_eq!(object.get("search_cards_count"), Some(&json!(3)));
-        assert_eq!(object.get("selected_cards_count"), Some(&json!(1)));
-        assert_eq!(object.get("notes_count"), Some(&json!(3)));
-        assert_eq!(object.get("notes_skipped_count"), Some(&json!(2)));
-        assert_eq!(object.get("has_run_dir"), Some(&json!(true)));
-        assert!(!object.contains_key("body"));
-        assert!(!object.contains_key("comments"));
-    }
 }
 
 async fn send_request(

@@ -9,6 +9,8 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
+pub mod tool_call;
+
 const EVENT_SCHEMA_VERSION: u32 = 1;
 const TELEMETRY_ENDPOINT: &str = "https://socai.io/v1/events";
 const CHANNEL_CAPACITY: usize = 512;
