@@ -1,7 +1,7 @@
 import type { AgentTaskEventPayload } from "../main";
 import { esc } from "../lib/html";
 import { renderMarkdown } from "../lib/markdown";
-import { formatTaskCount, formatTokenUsage, formatTurns, getLocale, taskStatusLabel, t } from "../lib/i18n";
+import { formatTaskCount, formatTaskTimestamp, formatTokenUsage, formatTurns, taskStatusLabel, t } from "../lib/i18n";
 import type { AgentTaskView } from "./tasks";
 
 export interface TaskHistoryPageProps {
@@ -57,7 +57,7 @@ function renderTaskRows(tasks: AgentTaskView[], selectedTaskId: string | null): 
           <span class="task-row-glyph task-row-glyph-${esc(task.status)}" aria-hidden="true">${taskStatusGlyph(task.status)}</span>
           <span class="task-row-main">
             <span class="task-row-title">${esc(task.task)}</span>
-            <span class="task-row-meta">${esc(taskStatusLabel(task.status))} · ${esc(formatTime(task.created_at))}</span>
+            <span class="task-row-meta">${esc(taskStatusLabel(task.status))} · ${esc(formatTaskTimestamp(task.created_at))}</span>
           </span>
         </button>
       `;
@@ -173,9 +173,4 @@ function taskStatusGlyph(status: AgentTaskView["status"]): string {
 
 function canCancel(task: AgentTaskView): boolean {
   return task.status === "queued" || task.status === "running";
-}
-
-function formatTime(ms: number): string {
-  if (!ms) return "";
-  return new Date(ms).toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit" });
 }

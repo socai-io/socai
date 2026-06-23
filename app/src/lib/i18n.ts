@@ -97,11 +97,7 @@ const messages = {
     en: "start a one-shot browser task. socai opens a temporary chrome tab, runs the agent, saves the result, then closes the tab.",
     zh: "启动一次性浏览器任务。socai 会打开临时 chrome 标签页、运行智能体、保存结果，然后关闭标签页。",
   },
-  "task.modeAria": { en: "task mode", zh: "任务模式" },
-  "task.modeAgent": { en: "agent tasks", zh: "智能体任务" },
-  "task.modeTools": { en: "tool tests", zh: "工具测试" },
   "task.starting": { en: "starting…", zh: "启动中…" },
-  "task.runTest": { en: "run test", zh: "运行测试" },
   "task.loadingModels": { en: "loading agent models…", zh: "正在加载智能体模型…" },
   "task.addKeyHint": { en: "add an api key in the model menu (top right) to run.", zh: "在右上角模型菜单中添加 api key 后即可运行。" },
   "task.agentPlaceholder": {
@@ -111,28 +107,8 @@ const messages = {
   "task.recent": { en: "recent", zh: "最近" },
   "task.viewHistory": { en: "view history", zh: "查看历史" },
   "task.noRecent": { en: "no recent tasks yet.", zh: "暂无最近任务。" },
-
-  "tool.pickerAria": { en: "tool", zh: "工具" },
-  "tool.searchNotes": { en: "search notes", zh: "搜索笔记" },
-  "tool.topicScan": { en: "topic scan", zh: "话题扫描" },
-  "tool.extractNote": { en: "extract note", zh: "提取笔记" },
-  "tool.hintSearchNotes": {
-    en: "test search_notes on a fresh temporary xiaohongshu tab.",
-    zh: "在新的临时 xiaohongshu 标签页中测试 search_notes。",
-  },
-  "tool.hintTopicScan": {
-    en: "test topic_scan on a fresh temporary xiaohongshu tab.",
-    zh: "在新的临时 xiaohongshu 标签页中测试 topic_scan。",
-  },
-  "tool.hintExtractNote": {
-    en: "paste a note id or url; socai opens a fresh temporary page and extracts it.",
-    zh: "粘贴笔记 id 或 url；socai 会打开新的临时页面并提取内容。",
-  },
-  "tool.placeholderSearch": { en: "search query…", zh: "搜索关键词…" },
-  "tool.placeholderTopic": { en: "topic to scan…", zh: "要扫描的话题…" },
-  "tool.placeholderNote": { en: "note id or url…", zh: "笔记 id 或 url…" },
-  "tool.running": { en: "running", zh: "运行中" },
-  "tool.noResult": { en: "no tool test result yet.", zh: "暂无工具测试结果。" },
+  "task.today": { en: "today", zh: "今天" },
+  "task.yesterday": { en: "yesterday", zh: "昨天" },
 } as const satisfies Record<string, Record<Language, string>>;
 
 const taskStatusLabels = {
@@ -210,6 +186,31 @@ export function formatTurns(count: number): string {
 export function formatTokenUsage(inputTokens: number, outputTokens: number): string {
   if (currentLanguage === "zh") return `输入 ${inputTokens} / 输出 ${outputTokens} tokens`;
   return `in ${inputTokens} / out ${outputTokens} tokens`;
+}
+
+// Task timestamps read as "today 14:30" / "yesterday 09:15" for the last two
+// calendar days, falling back to a localized date ("Jun 21 09:15", with the
+// year appended only when it differs from now) for anything older.
+export function formatTaskTimestamp(ms: number): string {
+  if (!ms) return "";
+  const date = new Date(ms);
+  const time = date.toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit" });
+  return `${relativeDayLabel(date)} ${time}`;
+}
+
+function relativeDayLabel(date: Date): string {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayDiff = Math.round((startOfToday - startOfDate) / 86_400_000);
+  if (dayDiff === 0) return t("task.today");
+  if (dayDiff === 1) return t("task.yesterday");
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return date.toLocaleDateString(getLocale(), {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
 }
 
 function readInitialLanguage(): Language {

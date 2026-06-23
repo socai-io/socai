@@ -15,9 +15,7 @@ import { t } from "../lib/i18n";
 import { renderAgentEvent, renderHistoryPage } from "./task_history";
 import { renderNewTaskPage } from "./task_new";
 
-export type TaskMode = "agent" | "tools";
 type TaskPage = "new" | "history";
-export type ToolCommand = "search_notes" | "topic_scan" | "extract_note";
 export type AgentTaskView = AgentTaskSnapshot & { events: AgentTaskEventPayload[] };
 type CodexLoginStart = { message: string };
 
@@ -26,15 +24,10 @@ type CodexLoginStart = { message: string };
 export namespace agentPanel {
   let page: TaskPage = "new";
   let draft = "";
-  let mode: TaskMode = "agent";
-  let toolCommand: ToolCommand = "search_notes";
   let model = "";
   let modelProvider = "";
   let modelByProvider = new Map<string, string>();
   let submittingTask = false;
-  let toolInFlight = false;
-  let toolResult: unknown = null;
-  let toolError = "";
   let submitError = "";
   let tasks: AgentTaskView[] = [];
   let pendingEvents = new Map<string, AgentTaskEventPayload[]>();
@@ -446,13 +439,8 @@ export namespace agentPanel {
         ${page === "new"
           ? renderNewTaskPage({
               shell,
-              mode,
-              toolCommand,
               draft,
               submittingTask,
-              toolInFlight,
-              toolResult,
-              toolError,
               submitError,
               tasks,
               selectedModel: selectedModel(),
@@ -495,24 +483,6 @@ export namespace agentPanel {
       updateSubmitButton(shell);
     });
 
-    document.getElementById("mode-agent")?.addEventListener("click", () => {
-      mode = "agent";
-      submitError = "";
-      shell.rerender();
-    });
-    document.getElementById("mode-tools")?.addEventListener("click", () => {
-      mode = "tools";
-      submitError = "";
-      shell.rerender();
-    });
-    document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        toolCommand = btn.dataset.tool as ToolCommand;
-        toolError = "";
-        toolResult = null;
-        shell.rerender();
-      });
-    });
     document.querySelectorAll<HTMLButtonElement>("[data-task-id]").forEach((btn) => {
       btn.addEventListener("click", () => {
         selectedTaskId = btn.dataset.taskId ?? null;
@@ -538,8 +508,7 @@ export namespace agentPanel {
 
     document.getElementById("task-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
-      if (mode === "agent") await startAgentTask(shell);
-      else await runDedicatedTool(shell);
+      await startAgentTask(shell);
     });
 
     document.getElementById("overlay-chrome-connect")?.addEventListener("click", () => {
@@ -595,11 +564,9 @@ export namespace agentPanel {
     const button = document.getElementById("task-submit") as HTMLButtonElement | null;
     if (!button) return;
     const connected = shell.status.state === "connected";
-    const agentMode = mode === "agent";
     const selected = selectedModel();
     const modelReady = !!selected && selected.has_key;
-    const running = agentMode ? submittingTask : toolInFlight;
-    button.disabled = running || !draft.trim() || !connected || (agentMode && !modelReady);
+    button.disabled = submittingTask || !draft.trim() || !connected || !modelReady;
   }
 
   async function startAgentTask(shell: ShellState): Promise<void> {
@@ -623,29 +590,6 @@ export namespace agentPanel {
       submitError = `${err}`;
     } finally {
       submittingTask = false;
-      shell.rerender();
-    }
-  }
-
-  async function runDedicatedTool(shell: ShellState): Promise<void> {
-    const value = draft.trim();
-    if (!value || toolInFlight) return;
-    toolInFlight = true;
-    toolError = "";
-    toolResult = null;
-    shell.rerender();
-    try {
-      if (toolCommand === "extract_note") {
-        toolResult = await invoke("tool_extract_note", { noteId: value });
-      } else if (toolCommand === "topic_scan") {
-        toolResult = await invoke("tool_topic_scan", { query: value });
-      } else {
-        toolResult = await invoke("tool_search_notes", { query: value });
-      }
-    } catch (err) {
-      toolError = `${err}`;
-    } finally {
-      toolInFlight = false;
       shell.rerender();
     }
   }

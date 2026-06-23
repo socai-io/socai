@@ -439,40 +439,7 @@ body.has-paper > * { position: relative; z-index: 1; }
   border-top: var(--hairline);
   background: var(--canvas);
 }
-.mode-switch,
-.tool-picker {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
-.mode-switch {
-  padding: 2px;
-  border: var(--hairline);
-  border-radius: var(--r-pill);
-  background: var(--surface);
-}
-.mode-button,
-.tool-choice {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  border-radius: var(--r-pill);
-  color: var(--fg-soft);
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
-  letter-spacing: 0.02em;
-  padding: 6px 10px;
-  white-space: nowrap;
-}
-.mode-button-active,
-.tool-choice-active {
-  background: var(--ink-0);
-  color: var(--ink-9);
-}
 .task-context { flex: 1; }
-.tool-picker { flex: 1; }
 
 .page-switch {
   align-self: center;
@@ -728,7 +695,6 @@ body.has-paper > * { position: relative; z-index: 1; }
   word-break: break-word;
 }
 .result-error { color: var(--status-error-fg); }
-.result-running { color: var(--fg-soft); }
 
 /* Rendered markdown for the final answer. Reuses the .result-pre container
    (border/padding/scroll) but switches to prose typography. Targets the plain

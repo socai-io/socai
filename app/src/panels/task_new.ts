@@ -2,21 +2,16 @@ import type { ModelInfo, Status, ShellState } from "../main";
 import { esc } from "../lib/html";
 import {
   formatRunningTaskCount,
-  getLocale,
+  formatTaskTimestamp,
   taskStatusLabel,
   t,
 } from "../lib/i18n";
-import type { AgentTaskView, TaskMode, ToolCommand } from "./tasks";
+import type { AgentTaskView } from "./tasks";
 
 export interface NewTaskPageProps {
   shell: ShellState;
-  mode: TaskMode;
-  toolCommand: ToolCommand;
   draft: string;
   submittingTask: boolean;
-  toolInFlight: boolean;
-  toolResult: unknown;
-  toolError: string;
   submitError: string;
   tasks: AgentTaskView[];
   selectedModel: ModelInfo | undefined;
@@ -25,9 +20,8 @@ export interface NewTaskPageProps {
 export function renderNewTaskPage(props: NewTaskPageProps): string {
   const connected = props.shell.status.state === "connected";
   const modelReady = !!props.selectedModel && props.selectedModel.has_key;
-  const agentMode = props.mode === "agent";
-  const running = agentMode ? props.submittingTask : props.toolInFlight;
-  const runDisabled = running || !props.draft.trim() || !connected || (agentMode && !modelReady);
+  const running = props.submittingTask;
+  const runDisabled = running || !props.draft.trim() || !connected || !modelReady;
   const gated = !connected;
 
   return `
@@ -39,10 +33,9 @@ export function renderNewTaskPage(props: NewTaskPageProps): string {
         </div>
         <div class="compose-form-stack ${gated ? "is-masked" : ""}">
           <div class="compose-form-inner" aria-hidden="${gated ? "true" : "false"}">
-            ${renderTaskForm(props, agentMode, running, runDisabled)}
-            ${renderInlineGuard(props.mode, props.toolCommand, props.selectedModel)}
+            ${renderTaskForm(props, running, runDisabled)}
+            ${renderInlineGuard(props.selectedModel)}
             ${props.submitError ? `<pre class="result-pre result-error">${esc(props.submitError)}</pre>` : ""}
-            ${agentMode ? "" : renderToolResult(props)}
           </div>
           ${!connected ? renderConnectOverlay(props.shell.status) : ""}
         </div>
@@ -55,7 +48,6 @@ export function renderNewTaskPage(props: NewTaskPageProps): string {
 
 function renderTaskForm(
   props: NewTaskPageProps,
-  agentMode: boolean,
   running: boolean,
   runDisabled: boolean,
 ): string {
@@ -65,26 +57,21 @@ function renderTaskForm(
         id="task-input"
         class="task-input"
         rows="5"
-        placeholder="${esc(taskPlaceholder(props.mode, props.toolCommand))}"
+        placeholder="${esc(t("task.agentPlaceholder"))}"
         ${running ? "disabled" : ""}
       >${esc(props.draft)}</textarea>
 
       <div class="task-controls">
-        <div class="mode-switch" aria-label="${esc(t("task.modeAria"))}">
-          <button id="mode-agent" type="button" class="mode-button ${agentMode ? "mode-button-active" : ""}">${esc(t("task.modeAgent"))}</button>
-          <button id="mode-tools" type="button" class="mode-button ${!agentMode ? "mode-button-active" : ""}">${esc(t("task.modeTools"))}</button>
-        </div>
-        ${agentMode ? renderAgentSummary(props.selectedModel) : renderToolPicker(props.toolCommand)}
+        ${renderAgentSummary(props.selectedModel)}
         <button id="task-submit" type="submit" class="btn-primary" ${runDisabled ? "disabled" : ""}>
-          ${running ? esc(t("task.starting")) : agentMode ? esc(t("task.new")) : esc(t("task.runTest"))}
+          ${running ? esc(t("task.starting")) : esc(t("task.new"))}
         </button>
       </div>
     </form>
   `;
 }
 
-function renderInlineGuard(mode: TaskMode, toolCommand: ToolCommand, selected: ModelInfo | undefined): string {
-  if (mode !== "agent") return renderToolHint(toolCommand);
+function renderInlineGuard(selected: ModelInfo | undefined): string {
   if (!selected) return `<p class="t-small subtle">${esc(t("task.loadingModels"))}</p>`;
   if (!selected.has_key) return `<p class="t-small subtle">${esc(t("task.addKeyHint"))}</p>`;
   return "";
@@ -97,41 +84,6 @@ function renderAgentSummary(selected: ModelInfo | undefined): string {
     ? `${esc(t("agent.label"))} · ${esc(provider)} · <span class="t-mono">${esc(modelId)}</span>`
     : `${esc(t("agent.label"))} · ${esc(t("agent.loading"))}`;
   return `<p class="t-small subtle task-context">${summary}</p>`;
-}
-
-function renderToolPicker(toolCommand: ToolCommand): string {
-  const tools: Array<[ToolCommand, string]> = [
-    ["search_notes", t("tool.searchNotes")],
-    ["topic_scan", t("tool.topicScan")],
-    ["extract_note", t("tool.extractNote")],
-  ];
-  return `
-    <div class="tool-picker" aria-label="${esc(t("tool.pickerAria"))}">
-      ${tools.map(([cmd, label]) => `
-        <button type="button" data-tool="${cmd}" class="tool-choice ${toolCommand === cmd ? "tool-choice-active" : ""}">
-          ${esc(label)}
-        </button>
-      `).join("")}
-    </div>
-  `;
-}
-
-function renderToolHint(toolCommand: ToolCommand): string {
-  const hint = {
-    search_notes: t("tool.hintSearchNotes"),
-    topic_scan: t("tool.hintTopicScan"),
-    extract_note: t("tool.hintExtractNote"),
-  }[toolCommand];
-  return `<p class="t-small subtle">${esc(hint)}</p>`;
-}
-
-function taskPlaceholder(mode: TaskMode, toolCommand: ToolCommand): string {
-  if (mode === "agent") return t("task.agentPlaceholder");
-  switch (toolCommand) {
-    case "search_notes": return t("tool.placeholderSearch");
-    case "topic_scan": return t("tool.placeholderTopic");
-    case "extract_note": return t("tool.placeholderNote");
-  }
 }
 
 function renderConnectOverlay(status: Status): string {
@@ -216,25 +168,12 @@ function renderTaskSummaryRows(items: AgentTaskView[], emptyText: string): strin
           <span class="task-row-glyph task-row-glyph-${esc(task.status)}" aria-hidden="true">${taskStatusGlyph(task.status)}</span>
           <span class="task-row-main">
             <span class="task-row-title">${esc(task.task)}</span>
-            <span class="task-row-meta">${esc(taskStatusLabel(task.status))} · ${esc(formatTime(task.created_at))}</span>
+            <span class="task-row-meta">${esc(taskStatusLabel(task.status))} · ${esc(formatTaskTimestamp(task.created_at))}</span>
           </span>
         </button>
       `).join("")}
     </div>
   `;
-}
-
-function renderToolResult(props: NewTaskPageProps): string {
-  if (props.toolInFlight) {
-    return `<pre class="result-pre result-running">${esc(t("tool.running"))}: ${esc(props.toolCommand)}(${esc(JSON.stringify(props.draft.trim()))})</pre>`;
-  }
-  if (props.toolError) {
-    return `<pre class="result-pre result-error">${esc(props.toolError)}</pre>`;
-  }
-  if (props.toolResult) {
-    return `<pre class="result-pre">${esc(JSON.stringify(props.toolResult, null, 2))}</pre>`;
-  }
-  return `<p class="t-small placeholder">${esc(t("tool.noResult"))}</p>`;
 }
 
 function taskStatusGlyph(status: AgentTaskView["status"]): string {
@@ -246,9 +185,4 @@ function taskStatusGlyph(status: AgentTaskView["status"]): string {
     case "cancelled": return "−";
     case "interrupted": return "!";
   }
-}
-
-function formatTime(ms: number): string {
-  if (!ms) return "";
-  return new Date(ms).toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit" });
 }
