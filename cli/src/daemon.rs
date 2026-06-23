@@ -415,11 +415,6 @@ impl DaemonState {
         let started = Instant::now();
         let result = async {
             let debug_snapshot = debug_snapshot_flag(&args);
-            // Route CDP through the bridge (spawning it on first use) so the
-            // chrome connection — and its allow-debugging consent — survives
-            // daemon restarts. Falls back to a direct connect when the bridge
-            // can't start.
-            crate::bridge::ensure_bridge_env().await;
             // Create the session tab blank and let the command navigate itself:
             // every site command either opens its own entry URL (e.g. `author`
             // opens the profile directly) or has a `before` hook that reaches
@@ -729,8 +724,8 @@ fn debug_snapshot_flag(args: &Value) -> bool {
 
 /// Spawn `socai <subcommand>` as a detached background process (own session
 /// on unix) with stdout/stderr appended to `log_path`. `configure` can adjust
-/// the command (e.g. env) before spawning. Shared by the daemon and the CDP
-/// bridge.
+/// the command (e.g. env) before spawning. Used by the daemon to relaunch
+/// itself detached.
 pub(crate) fn spawn_detached_subcommand(
     subcommand: &str,
     log_path: &std::path::Path,
@@ -764,8 +759,7 @@ pub(crate) fn spawn_detached_subcommand(
         .with_context(|| format!("spawn socai {subcommand}"))
 }
 
-/// The socai state dir (`$SOCAI_HOME` or `~/.socai`), shared by the daemon
-/// and the CDP bridge.
+/// The socai state dir (`$SOCAI_HOME` or `~/.socai`).
 pub(crate) fn socai_home() -> Result<PathBuf> {
     match std::env::var_os("SOCAI_HOME") {
         Some(path) => Ok(PathBuf::from(path)),
@@ -818,11 +812,11 @@ fn request_id() -> String {
     format!("{}-{millis}", std::process::id())
 }
 
-/// Best-effort sweep: terminate every lingering socai `__daemon` / `__bridge`
-/// process, no matter which binary or `SOCAI_HOME` spawned it. The graceful
-/// socket shutdown only reaches whoever currently owns the IPC endpoint, so
-/// this catches orphans left by restart races or crashes. Returns the number
-/// of processes signalled.
+/// Best-effort sweep: terminate every lingering socai `__daemon` process, no
+/// matter which binary or `SOCAI_HOME` spawned it. The graceful socket shutdown
+/// only reaches whoever currently owns the IPC endpoint, so this catches
+/// orphans left by restart races or crashes. Returns the number of processes
+/// signalled.
 pub async fn kill_lingering_helpers() -> usize {
     let pids = lingering_helper_pids();
     if pids.is_empty() {
@@ -839,8 +833,8 @@ pub async fn kill_lingering_helpers() -> usize {
     pids.len()
 }
 
-/// PIDs of running `socai __daemon` / `socai __bridge` processes (excluding the
-/// caller). Identified by command line so it spans every install path.
+/// PIDs of running `socai __daemon` processes (excluding the caller).
+/// Identified by command line so it spans every install path.
 #[cfg(unix)]
 fn lingering_helper_pids() -> Vec<u32> {
     let me = std::process::id();
@@ -860,9 +854,9 @@ fn lingering_helper_pids() -> Vec<u32> {
                 return None;
             }
             // The binary is always named `socai`; matching the exact
-            // `socai __daemon` / `socai __bridge` tail avoids hitting the
-            // `socai stop` process or unrelated programs.
-            (cmd.contains("socai __daemon") || cmd.contains("socai __bridge")).then_some(pid)
+            // `socai __daemon` tail avoids hitting the `socai stop` process or
+            // unrelated programs.
+            cmd.contains("socai __daemon").then_some(pid)
         })
         .collect()
 }

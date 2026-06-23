@@ -34,7 +34,23 @@ socai总是用模拟人的方式，通过CDP和DOM进行每一步的网页操作
 
 3. 然后，按以下的3步流程逐步执行，并且不断循环这3步流程，一步一步地添加：
   1) 首先，添加下一步单点操作的代码。代码结构要符合上面的代码准则。如果是刚开始实现第一步，则新增一个打开网页的操作；如果是后面的步骤，则是新增一个鼠标或键盘操作或页面js操作等等，你需要基于上一个循环中对snapshot理解，去准确写出代码。避免猜测页面元素，总是根据上一个循环中的实际DOM信息来写代码。确保新增的工具函数里支持--debug-snapshot参数，确保每执行一个动作都能保存下来变化的snapshots。
-  2) 然后，你调用目前代码已有的半成品工具函数，比如 `cargo run -p socai-cli -- <site_id> <command> ... --debug-snapshot`。此时cli会开始操作Chrome，每次命令在 stderr 打印 `run_dir`（目录名形如 `<本地时间>_<site_id>_<command>[_<搜索词>]`，位于 ~/.socai/runs/ 下），snapshots 保存在 `<run_dir>/snapshots/`。首次连接Chrome会弹窗，用户需要确认allow debugging。如果用户没有确认导致超时，请提醒用户。
+  2) 然后，你调用目前代码已有的半成品工具函数，比如 `cargo run -p socai-cli -- <site_id> <command> ... --debug-snapshot`。此时cli会开始操作Chrome，每次命令在 stderr 打印 `run_dir`（目录名形如 `<本地时间>_<site_id>_<command>[_<搜索词>]`，位于 ~/.socai/runs/ 下），snapshots 保存在 `<run_dir>/snapshots/`。
+
+**开发前先把 Chrome 切到 managed profile，避免反复弹 allow-debugging。** socai 默认复用用户日常 Chrome，每次 rebuild 重启 daemon 后首次连接都会弹一次 allow-debugging；开发时反复 rebuild 会很烦。所以在开始这一轮自我创建开发前，先执行一次：
+
+```bash
+cargo run -p socai-cli -- config set chrome.profile managed
+cargo run -p socai-cli -- stop   # 让 daemon 下次用新 profile
+```
+
+之后 socai 会拉起一个它自己管理的独立 Chrome（profile 目录 `~/.socai/chrome-profile`），不碰用户日常浏览器，**不再弹 allow-debugging**，daemon 反复重启也不会。代价是这个独立 Chrome 是干净 profile：首次运行时请提醒用户在弹出的 Chrome 窗口里手动登录一次目标网站（如小红书），登录态会持久化在该 profile 目录里，后续重建无需再登录。
+
+开发全部完成后，把 profile 改回去，恢复日常使用默认 Chrome 的行为：
+
+```bash
+cargo run -p socai-cli -- config unset chrome.profile
+cargo run -p socai-cli -- stop
+```
   3) 这步工具运行完成后，你需要查看最新一步的增量snapshot。每帧目录包含：`screenshot.jpg`（用户视窗）、`screenshot_full.jpg`（全页截图，和DOM范围对应）、`a11y.json`（精简无障碍树）、`dom.html`（精简DOM）、`dom.raw.html`（原始DOM，很大，一般不需要）。你每次先用多模态能力看两张截图来理解页面，再读 `a11y.json` 理解页面区块与状态，然后重点从 `dom.html` 里面来确认元素。确认当前操作是否符合预期。由于你是一步一步添加操作的，这时候的工具结果只是中间结果，你要检验的是so far这个中间结果是否符合预期。如果符合预期，则基于这一步snapshot的结果，继续实现下一步的代码。如果结果不符合预期，说明上一步的代码有问题，你排查snapshot，修改上一步的代码。
 重复以上3步循环，直到新加的工具完整执行每一步，能完成用户的需求。总是按照上面的三部曲，每一步都要确认snapshot再添加下一步的代码，避免跳步。如果再开发过程中发现有和用户描述不符或者一开始用户没有描述清楚的地方，这时你应该用户再次交互对话，来理清楚操作细节。
 代码实现过程中，多参考sites目录下已有的其他网站代码。

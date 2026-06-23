@@ -1,4 +1,3 @@
-mod bridge;
 mod daemon;
 mod tui;
 mod version;
@@ -68,8 +67,7 @@ fn build_cli() -> clap::Command {
                         ),
                 ),
         )
-        .subcommand(clap::Command::new("__daemon").hide(true))
-        .subcommand(clap::Command::new("__bridge").hide(true));
+        .subcommand(clap::Command::new("__daemon").hide(true));
     for site in all_sites() {
         let mut site_cmd = clap::Command::new(site.id)
             .about(site.about)
@@ -194,7 +192,7 @@ async fn run_site_command(
 fn should_warn_for_update(subcommand: &str) -> bool {
     !matches!(
         subcommand,
-        "__daemon" | "__bridge" | "update" | "version" | "config"
+        "__daemon" | "update" | "version" | "config"
     )
 }
 
@@ -228,11 +226,9 @@ async fn main() -> Result<()> {
         "config" => run_config_command(sub_matches)?,
         "stop" => {
             // Graceful shutdown reaches whoever owns the IPC endpoint; the
-            // sweep then kills any orphan daemon/bridge from any binary or
-            // SOCAI_HOME, so one `socai stop` always leaves a clean slate.
+            // sweep then kills any orphan daemon from any binary or SOCAI_HOME,
+            // so one `socai stop` always leaves a clean slate.
             let daemon_stopped = daemon::stop_daemon().await?;
-            // Stop the CDP bridge too so Chrome drops its debugging banner.
-            let bridge_stopped = bridge::stop_bridge().await?;
             let swept = daemon::kill_lingering_helpers().await;
 
             if daemon_stopped || swept > 0 {
@@ -240,15 +236,11 @@ async fn main() -> Result<()> {
             } else {
                 eprintln!("socai rust daemon is not running");
             }
-            if bridge_stopped {
-                eprintln!("socai cdp bridge stopped");
-            }
             if swept > 0 {
                 eprintln!("cleaned up {swept} lingering socai helper process(es)");
             }
         }
         "__daemon" => daemon::run_daemon().await?,
-        "__bridge" => bridge::run_bridge().await?,
         _ => {
             if let Some(site) = find_site(name) {
                 let (command_name, command_matches) = sub_matches
