@@ -126,6 +126,22 @@ body.has-paper > * { position: relative; z-index: 1; }
   border-bottom: var(--hairline);
   background: var(--surface);
 }
+/* Overlay titlebar drag surface — only the bare header/brand area drags; the
+   buttons and toggles inside stay clickable (they lack the attribute). */
+.topbar[data-tauri-drag-region],
+.brand[data-tauri-drag-region] {
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* macOS floats the native traffic-light cluster over the header; reserve
+   ~80px on the left so the brand clears it, and add height so the brand sits
+   level with the buttons. Right-side status keeps its margin-left:auto line. */
+.is-macos .topbar {
+  padding-left: 80px;
+  padding-top: var(--sp-4);
+  padding-bottom: var(--sp-4);
+}
 .brand {
   display: inline-flex;
   align-items: center;

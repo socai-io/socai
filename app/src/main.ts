@@ -149,8 +149,8 @@ function render(): void {
     .join("");
   root.innerHTML = `
     <div class="shell">
-      <header class="topbar">
-        <div class="brand">${MARK_SVG}<span class="brand-name">socai</span></div>
+      <header class="topbar" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region>${MARK_SVG}<span class="brand-name">socai</span></div>
         ${renderUpdateChip()}
         <div class="topbar-controls">
           <div class="status-capsule" role="group" aria-label="${htmlEsc(t("status.capsuleAria"))}">
@@ -416,6 +416,9 @@ function eventPathHasClass(event: Event, className: string): boolean {
 
 async function main(): Promise<void> {
   applyLanguageToDocument();
+  // Overlay titlebar (see tauri.conf.json) floats the native macOS traffic
+  // lights over our header; reserve their inset only on macOS.
+  if (navigator.userAgent.includes("Mac")) document.body.classList.add("is-macos");
 
   await listen<Status>("cdp:status_changed", (event) => {
     status = event.payload;
