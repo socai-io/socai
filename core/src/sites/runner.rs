@@ -118,7 +118,8 @@ pub async fn call_site_tool(
 
 /// Allocate a run dir for a one-shot command and build its ToolContext with
 /// the site enabled (so site-gated tools resolve). The site id is part of the
-/// run-dir name (`<ts>_<site>_<command>[_<query>]`).
+/// run-dir name (`<ts>_<site>_<command>[_<identifier>]`, where the optional
+/// identifier is the command's first non-empty `query`/`author_id` input).
 pub fn command_context(site_id: &str, label: &str) -> (String, ToolContext) {
     command_context_for_label(site_id, &format!("{site_id}_{label}"))
 }
