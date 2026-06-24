@@ -335,12 +335,12 @@ impl PageSession {
     /// Close the underlying tab. Consumes the session.
     pub async fn close(self) -> anyhow::Result<()> {
         let target_id = self.target_id.clone();
-        let client = self
-            .owner
-            .browser_client()
-            .await
-            .ok_or_else(|| anyhow!("CDP browser websocket is not connected"))?;
-        client
+        // Use the browser websocket that created/attached this PageSession, not
+        // whatever browser client the runtime currently holds. The runtime may
+        // have disconnected/reconnected or switched profile by the time a
+        // session is dropped/cancelled; cleanup should still target the browser
+        // that owns this target id.
+        self.client
             .execute("Target.closeTarget", json!({ "targetId": target_id }))
             .await?;
         self.owner.unregister_owned_target(&target_id).await;
