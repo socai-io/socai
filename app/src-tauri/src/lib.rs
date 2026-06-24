@@ -11,6 +11,58 @@ use tasks::AgentTaskRegistry;
 use telemetry::{duration_ms, DesktopTelemetry};
 use tauri::{Emitter, Manager};
 
+/// macOS traffic-light inset (x, y). With this math the close-button center
+/// lands at `y - 2` px from the window top; the `.is-macos .topbar` header is
+/// 52px tall (centerline 26px), so `y = 28` puts the lights on the same row as
+/// the brand and status capsule. Keep `y` in sync with that header height.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_POS: (f64, f64) = (19.0, 28.0);
+
+/// Reposition the native macOS traffic lights onto our header's centerline.
+///
+/// tao applies `trafficLightPosition` inside its content-view `drawRect`, but
+/// wry swaps in its own webview parent view, so that path never fires for us.
+/// We replicate tao's inset math here and call it on window show/resize/focus.
+#[cfg(target_os = "macos")]
+fn reposition_traffic_lights(ns_window_ptr: *mut std::ffi::c_void, x: f64, y: f64) {
+    use objc2_app_kit::{NSWindow, NSWindowButton};
+
+    if ns_window_ptr.is_null() {
+        return;
+    }
+    // Safety: Tauri hands us a valid NSWindow pointer; we only message it on the
+    // main thread (setup + window-event callbacks both run there).
+    let window: &NSWindow = unsafe { &*(ns_window_ptr as *const NSWindow) };
+
+    let (Some(close), Some(mini), Some(zoom)) = (
+        window.standardWindowButton(NSWindowButton::CloseButton),
+        window.standardWindowButton(NSWindowButton::MiniaturizeButton),
+        window.standardWindowButton(NSWindowButton::ZoomButton),
+    ) else {
+        return;
+    };
+
+    let win_h = window.frame().size.height;
+    let close_rect = close.frame();
+
+    // Resize the private title-bar container so clicks register at the new
+    // position, pinned to the window top (tao's approach).
+    if let Some(container) = unsafe { close.superview().and_then(|sv| sv.superview()) } {
+        let mut r = container.frame();
+        r.size.height = close_rect.size.height + y;
+        r.origin.y = win_h - r.size.height;
+        container.setFrame(r);
+    }
+
+    // Evenly space the three buttons from x, keeping their vertical offset.
+    let space = mini.frame().origin.x - close_rect.origin.x;
+    for (i, button) in [&close, &mini, &zoom].into_iter().enumerate() {
+        let mut origin = button.frame().origin;
+        origin.x = x + (i as f64) * space;
+        button.setFrameOrigin(origin);
+    }
+}
+
 pub fn run() {
     // Tauri owns its own in-process runtime.
     let runtime = SocaiRuntime::new();
@@ -75,6 +127,28 @@ pub fn run() {
                     }
                 }
             });
+
+            // macOS: drop the native traffic lights onto our header centerline,
+            // and re-apply on show/resize/focus (macOS resets them otherwise).
+            #[cfg(target_os = "macos")]
+            if let Some(win) = app.get_webview_window("main") {
+                let (x, y) = TRAFFIC_LIGHT_POS;
+                if let Ok(ptr) = win.ns_window() {
+                    reposition_traffic_lights(ptr, x, y);
+                }
+                let win_for_events = win.clone();
+                win.on_window_event(move |event| {
+                    if matches!(
+                        event,
+                        tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(true)
+                    ) {
+                        if let Ok(ptr) = win_for_events.ns_window() {
+                            reposition_traffic_lights(ptr, x, y);
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

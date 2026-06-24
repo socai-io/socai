@@ -3,6 +3,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 
@@ -111,13 +112,6 @@ export interface ShellState {
   rerender: () => void;
 }
 
-const MARK_SVG = `
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="24" height="24" fill="none" role="img" aria-label="socai">
-    <rect x="2.5" y="2.5" width="27" height="27" rx="3" stroke="currentColor" stroke-width="1.6"></rect>
-    <rect x="16" y="16" width="10" height="10" rx="1.2" fill="currentColor"></rect>
-  </svg>
-`;
-
 interface PanelModule {
   label: string;
   render: (shell: ShellState) => string;
@@ -150,7 +144,6 @@ function render(): void {
   root.innerHTML = `
     <div class="shell">
       <header class="topbar" data-tauri-drag-region>
-        <div class="brand" data-tauri-drag-region>${MARK_SVG}<span class="brand-name">socai</span></div>
         ${renderUpdateChip()}
         <div class="topbar-controls">
           <div class="status-capsule" role="group" aria-label="${htmlEsc(t("status.capsuleAria"))}">
@@ -418,7 +411,20 @@ async function main(): Promise<void> {
   applyLanguageToDocument();
   // Overlay titlebar (see tauri.conf.json) floats the native macOS traffic
   // lights over our header; reserve their inset only on macOS.
-  if (navigator.userAgent.includes("Mac")) document.body.classList.add("is-macos");
+  if (navigator.userAgent.includes("Mac")) {
+    document.body.classList.add("is-macos");
+    // In fullscreen macOS hides the traffic lights, so collapse the left gutter.
+    const win = getCurrentWindow();
+    const syncFullscreen = async (): Promise<void> => {
+      try {
+        document.body.classList.toggle("is-fullscreen", await win.isFullscreen());
+      } catch (e) {
+        console.error("isFullscreen failed:", e);
+      }
+    };
+    void syncFullscreen();
+    void win.onResized(() => void syncFullscreen());
+  }
 
   await listen<Status>("cdp:status_changed", (event) => {
     status = event.payload;

@@ -20,3 +20,11 @@ serde_json.workspace = true
 tokio = { workspace = true }
 anyhow.workspace = true
 socai-core.workspace = true
+
+# macOS-only: reposition the native traffic lights onto our header centerline.
+# tao's built-in trafficLightPosition inset runs inside its content-view drawRect,
+# which wry replaces — so we re-apply it ourselves on window events.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSButton", "NSControl", "NSResponder"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry"] }

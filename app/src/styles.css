@@ -126,33 +126,27 @@ body.has-paper > * { position: relative; z-index: 1; }
   border-bottom: var(--hairline);
   background: var(--surface);
 }
-/* Overlay titlebar drag surface — only the bare header/brand area drags; the
-   buttons and toggles inside stay clickable (they lack the attribute). */
-.topbar[data-tauri-drag-region],
-.brand[data-tauri-drag-region] {
+/* Overlay titlebar drag surface — the bare header area drags; the buttons and
+   toggles inside stay clickable (they lack the attribute). */
+.topbar[data-tauri-drag-region] {
   cursor: default;
   -webkit-user-select: none;
   user-select: none;
 }
-/* macOS floats the native traffic-light cluster over the header; reserve
-   ~80px on the left so the brand clears it, and add height so the brand sits
-   level with the buttons. Right-side status keeps its margin-left:auto line. */
+/* macOS overlay titlebar — the OS keeps the native traffic lights (repositioned
+   onto our centerline in lib.rs), and the header reserves a fixed px gutter so
+   header content clears the lights. The 52px band is paired with the native
+   y=28 inset so the light cluster centers at ~26px = this band's center. */
 .is-macos .topbar {
-  padding-left: 80px;
-  padding-top: var(--sp-4);
-  padding-bottom: var(--sp-4);
+  padding-left: 80px;          /* clears the 3 traffic-light buttons */
+  min-height: 52px;            /* keep in sync with TRAFFIC_LIGHT_POS.y in lib.rs */
+  padding-top: 0;
+  padding-bottom: 0;
 }
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  color: var(--ink-0);
-}
-.brand-name {
-  font-family: var(--font-sans);
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--ink-0);
+/* Fullscreen hides the OS traffic lights, so reclaim the gutter. Toggled via
+   body.is-fullscreen in main.ts. */
+.is-macos.is-fullscreen .topbar {
+  padding-left: var(--sp-5);
 }
 .topbar-controls {
   margin-left: auto;
@@ -267,18 +261,14 @@ body.has-paper > * { position: relative; z-index: 1; }
   width: 30px;
   height: 30px;
   padding: 0;
-  border: var(--hairline);
-  border-radius: var(--r-pill);
-  background: var(--surface);
+  border: 0;
+  background: transparent;
   color: var(--fg-soft);
   cursor: pointer;
-  transition:
-    border-color var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease),
-    background-color var(--t-fast) var(--ease);
+  transition: color var(--t-fast) var(--ease);
 }
-.icon-button:hover { color: var(--ink-0); border-color: var(--line-strong); }
-.icon-button-active { color: var(--ink-0); border-color: var(--line-strong); background: var(--ink-7); }
+.icon-button:hover { color: var(--ink-0); }
+.icon-button-active { color: var(--ink-0); }
 .language-toggle {
   display: inline-flex;
   align-items: center;
@@ -568,6 +558,7 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex: 1;
   display: flex;
   flex-direction: column;
+  justify-content: center;   /* center core content vertically in the window */
   gap: var(--sp-4);
   padding: var(--sp-4) var(--sp-5);
   max-width: 1080px;
