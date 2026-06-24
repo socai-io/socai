@@ -8,6 +8,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 
 use super::connection::Cdp;
+use super::endpoint;
 use super::raw_client::RawCdpClient;
 use super::snapshot::SnapshotRecorder;
 
@@ -350,12 +351,25 @@ impl PageSession {
     /// Close the underlying tab. Consumes the session.
     pub async fn close(self) -> anyhow::Result<()> {
         // `Page.close` often closes the target websocket before Chrome sends a
-        // command response. Treat that as success; cancellation paths that need
-        // a stronger close use `Target.closeTarget` via the HTTP endpoint.
+        // command response. Treat that as success, but if the command errors
+        // before Chrome closes the target, best-effort fall back to the stronger
+        // target-level close so owned tabs do not become untracked leftovers.
         let target_id = self.target_id.clone();
-        let _ = self.execute("Page.close", json!({})).await;
+        if self.execute("Page.close", json!({})).await.is_err() {
+            self.close_target_fallback(&target_id).await;
+        }
         self.owner.unregister_owned_target(&target_id).await;
         Ok(())
+    }
+
+    async fn close_target_fallback(&self, target_id: &str) {
+        if let Some(client) = self.owner.browser_client().await {
+            let _ = client
+                .execute("Target.closeTarget", json!({ "targetId": target_id }))
+                .await;
+        } else if let Ok(endpoint) = self.owner.endpoint().await {
+            let _ = endpoint::close_debug_target(&endpoint, target_id).await;
+        }
     }
 }
 

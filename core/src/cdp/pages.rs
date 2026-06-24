@@ -108,7 +108,9 @@ impl PageSessionManager {
         }
         let endpoint = self.cdp.endpoint().await?;
         let result = endpoint::close_debug_target(&endpoint, target_id).await;
-        self.cdp.unregister_owned_target(target_id).await;
+        if matches!(result, Ok(true)) {
+            self.cdp.unregister_owned_target(target_id).await;
+        }
         result
     }
 }
