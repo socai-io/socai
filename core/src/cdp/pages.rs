@@ -1,7 +1,6 @@
 use serde_json::{json, Value};
 
 use crate::cdp::connection::Cdp;
-use crate::cdp::endpoint;
 use crate::cdp::session::PageSession;
 
 /// Thin page factory over one remote-debugging endpoint. Higher-level runtime
@@ -16,32 +15,19 @@ impl PageSessionManager {
         Self { cdp }
     }
 
-    /// Open a new socai-owned tab and control only that target. This
-    /// deliberately avoids browser-wide CDP target discovery/auto-attach, so
-    /// unrelated user tabs are not instrumented.
+    /// Open a new socai-owned tab and control only that target. All target
+    /// lifecycle is routed through the browser websocket (`Target.*`) so
+    /// existing and managed Chrome share one code path. This deliberately
+    /// avoids browser-wide CDP target discovery/auto-attach, so unrelated user
+    /// tabs are not instrumented.
     pub async fn create_page(&self, start_url: &str) -> anyhow::Result<PageSession> {
-        if let Some(browser_client) = self.cdp.browser_client().await {
-            return self
-                .create_page_via_browser_ws(browser_client, start_url)
-                .await;
-        }
-
-        let endpoint = self.cdp.endpoint().await?;
-        let target = endpoint::create_debug_page(&endpoint, start_url).await?;
-        let target_id = target.target_id.clone();
-        let Some(ws) = target.web_socket_debugger_url else {
-            let _ = endpoint::close_debug_target(&endpoint, &target_id).await;
-            anyhow::bail!("created target missing webSocketDebuggerUrl: {target_id}");
-        };
-        let page = match PageSession::connect(target_id.clone(), &ws, self.cdp.clone()).await {
-            Ok(page) => page,
-            Err(err) => {
-                let _ = endpoint::close_debug_target(&endpoint, &target_id).await;
-                return Err(err);
-            }
-        };
-        self.cdp.register_owned_target(target_id).await;
-        Ok(page)
+        let browser_client = self
+            .cdp
+            .browser_client()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("CDP browser websocket is not connected"))?;
+        self.create_page_via_browser_ws(browser_client, start_url)
+            .await
     }
 
     async fn create_page_via_browser_ws(
@@ -99,19 +85,16 @@ impl PageSessionManager {
         if target_id.is_empty() {
             return Ok(false);
         }
-        if let Some(browser_client) = self.cdp.browser_client().await {
-            browser_client
-                .execute("Target.closeTarget", json!({ "targetId": target_id }))
-                .await?;
-            self.cdp.unregister_owned_target(target_id).await;
-            return Ok(true);
-        }
-        let endpoint = self.cdp.endpoint().await?;
-        let result = endpoint::close_debug_target(&endpoint, target_id).await;
-        if matches!(result, Ok(true)) {
-            self.cdp.unregister_owned_target(target_id).await;
-        }
-        result
+        let browser_client = self
+            .cdp
+            .browser_client()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("CDP browser websocket is not connected"))?;
+        browser_client
+            .execute("Target.closeTarget", json!({ "targetId": target_id }))
+            .await?;
+        self.cdp.unregister_owned_target(target_id).await;
+        Ok(true)
     }
 }
 

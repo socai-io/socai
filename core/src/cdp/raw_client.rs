@@ -17,9 +17,9 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// This intentionally avoids `chromiumoxide::Handler`: we send only explicit
 /// commands socai needs. Events are ignored, and no browser-wide target
-/// discovery/auto-attach/domain enabling is performed. The same transport is
-/// used for direct page-target websockets and for a browser websocket with an
-/// explicit `sessionId` attached to one socai-owned target.
+/// discovery/auto-attach/domain enabling is performed. The runtime uses a
+/// browser websocket for target inventory/lifecycle and routes page commands
+/// with an explicit `sessionId` attached to one socai-owned target.
 #[derive(Clone)]
 pub struct RawCdpClient {
     tx: mpsc::Sender<CommandRequest>,

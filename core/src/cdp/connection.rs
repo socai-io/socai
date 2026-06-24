@@ -98,12 +98,12 @@ pub enum CdpState {
         attempt: u8,
     },
     Connected {
-        /// Remote-debugging endpoint. When Chrome exposes the HTTP debugging
-        /// API, status/tab inventory uses that passive control plane. When it
-        /// only exposes the browser websocket, `browser_client` is used for raw
-        /// `Target.*` commands without chromiumoxide's global auto-init.
+        /// Remote-debugging endpoint. The endpoint may be discovered through
+        /// HTTP (`/json/version`) or `DevToolsActivePort`, but active target
+        /// inventory/lifecycle always uses `browser_client` and raw `Target.*`
+        /// commands without chromiumoxide's global auto-init.
         endpoint: Endpoint,
-        browser_client: Option<RawCdpClient>,
+        browser_client: RawCdpClient,
         browser_version: String,
         targets: HashMap<String, TargetInfo>,
         monitor_task: tokio::task::AbortHandle,
@@ -217,16 +217,9 @@ impl Cdp {
         }
     }
 
-    pub(crate) async fn endpoint(&self) -> anyhow::Result<Endpoint> {
-        match &*self.state.lock().await {
-            CdpState::Connected { endpoint, .. } => Ok(endpoint.clone()),
-            _ => Err(anyhow::anyhow!("CDP not connected")),
-        }
-    }
-
     pub(crate) async fn browser_client(&self) -> Option<RawCdpClient> {
         match &*self.state.lock().await {
-            CdpState::Connected { browser_client, .. } => browser_client.clone(),
+            CdpState::Connected { browser_client, .. } => Some(browser_client.clone()),
             _ => None,
         }
     }
