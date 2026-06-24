@@ -201,7 +201,9 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,chromiumoxide=off,hyper=off,reqwest=off".into()),
+                .unwrap_or_else(|_| {
+                    "info,async_tungstenite=off,tungstenite=off,hyper=off,reqwest=off".into()
+                }),
         )
         .init();
 

@@ -1,7 +1,9 @@
 pub mod connection;
 pub mod endpoint;
+pub(crate) mod launch;
 pub mod lifecycle;
 pub mod pages;
+pub(crate) mod raw_client;
 pub mod session;
 pub mod snapshot;
 

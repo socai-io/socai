@@ -1,30 +1,42 @@
 use std::collections::HashMap;
-use std::env;
-use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
-use chromiumoxide::cdp::browser_protocol::target::{
-    EventTargetCreated, EventTargetDestroyed, EventTargetInfoChanged, GetTargetsParams,
-    SetDiscoverTargetsParams,
-};
-use chromiumoxide::{Browser, BrowserConfig, Handler};
-use futures::StreamExt;
-use tracing::{debug, info, warn};
+use serde_json::{json, Value};
+use tracing::{debug, warn};
 
 use crate::cdp::connection::{
-    BrowserEvent, Cdp, CdpState, ChromeConnectOptions, ChromeProfile, StatusPayload, TargetInfo,
+    page_list_from, BrowserEvent, Cdp, CdpState, ChromeConnectOptions, ChromeProfile, StatusPayload,
+    TargetInfo,
 };
-use crate::cdp::endpoint::{self, Endpoint};
+use crate::cdp::endpoint::{self, DebugTarget, Endpoint};
+use crate::cdp::launch::{self, ChromeProcess};
+use crate::cdp::raw_client::RawCdpClient;
 
 const MAX_ATTEMPTS: u8 = 3;
 const ATTEMPT_DELAY: Duration = Duration::from_millis(500);
-const MANAGED_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
+const TARGET_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const TARGET_POLL_FAILURES: u8 = 3;
 
-struct OpenBrowser {
+#[derive(Clone)]
+#[allow(clippy::large_enum_variant)] // only one poller exists per connection
+enum TargetPoller {
+    Http(Endpoint),
+    BrowserWs(RawCdpClient),
+}
+
+struct ConnectInventory {
+    targets: HashMap<String, TargetInfo>,
+    browser_version: String,
+    browser_client: Option<RawCdpClient>,
+    poller: TargetPoller,
+}
+
+/// A resolved remote-debugging endpoint plus, for managed mode, the chrome
+/// process socai launched. The process guard is threaded into the `Connected`
+/// state so it lives exactly as long as the connection.
+struct OpenEndpoint {
     endpoint: Endpoint,
-    browser: Browser,
-    handler: Handler,
+    chrome_process: Option<ChromeProcess>,
 }
 
 impl Cdp {
@@ -49,6 +61,18 @@ impl Cdp {
     }
 
     pub async fn disconnect(&self) {
+        // Close socai-owned page targets before dropping endpoint state. Page
+        // sessions may use independent target websockets or a browser websocket
+        // session, so browser-status disconnect must explicitly tear them down.
+        let endpoint = self.endpoint().await.ok();
+        let browser_client = self.browser_client().await;
+        for target_id in self.take_owned_targets().await {
+            if let Some(client) = browser_client.as_ref() {
+                let _ = close_target_via_browser_ws(client, &target_id).await;
+            } else if let Some(endpoint) = endpoint.as_ref() {
+                let _ = endpoint::close_debug_target(endpoint, &target_id).await;
+            }
+        }
         transition_unconditional(
             self,
             CdpState::Disconnected {
@@ -93,72 +117,49 @@ async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
 }
 
 async fn try_connect_once(cdp: &Cdp, options: Option<ChromeConnectOptions>) -> anyhow::Result<()> {
-    let OpenBrowser {
+    let OpenEndpoint {
         endpoint,
-        browser,
-        mut handler,
-    } = open_browser(options).await?;
+        chrome_process,
+    } = open_endpoint(options).await?;
 
-    let cdp_for_pump = cdp.clone();
-    let pump = tokio::spawn(async move {
-        // Handler stream yields Result<_, CdpError>. Individual decode errors
-        // are non-fatal — only stream exhaustion (None) means the WS closed.
-        while let Some(event) = handler.next().await {
-            if let Err(e) = event {
-                debug!(error = ?e, "cdp handler non-fatal error");
-            }
-        }
-        on_connection_dropped(cdp_for_pump).await;
-    });
-    let handler_task = pump.abort_handle();
-
-    let version = browser.version().await?;
-    let browser_version = format!("{} v{}", version.product, version.revision);
-
-    browser
-        .execute(SetDiscoverTargetsParams {
-            discover: true,
-            filter: None,
-        })
-        .await?;
-
-    let initial = browser.execute(GetTargetsParams::default()).await?;
-    let targets: HashMap<String, TargetInfo> = initial
-        .result
-        .target_infos
-        .iter()
-        .map(target_info_to_pair)
-        .collect();
-
-    let browser = Arc::new(browser);
+    let inventory = connect_inventory(&endpoint).await?;
+    let monitor_task = spawn_target_poll_loop(cdp.clone(), inventory.poller.clone());
 
     {
         let state = cdp.state();
         let mut guard = state.lock().await;
         if !guard.is_connecting() {
+            monitor_task.abort();
+            // Dropping `chrome_process` here kills a just-launched managed chrome
+            // if the connect was cancelled mid-flight.
             return Err(anyhow::anyhow!("connect cancelled"));
         }
         *guard = CdpState::Connected {
-            browser: Arc::clone(&browser),
-            handler_task,
             endpoint,
-            browser_version,
-            targets,
+            browser_client: inventory.browser_client,
+            browser_version: inventory.browser_version,
+            targets: inventory.targets,
+            monitor_task,
+            chrome_process,
         };
         let payload: StatusPayload = (&*guard).into();
         cdp.emit(BrowserEvent::StatusChanged(payload));
     }
 
-    // initial targets emit so subscribers can hydrate
+    // Initial targets emit so subscribers can hydrate. Future updates come from
+    // lightweight polling: HTTP `/json/list` where available, otherwise raw
+    // `Target.getTargets` over the browser websocket. Neither path enables
+    // Target discovery nor attaches to user-owned tabs.
     let initial_pages = cdp.pages().await;
     cdp.emit(BrowserEvent::TargetsChanged(initial_pages));
-
-    spawn_target_event_loop(Arc::clone(&browser), cdp.clone());
 
     Ok(())
 }
 
-async fn open_browser(options: Option<ChromeConnectOptions>) -> anyhow::Result<OpenBrowser> {
+/// Resolve the remote-debugging endpoint for this connect attempt, honoring the
+/// chrome profile preference. Explicit `SOCAI_CDP_*` / argument endpoints win
+/// for non-managed modes; managed mode launches (or reuses) socai's own chrome.
+async fn open_endpoint(options: Option<ChromeConnectOptions>) -> anyhow::Result<OpenEndpoint> {
     let options = match options {
         Some(options) => options,
         None => ChromeConnectOptions::from_config()?,
@@ -166,18 +167,21 @@ async fn open_browser(options: Option<ChromeConnectOptions>) -> anyhow::Result<O
 
     if !matches!(options.profile, ChromeProfile::Managed) {
         if let Some(endpoint) = endpoint::resolve_explicit_endpoint(None, None).await? {
-            return connect_to_endpoint(endpoint).await;
+            return Ok(OpenEndpoint {
+                endpoint,
+                chrome_process: None,
+            });
         }
     }
 
     match options.profile {
-        ChromeProfile::Managed => open_managed_browser(&options).await,
-        ChromeProfile::Existing => open_existing_browser().await,
-        ChromeProfile::Auto => match open_managed_browser(&options).await {
-            Ok(connection) => Ok(connection),
+        ChromeProfile::Managed => open_managed_endpoint(&options).await,
+        ChromeProfile::Existing => open_existing_endpoint().await,
+        ChromeProfile::Auto => match open_managed_endpoint(&options).await {
+            Ok(open) => Ok(open),
             Err(managed_err) => {
                 warn!(error = %managed_err, "managed chrome launch failed; falling back to existing browser discovery");
-                open_existing_browser().await.map_err(|existing_err| {
+                open_existing_endpoint().await.map_err(|existing_err| {
                     anyhow::anyhow!(
                         "managed chrome launch failed: {managed_err:#}; existing-browser fallback failed: {existing_err:#}"
                     )
@@ -187,17 +191,8 @@ async fn open_browser(options: Option<ChromeConnectOptions>) -> anyhow::Result<O
     }
 }
 
-async fn connect_to_endpoint(endpoint: Endpoint) -> anyhow::Result<OpenBrowser> {
-    let (browser, handler) = Browser::connect(&endpoint.browser_ws_url).await?;
-    Ok(OpenBrowser {
-        endpoint,
-        browser,
-        handler,
-    })
-}
-
-async fn open_existing_browser() -> anyhow::Result<OpenBrowser> {
-    let endpoint: Endpoint = endpoint::discover_running_chrome_endpoint()
+async fn open_existing_endpoint() -> anyhow::Result<OpenEndpoint> {
+    let endpoint = endpoint::discover_running_chrome_endpoint()
         .await?
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -206,79 +201,98 @@ async fn open_existing_browser() -> anyhow::Result<OpenBrowser> {
                  or run `socai config set chrome.profile managed` to use socai's managed chrome profile."
             )
         })?;
-    connect_to_endpoint(endpoint).await
+    Ok(OpenEndpoint {
+        endpoint,
+        chrome_process: None,
+    })
 }
 
-async fn open_managed_browser(options: &ChromeConnectOptions) -> anyhow::Result<OpenBrowser> {
+async fn open_managed_endpoint(options: &ChromeConnectOptions) -> anyhow::Result<OpenEndpoint> {
     let user_data_dir = match &options.managed_user_data_dir {
         Some(path) => path.clone(),
         None => endpoint::managed_chrome_user_data_dir()?,
     };
     tokio::fs::create_dir_all(&user_data_dir).await?;
 
-    // if another socai entrypoint already launched the isolated profile, reuse
-    // it instead of attempting a second chrome process with the same profile.
+    // If a prior socai entrypoint already launched this isolated profile, reuse
+    // it rather than spawning a second chrome against the same profile dir. We
+    // didn't launch that process, so it gets no `ChromeProcess` guard — we must
+    // not kill a browser we don't own.
     if let Some(endpoint) = endpoint::endpoint_from_active_port(&user_data_dir).await {
-        match connect_to_endpoint(endpoint::mark_managed_endpoint(endpoint, &user_data_dir)).await {
-            Ok(connection) => return Ok(connection),
-            Err(err) => {
-                warn!(profile = %user_data_dir.display(), error = %err, "managed chrome active-port marker was stale");
-            }
+        let endpoint = endpoint::mark_managed_endpoint(endpoint, &user_data_dir);
+        if reachable(&endpoint).await {
+            return Ok(OpenEndpoint {
+                endpoint,
+                chrome_process: None,
+            });
         }
+        warn!(
+            profile = %user_data_dir.display(),
+            "managed chrome active-port marker was stale; relaunching"
+        );
     }
 
-    let mut builder = BrowserConfig::builder()
-        .with_head()
-        .user_data_dir(&user_data_dir)
-        .launch_timeout(MANAGED_LAUNCH_TIMEOUT)
-        .viewport(None)
-        .window_size(1280, 900)
-        .arg("--disable-blink-features=AutomationControlled")
-        .arg("--no-default-browser-check")
-        .arg("--no-first-run");
-
-    if let Some(executable) = chrome_executable_override() {
-        builder = builder.chrome_executable(executable);
-    }
-
-    info!(profile = %user_data_dir.display(), "launching managed chrome profile");
-    let (browser, handler) = Browser::launch(builder.build().map_err(anyhow::Error::msg)?).await?;
-    let endpoint = Endpoint {
-        source: format!("managed_profile:{}", user_data_dir.display()),
-        browser_ws_url: browser.websocket_address().clone(),
-        http_version_url: None,
-        version: None,
-        managed: true,
-        user_data_dir: Some(user_data_dir.display().to_string()),
-    };
-    Ok(OpenBrowser {
+    let (endpoint, chrome_process) = launch::launch_managed_chrome(&user_data_dir).await?;
+    Ok(OpenEndpoint {
         endpoint,
-        browser,
-        handler,
+        chrome_process: Some(chrome_process),
     })
 }
 
-fn chrome_executable_override() -> Option<PathBuf> {
-    env::var("SOCAI_CHROME_EXECUTABLE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            env::var("CHROME")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .map(PathBuf::from)
+/// Quick liveness probe for a discovered endpoint: a `DevToolsActivePort`
+/// marker can outlive the chrome that wrote it (crash / kill). Prefer the
+/// passive HTTP debug API; fall back to confirming the browser websocket still
+/// accepts a connection.
+async fn reachable(endpoint: &Endpoint) -> bool {
+    if endpoint::list_debug_targets(endpoint).await.is_ok() {
+        return true;
+    }
+    RawCdpClient::connect(&endpoint.browser_ws_url).await.is_ok()
 }
 
-async fn on_connection_dropped(cdp: Cdp) {
+async fn connect_inventory(endpoint: &Endpoint) -> anyhow::Result<ConnectInventory> {
+    if let Ok(debug_targets) = endpoint::list_debug_targets(endpoint).await {
+        let browser_version = match browser_version_opt(endpoint) {
+            Some(version) => version,
+            // Endpoint had no cached version (e.g. SOCAI_CDP_WS). Fetch it
+            // passively over the HTTP debug API rather than reporting
+            // "unknown browser", matching the pre-merge live-version behavior.
+            None => endpoint::fetch_browser_version(endpoint)
+                .await
+                .unwrap_or_else(|| "unknown browser".into()),
+        };
+        return Ok(ConnectInventory {
+            targets: targets_map(debug_targets),
+            browser_version,
+            browser_client: None,
+            poller: TargetPoller::Http(endpoint.clone()),
+        });
+    }
+
+    let client = RawCdpClient::connect(&endpoint.browser_ws_url).await?;
+    let targets = browser_ws_targets(&client).await?;
+    let browser_version = browser_ws_version(&client)
+        .await
+        .ok()
+        .or_else(|| browser_version_opt(endpoint))
+        .unwrap_or_else(|| "unknown browser".into());
+    Ok(ConnectInventory {
+        targets,
+        browser_version,
+        browser_client: Some(client.clone()),
+        poller: TargetPoller::BrowserWs(client),
+    })
+}
+
+async fn on_connection_lost(cdp: Cdp, reason: String) {
+    let _ = cdp.take_owned_targets().await;
     let state = cdp.state();
     let mut guard = state.lock().await;
     if matches!(*guard, CdpState::Connected { .. }) {
-        *guard = CdpState::Disconnected {
-            reason: "connection_lost".into(),
-        };
+        *guard = CdpState::Disconnected { reason };
         let payload: StatusPayload = (&*guard).into();
         cdp.emit(BrowserEvent::StatusChanged(payload));
+        cdp.emit(BrowserEvent::TargetsChanged(Vec::new()));
     }
 }
 
@@ -301,115 +315,166 @@ async fn transition_if_eligible(cdp: &Cdp, new: CdpState) -> bool {
 async fn transition_unconditional(cdp: &Cdp, new: CdpState) {
     let state = cdp.state();
     let mut guard = state.lock().await;
-    abort_pump_if_connected(&guard);
+    let clear_targets = matches!(*guard, CdpState::Connected { .. })
+        && matches!(new, CdpState::Disconnected { .. });
+    abort_monitor_if_connected(&guard);
     *guard = new;
     let payload: StatusPayload = (&*guard).into();
     cdp.emit(BrowserEvent::StatusChanged(payload));
-}
-
-/// On user-initiated disconnect we have to terminate the WS pump task — its
-/// `Handler` owns the WebSocket, so dropping the `Arc<Browser>` alone won't
-/// close the socket. Aborting causes the task to be dropped, which drops the
-/// `Handler`, which closes the WS — only then does Chrome remove the
-/// "controlled by automated software" banner.
-fn abort_pump_if_connected(state: &CdpState) {
-    if let CdpState::Connected { handler_task, .. } = state {
-        handler_task.abort();
+    if clear_targets {
+        cdp.emit(BrowserEvent::TargetsChanged(Vec::new()));
     }
 }
 
-/// Subscribe to Target.* events from chromiumoxide; fold them into the cached
-/// targets map and emit `BrowserEvent::TargetsChanged` whenever the visible
-/// page list actually changes. Replaces the previous 100ms `Target.getTargets`
-/// polling loop.
-fn spawn_target_event_loop(browser: Arc<Browser>, cdp: Cdp) {
-    tokio::spawn(async move {
-        let (created, destroyed, changed) = match try_join_listeners(&browser).await {
-            Ok(streams) => streams,
-            Err(e) => {
-                warn!(error = %e, "failed to subscribe to target events");
-                return;
-            }
-        };
-        let mut created = Box::pin(created);
-        let mut destroyed = Box::pin(destroyed);
-        let mut changed = Box::pin(changed);
+fn abort_monitor_if_connected(state: &CdpState) {
+    if let CdpState::Connected { monitor_task, .. } = state {
+        monitor_task.abort();
+    }
+}
 
-        let mut last_emitted = cdp.pages().await;
-
+fn spawn_target_poll_loop(cdp: Cdp, poller: TargetPoller) -> tokio::task::AbortHandle {
+    let join = tokio::spawn(async move {
+        let mut failures = 0u8;
         loop {
-            let dirty = tokio::select! {
-                Some(ev) = created.next() => {
-                    apply_target_change(&cdp, |targets| {
-                        targets.insert(ev.target_info.target_id.inner().clone(), to_target_info(&ev.target_info));
-                    }).await
+            tokio::time::sleep(TARGET_POLL_INTERVAL).await;
+            match poll_targets(&poller).await {
+                Ok(targets) => {
+                    failures = 0;
+                    if let Some(pages) = replace_targets(&cdp, targets).await {
+                        cdp.emit(BrowserEvent::TargetsChanged(pages));
+                    }
                 }
-                Some(ev) = destroyed.next() => {
-                    apply_target_change(&cdp, |targets| {
-                        targets.remove(ev.target_id.inner().as_str());
-                    }).await
+                Err(err) => {
+                    failures = failures.saturating_add(1);
+                    debug!(failures, error = %err, "target poll failed");
+                    if failures >= TARGET_POLL_FAILURES {
+                        on_connection_lost(cdp.clone(), format!("connection_lost: {err}")).await;
+                        break;
+                    }
                 }
-                Some(ev) = changed.next() => {
-                    apply_target_change(&cdp, |targets| {
-                        targets.insert(ev.target_info.target_id.inner().clone(), to_target_info(&ev.target_info));
-                    }).await
-                }
-                else => break,
-            };
-            if !dirty {
-                break;
-            }
-            let pages = cdp.pages().await;
-            if pages != last_emitted {
-                last_emitted = pages.clone();
-                cdp.emit(BrowserEvent::TargetsChanged(pages));
             }
         }
     });
+    join.abort_handle()
 }
 
-async fn try_join_listeners(
-    browser: &Browser,
-) -> anyhow::Result<(
-    impl futures::Stream<Item = Arc<EventTargetCreated>>,
-    impl futures::Stream<Item = Arc<EventTargetDestroyed>>,
-    impl futures::Stream<Item = Arc<EventTargetInfoChanged>>,
-)> {
-    let created = browser.event_listener::<EventTargetCreated>().await?;
-    let destroyed = browser.event_listener::<EventTargetDestroyed>().await?;
-    let changed = browser.event_listener::<EventTargetInfoChanged>().await?;
-    Ok((created, destroyed, changed))
+async fn poll_targets(poller: &TargetPoller) -> anyhow::Result<HashMap<String, TargetInfo>> {
+    match poller {
+        TargetPoller::Http(endpoint) => {
+            let debug_targets = endpoint::list_debug_targets(endpoint).await?;
+            Ok(targets_map(debug_targets))
+        }
+        TargetPoller::BrowserWs(client) => browser_ws_targets(client).await,
+    }
 }
 
-/// Apply a closure under the state lock. Returns false if state moved out of
-/// Connected (loop should exit).
-async fn apply_target_change<F>(cdp: &Cdp, f: F) -> bool
-where
-    F: FnOnce(&mut HashMap<String, TargetInfo>),
-{
+/// Replace cached targets. Returns the new visible page list when it changed;
+/// `None` means either no visible page change or the connection is inactive.
+async fn replace_targets(
+    cdp: &Cdp,
+    next_targets: HashMap<String, TargetInfo>,
+) -> Option<Vec<TargetInfo>> {
     let state = cdp.state();
     let mut guard = state.lock().await;
-    match &mut *guard {
-        CdpState::Connected { targets, .. } => {
-            f(targets);
-            true
-        }
-        _ => false,
-    }
+    let CdpState::Connected { targets, .. } = &mut *guard else {
+        return None;
+    };
+    let before = page_list_from(targets);
+    let after = page_list_from(&next_targets);
+    *targets = next_targets;
+    (before != after).then_some(after)
 }
 
-fn target_info_to_pair(
-    info: &chromiumoxide::cdp::browser_protocol::target::TargetInfo,
-) -> (String, TargetInfo) {
-    let ti = to_target_info(info);
-    (ti.target_id.clone(), ti)
+fn targets_map(debug_targets: Vec<DebugTarget>) -> HashMap<String, TargetInfo> {
+    debug_targets
+        .into_iter()
+        .map(|target| {
+            let info = target_info_from_debug(target);
+            (info.target_id.clone(), info)
+        })
+        .collect()
 }
 
-fn to_target_info(info: &chromiumoxide::cdp::browser_protocol::target::TargetInfo) -> TargetInfo {
+fn target_info_from_debug(target: DebugTarget) -> TargetInfo {
     TargetInfo {
-        target_id: info.target_id.inner().clone(),
-        r#type: info.r#type.clone(),
-        title: info.title.clone(),
-        url: info.url.clone(),
+        target_id: target.target_id,
+        r#type: target.r#type,
+        title: target.title,
+        url: target.url,
     }
+}
+
+async fn browser_ws_targets(client: &RawCdpClient) -> anyhow::Result<HashMap<String, TargetInfo>> {
+    let value = client.execute("Target.getTargets", json!({})).await?;
+    let infos = value
+        .get("targetInfos")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("Target.getTargets missing targetInfos"))?;
+    let mut targets = HashMap::new();
+    for info in infos {
+        let target = target_info_from_protocol(info);
+        if !target.target_id.is_empty() {
+            targets.insert(target.target_id.clone(), target);
+        }
+    }
+    Ok(targets)
+}
+
+fn target_info_from_protocol(info: &Value) -> TargetInfo {
+    TargetInfo {
+        target_id: info
+            .get("targetId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        r#type: info
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        title: info
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        url: info
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
+async fn browser_ws_version(client: &RawCdpClient) -> anyhow::Result<String> {
+    let value = client.execute("Browser.getVersion", json!({})).await?;
+    let product = value
+        .get("product")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown browser");
+    let revision = value
+        .get("revision")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if revision.is_empty() {
+        Ok(product.to_string())
+    } else {
+        Ok(format!("{product} v{revision}"))
+    }
+}
+
+async fn close_target_via_browser_ws(client: &RawCdpClient, target_id: &str) -> anyhow::Result<()> {
+    client
+        .execute("Target.closeTarget", json!({ "targetId": target_id }))
+        .await?;
+    Ok(())
+}
+
+/// Browser version string from the cached endpoint metadata, if present.
+/// `None` for endpoints discovered without a `/json/version` round-trip (e.g.
+/// an explicit `SOCAI_CDP_WS`), in which case callers fetch it actively.
+fn browser_version_opt(endpoint: &Endpoint) -> Option<String> {
+    endpoint
+        .version
+        .as_ref()
+        .and_then(|version| version.browser.clone().or_else(|| version.user_agent.clone()))
 }

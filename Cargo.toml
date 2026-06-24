@@ -16,7 +16,7 @@ repository = "https://github.com/socai-io/socai"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
-tokio-tungstenite = "0.23"
+async-tungstenite = { version = "0.27", default-features = false, features = ["tokio-native-tls"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,8 +36,6 @@ libc = "0.2"
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-chromiumoxide = "0.7"
 
 socai-core = { path = "core" }
 
