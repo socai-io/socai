@@ -144,8 +144,8 @@ function render(): void {
   root.innerHTML = `
     <div class="shell">
       <header class="topbar" data-tauri-drag-region>
-        ${renderUpdateChip()}
         <div class="topbar-controls">
+          ${renderUpdateChip()}
           <div class="status-capsule" role="group" aria-label="${htmlEsc(t("status.capsuleAria"))}">
             ${connectionStatusBar()}
             <span class="status-capsule__divider" aria-hidden="true"></span>
@@ -411,7 +411,7 @@ async function main(): Promise<void> {
   applyLanguageToDocument();
   // Overlay titlebar (see tauri.conf.json) floats the native macOS traffic
   // lights over our header; reserve their inset only on macOS.
-  if (navigator.userAgent.includes("Mac")) {
+  if (navigator.userAgent.includes("Macintosh")) {
     document.body.classList.add("is-macos");
     // In fullscreen macOS hides the traffic lights, so collapse the left gutter.
     const win = getCurrentWindow();

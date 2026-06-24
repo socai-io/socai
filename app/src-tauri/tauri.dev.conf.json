@@ -7,6 +7,8 @@
       {
         "title": "socai dev",
         "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "theme": "Light",
         "width": 1180,
         "height": 860,
         "minWidth": 980,
