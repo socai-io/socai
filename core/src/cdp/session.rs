@@ -340,11 +340,12 @@ impl PageSession {
         // have disconnected/reconnected or switched profile by the time a
         // session is dropped/cancelled; cleanup should still target the browser
         // that owns this target id.
-        self.client
+        let result = self
+            .client
             .execute("Target.closeTarget", json!({ "targetId": target_id }))
-            .await?;
+            .await;
         self.owner.unregister_owned_target(&target_id).await;
-        Ok(())
+        result.map(|_| ())
     }
 }
 
