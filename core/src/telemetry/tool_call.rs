@@ -77,8 +77,8 @@ pub fn summarize_tool_result(value: &Value) -> Map<String, Value> {
     if let Some(cards) = data.get("cards").and_then(Value::as_array) {
         props.insert("cards_count".into(), json!(cards.len()));
     }
-    if let Some(cards) = data
-        .get("search")
+    let search_payload = data.get("search_scan").or_else(|| data.get("search"));
+    if let Some(cards) = search_payload
         .and_then(|search| search.get("cards"))
         .and_then(Value::as_array)
     {
@@ -191,7 +191,7 @@ mod tests {
             "data": {
                 "ok": true,
                 "cards": [{}, {}],
-                "search": { "cards": [{}, {}, {}] },
+                "search_scan": { "cards": [{}, {}, {}] },
                 "selected_cards": [{}],
                 "notes": [
                     { "id": "1", "body": "must not be copied" },

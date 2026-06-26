@@ -572,8 +572,8 @@ mod tests {
             "install-1",
             &json!({
                 "created_at_ms": 123,
-                "command": "topic_scan",
-                "tool_name": "topic_scan"
+                "command": "search_scan",
+                "tool_name": "search_scan"
             }),
         );
         let object = event.as_object().expect("remote event is an object");

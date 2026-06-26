@@ -1,8 +1,8 @@
-//! Stable media manifest generation for XHS topic scans.
+//! Stable media manifest generation for XHS macro runs.
 //!
-//! `topic_scan --download-media` keeps the large per-asset manifest in a
-//! run-dir JSON file so command stdout can stay compact while callers still get
-//! a stable path to a machine-readable media registry.
+//! `search_scan --download-media` and `author --download-media` keep the large
+//! per-asset manifest in a run-dir JSON file so command stdout can stay compact
+//! while callers still get a stable path to a machine-readable media registry.
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +14,8 @@ use super::entities::XhsNoteCard;
 pub(super) fn write_media_manifest_file(
     ctx: &ToolContext,
     manifest: &Value,
+    source_tool: &str,
+    label: &str,
 ) -> std::io::Result<String> {
     std::fs::create_dir_all(&ctx.run_dir)?;
     let path = ctx.run_dir.join("media_manifest.json");
@@ -23,15 +25,15 @@ pub(super) fn write_media_manifest_file(
         &path,
         "media_manifest",
         "json",
-        "Topic scan media manifest",
+        label,
         json!({"site": "xhs", "category": "media_manifest"}),
         Some(manifest),
-        "topic_scan",
+        source_tool,
     );
     Ok(path.to_string_lossy().to_string())
 }
 
-pub(super) fn topic_scan_media_manifest(notes: &[Value], run_dir: &Path) -> Value {
+pub(super) fn search_scan_media_manifest(notes: &[Value], run_dir: &Path) -> Value {
     let mut assets = Vec::new();
     for note in notes {
         collect_note_media_assets(note, run_dir, &mut assets);
@@ -615,7 +617,7 @@ mod tests {
             }),
         ];
 
-        let manifest = topic_scan_media_manifest(&notes, dir.path());
+        let manifest = search_scan_media_manifest(&notes, dir.path());
 
         assert_eq!(manifest.as_array().unwrap().len(), 0);
     }
@@ -639,7 +641,7 @@ mod tests {
             }
         })];
 
-        let manifest = topic_scan_media_manifest(&notes, dir.path());
+        let manifest = search_scan_media_manifest(&notes, dir.path());
         let assets = manifest.as_array().unwrap();
 
         assert_eq!(assets.len(), 1);
@@ -672,7 +674,7 @@ mod tests {
             }
         })];
 
-        let manifest = topic_scan_media_manifest(&notes, dir.path());
+        let manifest = search_scan_media_manifest(&notes, dir.path());
         let assets = manifest.as_array().unwrap();
 
         assert_eq!(assets.len(), 1);
@@ -711,7 +713,7 @@ mod tests {
             }
         })];
 
-        let manifest = topic_scan_media_manifest(&notes, dir.path());
+        let manifest = search_scan_media_manifest(&notes, dir.path());
         let assets = manifest.as_array().unwrap();
 
         assert_eq!(assets.len(), 1);
@@ -737,7 +739,9 @@ mod tests {
         let ctx = ToolContext::new("run", dir.path());
         let manifest = json!([{ "note_id": "note-1", "type": "image" }]);
 
-        let path = write_media_manifest_file(&ctx, &manifest).unwrap();
+        let path =
+            write_media_manifest_file(&ctx, &manifest, "search_scan", "Search scan media manifest")
+                .unwrap();
         let expected = dir.path().join("media_manifest.json");
         let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
 

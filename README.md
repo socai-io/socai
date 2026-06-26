@@ -56,14 +56,14 @@ cargo install --path cli --force
 小红书常用命令：
 
 ```bash
-socai xhs search "运营爆款思路" --num-notes 30 --filter publish_time=一周内 --download-media  # 搜索并逐个打开帖子，获取正文+评论，并下载图片/视频
+socai xhs search_scan "运营爆款思路" --num-notes 30 --filter publish_time=一周内 --download-media  # 搜索并逐个打开帖子，获取正文+评论，并下载图片/视频
 socai xhs author <作者id> --num-notes 10 --preview                               # 打开作者主页，拿作者简介，并逐个打开帖子读正文+评论；加 --preview 则只拿帖子概要
 socai stop                                                             # 停止 daemon（关闭工具标签页）
 ```
 
 Options:
 
-- `--filter <GROUP=OPTION>` — 对应搜索页右上角的“筛选”，仅适用于`search`命令。
+- `--filter <GROUP=OPTION>` — 对应搜索页右上角的“筛选”，仅适用于`search_scan`命令。
   以下几个筛选条件可以叠加：
   `sort` (综合/最新/最多点赞/最多评论/最多收藏), `note_type` (不限/视频/图文),
   `publish_time` (不限/一天内/一周内/半年内), `search_scope` (不限/已看过/未看过/已关注),

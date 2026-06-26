@@ -69,8 +69,9 @@ Supported command/tool mapping:
 
 | CLI daemon command | `command` | `tool_name` |
 | --- | --- | --- |
-| `search_notes` | `search_notes` | `search_notes` |
-| `topic_scan` | `topic_scan` | `topic_scan` |
+| `search_scan` | `search_scan` | `search_scan` |
+| `search_notes` (deprecated) | `search_notes` | `search_scan` |
+| `topic_scan` (deprecated) | `topic_scan` | `search_scan` |
 | `extract_note` | `extract_note` | `read_note` |
 
 Every event carries a top-level `event` field naming its type — the CLI tool
@@ -127,8 +128,7 @@ Current metadata keys:
 
 | Metadata key | Type | Source CLI flag | Omitted when |
 | --- | --- | --- | --- |
-| `metadata.tab` | string | `topic_scan --tab <value>` | `--tab` is not passed or is empty. |
-| `metadata.num_notes` | number | `topic_scan` / `search_notes` `--num-notes <n>` | `--num-notes` is not passed. |
+| `metadata.num_notes` | number | `search_scan` / `search_scan --preview` `--num-notes <n>` | `--num-notes` is not passed. |
 | `metadata.debug_snapshot` | boolean | `--debug-snapshot` | `--debug-snapshot` is not passed / false. |
 
 ### Duration, status, and safe result metrics
@@ -140,7 +140,7 @@ Current metadata keys:
 | `error` | string | First-line error summary when `ok=false`. |
 | `result_ok` | boolean | Safe `data.ok` result flag when present. |
 | `cards_count` | number | Count of top-level `cards` result entries when present. |
-| `search_cards_count` | number | Count of `search.cards` entries when present. |
+| `search_cards_count` | number | Count of `search_scan.cards` entries when present (or legacy `search.cards`). |
 | `selected_cards_count` | number | Count of selected cards when present. |
 | `notes_count` | number | Count of note result entries when present. |
 | `notes_skipped_count` | number | Count of notes marked skipped when present. |
@@ -273,12 +273,12 @@ CLI behavior in `cli/src/daemon.rs`:
   sanitization.
 - Safe result metrics are counts/booleans only, not raw XHS content.
 
-## Example: normal `topic_scan` trace
+## Example: normal `search_scan` trace
 
 A user runs:
 
 ```bash
-socai xhs topic_scan "运营爆款思路" --num-notes 12 --tab latest
+socai xhs search_scan "运营爆款思路" --num-notes 12
 ```
 
 Representative Axiom row after proxy sanitization:
@@ -300,15 +300,14 @@ Representative Axiom row after proxy sanitization:
   "cpu_count": 14,
   "terminal_app": "Ghostty",
   "parent_process": "zsh",
-  "command": "topic_scan",
-  "tool_name": "topic_scan",
+  "command": "search_scan",
+  "tool_name": "search_scan",
   "site": "xhs",
   "query_text_enabled": true,
   "query_text": "运营爆款思路",
   "query_len": 6,
   "metadata": {
-    "num_notes": 12,
-    "tab": "latest"
+    "num_notes": 12
   },
   "duration_ms": 42130,
   "ok": true,
@@ -324,12 +323,12 @@ Representative Axiom row after proxy sanitization:
 
 Axiom will also show native `_time` and `_sysTime` columns for the row.
 
-## Example: query-redacted `topic_scan` trace
+## Example: query-redacted `search_scan` trace
 
 A user runs:
 
 ```bash
-SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs topic_scan "运营爆款思路" --num-notes 12
+SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs search_scan "运营爆款思路" --num-notes 12
 ```
 
 Representative Axiom row:
@@ -345,8 +344,8 @@ Representative Axiom row:
   "source": "cli_daemon",
   "app_version": "0.1.0",
   "platform": "macos",
-  "command": "topic_scan",
-  "tool_name": "topic_scan",
+  "command": "search_scan",
+  "tool_name": "search_scan",
   "site": "xhs",
   "query_text_enabled": false,
   "query_len": 6,

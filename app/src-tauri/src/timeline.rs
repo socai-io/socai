@@ -358,7 +358,7 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
 
 pub(crate) fn user_label(name: &str) -> String {
     match name {
-        "search_notes" => "searched xiaohongshu",
+        "search_scan" | "search" | "search_notes" | "topic_scan" => "searched xiaohongshu",
         "extract_search_cards" => "read search cards",
         "list_search_tabs" => "listed search tabs",
         "click_search_tab" => "switched search tab",
@@ -372,7 +372,7 @@ pub(crate) fn user_label(name: &str) -> String {
         "scroll_in_note" => "scrolled note",
         "collect_carousel_images" => "collected carousel images",
         "extract_profile" => "read author profile",
-        "topic_scan" => "scanned topic",
+        "author" | "author_scan" => "scanned author",
         "page_state" => "checked page state",
         _ => return name.replace('_', " "),
     }
@@ -966,12 +966,21 @@ fn raw_tool_result_value(content: &Value) -> Option<Value> {
 
 fn normalize_entities(tool: &str, value: &Value) -> Vec<TimelineEntity> {
     match tool {
-        "search_notes" => value
-            .get("cards")
-            .and_then(Value::as_array)
-            .filter(|cards| !cards.is_empty())
-            .map(|cards| vec![entity("xhs_note_card_grid", Value::Array(cards.clone()))])
-            .unwrap_or_default(),
+        "search_scan" | "search" | "search_notes" | "topic_scan" => {
+            let mut entities = if value.is_object() {
+                vec![entity("xhs_search_scan", value.clone())]
+            } else {
+                Vec::new()
+            };
+            if let Some(cards) = value
+                .get("cards")
+                .and_then(Value::as_array)
+                .filter(|cards| !cards.is_empty())
+            {
+                entities.push(entity("xhs_note_card_grid", Value::Array(cards.clone())));
+            }
+            entities
+        }
         "extract_search_cards" => value
             .as_array()
             .filter(|cards| !cards.is_empty())
@@ -1006,9 +1015,9 @@ fn normalize_entities(tool: &str, value: &Value) -> Vec<TimelineEntity> {
                 Vec::new()
             }
         }
-        "topic_scan" => {
+        "author" | "author_scan" => {
             if value.is_object() {
-                vec![entity("xhs_topic_scan", value.clone())]
+                vec![entity("xhs_author", value.clone())]
             } else {
                 Vec::new()
             }

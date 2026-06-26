@@ -175,7 +175,7 @@ impl<'a> XhsPageRuntime<'a> {
         self.expect_object("pageState", None).await
     }
 
-    pub async fn search_notes(
+    pub async fn search_cards(
         &self,
         query: &str,
         filters: Option<&Value>,
