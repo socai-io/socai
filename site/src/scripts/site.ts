@@ -170,6 +170,12 @@ const applyLanguage = (language, shouldPersist = false) => {
         option.setAttribute("aria-pressed", String(isActive));
     });
 
+    // Blog index: show only the posts written in the current language.
+    document.querySelectorAll("[data-post-lang]").forEach((element) => {
+        (element as HTMLElement).hidden =
+            element.getAttribute("data-post-lang") !== nextLanguage;
+    });
+
     startTypewriter(
         dictionary[nextLanguage]?.prompts || dictionary.zh?.prompts || [],
     );

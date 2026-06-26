@@ -5,11 +5,13 @@ interface Props {
     messages: Record<string, Record<string, unknown>>;
     language: string;
     currentYear: number;
+    showBlog?: boolean;
 }
 
-const { messages, language, currentYear } = Astro.props;
+const { messages, language, currentYear, showBlog = false } = Astro.props;
 
 const githubUrl = "/github";
+const blogPath = "/blog";
 const connectPath = "/connect";
 const contactPath = "/contact";
 
@@ -23,6 +25,13 @@ const t = (path: string) => message(messages, path, language);
         data-i18n-aria-label="footer.linksAria"
     >
         <a href={githubUrl}>github</a>
+        {
+            showBlog && (
+                <a href={blogPath} data-i18n="footer.blog">
+                    {t("footer.blog")}
+                </a>
+            )
+        }
         <a href={connectPath} data-i18n="footer.connect">{t("footer.connect")}</a
         >
         <a href={contactPath} data-i18n="footer.contact">{t("footer.contact")}</a

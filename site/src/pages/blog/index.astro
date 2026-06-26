@@ -1,0 +1,227 @@
+---
+import "../../styles/global.css";
+import SiteHeader from "../../components/SiteHeader.astro";
+import SiteFooter from "../../components/SiteFooter.astro";
+import { message as messageFor } from "../../lib/i18n";
+
+const currentYear = new Date().getFullYear();
+const siteUrl = "https://socai.io";
+const canonicalUrl = `${siteUrl}/blog`;
+const socialImageUrl = `${siteUrl}/social-card.png`;
+const defaultLanguage = "zh";
+const defaultHtmlLanguage =
+    defaultLanguage === "zh" ? "zh-CN" : defaultLanguage;
+
+// Newest first. Each post is single-language; the blog index shows only the
+// posts matching the current site language (see [data-post-lang] in site.ts).
+const posts = [
+    {
+        href: "/blog/zh/xiaohongshu-automation-tools",
+        lang: "zh",
+        dateIso: "2026-06-07",
+        dateLabel: "2026 / 06",
+        title: "小红书自动化会被封号吗？我把 7 个开源工具的源码都读了一遍",
+        excerpt:
+            "逆向 API 还是浏览器自动化、签名与风控怎么过、哪种最容易被封，以及 socai 在这张地图里的位置。七个有代表性的小红书自动化开源项目，逐个读源码。",
+        more: "阅读全文 →",
+    },
+    {
+        href: "/blog/xiaohongshu-automation-tools",
+        lang: "en",
+        dateIso: "2026-06-07",
+        dateLabel: "2026 / 06",
+        title: "Will Xiaohongshu automation get you banned? I read the source of 7 open-source tools",
+        excerpt:
+            "Reverse-engineered API vs browser automation, signing and risk control, which gets banned fastest, and where socai fits. Reading the source of 7 Xiaohongshu tools.",
+        more: "Read more →",
+    },
+];
+
+const messages = {
+    en: {
+        meta: {
+            title: "博客 · socai",
+            description:
+                "The socai blog: notes on Xiaohongshu automation and browser agents.",
+            socialImageAlt: "socai blog",
+        },
+        nav: {
+            primaryAria: "primary navigation",
+            homeAria: "socai home",
+            linksAria: "site links",
+            github: "github",
+            connect: "connect chrome",
+            contact: "contact",
+            languageAria: "language",
+            releaseLabel: "release version {version}",
+        },
+        blog: {
+            heading: "Blog",
+        },
+        footer: {
+            linksAria: "footer links",
+            connect: "connect guide",
+            contact: "contact",
+        },
+    },
+    zh: {
+        meta: {
+            title: "博客 · socai",
+            description:
+                "socai 博客，记录小红书自动化、浏览器 agent 相关的文章。",
+            socialImageAlt: "socai 博客",
+        },
+        nav: {
+            primaryAria: "主导航",
+            homeAria: "socai 首页",
+            linksAria: "站点链接",
+            github: "github",
+            connect: "连接 Chrome",
+            contact: "联系",
+            languageAria: "语言",
+            releaseLabel: "发布版本 {version}",
+        },
+        blog: {
+            heading: "博客",
+        },
+        footer: {
+            linksAria: "页脚链接",
+            connect: "连接教程",
+            contact: "联系",
+        },
+    },
+};
+
+const message = (path: string, language = defaultLanguage) =>
+    messageFor(messages, path, language);
+
+const pageTitle = message("meta.title");
+const pageDescription = message("meta.description");
+const socialImageAlt = message("meta.socialImageAlt");
+---
+
+<html lang={defaultHtmlLanguage} data-language={defaultLanguage}>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{pageTitle}</title>
+        <meta
+            name="description"
+            content={pageDescription}
+            data-i18n-content="meta.description"
+        />
+        <meta name="robots" content="index, follow" />
+        <link rel="canonical" href={canonicalUrl} />
+
+        <meta property="og:type" content="website" />
+        <meta property="og:site_name" content="socai" />
+        <meta property="og:url" content={canonicalUrl} />
+        <meta
+            property="og:title"
+            content={pageTitle}
+            data-i18n-content="meta.title"
+        />
+        <meta
+            property="og:description"
+            content={pageDescription}
+            data-i18n-content="meta.description"
+        />
+        <meta property="og:image" content={socialImageUrl} />
+        <meta property="og:image:type" content="image/png" />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+        <meta
+            property="og:image:alt"
+            content={socialImageAlt}
+            data-i18n-content="meta.socialImageAlt"
+        />
+
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta
+            name="twitter:title"
+            content={pageTitle}
+            data-i18n-content="meta.title"
+        />
+        <meta
+            name="twitter:description"
+            content={pageDescription}
+            data-i18n-content="meta.description"
+        />
+        <meta name="twitter:image" content={socialImageUrl} />
+        <meta
+            name="twitter:image:alt"
+            content={socialImageAlt}
+            data-i18n-content="meta.socialImageAlt"
+        />
+
+        <meta name="theme-color" content="#fafaf9" />
+        <meta name="application-name" content="socai" />
+        <meta name="apple-mobile-web-app-title" content="socai" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link
+            rel="apple-touch-icon"
+            sizes="180x180"
+            href="/apple-touch-icon.png"
+        />
+        <link rel="manifest" href="/site.webmanifest" />
+    </head>
+    <body>
+        <div class="site-shell">
+            <SiteHeader messages={messages} language={defaultLanguage} />
+
+            <main class="blog-main">
+                <section class="blog" aria-labelledby="blog-title">
+                    <header class="blog__head">
+                        <h1 id="blog-title" data-i18n="blog.heading">
+                            {message("blog.heading")}
+                        </h1>
+                    </header>
+
+                    <ul class="post-list">
+                        {
+                            posts.map((post) => (
+                                <li
+                                    class="post-item"
+                                    data-post-lang={post.lang}
+                                    hidden={post.lang !== defaultLanguage}
+                                >
+                                    <a class="post-card" href={post.href}>
+                                        <div class="post-card__meta">
+                                            <time datetime={post.dateIso}>
+                                                {post.dateLabel}
+                                            </time>
+                                        </div>
+                                        <h2 class="post-card__title">
+                                            {post.title}
+                                        </h2>
+                                        <p class="post-card__excerpt">
+                                            {post.excerpt}
+                                        </p>
+                                        <span class="post-card__more">
+                                            {post.more}
+                                        </span>
+                                    </a>
+                                </li>
+                            ))
+                        }
+                    </ul>
+                </section>
+            </main>
+
+            <SiteFooter
+                messages={messages}
+                language={defaultLanguage}
+                currentYear={currentYear}
+            />
+        </div>
+
+        <script
+            id="site-i18n"
+            type="application/json"
+            set:html={JSON.stringify(messages)}
+        />
+        <script>
+            import "../../scripts/site.ts";
+        </script>
+    </body>
+</html>

@@ -498,3 +498,5 @@ MCP/发布工具"，而是**小红书研究产品**。
   **两者结合**：通用 agent 负责开放式探索与兜底，垂类工具提供"这个站点该怎么稳妥
   操作"的固化能力。socai 把站点知识 + 多模态 + 产品形态捆在一起，正是在押注这种
   "垂类纵深不会被通用框架轻易抹平"。
+
+网页可读版：[小红书自动化会被封号吗？我把 7 个开源工具的源码都读了一遍](https://socai.io/blog/xiaohongshu-automation-tools)（[English](https://socai.io/blog/xiaohongshu-automation-tools)）

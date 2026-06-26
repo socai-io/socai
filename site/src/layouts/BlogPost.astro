@@ -1,0 +1,271 @@
+---
+// Layout for Markdown blog posts. Each post is a plain `.md` file under
+// `src/pages/blog/` that sets `layout: ../../layouts/BlogPost.astro` plus a
+// little frontmatter (title / description / date / lang / faq …). The rendered
+// Markdown arrives through <slot/>; this file owns the page shell, SEO, TOC and
+// chrome so the post body stays clean, hand-editable Markdown.
+import "../styles/global.css";
+import SiteHeader from "../components/SiteHeader.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+import { message as messageFor } from "../lib/i18n";
+
+const { frontmatter, headings = [] } = Astro.props;
+const {
+    title,
+    description,
+    eyebrow,
+    date,
+    dateLabel,
+    readingTime,
+    footnote,
+    lang = "zh",
+    ogImage,
+    alternates = [],
+    faq = [],
+} = frontmatter;
+
+const isZh = lang !== "en";
+const currentYear = new Date().getFullYear();
+const siteUrl = "https://socai.io";
+const canonicalUrl = `${siteUrl}${Astro.url.pathname.replace(/\/$/, "")}`;
+const socialImageUrl = ogImage
+    ? `${siteUrl}${ogImage}`
+    : `${siteUrl}/social-card.png`;
+const defaultLanguage = isZh ? "zh" : "en";
+const defaultHtmlLanguage = isZh ? "zh-CN" : "en";
+const dateIso = date ? new Date(date).toISOString().slice(0, 10) : undefined;
+
+// Section-level table of contents, built from the headings Astro extracts from
+// the Markdown (slugs match the ids it auto-assigns to each heading).
+const toc = headings.filter((h: { depth: number }) => h.depth === 2);
+
+// hreflang alternates: every translation plus this page itself.
+const alternateLinks = [
+    { hreflang: lang, href: canonicalUrl },
+    ...alternates.map((a: { hreflang: string; href: string }) => ({
+        hreflang: a.hreflang,
+        href: `${siteUrl}${a.href}`,
+    })),
+];
+
+const backLabel = isZh ? "← 博客" : "← Blog";
+const backFootLabel = isZh ? "← 回到博客" : "← Back to the blog";
+const tocLabel = isZh ? "目录" : "Contents";
+const faqHeading = isZh ? "常见问题" : "FAQ";
+
+const breadcrumbLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+        { "@type": "ListItem", position: 1, name: isZh ? "首页" : "Home", item: `${siteUrl}/` },
+        { "@type": "ListItem", position: 2, name: isZh ? "博客" : "Blog", item: `${siteUrl}/blog` },
+        { "@type": "ListItem", position: 3, name: title, item: canonicalUrl },
+    ],
+};
+
+const articleLd = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: dateIso,
+    dateModified: dateIso,
+    author: { "@type": "Organization", name: "socai" },
+    publisher: { "@type": "Organization", name: "socai" },
+    mainEntityOfPage: canonicalUrl,
+    image: socialImageUrl,
+    inLanguage: defaultHtmlLanguage,
+};
+
+const faqLd = faq.length
+    ? {
+          "@context": "https://schema.org",
+          "@type": "FAQPage",
+          mainEntity: faq.map((item: { q: string; a: string }) => ({
+              "@type": "Question",
+              name: item.q,
+              acceptedAnswer: { "@type": "Answer", text: item.a },
+          })),
+      }
+    : null;
+
+// Chrome-only strings (header / footer). The post body is the Markdown slot and
+// stays in its authored language regardless of the toggle.
+const messages = {
+    en: {
+        meta: { title: `${title} · socai` },
+        nav: {
+            primaryAria: "primary navigation",
+            homeAria: "socai home",
+            linksAria: "site links",
+            github: "github",
+            connect: "connect chrome",
+            contact: "contact",
+            languageAria: "language",
+            releaseLabel: "release version {version}",
+        },
+        footer: {
+            linksAria: "footer links",
+            blog: "blog",
+            connect: "connect guide",
+            contact: "contact",
+        },
+    },
+    zh: {
+        meta: { title: `${title} · socai` },
+        nav: {
+            primaryAria: "主导航",
+            homeAria: "socai 首页",
+            linksAria: "站点链接",
+            github: "github",
+            connect: "连接 Chrome",
+            contact: "联系",
+            languageAria: "语言",
+            releaseLabel: "发布版本 {version}",
+        },
+        footer: {
+            linksAria: "页脚链接",
+            blog: "博客",
+            connect: "连接教程",
+            contact: "联系",
+        },
+    },
+};
+
+const message = (path: string, language = defaultLanguage) =>
+    messageFor(messages, path, language);
+const pageTitle = message("meta.title");
+---
+
+<html lang={defaultHtmlLanguage} data-language={defaultLanguage}>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{pageTitle}</title>
+        <meta name="description" content={description} />
+        <meta name="robots" content="index, follow" />
+        <link rel="canonical" href={canonicalUrl} />
+        {
+            alternateLinks.map((a) => (
+                <link rel="alternate" hreflang={a.hreflang} href={a.href} />
+            ))
+        }
+
+        <meta property="og:type" content="article" />
+        <meta property="og:site_name" content="socai" />
+        <meta property="og:url" content={canonicalUrl} />
+        <meta property="og:title" content={pageTitle} />
+        <meta property="og:description" content={description} />
+        {dateIso && <meta property="article:published_time" content={dateIso} />}
+        <meta property="og:image" content={socialImageUrl} />
+        <meta property="og:image:type" content="image/png" />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content={pageTitle} />
+        <meta name="twitter:description" content={description} />
+        <meta name="twitter:image" content={socialImageUrl} />
+
+        <meta name="theme-color" content="#fafaf9" />
+        <meta name="application-name" content="socai" />
+        <meta name="apple-mobile-web-app-title" content="socai" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link
+            rel="apple-touch-icon"
+            sizes="180x180"
+            href="/apple-touch-icon.png"
+        />
+        <link rel="manifest" href="/site.webmanifest" />
+
+        <script type="application/ld+json" set:html={JSON.stringify(articleLd)} />
+        <script
+            type="application/ld+json"
+            set:html={JSON.stringify(breadcrumbLd)}
+        />
+        {
+            faqLd && (
+                <script
+                    type="application/ld+json"
+                    set:html={JSON.stringify(faqLd)}
+                />
+            )
+        }
+    </head>
+    <body>
+        <div class="site-shell">
+            <SiteHeader messages={messages} language={defaultLanguage} />
+
+            <main class="article-main">
+                <article class="article">
+                    <header class="article__head">
+                        <a class="article__back" href="/blog">{backLabel}</a>
+                        {eyebrow && <span class="article__eyebrow">{eyebrow}</span>}
+                        <h1>{title}</h1>
+                        <div class="article__meta">
+                            {dateLabel && <time datetime={dateIso}>{dateLabel}</time>}
+                            {dateLabel && readingTime && <span aria-hidden="true">·</span>}
+                            {readingTime && <span>{readingTime}</span>}
+                        </div>
+                    </header>
+
+                    {
+                        toc.length > 1 && (
+                            <nav class="toc" aria-label={tocLabel}>
+                                <span class="toc__label">{tocLabel}</span>
+                                <ol>
+                                    {toc.map((h: { slug: string; text: string }) => (
+                                        <li>
+                                            <a href={`#${h.slug}`}>{h.text}</a>
+                                        </li>
+                                    ))}
+                                </ol>
+                            </nav>
+                        )
+                    }
+
+                    <div class="prose">
+                        <slot />
+                    </div>
+
+                    {
+                        faq.length > 0 && (
+                            <section class="faq" aria-label={faqHeading}>
+                                <h2>{faqHeading}</h2>
+                                {faq.map((item: { q: string; a: string }) => (
+                                    <details class="faq__item">
+                                        <summary>{item.q}</summary>
+                                        <p>{item.a}</p>
+                                    </details>
+                                ))}
+                            </section>
+                        )
+                    }
+
+                    <footer class="article__foot">
+                        {footnote && <p class="article__foot-note">{footnote}</p>}
+                        <a class="article__back article__back--foot" href="/blog"
+                            >{backFootLabel}</a
+                        >
+                    </footer>
+                </article>
+            </main>
+
+            <SiteFooter
+                messages={messages}
+                language={defaultLanguage}
+                currentYear={currentYear}
+                showBlog={true}
+            />
+        </div>
+
+        <script
+            id="site-i18n"
+            type="application/json"
+            set:html={JSON.stringify(messages)}
+        />
+        <script>
+            import "../scripts/site.ts";
+        </script>
+    </body>
+</html>
