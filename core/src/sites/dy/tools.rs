@@ -54,7 +54,9 @@ pub static DY_SITE: SiteSpec = SiteSpec {
     // timeout for the site's occasional 4-5 minute blank-page throttling.
     home_url: "",
     agent_tools: |page, llm| Box::pin(dy_agent_tools(page, llm)),
+    default_agent_tools: None,
     agent_instructions: dy_agent_instructions,
+    default_agent_instructions: None,
     commands: &[
         SiteCommand {
             name: "search",

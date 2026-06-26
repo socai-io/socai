@@ -18,6 +18,7 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + Send>>;
 
 /// Async factory: build the site's agent tools against a shared page.
 pub type AgentToolsFn = fn(Arc<PageSession>, Arc<dyn LlmProvider>) -> BoxFuture<Vec<Arc<dyn Tool>>>;
+pub type AgentInstructionsFn = fn(&str) -> String;
 
 /// One-shot CLI/daemon command: `(page, JSON args, debug_snapshot)` → JSON.
 pub type CommandRunFn = fn(Arc<PageSession>, Value, bool) -> BoxFuture<Value>;
@@ -29,8 +30,14 @@ pub struct SiteSpec {
     pub about: &'static str,
     pub home_url: &'static str,
     pub agent_tools: AgentToolsFn,
+    /// Optional default tool surface for normal app/TUI agents. Sites can keep
+    /// a broader command/debug surface in `agent_tools` while exposing a
+    /// smaller, product-safe macro surface to interactive users.
+    pub default_agent_tools: Option<AgentToolsFn>,
     /// Agent playbook (knowledge.md) with host-specific preamble prepended.
-    pub agent_instructions: fn(&str) -> String,
+    pub agent_instructions: AgentInstructionsFn,
+    /// Optional default playbook that matches `default_agent_tools`.
+    pub default_agent_instructions: Option<AgentInstructionsFn>,
     pub commands: &'static [SiteCommand],
 }
 

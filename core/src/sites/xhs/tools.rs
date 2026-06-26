@@ -36,10 +36,8 @@ const DEFAULT_NUM_NOTES: i64 = 10;
 /// (one extra JS read, no extra navigation), so every note read includes them.
 const TOP_COMMENTS_PER_NOTE: i64 = 12;
 
-/// XHS agent playbook: browser-lock rule, tool inventory, anti-bot rules,
-/// page states, entity fields, workflows, reading levels, evidence rules,
-/// and Chinese UI hints. Embedded at compile time so the agent prompt always
-/// carries the latest copy.
+/// XHS macro-agent playbook for the single app/TUI agent interface. Embedded
+/// at compile time so the agent prompt always carries the latest copy.
 pub const XHS_KNOWLEDGE: &str = include_str!("knowledge.md");
 
 /// All XHS tools constructed against the same page. Convenience helper for
@@ -93,12 +91,37 @@ pub fn xhs_tools_with_llm_provider(
     ]
 }
 
+pub fn xhs_macro_tools_with_llm_provider(
+    page: Arc<PageSession>,
+    llm_provider: Option<Arc<dyn LlmProvider>>,
+) -> Vec<Arc<dyn Tool>> {
+    let history = Arc::new(XhsHistoryStore::open_default());
+    vec![
+        Arc::new(TopicScanTool {
+            page: page.clone(),
+            llm_provider,
+            history: history.clone(),
+        }) as Arc<dyn Tool>,
+        Arc::new(AuthorScanTool { page, history }),
+    ]
+}
+
 pub async fn xhs_agent_tools(
     page: Arc<PageSession>,
     llm_provider: Arc<dyn LlmProvider>,
 ) -> anyhow::Result<Vec<Arc<dyn Tool>>> {
     XhsPageRuntime::new(&page).ensure_xhs(false).await.ok();
     Ok(xhs_tools_with_llm_provider(page, Some(llm_provider)))
+}
+
+pub async fn xhs_default_agent_tools(
+    page: Arc<PageSession>,
+    llm_provider: Arc<dyn LlmProvider>,
+) -> anyhow::Result<Vec<Arc<dyn Tool>>> {
+    // Macro tools are self-contained and perform their own navigation/typed
+    // failure handling, so the default agent factory should not require the
+    // current tab to already be on XHS.
+    Ok(xhs_macro_tools_with_llm_provider(page, Some(llm_provider)))
 }
 
 pub fn xhs_agent_instructions(extra: &str) -> String {
@@ -118,7 +141,9 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
     about: "Xiaohongshu (xiaohongshu.com)",
     home_url: XHS_HOME_URL,
     agent_tools: |page, llm| Box::pin(xhs_agent_tools(page, llm)),
+    default_agent_tools: Some(|page, llm| Box::pin(xhs_default_agent_tools(page, llm))),
     agent_instructions: xhs_agent_instructions,
+    default_agent_instructions: Some(xhs_agent_instructions),
     commands: &[
         SiteCommand {
             name: "search",

@@ -1,146 +1,89 @@
-# Xiaohongshu Site Knowledge
+# Xiaohongshu Macro-Agent Knowledge
 
-Xiaohongshu / 小红书 / XHS is a Chinese lifestyle social platform at
-https://www.xiaohongshu.com (default landing page:
-https://www.xiaohongshu.com/explore). Posts are called notes (笔记) and are
-usually image carousels or short videos with title, body text, hashtags,
-engagement counts, comments, and author/profile context.
+Xiaohongshu / 小红书 / XHS is a Chinese lifestyle social platform. Posts are
+called notes (笔记) and usually include title/body text, hashtags, engagement
+counts, comments, media, and author/profile context.
 
-## Browser Lock
+## Runtime Assumption
 
-The browser is locked to Xiaohongshu; every task is an XHS task. Do not
-navigate to other websites. Drive the site through the XHS tools below
-instead of direct `/explore/<note_id>` navigation, which often triggers
-blocked, blank, app-only, or QR-code flows. Reply in the same language as the
-user's task and ground your answer in tool output.
+socai prepares the browser/session/login state before the app/TUI agent run.
+You may assume an authenticated XHS session is available, but you must not
+assume any current page, modal, scroll position, selected filter state, or
+clicked card.
 
-## Tools
+## Macro-First Rule
 
-`search_notes`, `extract_search_cards`, `reset_search_filters`, `apply_search_filters`,
-`open_note`, `close_note`, `read_note`, `extract_note`, `extract_comments`, `scroll_in_note`,
-`collect_carousel_images`, `extract_profile`, `author_scan`, `topic_scan`,
-`page_state`.
+Use self-contained macro tools. Do not try to maintain browser UI state in your
+reasoning. Each macro tool should contain all inputs needed to navigate and
+collect evidence internally, then return structured results and artifact
+references.
 
-Prefer `topic_scan` for any "research a topic" task — it bundles search,
-sample, and read in one call. `topic_scan` is equivalent to calling
-`search_notes` and then `read_note` on each result one by one, but it is
-faster and uses far fewer tokens — so default to `topic_scan` and only fall
-back to `search_notes` + per-note `read_note` when you have a clear reason to
-read specific notes. For one-off
-lookups: `page_state` → `search_notes` → `read_note` (or `open_note` +
-`extract_note` + `extract_comments`). Close any open note modal before
-searching again.
+The default interactive XHS tools are intentionally high level:
 
-## Anti-Bot Rules
+- `topic_scan` — V1 topic/search macro. This is the current implementation of
+  the future `xhs.search` surface.
+- `author_scan` — V1 author/profile macro. This is the current implementation
+  of the future `xhs.author` surface.
 
-- Prefer `search_notes` from the homepage or any non-XHS tab; it navigates
-  to XHS and submits the search like a user.
-- Do not navigate directly to `/explore/<note_id>` unless no card-click path is
-  available. Open notes from search/profile cards with `read_note`.
-- Close note modals with `close_note`, Escape, or the close button. Do not
-  reload the page just to close a note.
-- If a page shows QR/app-only prompts, captcha, security verification, 404/blank
-  direct-detail routes, or "page unavailable" copy, stop retrying that URL and
-  return to search/profile card clicks.
-- Add screenshots when visual state or extraction confidence matters.
+Stateful micro tools such as opening/closing a current note, scrolling a note,
+extracting the current modal, or reading current page state are not part of the
+normal app/TUI agent workflow.
 
-## Page States
+## Tool Use
 
-- `homepage`: left navigation and top search input. Use `search_notes`.
-- `search_results`: query input and a waterfall of note cards with cover,
-  title, author, likes, and type.
-- `note_detail`: modal or full detail. Left side is carousel/video, right side
-  is author, title/body, hashtags, comments, and engagement bar.
-- `profile_page`: author avatar/name/XHS ID/bio/IP location/stats and note-card
-  grid. Use `author_scan` (opens the profile by id) when you have the author id,
-  or `extract_profile` when already on the page; scroll loads more cards. The
-  grid renders many cards at once (often dozens), so a small `num_notes` returns
-  the first render without scrolling. Profile note cards open the same note
-  detail (modal/full) as search cards, so `read_note`/`open_note` work on them.
+### Topic / search research
 
-## Entity Fields
+Call `topic_scan(query=..., num_notes=N, filters=..., download_media=...)` when
+the task asks about a topic, keyword, market, trend, product category, or group
+of XHS posts.
 
-Note fields: `note_id`, `url`, `type`, `title`, `author`, `author_id`,
-`author_url`, `content`, `hashtags`, `date`, `location` (the note's POI/geo-tag;
-notes carry no `ip_location` — that is profile-only), `likes`, `favorites`,
-`comments_count`, `image_count`, `images`, `video`, `top_comments`. (Search /
-profile result *cards* — not opened notes — instead carry `link`/`xsec_token`
-for the tokenized URL.)
+`topic_scan` searches, optionally applies filters, samples notes from results,
+reads note bodies and top comments, writes artifacts, and returns a compact
+bundle. Default `num_notes` is modest; increase it only when the question needs
+broader evidence. Use `download_media=true` when the user explicitly needs local
+image/video files.
 
-`top_comments` is a plain array of comment text strings. The full comment
-objects (`username`, `text`, `likes`, `like_count`, `time`, `is_author_reply`,
-`is_pinned`, `reply_count`, `sub_comments`) are kept in the run artifact
-(`<run_dir>/artifacts/…json`), which holds the complete untrimmed bundle.
+### Author / creator research
 
-Author fields: `display_name`, `xhs_id`, `profile_url`, `bio`, `ip_location`,
-`followers`, `following`, `likes_and_collections` (raw displayed strings, e.g.
-`5.6万`), `note_count`, `note_cards` (only when notes weren't opened; once read,
-the listing lives in `notes`).
+Call `author_scan(author_id=..., num_notes=N, read_notes=true|false,
+download_media=...)` when the task asks about a specific author/creator and you
+have an `author_id`, can extract the trailing id from a profile URL, or a
+previous macro result surfaced an author id worth expanding.
 
-Image fields: `url`, `index`, `is_cover`, optional `ocr_text`,
-`vision_description`, `local_path`.
+If the user only gives a display name or handle, first discover candidates with
+a focused `topic_scan` or ask the user for the profile URL/author id.
 
-Video fields: `url`, `resolved_url`, `poster_url`, optional `transcript`,
-`transcript_summary`, `frame_paths`, `frame_descriptions`, `visual_summary`.
+Use `read_notes=true` when you need the author's recent note bodies/comments;
+otherwise the profile header plus note cards may be enough. For author media
+downloads, `download_media=true` only matters when `read_notes=true`, because
+media is downloaded while reading notes.
 
-## Workflows
+### Note details
 
-- Topic research: call `topic_scan(query=..., num_notes=N)`. It
-  searches, optionally applies search-result filters,
-  then reads notes top-to-bottom in feed order — opening each (which pages the
-  next cards in as it scrolls), reading its body + top comments, writing
-  artifacts, closing note modals, and marking already analyzed posts. Default
-  `num_notes` is 10.
-- Quick breadth scan: use `search_notes` to return search-result cards (accepts
-  optional `filters`). By default returns only the first page (~19 cards, no
-  scrolling); pass `num_notes` to auto-scroll the feed and collect that many
-  cards (titles/likes/covers only — no bodies opened, so it stays fast). This is
-  the right tool to batch-harvest card metadata for filtering/analysis without
-  reading note bodies. Or use `extract_search_cards` to inspect already-loaded
-  cards without opening notes.
-- Manual note read: use `read_note(index=N)` or `read_note(note_id=...)`.
-  Pass `include_media=true` only when images, OCR, video, or visual evidence
-  materially matters. Use `download_media=true` when the user explicitly wants
-  local image/video files rather than OCR/vision enrichment.
-- Creator analysis: call `author_scan(author_id=..., num_notes=N)`. It opens
-  the author's profile, reads the header (bio, xhs id, IP location,
-  follower/following/liked-&-collected counts), and collects their note summary
-  cards in page order (scrolling for `num_notes`; omit for the first render).
-  Pass `read_notes=true` to also open each note and read its body + top
-  comments — that makes it the profile-scoped analog of `topic_scan` (latency
-  scales with the card count, so keep `num_notes` modest when combining with
-  details). Use `extract_profile` instead only when already on the profile page.
-  Keep creator inventory/style analysis separate from keyword/topic sampling
-  unless the user explicitly asks for both.
-- Comment sentiment: a note read already returns top comments; call
-  `scroll_in_note` then `extract_comments` when more visible comments are needed.
-- Media-heavy tasks: enable `include_media` sparingly. OCR, vision,
-  transcription, and frame extraction depend on optional local/cloud
-  capabilities and can be slow. `download_media=true` only downloads files into
-  the run dir and avoids those expensive enrichment steps.
+A standalone note-snapshot macro is deferred for V1 because direct note opening
+can require tokenized URLs or source card context. Prefer note details already
+collected by `topic_scan` or `author_scan` artifacts. If note details are
+missing, run a focused `topic_scan` or `author_scan` that can reach the note via
+search/profile context.
+
+## Artifact-First Reasoning
+
+Reason from previous macro outputs and saved artifacts. Use returned counts,
+ids, source URLs, warnings, and artifact references to decide whether more
+evidence is needed. Do not repeat the same macro call unless the previous result
+was insufficient, partial, or used the wrong query/author/depth.
+
+Full comment objects and untrimmed bundles may live in run artifacts even when
+the returned tool payload is compact. Media downloaded with `download_media`
+lives locally in the run directory and is referenced from manifests.
 
 ## Evidence Rules
 
-- Preserve real XHS post links from cards when available, including
-  `xsec_token` query parameters. Fall back to bare `/explore/<note_id>` only
-  when no real tokenized URL exists.
-- Cards carry `already_analyzed` / `history_include_media` flags when a prior
-  run already read them. `read_note` and `topic_scan` short-circuit notes
-  already covered at the same media setting — the returned payload has
-  `skipped: true` plus the prior `history` entry. To deepen prior analysis, set
-  `include_media: true`. Media downloads are not cache-skipped because fresh
-  local files are expected in the current run dir.
-- Keep DOM text, comment evidence, image OCR/vision, and video transcript/frame
-  evidence labeled separately in final answers.
-- If a read returns a stale-note warning or note-id mismatch, close the current
-  modal and reopen the intended card before trusting the result.
-- Post-level engagement extraction must exclude comment-area DOM; otherwise
-  comment likes or comment UI text can be misread as the note's own engagement.
-- For reports, include screenshots and artifact paths only when they support the
-  conclusion or make verification easier.
-
-## Chinese UI Hints
-
-- No-result copy often contains: `没有找到相关内容`, `换个词试试`, `暂无相关内容`.
-- Engagement labels: `赞`, `收藏`, `评论`, `分享`.
-- Count suffixes: `万` and `w` mean 10000; `k` means 1000.
+- Ground final answers in collected XHS evidence.
+- Distinguish note body text, comments, author profile facts, engagement, and
+  media observations.
+- If a macro returns partial success, use the collected evidence and clearly say
+  what was missing.
+- If a macro reports login/session/security/route/DOM failures, do not pretend
+  the data was collected; explain the blocker and what would be needed next.
+- Reply in the same language as the user's task.

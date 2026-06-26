@@ -628,7 +628,8 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
             return Err(err);
         }
     };
-    let mut tools = (site.agent_tools)(page, llm_provider.clone()).await?;
+    let agent_tools = site.default_agent_tools.unwrap_or(site.agent_tools);
+    let mut tools = agent_tools(page, llm_provider.clone()).await?;
     tools.extend(local_agent_tools());
 
     // Track run_id + latest assistant text live off the event stream so we can
@@ -652,8 +653,11 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     // Seed the conversation with prior turns and tell the agent which run dirs
     // belong to this session so it can read back earlier artifacts.
     let preamble = format!("{TUI_AGENT_PREAMBLE}\n\n{}", state.session.context_note());
+    let agent_instructions = site
+        .default_agent_instructions
+        .unwrap_or(site.agent_instructions);
     let config = AgentRunConfig {
-        extra_instructions: (site.agent_instructions)(&preamble),
+        extra_instructions: agent_instructions(&preamble),
         enabled_sites: vec![site.id.to_string()],
         seed_messages: state.session.chat_messages(),
         run_dir: Some(run_dir.clone()),

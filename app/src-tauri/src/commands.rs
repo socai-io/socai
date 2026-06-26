@@ -673,12 +673,16 @@ async fn run_agent_task_on_fresh_page(
         }
     }
     let outcome = async {
-        let tools = (site.agent_tools)(page.clone(), llm_provider.clone()).await?;
+        let agent_tools = site.default_agent_tools.unwrap_or(site.agent_tools);
+        let tools = agent_tools(page.clone(), llm_provider.clone()).await?;
         let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
         let pump = pump_agent_task_events(app, registry.clone(), task_id.clone(), telemetry, rx);
 
+        let agent_instructions = site
+            .default_agent_instructions
+            .unwrap_or(site.agent_instructions);
         let config = AgentRunConfig {
-            extra_instructions: (site.agent_instructions)(TAURI_AGENT_PREAMBLE),
+            extra_instructions: agent_instructions(TAURI_AGENT_PREAMBLE),
             enabled_sites: vec![site.id.to_string()],
             run_dir,
             ..AgentRunConfig::default()
