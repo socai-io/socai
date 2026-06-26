@@ -984,9 +984,13 @@ fn lean_scan_note(note: &mut Value) {
     let Some(entity) = entry.get_mut("entity").and_then(Value::as_object_mut) else {
         return;
     };
+    let media_summary = lean_entity_media_summary(entity);
     entity.remove("content_source");
     entity.remove("wait");
     entity.remove("top_comments_wait");
+    entity.remove("images");
+    entity.remove("video");
+    entity.insert("media_summary".into(), media_summary);
     if let Some(comments) = entity.get_mut("top_comments").and_then(Value::as_array_mut) {
         let texts: Vec<Value> = comments
             .iter()
@@ -995,6 +999,52 @@ fn lean_scan_note(note: &mut Value) {
             .collect();
         entity.insert("top_comments".into(), Value::Array(texts));
     }
+}
+
+fn lean_entity_media_summary(entity: &Map<String, Value>) -> Value {
+    let image_count = entity
+        .get("images")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .or_else(|| {
+            entity
+                .get("image_count")
+                .and_then(Value::as_i64)
+                .and_then(|count| usize::try_from(count).ok())
+        })
+        .unwrap_or_default();
+    let local_image_count = entity
+        .get("images")
+        .and_then(Value::as_array)
+        .map(|images| {
+            images
+                .iter()
+                .filter(|image| get_str(image, "local_path").is_some_and(|path| !path.is_empty()))
+                .count()
+        })
+        .unwrap_or_default();
+    let video = entity.get("video").filter(|video| video.is_object());
+    let has_video = video.is_some_and(|video| {
+        get_str(video, "url").is_some_and(|url| !url.is_empty())
+            || get_str(video, "resolved_url").is_some_and(|url| !url.is_empty())
+            || get_str(video, "local_path").is_some_and(|path| !path.is_empty())
+    });
+    let local_video_count = video
+        .filter(|video| {
+            get_str(video, "local_path").is_some_and(|path| !path.is_empty())
+                || get_str(video, "poster_local_path").is_some_and(|path| !path.is_empty())
+        })
+        .map(|_| 1)
+        .unwrap_or_default();
+    let media_count = image_count + usize::from(has_video);
+    let local_media_count = local_image_count + local_video_count;
+    json!({
+        "media_count": media_count,
+        "image_count": image_count,
+        "has_video": has_video,
+        "local_media_count": local_media_count,
+        "has_local_media": local_media_count > 0,
+    })
 }
 
 /// open_note(note_id?, index?, wait_seconds?) -> {ok, ...}
@@ -1492,7 +1542,7 @@ impl Tool for ExtractProfileTool {
     }
 }
 
-const SEARCH_SCAN_DOWNLOAD_MEDIA_DESCRIPTION: &str = "Download note images/videos into the command run_dir, include local_path fields in returned notes, and write a stable media_manifest.json surfaced by media_manifest_path.";
+const SEARCH_SCAN_DOWNLOAD_MEDIA_DESCRIPTION: &str = "Always enabled for this macro. Downloads note images/videos into the run dir, includes local_path fields in artifacts, and writes a stable media manifest.";
 
 fn search_scan_description() -> &'static str {
     "Self-contained Xiaohongshu search_scan macro: start from any page, search by query, optionally apply filters, and by default read selected notes with top comments. Set `preview=true` for card-only search results without opening notes. Use this for XHS topic, trend, keyword, market, and note-evidence research. Do not repeat the same search_scan unless the previous one was clearly insufficient."
@@ -1531,6 +1581,17 @@ fn search_scan_input_schema(
         },
         "required": ["query"]
     })
+}
+
+fn force_macro_media_input(input: &mut Value, force_read_notes: bool) -> anyhow::Result<()> {
+    let Some(obj) = input.as_object_mut() else {
+        anyhow::bail!("macro input must be an object");
+    };
+    obj.insert("download_media".into(), json!(true));
+    if force_read_notes {
+        obj.insert("read_notes".into(), json!(true));
+    }
+    Ok(())
 }
 
 fn normalize_author_input(input: &mut Value) -> anyhow::Result<()> {
@@ -1641,13 +1702,14 @@ impl Tool for SearchScanTool {
     }
 
     fn input_schema(&self) -> Value {
-        search_scan_input_schema(false, SEARCH_SCAN_DOWNLOAD_MEDIA_DESCRIPTION)
+        search_scan_input_schema(true, SEARCH_SCAN_DOWNLOAD_MEDIA_DESCRIPTION)
     }
 
-    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+    async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         if get_bool(&input, "preview", false) {
             return self.search_preview(input).await;
         }
+        force_macro_media_input(&mut input, false)?;
 
         let query = get_str(&input, "query")
             .ok_or_else(|| anyhow::anyhow!("missing query"))?
@@ -1891,7 +1953,7 @@ impl Tool for AuthorScanTool {
     }
 
     fn description(&self) -> &str {
-        "Self-contained Xiaohongshu author/creator macro: open an author's profile page by author_id or profile_url, read the author header (display name, xhs id, bio, IP location, follower/following/liked-&-collected counts), collect note cards in page order, and optionally read each collected note body + top comments. Use this for creator research scoped to one author."
+        "Self-contained Xiaohongshu author/creator macro: open an author's profile page by author_id or profile_url, read the author header (display name, xhs id, bio, IP location, follower/following/liked-&-collected counts), read recent notes with top comments, always download available media into local artifacts, and return structured results plus artifact references. Use this for creator research scoped to one author."
     }
 
     fn input_schema(&self) -> Value {
@@ -1914,13 +1976,13 @@ impl Tool for AuthorScanTool {
                 },
                 "read_notes": {
                     "type": "boolean",
-                    "description": "Open each collected note and read its body + top comments. Off by default (summaries only).",
-                    "default": false
+                    "description": "Always enabled for this macro. Opens each collected note and reads its body + top comments so artifacts contain post-level evidence.",
+                    "default": true
                 },
                 "download_media": {
                     "type": "boolean",
-                    "description": "When reading notes, download their images/videos into the run dir, include local_path fields, and emit a stable media_manifest_path.",
-                    "default": false
+                    "description": "Always enabled for this macro. Downloads note images/videos into the run dir while reading notes and writes a stable media manifest.",
+                    "default": true
                 }
             }
         })
@@ -1928,6 +1990,7 @@ impl Tool for AuthorScanTool {
 
     async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         normalize_author_input(&mut input)?;
+        force_macro_media_input(&mut input, true)?;
         let author_id = get_str(&input, "author_id")
             .map(str::trim)
             .filter(|id| !id.is_empty())
@@ -2219,5 +2282,40 @@ mod tests {
 
         assert_eq!(input["author_id"], json!("abc123"));
         assert_eq!(input["read_notes"], json!(true));
+    }
+
+    #[test]
+    fn force_macro_media_overrides_media_flags() {
+        let mut search = json!({"query": "coffee", "download_media": false});
+        force_macro_media_input(&mut search, false).expect("search input should normalize");
+        assert_eq!(search["download_media"], json!(true));
+        assert!(search.get("read_notes").is_none());
+
+        let mut author = json!({"author_id": "abc", "read_notes": false, "download_media": false});
+        force_macro_media_input(&mut author, true).expect("author input should normalize");
+        assert_eq!(author["download_media"], json!(true));
+        assert_eq!(author["read_notes"], json!(true));
+    }
+
+    #[test]
+    fn lean_scan_note_replaces_media_paths_with_summary() {
+        let mut note = json!({
+            "entity": {
+                "note_id": "note1",
+                "images": [{"local_path": "site_media/note1/0.jpg"}],
+                "video": {},
+                "top_comments": [],
+            }
+        });
+
+        lean_scan_note(&mut note);
+
+        let entity = note.get("entity").unwrap();
+        assert!(entity.get("images").is_none());
+        assert!(entity.get("video").is_none());
+        assert_eq!(entity["media_summary"]["local_media_count"], json!(1));
+        assert!(!serde_json::to_string(entity)
+            .unwrap()
+            .contains("site_media/note1/0.jpg"));
     }
 }

@@ -4,9 +4,9 @@ use crate::timeline::{agent_event_to_timeline, AgentTaskEventKind, AgentTaskEven
 use anyhow::Result;
 use serde_json::{json, Map, Value};
 use socai_core::agent::{
-    catalog_models_for, configured_default_model_for, configured_default_provider, make_run_dir,
-    provider_credential_kind, resolve_provider, save_default_model, AgentEvent, CredentialKind,
-    ModelCatalogEntry, Provider,
+    artifact_agent_tools, catalog_models_for, configured_default_model_for,
+    configured_default_provider, make_run_dir, provider_credential_kind, resolve_provider,
+    save_default_model, AgentEvent, CredentialKind, ModelCatalogEntry, Provider,
 };
 use socai_core::runtime::{
     create_llm_provider_for, ensure_llm_provider_configured_for,
@@ -674,7 +674,8 @@ async fn run_agent_task_on_fresh_page(
     }
     let outcome = async {
         let agent_tools = site.default_agent_tools.unwrap_or(site.agent_tools);
-        let tools = agent_tools(page.clone(), llm_provider.clone()).await?;
+        let mut tools = agent_tools(page.clone(), llm_provider.clone()).await?;
+        tools.extend(artifact_agent_tools());
         let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
         let pump = pump_agent_task_events(app, registry.clone(), task_id.clone(), telemetry, rx);
 

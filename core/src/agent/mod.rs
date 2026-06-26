@@ -5,6 +5,7 @@
 //! `sites` module and call into `cdp` themselves.
 
 pub mod api_errors;
+pub mod artifact_tools;
 pub mod compaction;
 pub mod file_bash_tools;
 pub mod llm;
@@ -19,6 +20,7 @@ pub mod signature;
 pub mod system_prompt;
 pub mod tool;
 
+pub use self::artifact_tools::{artifact_agent_tools, ArtifactListTool, ArtifactReadTool};
 pub use self::file_bash_tools::{local_agent_tools, BashTool, ReadFileTool};
 pub use self::llm::{
     AnthropicBackend, Backend, Block, LLMResponse, Message, MessageContent, MessageRole,

@@ -15,12 +15,12 @@ use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Cmd, CompletionType, Config, Editor, EventHandler, Helper, KeyEvent, Modifiers};
+use socai_core::agent::{artifact_agent_tools, local_agent_tools, make_run_dir, Session};
 use socai_core::agent::{
     catalog_models_for, config_for, configured_default_model_for, provider_credential_kind,
     resolve_provider, save_api_key, save_default_model, AgentEvent, Backend, CredentialKind,
     ModelCatalogEntry, Provider, PROVIDERS,
 };
-use socai_core::agent::{local_agent_tools, make_run_dir, Session};
 use socai_core::runtime::{
     create_llm_provider, run_agent_task as run_agent_with_tools, AgentRunConfig, SocaiRuntime,
 };
@@ -630,6 +630,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     };
     let agent_tools = site.default_agent_tools.unwrap_or(site.agent_tools);
     let mut tools = agent_tools(page, llm_provider.clone()).await?;
+    tools.extend(artifact_agent_tools());
     tools.extend(local_agent_tools());
 
     // Track run_id + latest assistant text live off the event stream so we can

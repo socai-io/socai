@@ -38,6 +38,9 @@ use crate::agent::signature::tool_call_signature;
 use crate::agent::system_prompt::build_system_prompt;
 use crate::agent::tool::{SharedTool, ToolContext, ToolResult, ToolResultBlock};
 
+const TOOL_RESULT_IMAGE_MAX_BLOCKS: usize = 4;
+const TOOL_RESULT_IMAGE_MAX_BASE64_CHARS: usize = 6_000_000;
+
 /// Events streamed to subscribers while the agent is running.
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
@@ -609,16 +612,16 @@ fn tool_result_to_content(result: &ToolResult) -> Vec<ToolResultContent> {
 
 /// Squash a tool_result for the chat history:
 /// - text blocks → compressed JSON-aware truncation
-/// - image blocks → text placeholder. If a preceding text block contained
-///   "Screenshot saved to <path>", the placeholder names that path so the
-///   model can still cite it in the final report.
+/// - image blocks → preserve a small bounded set so explicit artifact/media
+///   deep dives can actually be seen by vision-capable models; oversized or
+///   excess images become text placeholders.
 ///
-/// Returns a single Text block (or `(empty result)` when nothing usable
-/// remained). The raw bodies still hit disk via tool_results/*.json, so
-/// nothing is lost — we just keep the chat-history budget bounded.
+/// Raw bodies still hit disk via tool_results/*.json, so nothing is lost — we
+/// just keep the chat-history budget bounded.
 fn bound_content_for_history(content: &[ToolResultContent]) -> Vec<ToolResultContent> {
     let mut screenshot_path: Option<String> = None;
     let mut parts: Vec<String> = Vec::new();
+    let mut images: Vec<ToolResultContent> = Vec::new();
     for block in content {
         match block {
             ToolResultContent::Text { text } => {
@@ -629,6 +632,15 @@ fn bound_content_for_history(content: &[ToolResultContent]) -> Vec<ToolResultCon
                 if !compressed.trim().is_empty() {
                     parts.push(compressed);
                 }
+            }
+            ToolResultContent::Image { data, media_type }
+                if images.len() < TOOL_RESULT_IMAGE_MAX_BLOCKS
+                    && data.len() <= TOOL_RESULT_IMAGE_MAX_BASE64_CHARS =>
+            {
+                images.push(ToolResultContent::Image {
+                    data: data.clone(),
+                    media_type: media_type.clone(),
+                });
             }
             ToolResultContent::Image { .. } => {
                 parts.push(match &screenshot_path {
@@ -643,9 +655,15 @@ fn bound_content_for_history(content: &[ToolResultContent]) -> Vec<ToolResultCon
         combined = compress_text_maybe_json(&combined, TOOL_RESULT_TEXT_MAX_CHARS);
     }
     if combined.is_empty() {
-        combined = "(empty result)".to_string();
+        combined = if images.is_empty() {
+            "(empty result)".to_string()
+        } else {
+            "(image result)".to_string()
+        };
     }
-    vec![ToolResultContent::Text { text: combined }]
+    let mut out = vec![ToolResultContent::Text { text: combined }];
+    out.extend(images);
+    out
 }
 
 /// `"Screenshot saved to /tmp/x.png"` → `Some("/tmp/x.png")`.
@@ -738,4 +756,54 @@ fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> V
         });
     }
     blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bound_content_preserves_small_images() {
+        let content = vec![
+            ToolResultContent::Text {
+                text: "note".into(),
+            },
+            ToolResultContent::Image {
+                data: "abcd".into(),
+                media_type: "image/png".into(),
+            },
+        ];
+
+        let bounded = bound_content_for_history(&content);
+
+        assert!(matches!(bounded[0], ToolResultContent::Text { .. }));
+        assert!(matches!(bounded[1], ToolResultContent::Image { .. }));
+    }
+
+    #[test]
+    fn bound_content_omits_excess_images() {
+        let content: Vec<ToolResultContent> = (0..(TOOL_RESULT_IMAGE_MAX_BLOCKS + 1))
+            .map(|_| ToolResultContent::Image {
+                data: "abcd".into(),
+                media_type: "image/png".into(),
+            })
+            .collect();
+
+        let bounded = bound_content_for_history(&content);
+        let image_count = bounded
+            .iter()
+            .filter(|block| matches!(block, ToolResultContent::Image { .. }))
+            .count();
+        let text = bounded
+            .iter()
+            .filter_map(|block| match block {
+                ToolResultContent::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(image_count, TOOL_RESULT_IMAGE_MAX_BLOCKS);
+        assert!(text.contains("Image omitted"));
+    }
 }

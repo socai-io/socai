@@ -49,27 +49,24 @@ task asks about a topic, keyword, market, trend, product category, or group of
 XHS posts.
 
 `search_scan` searches, optionally applies filters, samples notes from results,
-reads note bodies and top comments by default, writes artifacts, and returns a
-compact bundle. Set `preview=true` only when card metadata is enough and note
-bodies / comments are unnecessary. Default `num_notes` is modest; increase it
-only when the question needs broader evidence. Use `download_media=true` when
-the user explicitly needs local image/video files.
+reads note bodies and top comments by default, downloads available media into
+local artifacts, and returns a compact bundle. Set `preview=true` only when card
+metadata is enough and note bodies / comments are unnecessary. Default
+`num_notes` is modest; increase it only when the question needs broader
+evidence.
 
 ### Author / creator research
 
-Call `author(author_id=..., profile_url=..., num_notes=N,
-read_notes=true|false, download_media=...)` when the task asks about a specific
-author/creator and you have an `author_id`, can pass a profile URL containing
-`/user/profile/<id>`, or a previous search result surfaced an author id worth
-expanding.
+Call `author(author_id=..., profile_url=..., num_notes=N)` when the task asks
+about a specific author/creator and you have an `author_id`, can pass a profile
+URL containing `/user/profile/<id>`, or a previous search result surfaced an
+author id worth expanding.
 
 If the user only gives a display name or handle, first discover candidates with
 a focused `search_scan` or ask the user for the profile URL/author id.
 
-Use `read_notes=true` when you need the author's recent note bodies/comments;
-otherwise the profile header plus note cards may be enough. For author media
-downloads, `download_media=true` only matters when `read_notes=true`, because
-media is downloaded while reading notes.
+`author` reads recent note bodies/comments and downloads available media into
+local artifacts so creator analysis has post-level evidence.
 
 ### Note details
 
@@ -86,9 +83,15 @@ ids, source URLs, warnings, and artifact references to decide whether more
 evidence is needed. Do not repeat the same macro call unless the previous result
 was insufficient, partial, or used the wrong query/author/depth.
 
+Use `artifact_list` for a high-level inventory of collected posts/artifacts.
+It is the right first step when you need to see what evidence is already local.
+Use `artifact_read` for a focused deep dive into one artifact or one interesting
+note. Set `include_media=true` on `artifact_read` only when visual evidence is
+material; do not inspect every downloaded media file up front.
+
 Full comment objects and untrimmed bundles may live in run artifacts even when
-the returned tool payload is compact. Media downloaded with `download_media`
-lives locally in the run directory and is referenced from manifests.
+the returned tool payload is compact. Downloaded media lives locally in the run
+directory and is referenced from manifests/artifacts.
 
 Some cards or note entries may be marked as previously analyzed (for example
 `already_analyzed`, `history_level`, `history_include_media`, `skipped`, or a
