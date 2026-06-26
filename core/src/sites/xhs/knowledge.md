@@ -29,6 +29,17 @@ Stateful micro tools such as opening/closing a current note, scrolling a note,
 extracting the current modal, or reading current page state are not part of the
 normal app/TUI agent workflow.
 
+## Anti-Bot / Rate-Limit Guardrails
+
+Macro tools navigate through search/profile/card flows because direct detail
+URLs and rapid repeated reads are more likely to trigger Xiaohongshu security
+states. If a macro reports security verification, captcha, login/session loss,
+blank/404/app-only detail pages, or copy such as "帖子不见了" / "内容无法展示" /
+"page unavailable", do not loop the same macro with identical inputs. Treat it
+as a platform/session/rate-limit blocker: use whatever evidence was collected,
+try at most one narrower or slower query/profile path if it materially changes
+the route, and otherwise explain the blocker to the user.
+
 ## Tool Use
 
 ### Topic / search research
@@ -76,6 +87,13 @@ was insufficient, partial, or used the wrong query/author/depth.
 Full comment objects and untrimmed bundles may live in run artifacts even when
 the returned tool payload is compact. Media downloaded with `download_media`
 lives locally in the run directory and is referenced from manifests.
+
+Some cards or note entries may be marked as previously analyzed (for example
+`already_analyzed`, `history_level`, `history_include_media`, `skipped`, or a
+`history` object). That means socai has durable cached evidence for that note
+from this or an earlier run. Use the returned cached entity/history as evidence
+instead of assuming the note was ignored. Only rerun with deeper settings when
+the cached level/media setting is insufficient for the current task.
 
 ## Evidence Rules
 
