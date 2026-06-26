@@ -10,7 +10,6 @@ interface Props {
 const { messages, language, currentYear } = Astro.props;
 
 const githubUrl = "/github";
-const downloadPath = "/download";
 const connectPath = "/connect";
 const contactPath = "/contact";
 
@@ -24,9 +23,6 @@ const t = (path: string) => message(messages, path, language);
         data-i18n-aria-label="footer.linksAria"
     >
         <a href={githubUrl}>github</a>
-        <a href={downloadPath} data-i18n="footer.download"
-            >{t("footer.download")}</a
-        >
         <a href={connectPath} data-i18n="footer.connect">{t("footer.connect")}</a
         >
         <a href={contactPath} data-i18n="footer.contact">{t("footer.contact")}</a

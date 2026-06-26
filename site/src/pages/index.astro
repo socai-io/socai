@@ -68,8 +68,7 @@ const messages = {
         },
         footer: {
             linksAria: "footer links",
-            download: "download",
-            connect: "connect",
+            connect: "connect guide",
             contact: "contact",
         },
         prompts: [
@@ -103,7 +102,7 @@ const messages = {
             actionsAria: "下载和源码",
             download: "下载 macOS 版",
             github: "在 github 查看",
-            releaseMeta: "macOS 13+ · 通用构建 · {version}",
+            releaseMeta: "macOS 13+ · {version}",
         },
         preview: {
             sectionAria: "socai app 预览",
@@ -129,8 +128,7 @@ const messages = {
         },
         footer: {
             linksAria: "页脚链接",
-            download: "下载",
-            connect: "连接",
+            connect: "连接教程",
             contact: "联系",
         },
         prompts: [
@@ -228,7 +226,6 @@ const releaseValues = JSON.stringify({ version: releaseVersion });
             <SiteHeader
                 messages={messages}
                 language={defaultLanguage}
-                releaseVersion={releaseVersion}
             />
 
             <main class="page-main">

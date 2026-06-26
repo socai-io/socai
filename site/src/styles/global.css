@@ -158,8 +158,7 @@ button:focus-visible {
   background: var(--line-strong);
 }
 
-.nav-link,
-.release-chip {
+.nav-link {
   display: inline-flex;
   align-items: center;
   border-radius: 4px;
@@ -200,7 +199,6 @@ button:focus-visible {
   color: var(--ink-0);
 }
 
-.release-chip,
 .release-meta,
 .site-footer,
 .window-title,
@@ -214,12 +212,6 @@ button:focus-visible {
 .button__external {
   font-family: var(--font-mono);
   letter-spacing: var(--ls-mono);
-}
-
-.release-chip {
-  color: var(--fg-soft);
-  font-size: 11px;
-  letter-spacing: 0.04em;
 }
 
 .page-main {
@@ -737,10 +729,6 @@ html[data-language="zh"] .hero h1 {
 }
 
 @media (max-width: 420px) {
-  .release-chip {
-    display: none;
-  }
-
   .hero {
     padding-inline: 10px;
   }

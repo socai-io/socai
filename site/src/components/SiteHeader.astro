@@ -1,26 +1,17 @@
 ---
-import { message, formatMessage } from "../lib/i18n";
+import { message } from "../lib/i18n";
 
 interface Props {
     messages: Record<string, Record<string, unknown>>;
     language: string;
-    releaseVersion: string;
 }
 
-const { messages, language, releaseVersion } = Astro.props;
+const { messages, language } = Astro.props;
 
 const githubUrl = "/github";
-const connectPath = "/connect";
 const contactPath = "/contact";
 
 const t = (path: string) => message(messages, path, language);
-const releaseValues = JSON.stringify({ version: releaseVersion });
-const releaseLabel = formatMessage(
-    messages,
-    "nav.releaseLabel",
-    { version: releaseVersion },
-    language,
-);
 ---
 
 <header
@@ -66,9 +57,6 @@ const releaseLabel = formatMessage(
         aria-label={t("nav.linksAria")}
         data-i18n-aria-label="nav.linksAria"
     >
-        <a class="nav-text-link" href={connectPath} data-i18n="nav.connect"
-            >{t("nav.connect")}</a
-        >
         <a class="nav-text-link" href={contactPath} data-i18n="nav.contact"
             >{t("nav.contact")}</a
         >
@@ -106,12 +94,5 @@ const releaseLabel = formatMessage(
                 aria-pressed="false">en</button
             >
         </div>
-        <span
-            class="release-chip"
-            data-release-chip
-            data-i18n-aria-label="nav.releaseLabel"
-            data-i18n-values={releaseValues}
-            aria-label={releaseLabel}>{releaseVersion}</span
-        >
     </nav>
 </header>
