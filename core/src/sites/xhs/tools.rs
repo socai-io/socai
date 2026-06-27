@@ -31,6 +31,10 @@ use crate::sites::xhs::{
 /// Default number of notes `search` reads when the caller doesn't specify.
 const DEFAULT_NUM_NOTES: i64 = 10;
 
+/// Seconds to wait for search results to render before reading cards. Internal
+/// (not a user/agent knob), shared by the full scan and the preview path.
+const SEARCH_WAIT_SECONDS: f64 = 2.0;
+
 /// Top comments attached to every note read (read_note, extract_note,
 /// search, author_scan). Comments are read from the already-open note's DOM
 /// (one extra JS read, no extra navigation), so every note read includes them.
@@ -402,11 +406,8 @@ fn search_input(
     download_media: bool,
     preview: bool,
 ) -> anyhow::Result<Value> {
-    // `wait_seconds` is consumed by the preview (cards-only) path; the full
-    // scan uses its own internal wait, so it's harmless when that path ignores it.
     let mut input = json!({
         "query": trimmed_required(query, "query")?,
-        "wait_seconds": 2.0,
     });
     if let Some(filters) = filters {
         input["filters"] = filters.clone();
@@ -1367,15 +1368,13 @@ impl Tool for SearchTool {
         // opening notes. This is the cards-only fast path surfaced on the CLI as
         // `search --preview` (formerly the standalone `search_notes` tool).
         if get_bool(&input, "preview", false) {
-            let wait_seconds = get_f64(&input, "wait_seconds", 2.0);
-            let num_notes = input
-                .get("num_notes")
-                .and_then(Value::as_i64)
-                .filter(|n| *n > 0)
-                .map(|n| n as usize);
+            // num_notes defaults to DEFAULT_NUM_NOTES to match the schema and
+            // the full-scan path: collect at least that many cards, scrolling
+            // only if the first page holds fewer.
+            let num_notes = Some(get_i64(&input, "num_notes", DEFAULT_NUM_NOTES).max(1) as usize);
             let xhs = XhsPageRuntime::new(&self.page);
             let mut value = xhs
-                .search_notes(&query, filters.as_ref(), wait_seconds, num_notes)
+                .search_notes(&query, filters.as_ref(), SEARCH_WAIT_SECONDS, num_notes)
                 .await?;
             if let Some(cards) = value.get_mut("cards") {
                 self.history.annotate_cards(cards);
@@ -1415,7 +1414,9 @@ impl Tool for SearchTool {
 
         // Filters are applied after the initial search below, so don't pass
         // them here.
-        let search = xhs.search_notes(&query, None, 2.0, None).await?;
+        let search = xhs
+            .search_notes(&query, None, SEARCH_WAIT_SECONDS, None)
+            .await?;
 
         // If the search never landed on a results page (search box not found,
         // login required, …) bail before the browse loop. Otherwise

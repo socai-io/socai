@@ -1,4 +1,4 @@
-//! Stable media manifest generation for XHS topic scans.
+//! Stable media manifest generation for XHS searches.
 //!
 //! `search --download-media` keeps the large per-asset manifest in a
 //! run-dir JSON file so command stdout can stay compact while callers still get
