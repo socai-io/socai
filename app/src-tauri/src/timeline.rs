@@ -356,11 +356,13 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
     }
 }
 
+/// Human-readable label for a tool name. Computed when an event is written and
+/// baked into timeline.jsonl; the read path never recomputes it. So only current
+/// tool names ever reach here — renamed tools need no legacy aliases, and old
+/// runs keep the labels they were written with.
 pub(crate) fn user_label(name: &str) -> String {
     match name {
-        // `search` and its pre-rename aliases (`search_notes`, `topic_scan`)
-        // render identically — old run files map onto the current label.
-        "search" | "search_notes" | "topic_scan" => "searched xiaohongshu",
+        "search" => "searched xiaohongshu",
         "extract_search_cards" => "read search cards",
         "list_search_tabs" => "listed search tabs",
         "click_search_tab" => "switched search tab",
@@ -966,12 +968,11 @@ fn raw_tool_result_value(content: &Value) -> Option<Value> {
 }
 
 fn normalize_entities(tool: &str, value: &Value) -> Vec<TimelineEntity> {
+    // Like user_label, this runs at write time, so only the current tool name
+    // reaches here. `--preview` yields a `cards` array (-> card grid); the
+    // default full scan yields the aggregated bundle (-> xhs_search).
     match tool {
-        // The single search tool, plus its pre-rename aliases (`search_notes`
-        // was cards-only, `topic_scan` was the full bundle). Branch on payload
-        // shape so old run files still render: a `cards` array -> card grid,
-        // otherwise the aggregated search bundle.
-        "search" | "search_notes" | "topic_scan" => {
+        "search" => {
             if let Some(cards) = value.get("cards").and_then(Value::as_array) {
                 if cards.is_empty() {
                     Vec::new()
