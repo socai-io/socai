@@ -18,7 +18,7 @@ CLI binary. For day-to-day iteration, build and run from the workspace instead:
 
 ```bash
 cargo build                 # build the whole workspace (core + cli)
-cargo run -p socai-cli -- topic_scan "运营爆款思路" --num-notes 30
+cargo run -p socai-cli -- xhs search "运营爆款思路" --num-notes 30
 cargo test                  # run the workspace test suite
 ```
 

@@ -21,18 +21,18 @@ use crate::sites::runner::{
     trimmed_required, PageHook, ToolCommand,
 };
 use crate::sites::xhs::media_manifest::{
-    ensure_entity_note_id, topic_scan_media_manifest, write_media_manifest_file,
+    ensure_entity_note_id, search_media_manifest, write_media_manifest_file,
 };
 use crate::sites::xhs::page::XHS_SEARCH_FILTERS;
 use crate::sites::xhs::{
     ReadNoteOptions, XhsAuthorProfile, XhsHistoryStore, XhsNoteCard, XhsPageRuntime, XHS_HOME_URL,
 };
 
-/// Default number of notes `topic_scan` reads when the caller doesn't specify.
+/// Default number of notes `search` reads when the caller doesn't specify.
 const DEFAULT_NUM_NOTES: i64 = 10;
 
 /// Top comments attached to every note read (read_note, extract_note,
-/// topic_scan, author_scan). Comments are read from the already-open note's DOM
+/// search, author_scan). Comments are read from the already-open note's DOM
 /// (one extra JS read, no extra navigation), so every note read includes them.
 const TOP_COMMENTS_PER_NOTE: i64 = 12;
 
@@ -52,14 +52,10 @@ pub fn xhs_tools_with_llm_provider(
 ) -> Vec<Arc<dyn Tool>> {
     let history = Arc::new(XhsHistoryStore::open_default());
     vec![
-        Arc::new(SearchNotesTool {
-            page: page.clone(),
-            history: history.clone(),
-        }) as Arc<dyn Tool>,
         Arc::new(ExtractSearchCardsTool {
             page: page.clone(),
             history: history.clone(),
-        }),
+        }) as Arc<dyn Tool>,
         Arc::new(ResetSearchFiltersTool { page: page.clone() }),
         Arc::new(ApplySearchFiltersTool { page: page.clone() }),
         Arc::new(OpenNoteTool { page: page.clone() }),
@@ -78,7 +74,7 @@ pub fn xhs_tools_with_llm_provider(
         Arc::new(ScrollInNoteTool { page: page.clone() }),
         Arc::new(CollectCarouselImagesTool { page: page.clone() }),
         Arc::new(ExtractProfileTool { page: page.clone() }),
-        Arc::new(TopicScanTool {
+        Arc::new(SearchTool {
             page: page.clone(),
             llm_provider,
             history: history.clone(),
@@ -97,7 +93,7 @@ pub fn xhs_macro_tools_with_llm_provider(
 ) -> Vec<Arc<dyn Tool>> {
     let history = Arc::new(XhsHistoryStore::open_default());
     vec![
-        Arc::new(TopicScanTool {
+        Arc::new(SearchTool {
             page: page.clone(),
             llm_provider,
             history: history.clone(),
@@ -249,88 +245,12 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
             slow: SlowWhen::Always,
             run: run_author_scan,
         },
-        // ── Deprecated aliases (kept so existing scripts keep working) ──
-        // Both delegate to the `search` paths and inject a `deprecation` field
-        // into the returned JSON (the CLI client also echoes it to stderr).
-        SiteCommand {
-            name: "search_notes",
-            tool_name: "search_notes",
-            about: "[DEPRECATED] Use `search --preview`. Returns result cards only.",
-            args: &[
-                CommandArg {
-                    key: "query",
-                    long: None,
-                    value_name: "QUERY",
-                    help: "Search query",
-                    required: true,
-                    kind: ArgKind::Str,
-                },
-                CommandArg {
-                    key: "filters",
-                    long: Some("filter"),
-                    value_name: "GROUP=OPTION",
-                    help: "Search-result filter as `group=option` (repeatable).",
-                    required: false,
-                    kind: ArgKind::KeyValueMap,
-                },
-                CommandArg {
-                    key: "num_notes",
-                    long: Some("num-notes"),
-                    value_name: "N",
-                    help: "Cards to collect by auto-scrolling; omit for the first page only.",
-                    required: false,
-                    kind: ArgKind::Int,
-                },
-            ],
-            slow: SlowWhen::Always,
-            run: run_search_notes_deprecated,
-        },
-        SiteCommand {
-            name: "topic_scan",
-            tool_name: "topic_scan",
-            about: "[DEPRECATED] Use `search`. Opens each result and returns body + comments.",
-            args: &[
-                CommandArg {
-                    key: "query",
-                    long: None,
-                    value_name: "QUERY",
-                    help: "Search query",
-                    required: true,
-                    kind: ArgKind::Str,
-                },
-                CommandArg {
-                    key: "filters",
-                    long: Some("filter"),
-                    value_name: "GROUP=OPTION",
-                    help: "Search-result filter as `group=option` (repeatable).",
-                    required: false,
-                    kind: ArgKind::KeyValueMap,
-                },
-                CommandArg {
-                    key: "num_notes",
-                    long: Some("num-notes"),
-                    value_name: "N",
-                    help: "Number of notes to read; scrolls only if the first page holds fewer.",
-                    required: false,
-                    kind: ArgKind::Int,
-                },
-                CommandArg {
-                    key: "download_media",
-                    long: Some("download-media"),
-                    value_name: "DOWNLOAD_MEDIA",
-                    help: "Download note images/videos into the run_dir; add local_path fields.",
-                    required: false,
-                    kind: ArgKind::Flag,
-                },
-            ],
-            slow: SlowWhen::Always,
-            run: run_topic_scan_deprecated,
-        },
     ],
 };
 
-/// `search` dispatches on `--preview`: default opens each result (topic scan,
-/// body + comments); `--preview` returns result cards only (search_notes).
+/// `search` dispatches on `--preview`: default opens each result (full scan —
+/// body + top comments); `--preview` returns result cards only (titles/likes/
+/// covers) without opening any note.
 fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
     Box::pin(async move {
         let query = required_string(&args, "query")?;
@@ -345,107 +265,25 @@ fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxF
             .get("preview")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        if preview {
-            // Cards only — download_media doesn't apply to a card-only read.
-            search_notes_command(page, "search", &query, filters.as_ref(), num_notes, debug_snapshot)
-                .await
-        } else {
-            let download_media = args
+        // download_media doesn't apply to a card-only (--preview) read. Drop it
+        // on preview runs so the run envelope doesn't advertise a `media_dir`
+        // for media that is never downloaded.
+        let download_media = !preview
+            && args
                 .get("download_media")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            topic_scan_command(
-                page,
-                "search",
-                &query,
-                filters.as_ref(),
-                num_notes,
-                download_media,
-                debug_snapshot,
-            )
-            .await
-        }
-    })
-}
-
-/// Inject a `deprecation` notice into a command's result. The CLI prints the
-/// envelope's `data` object to stdout, so the notice goes *inside* `data` to be
-/// visible to an AI consuming the output (the CLI client also echoes it to
-/// stderr for humans).
-fn with_deprecation(mut envelope: Value, message: &str) -> Value {
-    let notice = Value::String(message.to_string());
-    if let Some(data) = envelope.get_mut("data").and_then(Value::as_object_mut) {
-        data.insert("deprecation".into(), notice);
-    } else if let Some(map) = envelope.as_object_mut() {
-        map.insert("deprecation".into(), notice);
-    }
-    envelope
-}
-
-fn run_search_notes_deprecated(
-    page: Arc<PageSession>,
-    args: Value,
-    debug_snapshot: bool,
-) -> BoxFuture<Value> {
-    Box::pin(async move {
-        let query = required_string(&args, "query")?;
-        let filters = args.get("filters").cloned();
-        // Default to DEFAULT_NUM_NOTES so omitting --num-notes collects a fixed
-        // batch (scrolling as needed), not just whatever the first page renders.
-        let num_notes = args
-            .get("num_notes")
-            .and_then(Value::as_i64)
-            .or(Some(DEFAULT_NUM_NOTES));
-        let envelope = search_notes_command(
+        search_command(
             page,
-            "search_notes",
-            &query,
-            filters.as_ref(),
-            num_notes,
-            debug_snapshot,
-        )
-        .await?;
-        Ok(with_deprecation(
-            envelope,
-            "`search_notes` is deprecated and will be removed in a future release. \
-             Use `socai xhs search --preview` instead (same result cards).",
-        ))
-    })
-}
-
-fn run_topic_scan_deprecated(
-    page: Arc<PageSession>,
-    args: Value,
-    debug_snapshot: bool,
-) -> BoxFuture<Value> {
-    Box::pin(async move {
-        let query = required_string(&args, "query")?;
-        let filters = args.get("filters").cloned();
-        // Default to DEFAULT_NUM_NOTES so omitting --num-notes collects a fixed
-        // batch (scrolling as needed), not just whatever the first page renders.
-        let num_notes = args
-            .get("num_notes")
-            .and_then(Value::as_i64)
-            .or(Some(DEFAULT_NUM_NOTES));
-        let download_media = args
-            .get("download_media")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let envelope = topic_scan_command(
-            page,
-            "topic_scan",
+            "search",
             &query,
             filters.as_ref(),
             num_notes,
             download_media,
+            preview,
             debug_snapshot,
         )
-        .await?;
-        Ok(with_deprecation(
-            envelope,
-            "`topic_scan` is deprecated and will be removed in a future release. \
-             Use `socai xhs search` instead (same behavior).",
-        ))
+        .await
     })
 }
 
@@ -495,17 +333,9 @@ struct XhsCommandSpec {
     include_run_metadata: bool,
 }
 
-const SEARCH_NOTES_COMMAND: XhsCommandSpec = XhsCommandSpec {
-    command_name: "search_notes",
-    tool_name: "search_notes",
-    before: CommandPageAction::SearchReady,
-    after: CommandPageAction::None,
-    include_run_metadata: false,
-};
-
-const TOPIC_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
-    command_name: "topic_scan",
-    tool_name: "topic_scan",
+const SEARCH_COMMAND: XhsCommandSpec = XhsCommandSpec {
+    command_name: "search",
+    tool_name: "search",
     before: CommandPageAction::SearchReady,
     after: CommandPageAction::None,
     include_run_metadata: true,
@@ -521,50 +351,28 @@ const AUTHOR_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
     include_run_metadata: false,
 };
 
-pub async fn search_notes_command(
-    page: Arc<PageSession>,
-    command_name: &'static str,
-    query: &str,
-    filters: Option<&Value>,
-    num_notes: Option<i64>,
-    debug_snapshot: bool,
-) -> anyhow::Result<Value> {
-    // `command_name` decouples the user-facing command (e.g. `search --preview`)
-    // from the underlying tool, so the run-dir label and envelope show what was
-    // actually invoked rather than the internal `search_notes` op.
-    let spec = XhsCommandSpec {
-        command_name,
-        ..SEARCH_NOTES_COMMAND
-    };
-    run_xhs_tool_command(
-        page,
-        spec,
-        search_notes_input(query, filters, num_notes)?,
-        debug_snapshot,
-    )
-    .await
-}
-
-pub async fn topic_scan_command(
+#[allow(clippy::too_many_arguments)]
+pub async fn search_command(
     page: Arc<PageSession>,
     command_name: &'static str,
     query: &str,
     filters: Option<&Value>,
     num_notes: Option<i64>,
     download_media: bool,
+    preview: bool,
     debug_snapshot: bool,
 ) -> anyhow::Result<Value> {
-    // The user-facing `search` command shares this operation with the
-    // deprecated `topic_scan` alias; record whichever name the caller invoked
-    // so the run-dir label and envelope reflect the actual command.
+    // `command_name` is passed through so the run-dir label and envelope reflect
+    // the actual command the caller invoked. `preview` selects the cards-only
+    // fast path inside the `search` tool; the default opens each result.
     let spec = XhsCommandSpec {
         command_name,
-        ..TOPIC_SCAN_COMMAND
+        ..SEARCH_COMMAND
     };
     run_xhs_tool_command(
         page,
         spec,
-        topic_scan_input(query, filters, num_notes, download_media)?,
+        search_input(query, filters, num_notes, download_media, preview)?,
         debug_snapshot,
     )
     .await
@@ -587,11 +395,15 @@ pub async fn author_scan_command(
     .await
 }
 
-fn search_notes_input(
+fn search_input(
     query: &str,
     filters: Option<&Value>,
     num_notes: Option<i64>,
+    download_media: bool,
+    preview: bool,
 ) -> anyhow::Result<Value> {
+    // `wait_seconds` is consumed by the preview (cards-only) path; the full
+    // scan uses its own internal wait, so it's harmless when that path ignores it.
     let mut input = json!({
         "query": trimmed_required(query, "query")?,
         "wait_seconds": 2.0,
@@ -602,26 +414,11 @@ fn search_notes_input(
     if let Some(n) = num_notes {
         input["num_notes"] = json!(n.max(1));
     }
-    Ok(input)
-}
-
-fn topic_scan_input(
-    query: &str,
-    filters: Option<&Value>,
-    num_notes: Option<i64>,
-    download_media: bool,
-) -> anyhow::Result<Value> {
-    let mut input = json!({
-        "query": trimmed_required(query, "query")?,
-    });
-    if let Some(filters) = filters {
-        input["filters"] = filters.clone();
-    }
-    if let Some(n) = num_notes {
-        input["num_notes"] = json!(n.max(1));
-    }
     if download_media {
         input["download_media"] = json!(true);
+    }
+    if preview {
+        input["preview"] = json!(true);
     }
     Ok(input)
 }
@@ -801,7 +598,7 @@ fn skipped_note_entry(card: &XhsNoteCard, reason: &str, history: &XhsHistoryStor
 }
 
 /// Open one already-selected card, read its body at `level`, attach top
-/// comments, and record it in run + cross-run history. Shared by `topic_scan`
+/// comments, and record it in run + cross-run history. Shared by `search`
 /// (cards from search) and `author_scan` (cards from a profile page) — the only
 /// difference between those macros is where the cards come from, not how each
 /// note is read. Returns the per-note entry; the caller pushes it and closes
@@ -933,7 +730,7 @@ async fn scan_card_note(
     entry
 }
 
-/// Trim a topic_scan / author_scan bundle to the shape we hand back to the
+/// Trim a search / author_scan bundle to the shape we hand back to the
 /// agent/CLI so it doesn't dominate an LLM context window. The full payload is
 /// still written to the run artifact (`<run_dir>/artifacts/…json`), which is the
 /// place to look for everything dropped here. Diagnostic blocks (`sampling`,
@@ -992,85 +789,6 @@ fn lean_scan_note(note: &mut Value) {
     }
 }
 
-/// search_notes(query, wait_seconds) -> {query, cards: [...]}
-pub struct SearchNotesTool {
-    page: Arc<PageSession>,
-    history: Arc<XhsHistoryStore>,
-}
-
-#[async_trait]
-impl Tool for SearchNotesTool {
-    fn name(&self) -> &str {
-        "search_notes"
-    }
-
-    fn description(&self) -> &str {
-        "Search Xiaohongshu for notes matching `query` and return result cards \
-         (id, title, author, likes, cover image). By default reads only the \
-         first results page (~19 cards, no scrolling). Pass `num_notes` to \
-         auto-scroll the feed, lazy-loading more cards until that many are \
-         collected (titles/likes/covers only — note bodies are NOT opened, so \
-         it stays fast). Optionally applies search-result `filters` (omitted \
-         groups reset to defaults); each group is single-select. Use before \
-         `open_note` to pick a note; to read note bodies + comments in one call \
-         use `topic_scan`."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "Search query (Chinese works fine)" },
-                "filters": search_filters_schema(),
-                "num_notes": {
-                    "type": "integer",
-                    "description": "Scroll to collect at least this many cards (lazy-loaded). Omit for the first page only.",
-                    "minimum": 1
-                },
-                "wait_seconds": {
-                    "type": "number",
-                    "description": "Extra seconds to wait for cards to load",
-                    "default": 2.0
-                }
-            },
-            "required": ["query"]
-        })
-    }
-
-    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-        let query = get_str(&input, "query")
-            .ok_or_else(|| anyhow::anyhow!("missing query"))?
-            .to_string();
-        let filters = input
-            .get("filters")
-            .filter(|value| !value.is_null())
-            .cloned();
-        let wait_seconds = get_f64(&input, "wait_seconds", 2.0);
-        let num_notes = input
-            .get("num_notes")
-            .and_then(Value::as_i64)
-            .filter(|n| *n > 0)
-            .map(|n| n as usize);
-        let xhs = XhsPageRuntime::new(&self.page);
-        let mut value = xhs
-            .search_notes(&query, filters.as_ref(), wait_seconds, num_notes)
-            .await?;
-        if let Some(cards) = value.get_mut("cards") {
-            self.history.annotate_cards(cards);
-        }
-        // `submit` is the search-submission diagnostic (strategy + page-state
-        // echo). The preview path writes no artifact, so keep it only when the
-        // search failed (where it explains why) and drop it on success.
-        let failed = value.get("ok").and_then(Value::as_bool) == Some(false);
-        if !failed {
-            if let Some(obj) = value.as_object_mut() {
-                obj.remove("submit");
-            }
-        }
-        Ok(json_result(&value))
-    }
-}
-
 /// open_note(note_id?, index?, wait_seconds?) -> {ok, ...}
 pub struct OpenNoteTool {
     page: Arc<PageSession>,
@@ -1084,7 +802,7 @@ impl Tool for OpenNoteTool {
 
     fn description(&self) -> &str {
         "Open a note's detail modal on the current search results page. \
-         Specify either `note_id` (from a card returned by search_notes) or \
+         Specify either `note_id` (from a card returned by `search --preview`) or \
          a 0-based `index` into the visible card list."
     }
 
@@ -1566,41 +1284,47 @@ impl Tool for ExtractProfileTool {
     }
 }
 
-/// topic_scan(query, filters?, num_notes?, download_media?) -> aggregated topic bundle
+/// search(query, filters?, num_notes?, download_media?, preview?) -> aggregated bundle
 ///
-/// Composite macro: search → optional search filters →
-/// collect up to `num_notes` cards in page order (scrolling the feed only when
-/// the first page is too small) → open each note and extract its body + top
-/// comments → bundle into one artifact. Prefer this for any "research a topic
-/// on XHS" task — it returns search results plus the note bodies plus comments
-/// in one tool call, so the agent doesn't have to chain 10+ tools by hand.
+/// The single Xiaohongshu search tool. Composite macro: search → optional
+/// search filters → collect up to `num_notes` cards in page order (scrolling
+/// the feed only when the first page is too small) → open each note and extract
+/// its body + top comments → bundle into one artifact. Prefer this for any
+/// "research a topic on XHS" task — it returns search results plus the note
+/// bodies plus comments in one tool call, so the agent doesn't have to chain
+/// 10+ tools by hand.
+///
+/// With `preview = true` it returns result cards only (titles/likes/covers)
+/// without opening any note — the fast cards-only path exposed on the CLI as
+/// `search --preview`.
 ///
 /// Defaults to `DEFAULT_NUM_NOTES` notes; pass a larger `num_notes` to scan
 /// more (each note is opened, so latency grows roughly linearly).
-pub struct TopicScanTool {
+pub struct SearchTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
     history: Arc<XhsHistoryStore>,
 }
 
 #[async_trait]
-impl Tool for TopicScanTool {
+impl Tool for SearchTool {
     fn name(&self) -> &str {
-        "topic_scan"
+        "search"
     }
 
     fn description(&self) -> &str {
-        "Xiaohongshu topic research macro: search → optional search filters → \
-         collect up to `num_notes` cards in page order (scrolling only if the \
-         first page is too small) → open each note and read its body + top \
-         comments → return one compact bundle (search results + selected cards \
-         + note bodies + comments). Pass `download_media=true` to download \
-         note images/videos into the run dir, include local paths, and emit a \
-         stable media_manifest_path. Defaults \
-         to 10 notes; pass a larger `num_notes` to scan more (each note is \
-         opened, so latency scales with it). Prefer this for XHS topic \
-         research. Do not repeat the same scan unless the previous one was \
-         clearly insufficient."
+        "Xiaohongshu search — the single XHS search tool. Default (full scan): \
+         search → optional search filters → collect up to `num_notes` cards in \
+         page order (scrolling only if the first page is too small) → open each \
+         note and read its body + top comments → return one compact bundle \
+         (search results + selected cards + note bodies + comments). Pass \
+         `download_media=true` to download note images/videos into the run dir, \
+         include local paths, and emit a stable media_manifest_path. Pass \
+         `preview=true` for a fast cards-only pass that returns result cards \
+         (titles/likes/covers) without opening any note. Defaults to 10 notes; \
+         pass a larger `num_notes` to scan more (each note is opened, so latency \
+         scales with it). Prefer this for XHS topic/keyword research. Do not \
+         repeat the same search unless the previous one was clearly insufficient."
     }
 
     fn input_schema(&self) -> Value {
@@ -1611,13 +1335,18 @@ impl Tool for TopicScanTool {
                 "filters": search_filters_schema(),
                 "num_notes": {
                     "type": "integer",
-                    "description": "Number of notes to read (body + top comments each). The first results page is used directly; only if it holds fewer than this does the feed scroll for more. Each note is opened, so latency scales with this.",
+                    "description": "Number of notes to read (body + top comments each). The first results page is used directly; only if it holds fewer than this does the feed scroll for more. Each note is opened, so latency scales with this. In preview mode, the number of cards to collect by scrolling.",
                     "default": DEFAULT_NUM_NOTES,
                     "minimum": 1
                 },
                 "download_media": {
                     "type": "boolean",
-                    "description": "Download note images/videos into the command run_dir, include local_path fields in returned notes, and write a stable media_manifest.json surfaced by media_manifest_path.",
+                    "description": "Download note images/videos into the command run_dir, include local_path fields in returned notes, and write a stable media_manifest.json surfaced by media_manifest_path. Ignored in preview mode.",
+                    "default": false
+                },
+                "preview": {
+                    "type": "boolean",
+                    "description": "Fast cards-only mode: return result cards (titles/likes/covers) without opening notes or reading bodies/comments. Off by default (full scan).",
                     "default": false
                 }
             },
@@ -1629,11 +1358,41 @@ impl Tool for TopicScanTool {
         let query = get_str(&input, "query")
             .ok_or_else(|| anyhow::anyhow!("missing query"))?
             .to_string();
-        let num_notes = get_i64(&input, "num_notes", DEFAULT_NUM_NOTES).max(1);
         let filters = input
             .get("filters")
             .filter(|value| !value.is_null())
             .cloned();
+
+        // Preview mode: return result cards only (titles/likes/covers) without
+        // opening notes. This is the cards-only fast path surfaced on the CLI as
+        // `search --preview` (formerly the standalone `search_notes` tool).
+        if get_bool(&input, "preview", false) {
+            let wait_seconds = get_f64(&input, "wait_seconds", 2.0);
+            let num_notes = input
+                .get("num_notes")
+                .and_then(Value::as_i64)
+                .filter(|n| *n > 0)
+                .map(|n| n as usize);
+            let xhs = XhsPageRuntime::new(&self.page);
+            let mut value = xhs
+                .search_notes(&query, filters.as_ref(), wait_seconds, num_notes)
+                .await?;
+            if let Some(cards) = value.get_mut("cards") {
+                self.history.annotate_cards(cards);
+            }
+            // `submit` is the search-submission diagnostic (strategy + page-state
+            // echo). Keep it only when the search failed (where it explains why)
+            // and drop it on success.
+            let failed = value.get("ok").and_then(Value::as_bool) == Some(false);
+            if !failed {
+                if let Some(obj) = value.as_object_mut() {
+                    obj.remove("submit");
+                }
+            }
+            return Ok(json_result(&value));
+        }
+
+        let num_notes = get_i64(&input, "num_notes", DEFAULT_NUM_NOTES).max(1);
         // Every scanned note is read the same way: open it, extract the body,
         // and pull top comments. Per-note image vision is off (it's the one
         // genuinely expensive enrichment and not needed for topic research).
@@ -1738,7 +1497,7 @@ impl Tool for TopicScanTool {
                 continue;
             }
             if !card.note_id.is_empty() {
-                ctx.add_topic_scan_note_ids(std::slice::from_ref(&card.note_id));
+                ctx.add_search_note_ids(std::slice::from_ref(&card.note_id));
             }
             selected.push(card.clone());
 
@@ -1772,7 +1531,7 @@ impl Tool for TopicScanTool {
         }
 
         let media_manifest_metadata = if download_media {
-            let media_manifest = topic_scan_media_manifest(&notes, &ctx.run_dir);
+            let media_manifest = search_media_manifest(&notes, &ctx.run_dir);
             let media_manifest_count = media_manifest.as_array().map(Vec::len).unwrap_or_default();
             let (media_manifest_path, media_manifest_error) =
                 match write_media_manifest_file(ctx, &media_manifest) {
@@ -1822,20 +1581,20 @@ impl Tool for TopicScanTool {
 
         // Persist as artifact so it shows up in the run dir + working memory.
         let _ = ctx.write_json_artifact(
-            &format!("xhs_topic_scan_{}", sanitize_for_filename(&query)),
+            &format!("xhs_search_{}", sanitize_for_filename(&query)),
             &payload,
             "artifacts",
-            "topic_scan",
+            "search",
             "json",
             &format!(
-                "Topic scan: {query} ({} notes)",
+                "Search: {query} ({} notes)",
                 payload
                     .get("notes")
                     .and_then(Value::as_array)
                     .map(Vec::len)
                     .unwrap_or(0)
             ),
-            json!({"site": "xhs", "category": "topic_scan"}),
+            json!({"site": "xhs", "category": "search"}),
         );
 
         // Artifact above keeps the full bundle; trim what we return so the
@@ -1847,7 +1606,7 @@ impl Tool for TopicScanTool {
 
 /// author_scan(author_id, num_notes?, read_notes?) -> author profile bundle
 ///
-/// Composite macro mirroring `topic_scan`, but entered from an author's profile
+/// Composite macro mirroring `search`, but entered from an author's profile
 /// page instead of a search query: open `…/user/profile/<id>` → read the author
 /// header (bio, xhs id, IP location, follower/following/like counts) → collect
 /// note summary cards in page order (scrolling to reach `num_notes`) → when
@@ -1870,9 +1629,9 @@ impl Tool for AuthorScanTool {
          summary cards in page order (titles/likes/covers only; pass `num_notes` \
          to scroll the grid for more, omit for just the first screen). Pass \
          `read_notes=true` to also open each collected note and read its body \
-         + top comments (like topic_scan; latency scales with the card count). \
-         Use this for creator research — it's search_notes + topic_scan but \
-         scoped to one author instead of a query."
+         + top comments (like `search`; latency scales with the card count). \
+         Use this for creator research — it's like `search` but scoped to one \
+         author instead of a query."
     }
 
     fn input_schema(&self) -> Value {
@@ -1985,7 +1744,7 @@ impl Tool for AuthorScanTool {
         if read_notes {
             for card in &cards {
                 if !card.note_id.is_empty() {
-                    ctx.add_topic_scan_note_ids(std::slice::from_ref(&card.note_id));
+                    ctx.add_search_note_ids(std::slice::from_ref(&card.note_id));
                 }
                 let entry = scan_card_note(
                     &xhs,
@@ -2010,7 +1769,7 @@ impl Tool for AuthorScanTool {
 
         // Build the media manifest from `notes` before they move into payload.
         let media_manifest_metadata = if download_media {
-            let media_manifest = topic_scan_media_manifest(&notes, &ctx.run_dir);
+            let media_manifest = search_media_manifest(&notes, &ctx.run_dir);
             let media_manifest_count = media_manifest.as_array().map(Vec::len).unwrap_or_default();
             let (path, error) = match write_media_manifest_file(ctx, &media_manifest) {
                 Ok(path) => (Some(path), None),
@@ -2155,9 +1914,8 @@ mod tests {
     }
 
     #[test]
-    fn standalone_run_metadata_is_topic_scan_only() {
-        assert!(!SEARCH_NOTES_COMMAND.include_run_metadata);
-        assert!(TOPIC_SCAN_COMMAND.include_run_metadata);
+    fn search_command_includes_run_metadata() {
+        assert!(SEARCH_COMMAND.include_run_metadata);
         assert!(!AUTHOR_SCAN_COMMAND.include_run_metadata);
     }
 }

@@ -358,6 +358,8 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
 
 pub(crate) fn user_label(name: &str) -> String {
     match name {
+        "search" => "searched xiaohongshu",
+        // Legacy tool names from pre-rename runs (now folded into `search`).
         "search_notes" => "searched xiaohongshu",
         "extract_search_cards" => "read search cards",
         "list_search_tabs" => "listed search tabs",
@@ -372,6 +374,7 @@ pub(crate) fn user_label(name: &str) -> String {
         "scroll_in_note" => "scrolled note",
         "collect_carousel_images" => "collected carousel images",
         "extract_profile" => "read author profile",
+        // Legacy tool name from pre-rename runs (now `search`).
         "topic_scan" => "scanned topic",
         "page_state" => "checked page state",
         _ => return name.replace('_', " "),
@@ -966,6 +969,22 @@ fn raw_tool_result_value(content: &Value) -> Option<Value> {
 
 fn normalize_entities(tool: &str, value: &Value) -> Vec<TimelineEntity> {
     match tool {
+        // The single search tool: `--preview` returns result cards; the default
+        // full scan returns the aggregated bundle.
+        "search" => {
+            if let Some(cards) = value.get("cards").and_then(Value::as_array) {
+                if cards.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![entity("xhs_note_card_grid", Value::Array(cards.clone()))]
+                }
+            } else if value.is_object() {
+                vec![entity("xhs_search", value.clone())]
+            } else {
+                Vec::new()
+            }
+        }
+        // Legacy tool name from pre-rename runs (cards-only path).
         "search_notes" => value
             .get("cards")
             .and_then(Value::as_array)
@@ -1006,6 +1025,7 @@ fn normalize_entities(tool: &str, value: &Value) -> Vec<TimelineEntity> {
                 Vec::new()
             }
         }
+        // Legacy tool name from pre-rename runs (full-scan bundle).
         "topic_scan" => {
             if value.is_object() {
                 vec![entity("xhs_topic_scan", value.clone())]

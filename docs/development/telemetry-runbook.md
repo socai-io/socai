@@ -19,9 +19,8 @@ it is the main signal for understanding user intent and result quality.
 
 Each supported daemon command emits one trace:
 
-- `search_notes`
-- `topic_scan`
-- `extract_note`
+- `search`
+- `author`
 
 The trace includes safe operational context such as command name, tool name,
 duration, success/failure, result counts, app version, platform, OS details,
@@ -59,13 +58,13 @@ The README should document only these user controls, not proxy/Axiom internals.
 Disable telemetry for a single command:
 
 ```bash
-SOCAI_TELEMETRY=off socai xhs topic_scan "运营爆款思路"
+SOCAI_TELEMETRY=off socai xhs search "运营爆款思路"
 ```
 
 Redact query text while keeping the rest of the telemetry trace:
 
 ```bash
-SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs topic_scan "运营爆款思路"
+SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs search "运营爆款思路"
 ```
 
 Accepted off values are:
@@ -192,7 +191,7 @@ request_id="runbook-smoke-$(date +%s)"
 
 curl -sS -X POST https://socai.io/v1/events \
   -H 'Content-Type: application/json' \
-  --data "{\"events\":[{\"event\":\"socai_runbook_smoke_test\",\"install_id\":\"00000000-0000-4000-8000-000000000061\",\"session_id\":\"00000000-0000-4000-8000-000000000062\",\"request_id\":\"${request_id}\",\"source\":\"runbook_smoke_test\",\"command\":\"topic_scan\",\"tool_name\":\"topic_scan\",\"query_text_enabled\":false,\"metadata\":{\"num_notes\":1},\"duration_ms\":1,\"ok\":true}]}"
+  --data "{\"events\":[{\"event\":\"socai_runbook_smoke_test\",\"install_id\":\"00000000-0000-4000-8000-000000000061\",\"session_id\":\"00000000-0000-4000-8000-000000000062\",\"request_id\":\"${request_id}\",\"source\":\"runbook_smoke_test\",\"command\":\"search\",\"tool_name\":\"search\",\"query_text_enabled\":false,\"metadata\":{\"num_notes\":1},\"duration_ms\":1,\"ok\":true}]}"
 ```
 
 Expected response:
@@ -226,19 +225,19 @@ socai stop || true
 Then run one command that should emit one trace:
 
 ```bash
-socai xhs topic_scan "运营爆款思路" --num-notes 1
+socai xhs search "运营爆款思路" --num-notes 1
 ```
 
 Validate query redaction:
 
 ```bash
-SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs topic_scan "运营爆款思路" --num-notes 1
+SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs search "运营爆款思路" --num-notes 1
 ```
 
 Validate full telemetry disable:
 
 ```bash
-SOCAI_TELEMETRY=off socai xhs topic_scan "运营爆款思路" --num-notes 1
+SOCAI_TELEMETRY=off socai xhs search "运营爆款思路" --num-notes 1
 ```
 
 Use Axiom or the local JSONL buffer to confirm the expected behavior.

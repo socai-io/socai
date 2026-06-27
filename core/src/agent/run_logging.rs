@@ -324,10 +324,10 @@ mod tests {
             default_runs_root_from_parts(None, Some(configured_runs_dir.clone()), Some(home)),
             configured_runs_dir
         );
-        let run_dir = make_run_dir_in_root(&configured_runs_dir, "topic scan");
+        let run_dir = make_run_dir_in_root(&configured_runs_dir, "author scan");
         assert!(run_dir.starts_with(&configured_runs_dir));
         let file_name = run_dir.file_name().and_then(|name| name.to_str()).unwrap();
-        assert!(file_name.ends_with("topic_scan"));
+        assert!(file_name.ends_with("author_scan"));
     }
 
     #[test]

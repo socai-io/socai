@@ -140,7 +140,7 @@ impl XhsHistoryStore {
 
     /// Take an owned snapshot of all entries currently in the store. Use
     /// this when a tool mutates history during its own call (e.g.
-    /// `topic_scan` records every note it reads) but still wants to
+    /// `search` records every note it reads) but still wants to
     /// annotate output cards based on what was known *before* the call —
     /// otherwise the annotation reflects this run's own writes.
     pub fn snapshot(&self) -> HistorySnapshot {

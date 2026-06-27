@@ -8,10 +8,6 @@ use serde_json::{Map, Value};
 use socai_core::config as socai_config;
 use socai_core::sites::{all_sites, find_site, ArgKind, CommandArg, SiteCommand, SiteSpec};
 
-/// Legacy default site for the hidden top-level command aliases
-/// (`socai search_notes …` predates the `socai <site> <tool>` form).
-const LEGACY_SITE_ID: &str = "xhs";
-
 fn build_cli() -> clap::Command {
     let mut root = clap::Command::new("socai")
         .about("socai — site-savvy browser agent")
@@ -77,12 +73,6 @@ fn build_cli() -> clap::Command {
             site_cmd = site_cmd.subcommand(command_to_clap(command, false));
         }
         root = root.subcommand(site_cmd);
-    }
-    // Hidden top-level aliases keep pre-registry invocations working.
-    if let Some(site) = find_site(LEGACY_SITE_ID) {
-        for command in site.commands {
-            root = root.subcommand(command_to_clap(command, true));
-        }
     }
     root
 }
@@ -244,29 +234,15 @@ async fn main() -> Result<()> {
         }
         "__daemon" => daemon::run_daemon().await?,
         _ => {
-            if let Some(site) = find_site(name) {
-                let (command_name, command_matches) = sub_matches
-                    .subcommand()
-                    .ok_or_else(|| anyhow::anyhow!("missing {name} subcommand"))?;
-                let command = site
-                    .command(command_name)
-                    .ok_or_else(|| anyhow::anyhow!("unknown {name} command: {command_name}"))?;
-                run_site_command(site, command, command_matches).await?;
-            } else {
-                // Legacy top-level alias (`socai search_notes …`).
-                let site = find_site(LEGACY_SITE_ID).ok_or_else(|| {
-                    anyhow::anyhow!("legacy site {LEGACY_SITE_ID} not registered")
-                })?;
-                let command = site
-                    .command(name)
-                    .ok_or_else(|| anyhow::anyhow!("unknown command: {name}"))?;
-                eprintln!(
-                    "warning: `socai {name}` is deprecated and will be removed soon; \
-                     use `socai {} {name}` instead",
-                    site.id
-                );
-                run_site_command(site, command, sub_matches).await?;
-            }
+            let site =
+                find_site(name).ok_or_else(|| anyhow::anyhow!("unknown command: {name}"))?;
+            let (command_name, command_matches) = sub_matches
+                .subcommand()
+                .ok_or_else(|| anyhow::anyhow!("missing {name} subcommand"))?;
+            let command = site
+                .command(command_name)
+                .ok_or_else(|| anyhow::anyhow!("unknown {name} command: {command_name}"))?;
+            run_site_command(site, command, command_matches).await?;
         }
     }
 
@@ -327,9 +303,6 @@ fn print_command_result(result: &Value, pretty: bool) -> Result<()> {
     }
 
     let data = result.get("data").unwrap_or(result);
-    if let Some(msg) = data.get("deprecation").and_then(Value::as_str) {
-        eprintln!("⚠️  {msg}");
-    }
     if pretty {
         println!("{}", serde_json::to_string_pretty(data)?);
     } else {

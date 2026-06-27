@@ -43,7 +43,7 @@ pub async fn run_tool_command(
 ) -> anyhow::Result<Value> {
     // Run-dir label: site + command, plus the command's identifying input when
     // it has one, so runs are tellable apart at a glance
-    // (…_xhs_search_notes_咖啡, …_xhs_author_<author_id>).
+    // (…_xhs_search_咖啡, …_xhs_author_<author_id>).
     let mut label = format!("{}_{}", cmd.site_id, cmd.command_name);
     for key in ["query", "author_id"] {
         if let Some(value) = input.get(key).and_then(Value::as_str) {

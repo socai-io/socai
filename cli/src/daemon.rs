@@ -418,7 +418,7 @@ impl DaemonState {
             // Create the session tab blank and let the command navigate itself:
             // every site command either opens its own entry URL (e.g. `author`
             // opens the profile directly) or has a `before` hook that reaches
-            // the right page (search/topic_scan via ensure_search_ready). Passing
+            // the right page (search via ensure_search_ready). Passing
             // home_url here would force an extra `/explore` load before the
             // command then navigates again — wasted time for no benefit.
             let page = self.runtime.ensure_site_page(site.id, "").await?;

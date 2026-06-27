@@ -114,13 +114,13 @@ pub struct ToolContext {
     pub enabled_sites: Arc<Mutex<BTreeSet<String>>>,
     counters: Arc<Mutex<Counters>>,
     /// Notes the agent has already processed at a given level. Used by
-    /// macros like `topic_scan` to short-circuit repeated reads of the
+    /// macros like `search` to short-circuit repeated reads of the
     /// same note. Keyed by note id; value is the processed level
     /// ("deep" / "lite") and whether media was included.
     processed_notes: Arc<Mutex<BTreeMap<String, ProcessedNote>>>,
-    /// Note ids the agent has sampled via topic_scan in this run — useful
+    /// Note ids the agent has sampled via `search` in this run — useful
     /// for "show me what I've already covered" tools.
-    topic_scan_note_ids: Arc<Mutex<Vec<String>>>,
+    search_note_ids: Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Default)]
@@ -158,7 +158,7 @@ impl ToolContext {
             enabled_sites: Arc::new(Mutex::new(BTreeSet::new())),
             counters: Arc::new(Mutex::new(Counters::default())),
             processed_notes: Arc::new(Mutex::new(BTreeMap::new())),
-            topic_scan_note_ids: Arc::new(Mutex::new(Vec::new())),
+            search_note_ids: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -219,9 +219,9 @@ impl ToolContext {
             && (!requested_include_media || prev.include_media)
     }
 
-    /// Append note ids to the topic-scan history (de-duped, preserving order).
-    pub fn add_topic_scan_note_ids(&self, ids: &[String]) {
-        let Ok(mut guard) = self.topic_scan_note_ids.lock() else {
+    /// Append note ids to the search history (de-duped, preserving order).
+    pub fn add_search_note_ids(&self, ids: &[String]) {
+        let Ok(mut guard) = self.search_note_ids.lock() else {
             return;
         };
         for id in ids {
@@ -234,8 +234,8 @@ impl ToolContext {
         }
     }
 
-    pub fn topic_scan_note_ids(&self) -> Vec<String> {
-        self.topic_scan_note_ids
+    pub fn search_note_ids(&self) -> Vec<String> {
+        self.search_note_ids
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default()

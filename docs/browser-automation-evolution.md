@@ -785,7 +785,7 @@ structurally a browser-use-style agent CLI:
 
 ### 7.2 CLI tool mode — Pattern A (detached daemon)
 
-`socai search_notes` / `topic_scan` / `extract_note` are a *second, distinct*
+`socai xhs search` / `socai xhs author` are a *second, distinct*
 CLI surface — **agentless** tool subcommands, not the agent TUI. Structurally they
 are Vercel agent-browser's CLI+daemon split (§6.1), just at a higher
 granularity (domain tool calls, not `click @e1`):

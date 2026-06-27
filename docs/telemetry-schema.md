@@ -69,9 +69,8 @@ Supported command/tool mapping:
 
 | CLI daemon command | `command` | `tool_name` |
 | --- | --- | --- |
-| `search_notes` | `search_notes` | `search_notes` |
-| `topic_scan` | `topic_scan` | `topic_scan` |
-| `extract_note` | `extract_note` | `read_note` |
+| `search` | `search` | `search` |
+| `author` | `author` | `author_scan` |
 
 Every event carries a top-level `event` field naming its type — the CLI tool
 trace is `socai_tool_call`. The proxy validates that it starts with `socai_` and
@@ -127,8 +126,8 @@ Current metadata keys:
 
 | Metadata key | Type | Source CLI flag | Omitted when |
 | --- | --- | --- | --- |
-| `metadata.tab` | string | `topic_scan --tab <value>` | `--tab` is not passed or is empty. |
-| `metadata.num_notes` | number | `topic_scan` / `search_notes` `--num-notes <n>` | `--num-notes` is not passed. |
+| `metadata.tab` | string | `search --tab <value>` | `--tab` is not passed or is empty. |
+| `metadata.num_notes` | number | `search --num-notes <n>` | `--num-notes` is not passed. |
 | `metadata.debug_snapshot` | boolean | `--debug-snapshot` | `--debug-snapshot` is not passed / false. |
 
 ### Duration, status, and safe result metrics
@@ -273,12 +272,12 @@ CLI behavior in `cli/src/daemon.rs`:
   sanitization.
 - Safe result metrics are counts/booleans only, not raw XHS content.
 
-## Example: normal `topic_scan` trace
+## Example: normal `search` trace
 
 A user runs:
 
 ```bash
-socai xhs topic_scan "运营爆款思路" --num-notes 12 --tab latest
+socai xhs search "运营爆款思路" --num-notes 12 --tab latest
 ```
 
 Representative Axiom row after proxy sanitization:
@@ -300,8 +299,8 @@ Representative Axiom row after proxy sanitization:
   "cpu_count": 14,
   "terminal_app": "Ghostty",
   "parent_process": "zsh",
-  "command": "topic_scan",
-  "tool_name": "topic_scan",
+  "command": "search",
+  "tool_name": "search",
   "site": "xhs",
   "query_text_enabled": true,
   "query_text": "运营爆款思路",
@@ -324,12 +323,12 @@ Representative Axiom row after proxy sanitization:
 
 Axiom will also show native `_time` and `_sysTime` columns for the row.
 
-## Example: query-redacted `topic_scan` trace
+## Example: query-redacted `search` trace
 
 A user runs:
 
 ```bash
-SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs topic_scan "运营爆款思路" --num-notes 12
+SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs search "运营爆款思路" --num-notes 12
 ```
 
 Representative Axiom row:
@@ -345,8 +344,8 @@ Representative Axiom row:
   "source": "cli_daemon",
   "app_version": "0.1.0",
   "platform": "macos",
-  "command": "topic_scan",
-  "tool_name": "topic_scan",
+  "command": "search",
+  "tool_name": "search",
   "site": "xhs",
   "query_text_enabled": false,
   "query_len": 6,

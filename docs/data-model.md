@@ -153,11 +153,11 @@ example:
   "id": "toolu_123",
   "turn": 1,
   "sequence_in_turn": 1,
-  "name": "search_notes",
+  "name": "search",
   "label": "searched xiaohongshu",
   "args": { "query": "..." },
   "repeat_count": 1,
-  "text": "search_notes({\"query\":\"...\"})",
+  "text": "search({\"query\":\"...\"})",
   "sequence": 4,
   "created_at": 1790000005000
 }
@@ -170,12 +170,12 @@ Tool results can additionally carry normalized inline entities:
   "task_id": "task-1790000000000-1",
   "kind": "tool_result",
   "id": "toolu_123",
-  "name": "search_notes",
+  "name": "search",
   "label": "searched xiaohongshu",
   "ok": true,
   "duration_ms": 1400,
   "entities": [{ "type": "xhs_note_card_grid", "data": [] }],
-  "text": "search_notes (1400ms): ...",
+  "text": "search (1400ms): ...",
   "sequence": 5,
   "created_at": 1790000006500
 }

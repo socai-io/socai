@@ -20,10 +20,8 @@ references.
 
 The default interactive XHS tools are intentionally high level:
 
-- `topic_scan` — V1 topic/search macro. This is the current implementation of
-  the future `xhs.search` surface.
-- `author_scan` — V1 author/profile macro. This is the current implementation
-  of the future `xhs.author` surface.
+- `search` — the topic/keyword search macro, and the single XHS search tool.
+- `author_scan` — author/profile macro.
 
 Stateful micro tools such as opening/closing a current note, scrolling a note,
 extracting the current modal, or reading current page state are not part of the
@@ -44,15 +42,16 @@ the route, and otherwise explain the blocker to the user.
 
 ### Topic / search research
 
-Call `topic_scan(query=..., num_notes=N, filters=..., download_media=...)` when
+Call `search(query=..., num_notes=N, filters=..., download_media=...)` when
 the task asks about a topic, keyword, market, trend, product category, or group
 of XHS posts.
 
-`topic_scan` searches, optionally applies filters, samples notes from results,
+`search` searches, optionally applies filters, samples notes from results,
 reads note bodies and top comments, writes artifacts, and returns a compact
 bundle. Default `num_notes` is modest; increase it only when the question needs
 broader evidence. Use `download_media=true` when the user explicitly needs local
-image/video files.
+image/video files. Pass `preview=true` for a fast cards-only pass (result cards
+without opening any note).
 
 ### Author / creator research
 
@@ -62,7 +61,7 @@ have an `author_id`, can extract the trailing id from a profile URL, or a
 previous macro result surfaced an author id worth expanding.
 
 If the user only gives a display name or handle, first discover candidates with
-a focused `topic_scan` or ask the user for the profile URL/author id.
+a focused `search` or ask the user for the profile URL/author id.
 
 Use `read_notes=true` when you need the author's recent note bodies/comments;
 otherwise the profile header plus note cards may be enough. For author media
@@ -73,8 +72,8 @@ media is downloaded while reading notes.
 
 A standalone note-snapshot macro is deferred for V1 because direct note opening
 can require tokenized URLs or source card context. Prefer note details already
-collected by `topic_scan` or `author_scan` artifacts. If note details are
-missing, run a focused `topic_scan` or `author_scan` that can reach the note via
+collected by `search` or `author_scan` artifacts. If note details are
+missing, run a focused `search` or `author_scan` that can reach the note via
 search/profile context.
 
 ## Artifact-First Reasoning

@@ -1,6 +1,6 @@
 //! Stable media manifest generation for XHS topic scans.
 //!
-//! `topic_scan --download-media` keeps the large per-asset manifest in a
+//! `search --download-media` keeps the large per-asset manifest in a
 //! run-dir JSON file so command stdout can stay compact while callers still get
 //! a stable path to a machine-readable media registry.
 
@@ -23,15 +23,15 @@ pub(super) fn write_media_manifest_file(
         &path,
         "media_manifest",
         "json",
-        "Topic scan media manifest",
+        "Search media manifest",
         json!({"site": "xhs", "category": "media_manifest"}),
         Some(manifest),
-        "topic_scan",
+        "search",
     );
     Ok(path.to_string_lossy().to_string())
 }
 
-pub(super) fn topic_scan_media_manifest(notes: &[Value], run_dir: &Path) -> Value {
+pub(super) fn search_media_manifest(notes: &[Value], run_dir: &Path) -> Value {
     let mut assets = Vec::new();
     for note in notes {
         collect_note_media_assets(note, run_dir, &mut assets);
@@ -615,7 +615,7 @@ mod tests {
             }),
         ];
 
-        let manifest = topic_scan_media_manifest(&notes, dir.path());
+        let manifest = search_media_manifest(&notes, dir.path());
 
         assert_eq!(manifest.as_array().unwrap().len(), 0);
     }
@@ -639,7 +639,7 @@ mod tests {
             }
         })];
 
-        let manifest = topic_scan_media_manifest(&notes, dir.path());
+        let manifest = search_media_manifest(&notes, dir.path());
         let assets = manifest.as_array().unwrap();
 
         assert_eq!(assets.len(), 1);
@@ -672,7 +672,7 @@ mod tests {
             }
         })];
 
-        let manifest = topic_scan_media_manifest(&notes, dir.path());
+        let manifest = search_media_manifest(&notes, dir.path());
         let assets = manifest.as_array().unwrap();
 
         assert_eq!(assets.len(), 1);
@@ -711,7 +711,7 @@ mod tests {
             }
         })];
 
-        let manifest = topic_scan_media_manifest(&notes, dir.path());
+        let manifest = search_media_manifest(&notes, dir.path());
         let assets = manifest.as_array().unwrap();
 
         assert_eq!(assets.len(), 1);

@@ -347,7 +347,7 @@ interact/content-ops）+ 统一 CLI。
   （`discover_existing_chrome_endpoint`；也可通过 `socai config set chrome.profile managed`
   持久切到独立 profile，默认路径 `~/.socai/chrome-profile`）。JS 抽取器集中在 `page_scripts.js`，经
   `Runtime.evaluate` 注入、返回 JSON——取数哲学与 xiaohongshu-mcp/autoclaw 同类。
-- **能力重心是"读/研究"而非"写/运营"**：`search_notes`、`topic_scan`、
+- **能力重心是"读/研究"而非"写/运营"**：`search`、
   `extract_note`、`extract_comments`、`extract_profile`、`scroll_in_note`、
   `collect_carousel_images` 等，**目前没有发布/互动的写工具**——与 publish 重的
   MCP/Skill 工具恰成镜像（§3）。
