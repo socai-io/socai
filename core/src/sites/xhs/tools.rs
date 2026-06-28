@@ -1677,7 +1677,12 @@ impl Tool for AuthorScanTool {
             .ok_or_else(|| anyhow::anyhow!("missing author_id"))?
             .to_string();
         let preview = get_bool(&input, "preview", false);
-        let download_media = get_bool(&input, "download_media", false);
+        // download_media only applies when notes are opened, so gate it on a
+        // full scan. Without this, a `preview=true, download_media=true` call
+        // would still spin up the media pipeline and emit media metadata even
+        // though no note is opened (the schema documents it as ignored in
+        // preview, and the CLI dispatcher gates it the same way).
+        let download_media = !preview && get_bool(&input, "download_media", false);
         let num_notes = input
             .get("num_notes")
             .and_then(Value::as_i64)
