@@ -64,10 +64,6 @@ impl XhsAuthorProfile {
         map.insert("display_name".into(), json!(self.display_name));
         map.insert("title".into(), json!(self.display_name));
         map.insert("xhs_id".into(), json!(self.xhs_id));
-        map.insert(
-            "profile_url".into(),
-            json!(normalize_url(&self.profile_url)),
-        );
         map.insert("url".into(), json!(normalize_url(&self.profile_url)));
         map.insert("bio".into(), json!(self.bio));
         map.insert("ip_location".into(), json!(self.ip_location));

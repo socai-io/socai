@@ -746,6 +746,11 @@ fn lean_scan_payload(payload: &mut Value) {
     obj.remove("search");
     obj.remove("sampling");
     obj.remove("timing");
+    // `ok: true` is pure noise — a successful bundle is self-evident from its
+    // notes. Keep `ok: false` (with its `reason`): there it's the failure signal.
+    if obj.get("ok").and_then(Value::as_bool) == Some(true) {
+        obj.remove("ok");
+    }
     let notes_read = obj
         .get("notes")
         .and_then(Value::as_array)
@@ -765,21 +770,46 @@ fn lean_scan_payload(payload: &mut Value) {
     }
 }
 
-/// Trim one scanned-note entry to the lean shape: drop the body-source marker
-/// (`content_source`) and the per-extract wait diagnostics (`wait`,
-/// `top_comments_wait`), and collapse `top_comments` to a plain array of comment
-/// texts. Applies to both freshly-read and reused (cached) entities; the full
-/// objects stay in the run artifact.
+/// Per-note entity fields kept in the lean output handed to the LLM: the basic
+/// human-readable post (title/author/content/date), the engagement counts, the
+/// comment texts, and the two locators (`note_id`, `url`). Everything else —
+/// hashtags, images, image_count, author ids/urls, location, type, video,
+/// content_source, and the wait diagnostics — stays only in the run artifact,
+/// which the LLM can re-read by `note_id` when it needs the dropped detail.
+const LEAN_NOTE_FIELDS: &[&str] = &[
+    "note_id",
+    "url",
+    "title",
+    "author",
+    "content",
+    "date",
+    "likes",
+    "favorites",
+    "comments_count",
+    "top_comments",
+];
+
+/// Trim one scanned-note entry to the lean shape: drop the per-entry provenance
+/// wrappers (`source_position`, `ok`, `skipped`, plus failure detail), collapse
+/// `top_comments` to a plain array of comment texts, and whitelist the entity to
+/// [`LEAN_NOTE_FIELDS`]. Applies to both freshly-read and reused (cached)
+/// entities; the full objects stay in the run artifact.
 fn lean_scan_note(note: &mut Value) {
     let Some(entry) = note.as_object_mut() else {
         return;
     };
+    // The entity is the only thing handed back; the provenance wrappers around
+    // it (history dedup status, source ordinal, read status) are diagnostics.
+    entry.remove("source_position");
+    entry.remove("ok");
+    entry.remove("skipped");
+    entry.remove("error");
+    entry.remove("open");
     let Some(entity) = entry.get_mut("entity").and_then(Value::as_object_mut) else {
         return;
     };
-    entity.remove("content_source");
-    entity.remove("wait");
-    entity.remove("top_comments_wait");
+    // Collapse comment objects to their text before the whitelist runs (the
+    // whitelist keeps `top_comments`, but we want the plain-string form).
     if let Some(comments) = entity.get_mut("top_comments").and_then(Value::as_array_mut) {
         let texts: Vec<Value> = comments
             .iter()
@@ -787,6 +817,87 @@ fn lean_scan_note(note: &mut Value) {
             .filter(|text| text.as_str().is_some_and(|s| !s.is_empty()))
             .collect();
         entity.insert("top_comments".into(), Value::Array(texts));
+    }
+    entity.retain(|key, _| LEAN_NOTE_FIELDS.contains(&key.as_str()));
+}
+
+/// Per-note properties that live only in the full scan artifact (dropped from
+/// the lean notes by [`lean_scan_note`]). Surfaced in the artifact pointer so
+/// the LLM knows what a `note_id` lookup can recover.
+const ARTIFACT_EXTRA_NOTE_PROPERTIES: &[&str] = &[
+    "hashtags",
+    "images (index, url)",
+    "image_count",
+    "video",
+    "type",
+    "author_id",
+    "author_url",
+    "location",
+    "content_source",
+    "top_comments (full objects: text, author, likes, time)",
+];
+
+/// Per-card properties that live only in the `search --preview` artifact
+/// (dropped from the lean cards by [`lean_preview_cards`]).
+const ARTIFACT_EXTRA_PREVIEW_CARD_PROPERTIES: &[&str] = &[
+    "author_id",
+    "author_url",
+    "cover_url",
+    "xsec_token",
+    "position",
+    "already_analyzed",
+    "history_level",
+    "history_include_media",
+];
+
+/// Append a pointer to the full run artifact so the LLM knows the lean output is
+/// abridged and can re-read the artifact (keyed by each note's `note_id`) for
+/// the dropped detail. `extra_properties` lists what the artifact carries beyond
+/// the lean fields, so the LLM can decide whether a lookup is worth it without
+/// opening the file blind.
+fn attach_artifact_pointer(
+    payload: &mut Value,
+    artifact_path: Option<String>,
+    extra_properties: &[&str],
+) {
+    let Some(path) = artifact_path else {
+        return;
+    };
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    obj.insert(
+        "artifact".into(),
+        json!({
+            "path": path,
+            "note": "Full untrimmed results. Look up a note by note_id for the fields trimmed below.",
+            "extra_note_properties": extra_properties,
+        }),
+    );
+}
+
+/// Per-card fields kept in the lean `search --preview` output. Card-only mode
+/// can't fill the body fields (content/date/comments), so it keeps the subset
+/// that overlaps the full-scan note shape — note_id, url, title, author, likes —
+/// plus `type` (image/video). The card's note link is exposed as `url` to match
+/// the note shape (the raw card calls it `link`).
+const LEAN_PREVIEW_CARD_FIELDS: &[&str] = &["note_id", "url", "title", "author", "likes", "type"];
+
+/// Trim each `search --preview` card to [`LEAN_PREVIEW_CARD_FIELDS`], renaming
+/// `link` → `url` for parity with the full-scan note shape. The full cards stay
+/// in the run artifact.
+fn lean_preview_cards(payload: &mut Value) {
+    let Some(cards) = payload.get_mut("cards").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for card in cards.iter_mut() {
+        let Some(obj) = card.as_object_mut() else {
+            continue;
+        };
+        if let Some(link) = obj.remove("link") {
+            obj.insert("url".into(), link);
+        }
+        obj.retain(|key, _| LEAN_PREVIEW_CARD_FIELDS.contains(&key.as_str()));
     }
 }
 
@@ -1379,14 +1490,45 @@ impl Tool for SearchTool {
             if let Some(cards) = value.get_mut("cards") {
                 self.history.annotate_cards(cards);
             }
-            // `submit` is the search-submission diagnostic (strategy + page-state
-            // echo). Keep it only when the search failed (where it explains why)
-            // and drop it on success.
             let failed = value.get("ok").and_then(Value::as_bool) == Some(false);
+            // On success, persist the full card bundle as an artifact (same as
+            // the full scan) so the trimmed return can point back at it. A failed
+            // preview has no cards worth keeping — its `submit`/`reason` are the
+            // only useful detail — so it isn't persisted or trimmed.
             if !failed {
+                let artifact_path = ctx
+                    .write_json_artifact(
+                        &format!("xhs_search_preview_{}", sanitize_for_filename(&query)),
+                        &value,
+                        "artifacts",
+                        "search",
+                        "json",
+                        &format!(
+                            "Search preview: {query} ({} cards)",
+                            value
+                                .get("cards")
+                                .and_then(Value::as_array)
+                                .map(Vec::len)
+                                .unwrap_or(0)
+                        ),
+                        json!({"site": "xhs", "category": "search_preview"}),
+                    )
+                    .ok()
+                    .map(|rel| ctx.run_dir.join(rel).to_string_lossy().into_owned());
                 if let Some(obj) = value.as_object_mut() {
+                    // `submit` is the search-submission diagnostic (strategy +
+                    // page-state echo), `reason` is empty on success, and `ok`
+                    // is self-evident — drop them to match the full-scan output.
                     obj.remove("submit");
+                    obj.remove("reason");
+                    obj.remove("ok");
                 }
+                lean_preview_cards(&mut value);
+                attach_artifact_pointer(
+                    &mut value,
+                    artifact_path,
+                    ARTIFACT_EXTRA_PREVIEW_CARD_PROPERTIES,
+                );
             }
             return Ok(json_result(&value));
         }
@@ -1581,26 +1723,32 @@ impl Tool for SearchTool {
         }
 
         // Persist as artifact so it shows up in the run dir + working memory.
-        let _ = ctx.write_json_artifact(
-            &format!("xhs_search_{}", sanitize_for_filename(&query)),
-            &payload,
-            "artifacts",
-            "search",
-            "json",
-            &format!(
-                "Search: {query} ({} notes)",
-                payload
-                    .get("notes")
-                    .and_then(Value::as_array)
-                    .map(Vec::len)
-                    .unwrap_or(0)
-            ),
-            json!({"site": "xhs", "category": "search"}),
-        );
+        // `write_json_artifact` returns the run-dir-relative path; the pointer we
+        // hand the LLM uses the absolute path so it's directly openable.
+        let artifact_path = ctx
+            .write_json_artifact(
+                &format!("xhs_search_{}", sanitize_for_filename(&query)),
+                &payload,
+                "artifacts",
+                "search",
+                "json",
+                &format!(
+                    "Search: {query} ({} notes)",
+                    payload
+                        .get("notes")
+                        .and_then(Value::as_array)
+                        .map(Vec::len)
+                        .unwrap_or(0)
+                ),
+                json!({"site": "xhs", "category": "search"}),
+            )
+            .ok()
+            .map(|rel| ctx.run_dir.join(rel).to_string_lossy().into_owned());
 
         // Artifact above keeps the full bundle; trim what we return so the
-        // agent/CLI output stays small.
+        // agent/CLI output stays small, then point at the artifact for the rest.
         lean_scan_payload(&mut payload);
+        attach_artifact_pointer(&mut payload, artifact_path, ARTIFACT_EXTRA_NOTE_PROPERTIES);
         Ok(json_result(&payload))
     }
 }
@@ -1814,19 +1962,23 @@ impl Tool for AuthorScanTool {
         } else {
             display_name
         };
-        let _ = ctx.write_json_artifact(
-            &format!("xhs_author_scan_{}", sanitize_for_filename(&author_id)),
-            &payload,
-            "artifacts",
-            "author_scan",
-            "json",
-            &format!("Author scan: {label} ({} notes)", cards.len()),
-            json!({"site": "xhs", "category": "author_scan"}),
-        );
+        let artifact_path = ctx
+            .write_json_artifact(
+                &format!("xhs_author_scan_{}", sanitize_for_filename(&author_id)),
+                &payload,
+                "artifacts",
+                "author_scan",
+                "json",
+                &format!("Author scan: {label} ({} notes)", cards.len()),
+                json!({"site": "xhs", "category": "author_scan"}),
+            )
+            .ok()
+            .map(|rel| ctx.run_dir.join(rel).to_string_lossy().into_owned());
 
         // Artifact above keeps the full bundle; trim what we return so the
-        // agent/CLI output stays small.
+        // agent/CLI output stays small, then point at the artifact for the rest.
         lean_scan_payload(&mut payload);
+        attach_artifact_pointer(&mut payload, artifact_path, ARTIFACT_EXTRA_NOTE_PROPERTIES);
         Ok(json_result(&payload))
     }
 }

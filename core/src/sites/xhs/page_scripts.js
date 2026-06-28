@@ -240,7 +240,9 @@ const SocaiXhsPageScripts = (() => {
           author_url: card.user?.userId ? `https://www.xiaohongshu.com/user/profile/${card.user.userId}` : '',
           likes: String(card.interactInfo?.likedCount || card.interactInfo?.likes || ''),
           cover_url: cleanImageUrl(card.cover?.urlDefault || card.cover?.urlPre || ''),
-          type: card.type || '',
+          // XHS's raw type is "normal" for image/text notes; map it to "image"
+          // so cards share the note vocabulary ("image"/"video").
+          type: card.type === 'normal' ? 'image' : (card.type || ''),
           position: i,
           xsec_token: token,
           link: id && token
@@ -527,6 +529,43 @@ const SocaiXhsPageScripts = (() => {
     // here are almost always media overlay or layout noise.
     if (lines.length > 1 || cleaned.length > 40) return '';
     return cleaned;
+  }
+
+  // Normalize a Xiaohongshu `.date` label into a stable form. XHS renders the
+  // publish date several ways: absolute ("2024-03-28", "03-28", often prefixed
+  // "编辑于" and/or suffixed with a location like "北京"), or relative for recent
+  // posts ("刚刚", "5分钟前", "11小时前", "今天 13:31", "昨天 13:31", "前天",
+  // "5天前"). The previous extractor only matched the absolute forms, so any
+  // relative date came back empty. Resolve relative dates against now so the
+  // field is comparable downstream; fall back to the trimmed raw text rather
+  // than emptying the field on anything unrecognized.
+  function normalizeXhsDate(value) {
+    const t = norm(value);
+    if (!t) return '';
+    // Absolute token wins (scoped to the short `.date` text, so this can't grab
+    // a "13-15" fragment from the note body). Pass it through unchanged.
+    const abs = t.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}/);
+    if (abs) return abs[0];
+    const now = new Date();
+    const fmt = (d) => {
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      // Mirror XHS's own convention: year only when it isn't the current year.
+      return d.getFullYear() === now.getFullYear()
+        ? `${mm}-${dd}`
+        : `${d.getFullYear()}-${mm}-${dd}`;
+    };
+    const daysAgo = (n) => {
+      const d = new Date(now);
+      d.setDate(d.getDate() - n);
+      return d;
+    };
+    if (/刚刚|今天|^\d+\s*(?:秒|分钟|小时)前/.test(t)) return fmt(now);
+    if (/昨天/.test(t)) return fmt(daysAgo(1));
+    if (/前天/.test(t)) return fmt(daysAgo(2));
+    const dm = t.match(/^(\d+)\s*天前/);
+    if (dm) return fmt(daysAgo(parseInt(dm[1], 10)));
+    return t;
   }
 
   function unwrapStateValue(value) {
@@ -825,7 +864,7 @@ const SocaiXhsPageScripts = (() => {
       root,
       { excludeComments: true },
     );
-    const date = (dateText.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}/) || [''])[0];
+    const date = normalizeXhsDate(dateText);
     const locationText = cleanLocationText(
       firstVisibleText(['.location, .poi, [class*="location"], [class*="poi"]'], root, { excludeComments: true })
     );
