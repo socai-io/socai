@@ -82,10 +82,12 @@ pub fn xhs_tools_with_llm_provider(
             page: page.clone(),
             llm_provider,
             history: history.clone(),
+            always_download_media: false,
         }),
         Arc::new(AuthorScanTool {
             page: page.clone(),
             history,
+            always_download_media: false,
         }),
         Arc::new(PageStateTool { page }),
     ]
@@ -96,13 +98,21 @@ pub fn xhs_macro_tools_with_llm_provider(
     llm_provider: Option<Arc<dyn LlmProvider>>,
 ) -> Vec<Arc<dyn Tool>> {
     let history = Arc::new(XhsHistoryStore::open_default());
+    // The app/TUI agent interface always downloads note media so the offline
+    // files are on hand for deeper analysis; the CLI keeps its --download-media
+    // opt-in via the full tool set above.
     vec![
         Arc::new(SearchTool {
             page: page.clone(),
             llm_provider,
             history: history.clone(),
+            always_download_media: true,
         }) as Arc<dyn Tool>,
-        Arc::new(AuthorScanTool { page, history }),
+        Arc::new(AuthorScanTool {
+            page,
+            history,
+            always_download_media: true,
+        }),
     ]
 }
 
@@ -1420,6 +1430,9 @@ pub struct SearchTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
     history: Arc<XhsHistoryStore>,
+    /// Force media download regardless of the `download_media` input. Set by the
+    /// app/TUI macro factory; the CLI/full set leaves the input in control.
+    always_download_media: bool,
 }
 
 #[async_trait]
@@ -1542,7 +1555,7 @@ impl Tool for SearchTool {
         // and pull top comments. Per-note image vision is off (it's the one
         // genuinely expensive enrichment and not needed for topic research).
         let include_media = false;
-        let download_media = get_bool(&input, "download_media", false);
+        let download_media = self.always_download_media || get_bool(&input, "download_media", false);
 
         let media = media_for(
             ctx,
@@ -1769,6 +1782,9 @@ impl Tool for SearchTool {
 pub struct AuthorScanTool {
     page: Arc<PageSession>,
     history: Arc<XhsHistoryStore>,
+    /// Force media download regardless of the `download_media` input. Set by the
+    /// app/TUI macro factory; the CLI/full set leaves the input in control.
+    always_download_media: bool,
 }
 
 #[async_trait]
@@ -1830,7 +1846,8 @@ impl Tool for AuthorScanTool {
         // would still spin up the media pipeline and emit media metadata even
         // though no note is opened (the schema documents it as ignored in
         // preview, and the CLI dispatcher gates it the same way).
-        let download_media = !preview && get_bool(&input, "download_media", false);
+        let download_media =
+            !preview && (self.always_download_media || get_bool(&input, "download_media", false));
         let num_notes = input
             .get("num_notes")
             .and_then(Value::as_i64)
