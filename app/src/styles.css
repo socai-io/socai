@@ -689,7 +689,10 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex-direction: column;
   /* Center the compose/glance when they fit; `safe` falls back to top-aligned
      when the window is too short, and overflow-y keeps any spill inside this
-     region rather than scrolling the document. */
+     region rather than scrolling the document. The plain `center` below is a
+     fallback: an engine that lacks the `safe` keyword discards that line as
+     invalid and keeps this one, so centering still works when content fits. */
+  justify-content: center;
   justify-content: safe center;
   overflow-y: auto;
   gap: var(--sp-5);
