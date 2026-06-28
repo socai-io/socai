@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Capability for the main socai window",
   "windows": ["main"],
-  "permissions": ["core:default", "updater:default", "process:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "updater:default",
+    "process:default"
+  ]
 }

@@ -87,7 +87,7 @@
 * { box-sizing: border-box; }
 
 html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-html, body { margin: 0; padding: 0; min-height: 100vh; }
+html, body { margin: 0; padding: 0; height: 100%; }
 
 body {
   background: var(--canvas);
@@ -96,6 +96,11 @@ body {
   font-size: 15px;
   line-height: 1.55;
   font-feature-settings: "ss01", "ss02", "cv11";
+  /* The window is a fixed-height app shell: the document itself never scrolls.
+     Scrolling is owned by the regions that hold variable-length content
+     (history list, run logs, final answer). See the min-height:0 flex chain
+     from .shell down to those scroll leaves. */
+  overflow: hidden;
 }
 
 body.has-paper::before {
@@ -109,14 +114,17 @@ body.has-paper::before {
 }
 body.has-paper > * { position: relative; z-index: 1; }
 
-#app { min-height: 100vh; display: flex; }
+#app { height: 100vh; display: flex; }
 
 /* ── App shell ─────────────────────────────────────────────────── */
 .shell {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  /* min-height:0 (not 100vh) so this column can constrain its children to the
+     window height — the prerequisite for the content region scrolling inside
+     instead of growing the document. */
+  min-height: 0;
 }
 .topbar {
   display: flex;
@@ -125,9 +133,18 @@ body.has-paper > * { position: relative; z-index: 1; }
   padding: var(--sp-3) var(--sp-5);
   border-bottom: var(--hairline);
   background: var(--surface);
+  /* Fixed top of the non-scrolling shell column — it can't shrink or grow, and
+     since the document no longer scrolls there's nothing to "stick" past. The
+     z-index keeps the header (and its absolutely-positioned popovers, z-index
+     10) above the content region; flex items honour z-index without position. */
+  flex: 0 0 auto;
+  z-index: 30;
 }
 /* Overlay titlebar drag surface — the bare header area drags; the buttons and
-   toggles inside stay clickable (they lack the attribute). */
+   toggles inside stay clickable (they lack the attribute). Tauri's drag.js
+   turns a mousedown here into `plugin:window|start_dragging`, which the ACL
+   gates: the window only moves because capabilities/default.json grants
+   `core:window:allow-start-dragging` (NOT part of core:default). Don't drop it. */
 .topbar[data-tauri-drag-region] {
   cursor: default;
   -webkit-user-select: none;
@@ -364,6 +381,13 @@ body.has-paper > * { position: relative; z-index: 1; }
   border: var(--hairline);
   border-radius: var(--r-4);
   box-shadow: var(--shadow-pop);
+  /* Re-enable selection inside popovers: they are descendants of the drag
+     region (.topbar) and would otherwise inherit its user-select:none, making
+     copyable text — the CDP endpoint URL, the Chrome profile path — unselectable.
+     Safe for dragging: a bare data-tauri-drag-region only drags when the mousedown
+     target IS .topbar, never these descendants. */
+  -webkit-user-select: text;
+  user-select: text;
 }
 .connection-dialog-head {
   display: flex;
@@ -556,9 +580,9 @@ body.has-paper > * { position: relative; z-index: 1; }
 /* ── Stacked sections ──────────────────────────────────────────── */
 .stack {
   flex: 1;
+  min-height: 0;             /* fill the window height and let children scroll */
   display: flex;
   flex-direction: column;
-  justify-content: center;   /* center core content vertically in the window */
   gap: var(--sp-4);
   padding: var(--sp-4) var(--sp-5);
   max-width: 1080px;
@@ -566,6 +590,8 @@ body.has-paper > * { position: relative; z-index: 1; }
   align-self: center;
 }
 .section {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -584,6 +610,8 @@ body.has-paper > * { position: relative; z-index: 1; }
 
 /* Universal task entrance. */
 .task-interface {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
@@ -626,6 +654,7 @@ body.has-paper > * { position: relative; z-index: 1; }
 .task-context { flex: 1; }
 
 .page-switch {
+  flex: 0 0 auto;
   align-self: center;
   display: inline-flex;
   align-items: center;
@@ -654,8 +683,15 @@ body.has-paper > * { position: relative; z-index: 1; }
   color: var(--ink-9);
 }
 .new-task-page {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Center the compose/glance when they fit; `safe` falls back to top-aligned
+     when the window is too short, and overflow-y keeps any spill inside this
+     region rather than scrolling the document. */
+  justify-content: safe center;
+  overflow-y: auto;
   gap: var(--sp-5);
 }
 .new-task-compose {
@@ -721,11 +757,14 @@ body.has-paper > * { position: relative; z-index: 1; }
 .task-summary-row .task-row-meta { font-size: 10px; }
 .task-summary-empty { color: var(--fg-faint); }
 .history-page {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
 }
 .history-page-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -734,16 +773,21 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .history-page-head .result-label { margin: 0 0 var(--sp-2) 0; }
 
-/* Task history layout. */
+/* Task history layout. Fills the content region; the single grid row is 1fr of
+   that fixed height so both columns get a definite height to scroll within. */
 .tasks-layout {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(220px, 0.36fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: var(--sp-3);
   align-items: stretch;
 }
 .task-list,
 .task-detail {
   min-width: 0;
+  min-height: 0;             /* allow the columns to be constrained + scroll */
   border: var(--hairline);
   border-radius: var(--r-4);
   background: var(--surface);
@@ -754,6 +798,7 @@ body.has-paper > * { position: relative; z-index: 1; }
   overflow: hidden;
 }
 .task-list-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -764,9 +809,10 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .task-list-head .result-label { margin: 0; }
 .task-list-body {
+  flex: 1;
+  min-height: 0;             /* fill the column and scroll internally (was max-height:520px) */
   display: flex;
   flex-direction: column;
-  max-height: 520px;
   overflow: auto;
 }
 .task-list-empty { padding: var(--sp-3); }
@@ -821,8 +867,15 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-3);
+  /* The detail's height is owned by its flex children (logs + answer each
+     scroll). `auto` is a safety net only: in the normal case the flex-basis:0
+     children fill exactly and this never scrolls; it engages just for odd
+     states like a failed task with a very long error block, scrolling the pane
+     instead of clipping. */
+  overflow-y: auto;
 }
 .task-detail-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -838,6 +891,7 @@ body.has-paper > * { position: relative; z-index: 1; }
 .task-detail-title { margin: 0; }
 .task-detail-title { margin-top: var(--sp-2); }
 .task-empty-detail {
+  flex: 1;
   display: flex;
   min-height: 220px;
   flex-direction: column;
@@ -855,7 +909,13 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 
 /* ── Result + event stream ─────────────────────────────────────── */
+/* Run logs in the detail pane: take 1 share of the pane height (the final
+   answer below takes 2 — "answer-first"), and never collapse below a usable
+   floor. When a task is still running this is the only flex region, so it
+   fills the pane on its own. */
 .result-block {
+  flex: 1 1 0;
+  min-height: 72px;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -940,13 +1000,15 @@ body.has-paper > * { position: relative; z-index: 1; }
 .placeholder { color: var(--fg-faint); margin: 0; }
 .subtle { margin: 0; color: var(--fg-soft); }
 .event-stream {
+  flex: 1;
+  min-height: 0;             /* fill .result-block and scroll internally (was max-height:320px);
+                                preserves the auto-follow in tasks.ts (scrollTop = scrollHeight) */
   display: flex;
   flex-direction: column;
   padding: var(--sp-2) var(--sp-3);
   background: var(--canvas);
   border: var(--hairline);
   border-radius: var(--r-3);
-  max-height: 320px;
   overflow: auto;
 }
 .event {
@@ -969,10 +1031,19 @@ body.has-paper > * { position: relative; z-index: 1; }
 .event-done .event-glyph { color: var(--ink-0); }
 
 .agent-outcome {
+  flex: 2 1 0;               /* the payoff: 2 shares of the pane vs the logs' 1 */
+  min-height: 96px;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
   margin-top: var(--sp-2);
+}
+/* The rendered answer scrolls inside the agent-outcome share; the eyebrow label
+   and run metadata stay pinned around it. Override the base .result-pre cap. */
+.agent-outcome .result-pre {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }
 
 code {
