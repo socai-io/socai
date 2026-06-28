@@ -300,20 +300,24 @@ fn run_author_scan(page: Arc<PageSession>, args: Value, debug_snapshot: bool) ->
             .get("num_notes")
             .and_then(Value::as_i64)
             .or(Some(DEFAULT_NUM_NOTES));
-        // Default reads each note; --preview returns cards only.
+        // Default opens each note; --preview returns cards only.
         let preview = args
             .get("preview")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let download_media = args
-            .get("download_media")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        // download_media only applies when notes are opened. Drop it on preview
+        // runs so the run envelope doesn't advertise a `media_dir` for media that
+        // is never downloaded (mirrors `search`).
+        let download_media = !preview
+            && args
+                .get("download_media")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         author_scan_command(
             page,
             &author_id,
             num_notes,
-            !preview,
+            preview,
             download_media,
             debug_snapshot,
         )
@@ -386,14 +390,14 @@ pub async fn author_scan_command(
     page: Arc<PageSession>,
     author_id: &str,
     num_notes: Option<i64>,
-    read_notes: bool,
+    preview: bool,
     download_media: bool,
     debug_snapshot: bool,
 ) -> anyhow::Result<Value> {
     run_xhs_tool_command(
         page,
         AUTHOR_SCAN_COMMAND,
-        author_scan_input(author_id, num_notes, read_notes, download_media)?,
+        author_scan_input(author_id, num_notes, preview, download_media)?,
         debug_snapshot,
     )
     .await
@@ -427,7 +431,7 @@ fn search_input(
 fn author_scan_input(
     author_id: &str,
     num_notes: Option<i64>,
-    read_notes: bool,
+    preview: bool,
     download_media: bool,
 ) -> anyhow::Result<Value> {
     let mut input = json!({
@@ -436,8 +440,8 @@ fn author_scan_input(
     if let Some(n) = num_notes {
         input["num_notes"] = json!(n.max(1));
     }
-    if read_notes {
-        input["read_notes"] = json!(true);
+    if preview {
+        input["preview"] = json!(true);
     }
     if download_media {
         input["download_media"] = json!(true);
@@ -1605,13 +1609,15 @@ impl Tool for SearchTool {
     }
 }
 
-/// author_scan(author_id, num_notes?, read_notes?) -> author profile bundle
+/// author_scan(author_id, num_notes?, preview?, download_media?) -> author profile bundle
 ///
 /// Composite macro mirroring `search`, but entered from an author's profile
 /// page instead of a search query: open `…/user/profile/<id>` → read the author
 /// header (bio, xhs id, IP location, follower/following/like counts) → collect
-/// note summary cards in page order (scrolling to reach `num_notes`) → when
-/// `read_notes` is set, open each note and read its body + top comments.
+/// note summary cards in page order (scrolling to reach `num_notes`) → by
+/// default open each note and read its body + top comments. With `preview =
+/// true` it returns the note cards only, without opening any note — the fast
+/// cards-only path exposed on the CLI as `author --preview`.
 pub struct AuthorScanTool {
     page: Arc<PageSession>,
     history: Arc<XhsHistoryStore>,
@@ -1627,10 +1633,11 @@ impl Tool for AuthorScanTool {
         "Xiaohongshu author/creator scan: open an author's profile page by id → \
          read the author header (display name, xhs id, bio, IP location, \
          follower/following/liked-&-collected counts) → collect their note \
-         summary cards in page order (titles/likes/covers only; pass `num_notes` \
-         to scroll the grid for more, omit for just the first screen). Pass \
-         `read_notes=true` to also open each collected note and read its body \
-         + top comments (like `search`; latency scales with the card count). \
+         summary cards in page order (pass `num_notes` to scroll the grid for \
+         more, omit for just the first screen) → open each collected note and \
+         read its body + top comments (like `search`; latency scales with the \
+         card count). Pass `preview=true` for a fast cards-only pass that \
+         returns the note cards (titles/likes/covers) without opening any note. \
          Use this for creator research — it's like `search` but scoped to one \
          author instead of a query."
     }
@@ -1648,14 +1655,14 @@ impl Tool for AuthorScanTool {
                     "description": "Collect at least this many note cards, scrolling the profile grid (lazy-loaded). Omit for the first screen only.",
                     "minimum": 1
                 },
-                "read_notes": {
+                "preview": {
                     "type": "boolean",
-                    "description": "Open each collected note and read its body + top comments. Off by default (summaries only).",
+                    "description": "Fast cards-only mode: return the note cards (titles/likes/covers) without opening notes or reading bodies/comments. Off by default (full scan: each note opened for its body + top comments).",
                     "default": false
                 },
                 "download_media": {
                     "type": "boolean",
-                    "description": "When reading notes, download their images/videos into the run dir, include local_path fields, and emit a stable media_manifest_path.",
+                    "description": "Download each note's images/videos into the run dir, include local_path fields, and emit a stable media_manifest_path. Ignored in preview mode.",
                     "default": false
                 }
             },
@@ -1669,7 +1676,7 @@ impl Tool for AuthorScanTool {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| anyhow::anyhow!("missing author_id"))?
             .to_string();
-        let read_notes = get_bool(&input, "read_notes", false);
+        let preview = get_bool(&input, "preview", false);
         let download_media = get_bool(&input, "download_media", false);
         let num_notes = input
             .get("num_notes")
@@ -1740,9 +1747,10 @@ impl Tool for AuthorScanTool {
             history_snapshot.annotate_cards(cards_value);
         }
 
-        // Optionally open each collected note and read body + top comments.
+        // By default open each collected note and read body + top comments;
+        // `preview` returns the cards only and skips this.
         let mut notes: Vec<Value> = Vec::new();
-        if read_notes {
+        if !preview {
             for card in &cards {
                 if !card.note_id.is_empty() {
                     ctx.add_search_note_ids(std::slice::from_ref(&card.note_id));
@@ -1789,8 +1797,8 @@ impl Tool for AuthorScanTool {
             "sampling": {
                 "num_notes": num_notes,
                 "collected": cards.len(),
-                "read_notes": read_notes,
-                "comments_per_note": if read_notes { TOP_COMMENTS_PER_NOTE } else { 0 },
+                "preview": preview,
+                "comments_per_note": if preview { 0 } else { TOP_COMMENTS_PER_NOTE },
                 "download_media": download_media,
             },
             "timing": { "media": media_timing },

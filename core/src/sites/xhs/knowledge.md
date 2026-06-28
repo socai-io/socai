@@ -55,7 +55,7 @@ without opening any note).
 
 ### Author / creator research
 
-Call `author_scan(author_id=..., num_notes=N, read_notes=true|false,
+Call `author_scan(author_id=..., num_notes=N, preview=true|false,
 download_media=...)` when the task asks about a specific author/creator and you
 have an `author_id`, can extract the trailing id from a profile URL, or a
 previous macro result surfaced an author id worth expanding.
@@ -63,10 +63,11 @@ previous macro result surfaced an author id worth expanding.
 If the user only gives a display name or handle, first discover candidates with
 a focused `search` or ask the user for the profile URL/author id.
 
-Use `read_notes=true` when you need the author's recent note bodies/comments;
-otherwise the profile header plus note cards may be enough. For author media
-downloads, `download_media=true` only matters when `read_notes=true`, because
-media is downloaded while reading notes.
+By default it opens each note for its body + top comments; pass `preview=true`
+for a fast cards-only pass when the profile header plus note cards are enough.
+For author media downloads, `download_media=true` only matters on a full scan
+(it is ignored with `preview=true`), because media is downloaded while reading
+notes.
 
 ### Note details
 
