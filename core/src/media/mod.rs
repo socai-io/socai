@@ -8,10 +8,12 @@ mod audio;
 mod common;
 mod image;
 mod md5;
+mod ocr;
 mod processor;
 mod timing;
 mod video;
 
 pub use self::common::{MediaConfig, MediaUnavailable};
+pub use self::ocr::diagnostics as ocr_diagnostics;
 pub use self::processor::MediaProcessor;
 pub use self::timing::{timing_delta, TimingRecord, TimingSnapshot};

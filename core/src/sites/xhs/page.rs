@@ -71,6 +71,10 @@ pub struct ReadNoteOptions {
     pub level: String,
     pub include_media: bool,
     pub download_media: bool,
+    /// OCR each downloaded image and attach `ocr_text` per image. Implies
+    /// `download_media` (the caller forces it on), since OCR reads the saved
+    /// files. Ignored for video notes.
+    pub ocr: bool,
     pub max_images: usize,
     pub max_video_frames: usize,
     pub poster_url_fallback: String,
@@ -83,6 +87,7 @@ impl Default for ReadNoteOptions {
             level: "lite".into(),
             include_media: false,
             download_media: false,
+            ocr: false,
             max_images: 12,
             max_video_frames: 4,
             poster_url_fallback: String::new(),
@@ -1131,6 +1136,14 @@ impl<'a> XhsPageRuntime<'a> {
         if options.download_media {
             self.download_note_media(&mut note, options.max_images)
                 .await?;
+            // OCR runs over the just-downloaded image files. Only meaningful for
+            // image notes; for video the images vec is empty so this no-ops.
+            if options.ocr {
+                if let Some(media) = &self.media {
+                    media.ocr_downloaded_images(&mut note.images).await;
+                    note.image_count = note.images.len() as i64;
+                }
+            }
         }
 
         Ok(note)

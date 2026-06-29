@@ -7,7 +7,9 @@ use base64::Engine;
 use futures::StreamExt;
 use serde_json::Value;
 
-use crate::media::common::{detect_media_type, insert_string, short, url_suffix, MediaUnavailable};
+use crate::media::common::{
+    detect_media_type, insert_string, insert_value, short, url_suffix, MediaUnavailable,
+};
 use crate::media::md5;
 use crate::media::processor::MediaProcessor;
 
@@ -26,13 +28,142 @@ const VISION_GRID_BATCH: usize = 4;
 const VISION_GRID_CELL: u32 = 512;
 
 impl MediaProcessor {
-    pub fn ocr_image(&self, _payload: &[u8]) -> Result<String> {
+    pub fn ocr_image(&self, payload: &[u8]) -> Result<String> {
         if !self.config.use_ocr {
             anyhow::bail!(MediaUnavailable("OCR is disabled".into()));
         }
-        anyhow::bail!(MediaUnavailable(
-            "OCR is unavailable in the Rust media processor".into()
-        ));
+        if payload.is_empty() {
+            return Ok(String::new());
+        }
+        let mut results = crate::media::ocr::ocr_images_bytes(vec![(0, payload.to_vec())]);
+        match results.pop() {
+            Some((_, Ok(outcome))) => Ok(outcome.text),
+            Some((_, Err(err))) => Err(anyhow::anyhow!(err)),
+            None => Ok(String::new()),
+        }
+    }
+
+    /// OCR the already-downloaded images of a note in place: for each image with
+    /// a `local_path`, read the file, run PP-OCRv6, and attach `ocr_text` and
+    /// `ocr_ms` (or `ocr_error`). Runs the CPU-bound inference on a blocking
+    /// thread. No-op when OCR is disabled or no image has a local path.
+    pub async fn ocr_downloaded_images(&self, images: &mut [Value]) {
+        if !self.config.use_ocr || images.is_empty() {
+            return;
+        }
+        let jobs: Vec<(usize, String)> = images
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.get("ocr_text").is_none())
+            .filter_map(|(idx, item)| {
+                item.get("local_path")
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .map(|path| (idx, path.to_string()))
+            })
+            .collect();
+        if jobs.is_empty() {
+            return;
+        }
+
+        let t0 = Instant::now();
+        let results = tokio::task::spawn_blocking(move || {
+            let items: Vec<(usize, Vec<u8>)> = jobs
+                .into_iter()
+                .filter_map(|(idx, path)| std::fs::read(&path).ok().map(|bytes| (idx, bytes)))
+                .collect();
+            crate::media::ocr::ocr_images_bytes(items)
+        })
+        .await;
+        self.timing.record("ocr_batch", t0.elapsed());
+
+        let Ok(results) = results else {
+            return;
+        };
+        for (idx, result) in results {
+            let Some(item) = images.get_mut(idx) else {
+                continue;
+            };
+            match result {
+                Ok(outcome) => {
+                    insert_value(item, "ocr_ms", Value::from(outcome.elapsed_ms as u64));
+                    if !outcome.text.trim().is_empty() {
+                        insert_string(item, "ocr_text", short(&outcome.text, 1200));
+                    }
+                }
+                Err(err) => insert_string(item, "ocr_error", err),
+            }
+        }
+    }
+
+    /// OCR card cover images *without persisting them* — used by the cards-only
+    /// preview path so a search-results scan reads each cover like a human
+    /// glancing at the page. Downloads each `cover_url` to memory, OCRs it, and
+    /// attaches `ocr_text` / `ocr_ms` (or `ocr_error`) to the card in place; the
+    /// downloaded bytes are dropped (nothing written to the run dir).
+    pub async fn ocr_cover_images(&self, cards: &mut [Value], referer: &str) {
+        if !self.config.use_ocr || cards.is_empty() {
+            return;
+        }
+        let jobs: Vec<(usize, String)> = cards
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, card)| {
+                card.get("cover_url")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|url| !url.is_empty())
+                    .map(|url| (idx, url.to_string()))
+            })
+            .collect();
+        if jobs.is_empty() {
+            return;
+        }
+
+        // Fetch covers concurrently (network-bound), then OCR on a blocking
+        // thread (CPU-bound). Covers are small (one per card) and never saved.
+        let t_dl = Instant::now();
+        let downloads = jobs
+            .iter()
+            .map(|(idx, url)| {
+                let idx = *idx;
+                let url = url.clone();
+                let referer = referer.to_string();
+                async move {
+                    let (bytes, _err) = self.safe_download(url, referer).await;
+                    (idx, bytes)
+                }
+            })
+            .collect::<Vec<_>>();
+        let fetched: Vec<(usize, Vec<u8>)> = futures::stream::iter(downloads)
+            .buffered(IMAGE_DOWNLOAD_CONCURRENCY)
+            .filter(|(_, bytes)| futures::future::ready(!bytes.is_empty()))
+            .collect()
+            .await;
+        self.timing.record("ocr_cover_download_batch", t_dl.elapsed());
+
+        let t0 = Instant::now();
+        let results =
+            tokio::task::spawn_blocking(move || crate::media::ocr::ocr_images_bytes(fetched)).await;
+        self.timing.record("ocr_batch", t0.elapsed());
+
+        let Ok(results) = results else {
+            return;
+        };
+        for (idx, result) in results {
+            let Some(card) = cards.get_mut(idx) else {
+                continue;
+            };
+            match result {
+                Ok(outcome) => {
+                    insert_value(card, "ocr_ms", Value::from(outcome.elapsed_ms as u64));
+                    if !outcome.text.trim().is_empty() {
+                        insert_string(card, "ocr_text", short(&outcome.text, 1200));
+                    }
+                }
+                Err(err) => insert_string(card, "ocr_error", err),
+            }
+        }
     }
 
     pub async fn describe_image(
