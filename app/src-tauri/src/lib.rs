@@ -75,6 +75,19 @@ pub fn run() {
         .manage(AgentTaskRegistry::default())
         .manage(telemetry)
         .setup(|app| {
+            // Let the webview load locally-downloaded note media (images/video)
+            // from the run-artifact root via the asset protocol (convertFileSrc).
+            // The static scope in tauri.conf.json covers the default ~/.socai/runs;
+            // extend it to the resolved root so a custom SOCAI_RUNS_DIR / `runs.dir`
+            // also resolves. allow_directory tolerates a not-yet-created dir.
+            let runs_root = socai_core::agent::run_logging::default_runs_root();
+            if let Err(err) = app.asset_protocol_scope().allow_directory(&runs_root, true) {
+                eprintln!(
+                    "failed to allow runs dir {} in asset scope: {err:#}",
+                    runs_root.display()
+                );
+            }
+
             let runtime = app.state::<SocaiRuntime>().inner().clone();
             let tasks = app.state::<AgentTaskRegistry>().inner().clone();
             let telemetry = app.state::<DesktopTelemetry>().inner().clone();
@@ -188,6 +201,7 @@ pub fn run() {
             commands::agent_task_list,
             commands::agent_task_get,
             commands::agent_task_events,
+            commands::agent_task_notes,
             commands::agent_task_cancel,
             commands::config_get,
             commands::config_set,

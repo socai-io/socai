@@ -157,6 +157,11 @@ pub struct ToolContext {
     /// Note ids the agent has sampled via `search` in this run — useful
     /// for "show me what I've already covered" tools.
     search_note_ids: Arc<Mutex<Vec<String>>>,
+    /// Notes the agent fully read this run, keyed by note id. Archived to
+    /// `<run_dir>/notes.json` so the desktop app can render them as rich,
+    /// locally-served cards without re-fetching. The record shape is built by
+    /// the site tools; see [`crate::agent::note_store`].
+    notes_seen: Arc<Mutex<BTreeMap<String, Value>>>,
 }
 
 #[derive(Default)]
@@ -197,6 +202,7 @@ impl ToolContext {
             counters: Arc::new(Mutex::new(Counters::default())),
             processed_notes: Arc::new(Mutex::new(BTreeMap::new())),
             search_note_ids: Arc::new(Mutex::new(Vec::new())),
+            notes_seen: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -290,6 +296,25 @@ impl ToolContext {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default()
+    }
+
+    /// Record a fully-read note (full content + resolved local media) into the
+    /// run's note archive (`<run_dir>/notes.json`). Re-recording the same
+    /// `note_id` overwrites the prior entry (latest read wins). No-op on empty
+    /// id. The record shape is built by the caller (site tools).
+    pub fn record_note(&self, note_id: &str, record: Value) {
+        if note_id.is_empty() {
+            return;
+        }
+        let Ok(mut guard) = self.notes_seen.lock() else {
+            return;
+        };
+        guard.insert(note_id.to_string(), record);
+        if let Err(err) = crate::agent::note_store::write_notes(&self.run_dir, &guard) {
+            // Non-fatal: the in-memory copy still serves this process; only the
+            // on-disk archive the desktop app reads is affected.
+            tracing::warn!(error = %err, note_id, "failed to persist note archive");
+        }
     }
 
     pub fn with_run_state(mut self, run_state: Arc<RunState>) -> Self {

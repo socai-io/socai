@@ -931,6 +931,13 @@ async fn scan_card_note(
         if let Some(entity) = entry.get("entity") {
             history.record(entity, level, requested_media);
         }
+        // Archive the fully-read note (full content + resolved local media) so
+        // the desktop app can render it as a rich, locally-served card without
+        // re-fetching. Recorded here — before the lean trim strips images/video
+        // from the agent-facing payload — so the archive keeps the full note.
+        if let Some((note_id, record)) = build_note_record(&entry, ctx, level) {
+            ctx.record_note(&note_id, record);
+        }
     }
 
     entry
@@ -1055,6 +1062,34 @@ async fn join_note_ocr(
         }
     }
     timings
+}
+
+/// Build the archived note record from a freshly-read scan entry
+/// (`{ ok, entity }`): the full note entity, plus a normalized, on-disk-validated
+/// `media` array (reusing the media-manifest asset builder, which resolves each
+/// image/video/poster `local_path`, confirms the file exists, and reads dims),
+/// plus run provenance (`site`, `first_seen_turn`, `level`). Returns
+/// `(note_id, record)`, or `None` when the entity carries no usable note id.
+fn build_note_record(entry: &Value, ctx: &ToolContext, level: &str) -> Option<(String, Value)> {
+    let entity = entry.get("entity").filter(|v| v.is_object())?;
+    let note_id = entity
+        .get("note_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if note_id.is_empty() {
+        return None;
+    }
+    let media = search_media_manifest(std::slice::from_ref(entry), ctx.output_dir());
+    let mut record = entity.clone();
+    if let Some(map) = record.as_object_mut() {
+        map.insert("site".into(), Value::String("xhs".into()));
+        map.insert("media".into(), media);
+        map.insert("first_seen_turn".into(), Value::from(ctx.turn));
+        map.insert("level".into(), Value::String(level.to_string()));
+    }
+    Some((note_id, record))
 }
 
 /// Trim a search / author_scan bundle to the shape we hand back to the

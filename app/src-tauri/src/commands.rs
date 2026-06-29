@@ -436,6 +436,27 @@ pub async fn agent_task_events(
         .ok_or_else(|| format!("unknown task: {task_id}"))
 }
 
+/// Notes the agent saw during a run — full content + resolved local media,
+/// read from `<run_dir>/notes.json`. Empty when the run recorded none (or has
+/// not scanned yet). Powers the desktop app's embedded rich-note cards; works
+/// live (run_dir is set at task creation) and on history reload.
+#[tauri::command]
+pub async fn agent_task_notes(
+    tasks: State<'_, AgentTaskRegistry>,
+    task_id: String,
+) -> Result<Vec<Value>, String> {
+    let snapshot = tasks
+        .get(&task_id)
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    let Some(run_dir) = snapshot.run_dir else {
+        return Ok(Vec::new());
+    };
+    Ok(socai_core::agent::note_store::load_notes(
+        std::path::Path::new(&run_dir),
+    ))
+}
+
 #[tauri::command]
 pub async fn agent_task_cancel(
     app: AppHandle,

@@ -10,6 +10,7 @@ pub mod file_bash_tools;
 pub mod llm;
 pub mod r#loop;
 pub mod memory;
+pub mod note_store;
 pub mod provider;
 pub mod report;
 pub mod run_logging;

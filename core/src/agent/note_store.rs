@@ -1,0 +1,48 @@
+//! Per-run archive of the notes the agent actually saw.
+//!
+//! As site tools fully read a note, they record it (full content + resolved
+//! local media) into `<run_dir>/notes.json` — a `{ "<note_id>": <record> }`
+//! map. This is the local, re-fetch-free source the desktop app renders as
+//! rich embedded note cards in the run timeline and the final answer.
+//!
+//! The record *shape* is site-specific and built by the site's tools (see
+//! `sites/xhs/tools.rs`); this module only owns the file path, persistence,
+//! and load. Records are keyed by note id, so re-reading a note overwrites the
+//! prior entry (latest read wins) and the archive stays deduped.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde_json::{Map, Value};
+
+/// Path to a run's note archive: `<run_dir>/notes.json`.
+pub fn notes_path(run_dir: &Path) -> PathBuf {
+    run_dir.join("notes.json")
+}
+
+/// Persist the full `note_id -> record` map to `<run_dir>/notes.json`.
+///
+/// Rewrites the whole file each call; the archive is small (tens of notes per
+/// run) and recording is sequential within a run, so this stays cheap.
+pub(crate) fn write_notes(run_dir: &Path, notes: &BTreeMap<String, Value>) -> std::io::Result<()> {
+    std::fs::create_dir_all(run_dir)?;
+    let map: Map<String, Value> = notes.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let rendered =
+        serde_json::to_string_pretty(&Value::Object(map)).map_err(std::io::Error::other)?;
+    std::fs::write(notes_path(run_dir), rendered)
+}
+
+/// Load a run's recorded notes as an array of records (empty when the run
+/// recorded none or hasn't scanned yet). Missing/unreadable/malformed files
+/// degrade to an empty list rather than an error — a run simply may have no
+/// notes. The array form is tolerated alongside the canonical object map.
+pub fn load_notes(run_dir: &Path) -> Vec<Value> {
+    let Ok(text) = std::fs::read_to_string(notes_path(run_dir)) else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(map)) => map.into_iter().map(|(_, v)| v).collect(),
+        Ok(Value::Array(items)) => items,
+        _ => Vec::new(),
+    }
+}
