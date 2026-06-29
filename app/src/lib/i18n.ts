@@ -46,7 +46,11 @@ const messages = {
 
   "status.capsuleAria": { en: "chrome and agent status", zh: "chrome 与智能体状态" },
 
+  "sidebar.collapseAria": { en: "collapse sidebar", zh: "收起侧边栏" },
+  "sidebar.expandAria": { en: "expand sidebar", zh: "展开侧边栏" },
+
   "update.restartToUpdate": { en: "restart to update", zh: "重启更新" },
+  "update.chip": { en: "update", zh: "更新" },
   "update.taskRunningWarn": {
     en: "a task is running — restarting will interrupt it.",
     zh: "有任务正在运行 — 重启会中断它。",
@@ -107,24 +111,19 @@ const messages = {
     zh: "还没有检测到 codex 登录。登录完成后返回 socai。",
   },
 
-  "task.pagesAria": { en: "task pages", zh: "任务页面" },
   "task.new": { en: "new task", zh: "新任务" },
   "task.history": { en: "history", zh: "历史" },
-  "task.historyTitle": { en: "task history", zh: "任务历史" },
-  "task.historyDescription": {
-    en: "review completed, failed, interrupted, and running tasks.",
-    zh: "查看已完成、失败、中断和运行中的任务。",
-  },
   "task.historyAria": { en: "task history", zh: "任务历史" },
   "task.selected": { en: "selected task", zh: "已选任务" },
   "task.selectedAria": { en: "selected task", zh: "已选任务" },
   "task.noTasks": { en: "no tasks yet.", zh: "暂无任务。" },
   "task.cancel": { en: "cancel", zh: "取消" },
   "task.finalAnswer": { en: "final answer", zh: "最终答案" },
+  "task.timeline": { en: "timeline", zh: "时间线" },
+  "task.errorLabel": { en: "error", zh: "错误" },
   "task.waitingForEvents": { en: "waiting for events…", zh: "等待事件…" },
   "task.noTimeline": { en: "no event timeline available.", zh: "暂无事件时间线。" },
   "task.emptyDetail": { en: "start a task or choose one from history.", zh: "启动一个任务或从历史中选择。" },
-  "task.run": { en: "run", zh: "运行" },
 
   "task.hero": { en: "what should socai research?", zh: "想让 socai 研究什么？" },
   "task.lede": {
@@ -138,9 +137,6 @@ const messages = {
     en: "tell socai what you want researched…\neach task opens its own temporary chrome tab.",
     zh: "告诉 socai 你想研究什么…\n每个任务都会打开自己的临时 chrome 标签页。",
   },
-  "task.recent": { en: "recent", zh: "最近" },
-  "task.viewHistory": { en: "view history", zh: "查看历史" },
-  "task.noRecent": { en: "no recent tasks yet.", zh: "暂无最近任务。" },
   "task.today": { en: "today", zh: "今天" },
   "task.yesterday": { en: "yesterday", zh: "昨天" },
 } as const satisfies Record<string, Record<Language, string>>;
@@ -224,11 +220,6 @@ export function formatTabs(count: number): string {
 export function formatTaskCount(count: number): string {
   if (currentLanguage === "zh") return `${count} 个任务`;
   return `${count} task${count === 1 ? "" : "s"}`;
-}
-
-export function formatRunningTaskCount(count: number): string {
-  if (currentLanguage === "zh") return `${count} 个任务运行中`;
-  return `${count} task${count === 1 ? "" : "s"} running`;
 }
 
 export function formatTurns(count: number): string {

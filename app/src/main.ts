@@ -112,18 +112,19 @@ export interface ShellState {
   rerender: () => void;
 }
 
-interface PanelModule {
-  label: string;
-  render: (shell: ShellState) => string;
-  bind: (shell: ShellState) => void;
-}
-
-const PANELS: PanelModule[] = [
-  { label: "tasks", render: agentPanel.render, bind: agentPanel.bind },
-];
-
 let status: Status = { state: "disconnected", reason: "starting" };
 let connectionDetailsOpen = false;
+// The sidebar (task history rail) starts expanded; the topbar toggle collapses it.
+let sidebarOpen = true;
+
+// Sidebar-collapse toggle glyph (mirrors the prototype's PanelIcon). On macOS
+// the native traffic lights sit to its left; the .topbar-left gutter clears them.
+const PANEL_ICON_SVG = `
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect>
+    <line x1="9.5" y1="4.5" x2="9.5" y2="19.5"></line>
+  </svg>
+`;
 
 function shell(): ShellState {
   return { status, rerender: render };
@@ -133,19 +134,20 @@ function render(): void {
   const root = document.getElementById("app");
   if (!root) return;
   const state = shell();
-  const sections = PANELS
-    .map(
-      (p) => `
-      <section class="section">
-        ${p.render(state)}
-      </section>`,
-    )
-    .join("");
   root.innerHTML = `
     <div class="shell">
       <header class="topbar" data-tauri-drag-region>
-        <div class="topbar-controls">
+        <div class="topbar-left ${sidebarOpen ? "topbar-left--bordered" : ""}">
+          <button
+            id="sidebar-toggle"
+            type="button"
+            class="icon-button"
+            aria-label="${htmlEsc(t(sidebarOpen ? "sidebar.collapseAria" : "sidebar.expandAria"))}"
+            aria-expanded="${sidebarOpen ? "true" : "false"}"
+          >${PANEL_ICON_SVG}</button>
           ${renderUpdateChip()}
+        </div>
+        <div class="topbar-controls">
           <div class="status-capsule" role="group" aria-label="${htmlEsc(t("status.capsuleAria"))}">
             ${connectionStatusBar()}
             <span class="status-capsule__divider" aria-hidden="true"></span>
@@ -154,14 +156,25 @@ function render(): void {
           ${settingsMenu.render(state)}
         </div>
       </header>
-      <main class="stack">${sections}</main>
+      <div class="body">
+        ${sidebarOpen ? agentPanel.renderSidebar() : ""}
+        <main class="workspace-main">${agentPanel.renderWorkspace(state)}</main>
+      </div>
     </div>
   `;
   bindConnectionStatusBar();
   bindUpdateChip();
+  bindSidebarToggle();
   agentPanel.bindHeader(state);
   settingsMenu.bind(state);
-  for (const p of PANELS) p.bind(state);
+  agentPanel.bind(state);
+}
+
+function bindSidebarToggle(): void {
+  document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
+    sidebarOpen = !sidebarOpen;
+    render();
+  });
 }
 
 function connectionStatusBar(): string {
@@ -225,7 +238,8 @@ function bindConnectionStatusBar(): void {
     connectionDetailsOpen = false;
     invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
   });
-  document.getElementById("chrome-status-toggle")?.addEventListener("click", async () => {
+  document.getElementById("chrome-status-toggle")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
     const opening = !connectionDetailsOpen;
     if (opening) {
       try {
@@ -278,7 +292,7 @@ function renderUpdateChip(): string {
     <div class="update-chip-wrap">
       <button id="update-chip" type="button" class="update-chip" aria-label="${htmlEsc(t("update.restartToUpdate"))}">
         <span class="update-chip-glyph" aria-hidden="true">↑</span>
-        <span class="update-chip-label">${htmlEsc(t("update.restartToUpdate"))}</span>
+        <span class="update-chip-label">${htmlEsc(t("update.chip"))}</span>
       </button>
       ${restartWarn ? renderRestartWarn() : updateTooltip()}
     </div>

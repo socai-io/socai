@@ -1,6 +1,6 @@
 //! Task workspace coordinator: shared state, agent configuration popover,
-//! task event intake, and bindings. The tab bodies live in `task_new.ts` and
-//! `task_history.ts`.
+//! task event intake, and bindings. The sidebar (history list) + detail pane
+//! live in `task_history.ts`; the compose view lives in `task_new.ts`.
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -12,17 +12,19 @@ import type {
 } from "../main";
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
-import { renderAgentEvent, renderHistoryPage } from "./task_history";
-import { renderNewTaskPage } from "./task_new";
+import { renderAgentEvent, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
+import { renderComposePane } from "./task_new";
 
-type TaskPage = "new" | "history";
+// The workspace shows one of two views: the compose form (default / "new task")
+// or the selected task's detail. The sidebar history list is always present.
+type WorkspaceView = "compose" | "detail";
 export type AgentTaskView = AgentTaskSnapshot & { events: AgentTaskEventPayload[] };
 type CodexLoginStart = { message: string };
 
 // ── Agent task workspace ──────────────────────────────────────────────────
 
 export namespace agentPanel {
-  let page: TaskPage = "new";
+  let view: WorkspaceView = "compose";
   let draft = "";
   let model = "";
   let modelProvider = "";
@@ -109,7 +111,8 @@ export namespace agentPanel {
   }
 
   export function bindHeader(shell: ShellState): void {
-    document.getElementById("agent-config-toggle")?.addEventListener("click", () => {
+    document.getElementById("agent-config-toggle")?.addEventListener("click", (event) => {
+      event.stopPropagation();
       configOpen = selectedNeedsKey() ? true : !configOpen;
       shell.rerender();
     });
@@ -204,13 +207,13 @@ export namespace agentPanel {
     const selected = selectedModel();
     const expanded = configOpen || selectedNeedsKey() ? "true" : "false";
     if (!selected) {
-      return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-muted" aria-hidden="true"></i>${esc(t("agent.label"))} · ${esc(t("agent.loading"))}</button>`;
+      return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-muted" aria-hidden="true"></i><span class="badge-text">${esc(t("agent.label"))} · ${esc(t("agent.loading"))}</span></button>`;
     }
     const label = modelDisplayLabel(selected);
     if (!selected.has_key) {
-      return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-hollow" aria-hidden="true"></i>${esc(t("agent.label"))} · ${esc(label)} · ${esc(t("agent.keyNeeded"))}</button>`;
+      return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-hollow" aria-hidden="true"></i><span class="badge-text">${esc(t("agent.label"))} · ${esc(label)} · ${esc(t("agent.keyNeeded"))}</span></button>`;
     }
-    return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${esc(t("agent.label"))} · ${esc(label)}</button>`;
+    return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i><span class="badge-text">${esc(t("agent.label"))} · ${esc(label)}</span></button>`;
   }
 
   function renderConfigPopover(): string {
@@ -437,48 +440,37 @@ export namespace agentPanel {
     return !!payload.snapshot;
   }
 
-  export function render(shell: ShellState): string {
-    return `
-      <div class="task-interface">
-        ${renderPageTabs()}
-        ${page === "new"
-          ? renderNewTaskPage({
-              shell,
-              draft,
-              submittingTask,
-              submitError,
-              tasks,
-              selectedModel: selectedModel(),
-            })
-          : renderHistoryPage({ tasks, selectedTask: selectedTask(), selectedTaskId })}
-      </div>
-    `;
+  // The persistent left rail: "new task" + the history list. Always rendered
+  // (when the sidebar is expanded); independent of which workspace view is up.
+  export function renderSidebar(): string {
+    return renderSidebarMarkup({
+      tasks,
+      selectedTaskId,
+      composing: view === "compose",
+    });
   }
 
-  function renderPageTabs(): string {
+  // The main pane: the compose form, or the selected task's detail.
+  export function renderWorkspace(shell: ShellState): string {
+    if (view === "compose") {
+      return renderComposePane({
+        shell,
+        draft,
+        submittingTask,
+        submitError,
+        selectedModel: selectedModel(),
+      });
+    }
     return `
-      <div class="page-switch" aria-label="${esc(t("task.pagesAria"))}">
-        <button id="page-new" type="button" class="page-switch-button ${page === "new" ? "page-switch-button-active" : ""}">${esc(t("task.new"))}</button>
-        <button id="page-history" type="button" class="page-switch-button ${page === "history" ? "page-switch-button-active" : ""}">${esc(t("task.history"))}</button>
-      </div>
+      <section class="task-detail" aria-label="${esc(t("task.selectedAria"))}">
+        ${renderTaskDetail(selectedTask())}
+      </section>
     `;
   }
 
   export function bind(shell: ShellState): void {
-    document.getElementById("page-new")?.addEventListener("click", () => {
-      page = "new";
-      shell.rerender();
-    });
-    document.getElementById("page-history")?.addEventListener("click", () => {
-      page = "history";
-      shell.rerender();
-    });
-    document.getElementById("history-new-task")?.addEventListener("click", () => {
-      page = "new";
-      shell.rerender();
-    });
-    document.getElementById("recent-history-link")?.addEventListener("click", () => {
-      page = "history";
+    document.getElementById("sidebar-new")?.addEventListener("click", () => {
+      view = "compose";
       shell.rerender();
     });
 
@@ -491,7 +483,7 @@ export namespace agentPanel {
     document.querySelectorAll<HTMLButtonElement>("[data-task-id]").forEach((btn) => {
       btn.addEventListener("click", () => {
         selectedTaskId = btn.dataset.taskId ?? null;
-        page = "history";
+        view = "detail";
         shell.rerender();
       });
     });
@@ -532,6 +524,16 @@ export namespace agentPanel {
         );
       });
 
+    // Auto-follow the selected task's timeline to the latest row after a render.
+    scrollSelectedEventsToBottom();
+  }
+
+  // Keep the event stream pinned to its newest row when the detail (re)renders,
+  // mirroring the incremental append in `appendEventRowIfSelected`.
+  function scrollSelectedEventsToBottom(): void {
+    if (!selectedTaskId) return;
+    const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${selectedTaskId}"]`);
+    if (stream) stream.scrollTop = stream.scrollHeight;
   }
 
   async function pollCodexOAuth(shell: ShellState): Promise<void> {
@@ -589,7 +591,7 @@ export namespace agentPanel {
       });
       upsertTask(snapshot);
       selectedTaskId = snapshot.task_id;
-      page = "history";
+      view = "detail";
       draft = "";
     } catch (err) {
       submitError = `${err}`;

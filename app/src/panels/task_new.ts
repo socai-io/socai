@@ -1,23 +1,20 @@
+//! Compose view: the centered hero + task textarea shown in the workspace when
+//! no task is selected (or after "new task"). When chrome is disconnected the
+//! form is masked behind a connect overlay.
+
 import type { ModelInfo, Status, ShellState } from "../main";
 import { esc } from "../lib/html";
-import {
-  formatRunningTaskCount,
-  formatTaskTimestamp,
-  taskStatusLabel,
-  t,
-} from "../lib/i18n";
-import type { AgentTaskView } from "./tasks";
+import { t } from "../lib/i18n";
 
-export interface NewTaskPageProps {
+export interface ComposePaneProps {
   shell: ShellState;
   draft: string;
   submittingTask: boolean;
   submitError: string;
-  tasks: AgentTaskView[];
   selectedModel: ModelInfo | undefined;
 }
 
-export function renderNewTaskPage(props: NewTaskPageProps): string {
+export function renderComposePane(props: ComposePaneProps): string {
   const connected = props.shell.status.state === "connected";
   const modelReady = !!props.selectedModel && props.selectedModel.has_key;
   const running = props.submittingTask;
@@ -25,7 +22,7 @@ export function renderNewTaskPage(props: NewTaskPageProps): string {
   const gated = !connected;
 
   return `
-    <div class="new-task-page">
+    <div class="compose-pane">
       <div class="new-task-compose">
         <div class="new-task-copy">
           <h2 class="t-h2">${esc(t("task.hero"))}</h2>
@@ -40,14 +37,12 @@ export function renderNewTaskPage(props: NewTaskPageProps): string {
           ${!connected ? renderConnectOverlay(props.shell.status) : ""}
         </div>
       </div>
-      ${renderRunningChip(props.tasks)}
-      ${renderTaskGlance(props.tasks)}
     </div>
   `;
 }
 
 function renderTaskForm(
-  props: NewTaskPageProps,
+  props: ComposePaneProps,
   running: boolean,
   runDisabled: boolean,
 ): string {
@@ -115,74 +110,4 @@ function renderConnectOverlay(status: Status): string {
       >${esc(t("chrome.remoteDebuggingHelp"))}</a>
     </div>
   `;
-}
-
-function renderRunningChip(tasks: AgentTaskView[]): string {
-  const running = [...tasks]
-    .filter((t) => t.status === "running" || t.status === "queued")
-    .sort((a, b) => b.created_at - a.created_at);
-  if (running.length === 0) return "";
-  const first = running[0];
-  const isOne = running.length === 1;
-  const count = formatRunningTaskCount(running.length);
-  const taskLabel = isOne
-    ? `<span class="running-chip-dot" aria-hidden="true">·</span><span class="running-chip-task">${esc(first.task)}</span>`
-    : "";
-  return `
-    <button type="button" class="running-chip" data-task-id="${esc(first.task_id)}">
-      <i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i>
-      <span class="running-chip-count">${count}</span>
-      ${taskLabel}
-      <span class="running-chip-arrow" aria-hidden="true">→</span>
-    </button>
-  `;
-}
-
-function renderTaskGlance(tasks: AgentTaskView[]): string {
-  const recent = [...tasks]
-    .filter((task) => task.status !== "running" && task.status !== "queued")
-    .sort((a, b) => b.created_at - a.created_at)
-    .slice(0, 5);
-
-  return `
-    <div class="task-glance">
-      <section class="task-glance-card">
-        <div class="task-glance-head">
-          <p class="t-eyebrow result-label">${esc(t("task.recent"))}</p>
-          <button id="recent-history-link" type="button" class="btn-ghost btn-compact">${esc(t("task.viewHistory"))}</button>
-        </div>
-        ${renderTaskSummaryRows(recent, t("task.noRecent"))}
-      </section>
-    </div>
-  `;
-}
-
-function renderTaskSummaryRows(items: AgentTaskView[], emptyText: string): string {
-  if (items.length === 0) {
-    return `<p class="t-small placeholder task-summary-empty">${esc(emptyText)}</p>`;
-  }
-  return `
-    <div class="task-summary-list">
-      ${items.map((task) => `
-        <button type="button" class="task-summary-row" data-task-id="${esc(task.task_id)}">
-          <span class="task-row-glyph task-row-glyph-${esc(task.status)}" aria-hidden="true">${taskStatusGlyph(task.status)}</span>
-          <span class="task-row-main">
-            <span class="task-row-title">${esc(task.task)}</span>
-            <span class="task-row-meta">${esc(taskStatusLabel(task.status))} · ${esc(formatTaskTimestamp(task.created_at))}</span>
-          </span>
-        </button>
-      `).join("")}
-    </div>
-  `;
-}
-
-function taskStatusGlyph(status: AgentTaskView["status"]): string {
-  switch (status) {
-    case "queued": return "○";
-    case "running": return "●";
-    case "completed": return "✓";
-    case "failed": return "×";
-    case "cancelled": return "−";
-    case "interrupted": return "!";
-  }
 }

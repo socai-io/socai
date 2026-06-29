@@ -1,57 +1,50 @@
+//! Sidebar (task history list) + the selected-task detail pane.
+//!
+//! The detail body uses the "split" layout: timeline ‖ final answer, each
+//! filling the pane. When only one panel has content — a running task with no
+//! answer yet, or a failed task that produced only an error — it falls back to a
+//! single stacked panel. (Narrow windows fold split into a stack via CSS.)
+
 import type { AgentTaskEventPayload } from "../main";
 import { esc } from "../lib/html";
 import { renderMarkdown } from "../lib/markdown";
 import { formatTaskCount, formatTaskTimestamp, formatTokenUsage, formatTurns, taskStatusLabel, t } from "../lib/i18n";
 import type { AgentTaskView } from "./tasks";
 
-export interface TaskHistoryPageProps {
+export interface SidebarProps {
   tasks: AgentTaskView[];
-  selectedTask: AgentTaskView | undefined;
   selectedTaskId: string | null;
+  /** True while the compose view is showing — no row should read as selected. */
+  composing: boolean;
 }
 
-export function renderHistoryPage(props: TaskHistoryPageProps): string {
+export function renderSidebar(props: SidebarProps): string {
   return `
-    <div class="history-page">
-      <div class="history-page-head">
-        <div>
-          <p class="t-eyebrow result-label">${esc(t("task.historyTitle"))}</p>
-          <p class="t-small subtle">${esc(t("task.historyDescription"))}</p>
-        </div>
-        <button id="history-new-task" type="button" class="btn-ghost">${esc(t("task.new"))}</button>
+    <aside class="sidebar" aria-label="${esc(t("task.historyAria"))}">
+      <div class="sidebar-head">
+        <button id="sidebar-new" type="button" class="sidebar-new">
+          <span class="sidebar-new-glyph" aria-hidden="true">+</span>${esc(t("task.new"))}
+        </button>
       </div>
-      ${renderTaskWorkspace(props)}
-    </div>
+      <div class="sidebar-list-head">
+        <p class="t-eyebrow result-label">${esc(t("task.history"))}</p>
+        <span class="t-small subtle">${esc(formatTaskCount(props.tasks.length))}</span>
+      </div>
+      <div class="sidebar-list">
+        ${renderTaskRows(props)}
+      </div>
+    </aside>
   `;
 }
 
-function renderTaskWorkspace(props: TaskHistoryPageProps): string {
-  return `
-    <div class="tasks-layout">
-      <aside class="task-list" aria-label="${esc(t("task.historyAria"))}">
-        <div class="task-list-head">
-          <p class="t-eyebrow result-label">${esc(t("task.history"))}</p>
-          <span class="t-small subtle">${esc(formatTaskCount(props.tasks.length))}</span>
-        </div>
-        <div class="task-list-body">
-          ${renderTaskRows(props.tasks, props.selectedTaskId)}
-        </div>
-      </aside>
-      <section class="task-detail" aria-label="${esc(t("task.selectedAria"))}">
-        ${props.selectedTask ? renderSelectedTask(props.selectedTask) : renderNoTaskSelected()}
-      </section>
-    </div>
-  `;
-}
-
-function renderTaskRows(tasks: AgentTaskView[], selectedTaskId: string | null): string {
-  if (tasks.length === 0) {
+function renderTaskRows(props: SidebarProps): string {
+  if (props.tasks.length === 0) {
     return `<p class="t-small placeholder task-list-empty">${esc(t("task.noTasks"))}</p>`;
   }
-  return [...tasks]
+  return [...props.tasks]
     .sort((a, b) => b.created_at - a.created_at)
     .map((task) => {
-      const active = task.task_id === selectedTaskId ? "task-row-active" : "";
+      const active = !props.composing && task.task_id === props.selectedTaskId ? "task-row-active" : "";
       return `
         <button type="button" class="task-row ${active}" data-task-id="${esc(task.task_id)}">
           <span class="task-row-glyph task-row-glyph-${esc(task.status)}" aria-hidden="true">${taskStatusGlyph(task.status)}</span>
@@ -65,67 +58,95 @@ function renderTaskRows(tasks: AgentTaskView[], selectedTaskId: string | null): 
     .join("");
 }
 
-function renderSelectedTask(task: AgentTaskView): string {
-  const tokenLine = task.input_tokens !== null && task.output_tokens !== null
-    ? ` · ${formatTokenUsage(task.input_tokens, task.output_tokens)}`
+export function renderTaskDetail(task: AgentTaskView | undefined): string {
+  if (!task) return renderEmptyDetail();
+
+  const running = task.status === "running" || task.status === "queued";
+  const hasTimeline = task.events.length > 0 || running;
+  const hasResult = !!task.final_text || !!task.error;
+  const bothPanels = hasTimeline && hasResult;
+
+  let body: string;
+  if (bothPanels) {
+    body = `
+      <div class="detail-split">
+        <div class="detail-col">${renderTimelinePanel(task)}</div>
+        <div class="detail-col">${renderResultPanel(task)}</div>
+      </div>
+    `;
+  } else {
+    body = `
+      <div class="detail-body detail-body--stacked">
+        ${hasTimeline ? renderTimelinePanel(task) : ""}
+        ${hasResult ? renderResultPanel(task) : ""}
+        ${!hasTimeline && !hasResult ? `<p class="t-small placeholder">${esc(t("task.noTimeline"))}</p>` : ""}
+      </div>
+    `;
+  }
+
+  return `${renderDetailHead(task, running)}${body}`;
+}
+
+function renderDetailHead(task: AgentTaskView, running: boolean): string {
+  const time = formatTaskTimestamp(task.started_at ?? task.created_at);
+  const duration = formatDuration(task);
+  const tokens = task.input_tokens !== null && task.output_tokens !== null
+    ? formatTokenUsage(task.input_tokens, task.output_tokens)
     : "";
+  const dotClass = running ? "badge-dot-ink badge-dot-pulse" : "badge-dot-hollow";
+  const items = [
+    `<span class="task-meta-item task-meta-status"><i class="badge-dot ${dotClass}" aria-hidden="true"></i>${esc(taskStatusLabel(task.status))}</span>`,
+    time ? `<span class="task-meta-item">${esc(time)}</span>` : "",
+    duration ? `<span class="task-meta-item">${esc(duration)}</span>` : "",
+    task.model ? `<span class="task-meta-item t-mono">${esc(task.model)}</span>` : "",
+    task.turns !== null && task.turns !== undefined ? `<span class="task-meta-item">${esc(formatTurns(task.turns))}</span>` : "",
+    tokens ? `<span class="task-meta-item">${esc(tokens)}</span>` : "",
+  ].join("");
   return `
     <div class="task-detail-head">
-      <div>
-        <p class="t-eyebrow result-label">${esc(t("task.selected"))}</p>
+      <div class="task-detail-headinfo">
         <h2 class="t-h3 task-detail-title">${esc(task.task)}</h2>
+        <div class="task-detail-meta">${items}</div>
       </div>
-      <div class="task-detail-actions">
-        <span class="badge"><i class="badge-dot ${task.status === "running" ? "badge-dot-ink badge-dot-pulse" : "badge-dot-hollow"}" aria-hidden="true"></i>${esc(taskStatusLabel(task.status))}</span>
-        ${canCancel(task) ? `<button type="button" class="btn-ghost btn-compact" data-cancel-task="${esc(task.task_id)}">${esc(t("task.cancel"))}</button>` : ""}
-      </div>
+      ${running ? `
+        <div class="task-detail-actions">
+          <button type="button" class="btn-ghost btn-compact" data-cancel-task="${esc(task.task_id)}">${esc(t("task.cancel"))}</button>
+        </div>` : ""}
     </div>
-
-    ${renderTaskTimeline(task)}
-
-    ${
-      task.error
-        ? `<pre class="result-pre result-error">${esc(task.error)}</pre>`
-        : ""
-    }
-    ${
-      task.final_text
-        ? `
-          <div class="agent-outcome">
-            <p class="t-eyebrow result-label">${esc(t("task.finalAnswer"))}</p>
-            <div class="result-pre result-md">${renderMarkdown(task.final_text.trim())}</div>
-            <p class="t-small subtle">${esc(t("task.run"))} ${esc(task.run_id ?? task.task_id)}${task.turns !== null ? ` · ${esc(formatTurns(task.turns))}` : ""}${esc(tokenLine)}</p>
-            ${task.run_dir ? `<p class="t-small subtle">run_dir: <span class="t-mono">${esc(task.run_dir)}</span></p>` : ""}
-          </div>`
-        : ""
-    }
   `;
 }
 
-function renderTaskTimeline(task: AgentTaskView): string {
-  if (task.events.length > 0) {
-    return `
-      <div class="result-block">
-        <div class="event-stream" data-agent-events="${esc(task.task_id)}">
-          ${task.events.map(renderAgentEvent).join("")}
-        </div>
-      </div>
-    `;
-  }
-  if (task.status === "running" || task.status === "queued") {
-    return `
-      <div class="result-block">
-        <div class="event-stream" data-agent-events="${esc(task.task_id)}">
-          <p class="t-small placeholder" data-events-placeholder>${esc(t("task.waitingForEvents"))}</p>
-        </div>
-      </div>
-    `;
-  }
-  if (task.final_text) return "";
-  return `<p class="t-small placeholder">${esc(t("task.noTimeline"))}</p>`;
+function renderTimelinePanel(task: AgentTaskView): string {
+  const hasEvents = task.events.length > 0;
+  const rows = hasEvents
+    ? task.events.map(renderAgentEvent).join("")
+    : `<p class="t-small placeholder" data-events-placeholder>${esc(t("task.waitingForEvents"))}</p>`;
+  return `
+    <div class="result-block detail-panel">
+      <p class="t-eyebrow result-label detail-panel-label">${esc(t("task.timeline"))}</p>
+      <div class="event-stream" data-agent-events="${esc(task.task_id)}">${rows}</div>
+    </div>
+  `;
 }
 
-function renderNoTaskSelected(): string {
+function renderResultPanel(task: AgentTaskView): string {
+  if (task.final_text) {
+    return `
+      <div class="agent-outcome detail-panel">
+        <p class="t-eyebrow result-label detail-panel-label">${esc(t("task.finalAnswer"))}</p>
+        <div class="result-pre result-md">${renderMarkdown(task.final_text.trim())}</div>
+      </div>
+    `;
+  }
+  return `
+    <div class="agent-outcome detail-panel">
+      <p class="t-eyebrow result-label detail-panel-label">${esc(t("task.errorLabel"))}</p>
+      <pre class="result-pre result-error">${esc(task.error ?? "")}</pre>
+    </div>
+  `;
+}
+
+function renderEmptyDetail(): string {
   return `
     <div class="task-empty-detail">
       <p class="t-eyebrow result-label">${esc(t("task.selected"))}</p>
@@ -137,6 +158,18 @@ function renderNoTaskSelected(): string {
 export function renderAgentEvent(ev: AgentTaskEventPayload): string {
   const glyph = eventGlyph(ev.kind);
   return `<div class="event event-${ev.kind}"><span class="event-glyph">${glyph}</span><span class="event-text">${esc(ev.text)}</span></div>`;
+}
+
+// Elapsed run time: started→finished, or started→now while still running.
+function formatDuration(task: AgentTaskView): string | null {
+  if (!task.started_at) return null;
+  const end = task.finished_at ?? Date.now();
+  const seconds = Math.max(0, Math.round((end - task.started_at) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
 function eventGlyph(kind: AgentTaskEventPayload["kind"]): string {
@@ -169,8 +202,4 @@ function taskStatusGlyph(status: AgentTaskView["status"]): string {
     case "cancelled": return "−";
     case "interrupted": return "!";
   }
-}
-
-function canCancel(task: AgentTaskView): boolean {
-  return task.status === "queued" || task.status === "running";
 }

@@ -121,16 +121,18 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex: 1;
   display: flex;
   flex-direction: column;
-  /* min-height:0 (not 100vh) so this column can constrain its children to the
-     window height — the prerequisite for the content region scrolling inside
-     instead of growing the document. */
+  /* The window frame is a row: full-height sidebar (left) + main column (right).
+     min-height/​min-width:0 let both columns constrain their children to the
+     window size so content scrolls inside instead of forcing the shell wider
+     than the viewport (which would clip the right-edge topbar controls). */
   min-height: 0;
+  min-width: 0;
 }
 .topbar {
   display: flex;
   align-items: center;
-  gap: var(--sp-4);
-  padding: var(--sp-3) var(--sp-5);
+  gap: 0;
+  padding: 0;
   border-bottom: var(--hairline);
   background: var(--surface);
   /* Fixed top of the non-scrolling shell column — it can't shrink or grow, and
@@ -150,20 +152,18 @@ body.has-paper > * { position: relative; z-index: 1; }
   -webkit-user-select: none;
   user-select: none;
 }
-/* macOS overlay titlebar — the OS keeps the native traffic lights (repositioned
-   onto our centerline in lib.rs), and the header reserves a fixed px gutter so
-   header content clears the lights. The 52px band is paired with the native
-   y=28 inset so the light cluster centers at ~26px = this band's center. */
-.is-macos .topbar {
-  padding-left: 80px;          /* clears the 3 traffic-light buttons */
-  min-height: 52px;            /* keep in sync with TRAFFIC_LIGHT_POS.y in lib.rs */
-  padding-top: 0;
-  padding-bottom: 0;
+/* macOS overlay titlebar — the OS draws the native traffic lights over the
+   top-left of the window, which is the left edge of .topbar-left. Reserve a
+   fixed gutter INSIDE that 280px zone (not on .topbar) so the zone's right edge
+   still lines up with the sidebar border below it. The 80px clears the three
+   lights; keep it in sync with TRAFFIC_LIGHT_POS in lib.rs. */
+.is-macos .topbar-left {
+  padding-left: 92px;          /* clears the 3 traffic-light buttons + breathing room before the toggle */
 }
 /* Fullscreen hides the OS traffic lights, so reclaim the gutter. Toggled via
    body.is-fullscreen in main.ts. */
-.is-macos.is-fullscreen .topbar {
-  padding-left: var(--sp-5);
+.is-macos.is-fullscreen .topbar-left {
+  padding-left: var(--sp-4);
 }
 .topbar-controls {
   margin-left: auto;
@@ -178,12 +178,20 @@ body.has-paper > * { position: relative; z-index: 1; }
 .status-capsule {
   display: inline-flex;
   align-items: stretch;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   border: var(--hairline);
   border-radius: var(--r-pill);
   background: var(--surface);
   transition: border-color var(--t-fast) var(--ease);
 }
+/* Keep the gear + update chip fixed; let the (verbose) model badge truncate
+   first when the topbar is tight, so nothing ever clips off the right edge. */
+.topbar-controls { min-width: 0; padding-right: var(--sp-5); }
+.status-capsule .connection-status { flex: 0 0 auto; }
+.status-capsule .agent-status { flex: 0 1 auto; min-width: 0; }
+.status-capsule .agent-status .badge { min-width: 0; }
+.badge-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .status-capsule:hover { border-color: var(--line-strong); }
 .status-capsule .connection-status,
 .status-capsule .agent-status { position: relative; display: inline-flex; gap: 0; }
@@ -223,6 +231,7 @@ body.has-paper > * { position: relative; z-index: 1; }
   letter-spacing: 0.02em;
   cursor: pointer;
   position: relative;
+  white-space: nowrap;
   transition: opacity var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
 }
 .update-chip:hover { opacity: 0.82; }
@@ -577,45 +586,121 @@ body.has-paper > * { position: relative; z-index: 1; }
 .agent-provider-option.is-active .agent-model-name,
 .agent-model-option.is-active .agent-model-name { font-weight: 600; }
 
-/* ── Stacked sections ──────────────────────────────────────────── */
-.stack {
+/* ── Window frame: persistent full-width topbar, then a body row ────
+   The topbar pins the traffic lights + update chip + sidebar toggle at the
+   top-left and never moves them; below it the body holds the full-height
+   sidebar (left) and the content pane (right). */
+.body {
   flex: 1;
-  min-height: 0;             /* fill the window height and let children scroll */
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-  padding: var(--sp-4) var(--sp-5);
-  max-width: 1080px;
-  width: 100%;
-  align-self: center;
-}
-.section {
-  flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
+  align-items: stretch;
 }
-.section-label {
-  margin: 0 0 var(--sp-1) 0;
-}
-
-/* ── Forms (rows shared by all panels) ─────────────────────────── */
-.row-form {
+.shell > .topbar { min-height: 52px; }
+/* Persistent top-left zone, the width of the sidebar so its right edge (and
+   the sidebar toggle pinned there) lines up with the sidebar's border below.
+   Traffic lights sit flush left; the toggle is pushed to the right edge. */
+.topbar-left {
+  flex: 0 0 280px;
+  width: 280px;
+  align-self: stretch;
   display: flex;
-  gap: var(--sp-2);
   align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-2) 0 var(--sp-4);
 }
-.row-form .input-field { flex: 1; }
+.topbar-left--bordered { border-right: var(--hairline); }
+.sidebar {
+  flex: 0 0 280px;
+  width: 280px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: var(--hairline);
+  background: var(--surface);
+}
+.sidebar-head {
+  flex: 0 0 auto;
+  padding: var(--sp-3);
+}
+.sidebar-new {
+  appearance: none;
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: var(--hairline);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.sidebar-new:hover { background: var(--ink-7); border-color: var(--line-strong); }
+.sidebar-new:active { background: var(--ink-6); }
+.sidebar-new-glyph { font-size: 14px; line-height: 1; color: var(--fg-soft); }
+.sidebar-list-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+}
+.sidebar-list-head .result-label { margin: 0; }
+.sidebar-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
 
-/* Universal task entrance. */
-.task-interface {
+.workspace-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* The detail pane is now the main content area: drop the card chrome and let
+   it fill, with generous padding. The inner panels keep their own boxes. */
+.workspace-main > .task-detail {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: var(--sp-5);
+}
+/* Compose view: hero + form, centered in the main pane on a comfortable measure. */
+.compose-pane {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
+  justify-content: center;
+  justify-content: safe center;
+  align-items: center;
+  overflow-y: auto;
+  padding: var(--sp-6) var(--sp-5);
 }
+.compose-pane .new-task-compose { width: min(100%, 760px); padding: 0; }
+
+@media (max-width: 760px) {
+  .sidebar, .topbar-left { flex-basis: 220px; width: 220px; }
+  .workspace-main > .task-detail { padding: var(--sp-4); }
+}
+
+/* ── Compose form ──────────────────────────────────────────────── */
 .task-form {
   display: flex;
   flex-direction: column;
@@ -653,50 +738,6 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .task-context { flex: 1; }
 
-.page-switch {
-  flex: 0 0 auto;
-  align-self: center;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: var(--hairline);
-  border-radius: var(--r-pill);
-  background: var(--surface);
-}
-.page-switch-button {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  border-radius: var(--r-pill);
-  color: var(--fg-soft);
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
-  letter-spacing: 0.02em;
-  padding: 7px 12px;
-  white-space: nowrap;
-}
-.page-switch-button-active {
-  background: var(--ink-0);
-  color: var(--ink-9);
-}
-.new-task-page {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  /* Center the compose/glance when they fit; `safe` falls back to top-aligned
-     when the window is too short, and overflow-y keeps any spill inside this
-     region rather than scrolling the document. The plain `center` below is a
-     fallback: an engine that lacks the `safe` keyword discards that line as
-     invalid and keeps this one, so centering still works when content fits. */
-  justify-content: center;
-  justify-content: safe center;
-  overflow-y: auto;
-  gap: var(--sp-5);
-}
 .new-task-compose {
   width: min(100%, 840px);
   align-self: center;
@@ -715,109 +756,6 @@ body.has-paper > * { position: relative; z-index: 1; }
 .new-task-copy p,
 .new-task-copy h2 { margin: 0; }
 .task-form-centered .task-input { min-height: 172px; }
-.task-glance {
-  width: min(100%, 840px);
-  align-self: center;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--sp-5);
-  padding-top: var(--sp-1);
-}
-.task-glance-card {
-  min-width: 0;
-}
-.task-glance-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-2);
-}
-.task-glance-head .result-label { margin: 0; }
-.task-summary-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-.task-summary-row {
-  appearance: none;
-  display: grid;
-  grid-template-columns: 14px 1fr;
-  gap: var(--sp-2);
-  width: 100%;
-  padding: 2px 0;
-  border: 0;
-  background: transparent;
-  color: var(--fg);
-  text-align: left;
-  cursor: pointer;
-}
-.task-summary-row:hover .task-row-title { text-decoration: underline; }
-.task-summary-row .task-row-title {
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-.task-summary-row .task-row-meta { font-size: 10px; }
-.task-summary-empty { color: var(--fg-faint); }
-.history-page {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-.history-page-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  padding-bottom: var(--sp-1);
-}
-.history-page-head .result-label { margin: 0 0 var(--sp-2) 0; }
-
-/* Task history layout. Fills the content region; the single grid row is 1fr of
-   that fixed height so both columns get a definite height to scroll within. */
-.tasks-layout {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(220px, 0.36fr) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: var(--sp-3);
-  align-items: stretch;
-}
-.task-list,
-.task-detail {
-  min-width: 0;
-  min-height: 0;             /* allow the columns to be constrained + scroll */
-  border: var(--hairline);
-  border-radius: var(--r-4);
-  background: var(--surface);
-}
-.task-list {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.task-list-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-  padding: var(--sp-3);
-  border-bottom: var(--hairline);
-  background: var(--canvas);
-}
-.task-list-head .result-label { margin: 0; }
-.task-list-body {
-  flex: 1;
-  min-height: 0;             /* fill the column and scroll internally (was max-height:520px) */
-  display: flex;
-  flex-direction: column;
-  overflow: auto;
-}
 .task-list-empty { padding: var(--sp-3); }
 .task-row {
   appearance: none;
@@ -866,16 +804,17 @@ body.has-paper > * { position: relative; z-index: 1; }
   color: var(--fg-soft);
 }
 .task-detail {
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-3);
   /* The detail's height is owned by its flex children (logs + answer each
-     scroll). `auto` is a safety net only: in the normal case the flex-basis:0
-     children fill exactly and this never scrolls; it engages just for odd
-     states like a failed task with a very long error block, scrolling the pane
-     instead of clipping. */
-  overflow-y: auto;
+     scroll). With the split layout the inner panels own scrolling, so the pane
+     itself never scrolls; overflow:hidden keeps any odd overflow (e.g. a failed
+     task with a very long error block) inside the pane instead of clipping. */
+  overflow: hidden;
 }
 .task-detail-head {
   flex: 0 0 auto;
@@ -892,7 +831,29 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .task-detail-head .result-label,
 .task-detail-title { margin: 0; }
-.task-detail-title { margin-top: var(--sp-2); }
+.task-detail-headinfo {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.task-detail-meta {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 4px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--fg-soft);
+}
+.task-meta-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.task-meta-item:not(:last-child)::after {
+  content: "·";
+  color: var(--fg-faint);
+  margin: 0 8px;
+}
+.task-meta-status { color: var(--fg-muted); }
 .task-empty-detail {
   flex: 1;
   display: flex;
@@ -905,10 +866,45 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .task-empty-detail .result-label { margin: 0; }
 
-@media (max-width: 760px) {
-  .task-glance,
-  .tasks-layout { grid-template-columns: 1fr; }
-  .task-list-body { max-height: 240px; }
+/* ── Task detail: timeline + result alignment ─────────────────────
+   Two arrangements share one detail pane (see TaskDetail):
+   · split   — timeline ‖ result, each gets the FULL pane height (default)
+   · stacked — a vertical stack, used when only one panel is present
+               (a running task with no answer yet, or an error-only failure)
+               and as the narrow-window fold of split.
+   The detail head stays pinned; .detail-body / .detail-split fill below it. */
+.detail-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+/* stacked: panels share the column; the answer is weighted slightly larger */
+.detail-body--stacked .result-block { flex: 1 1 0; min-height: 96px; }
+.detail-body--stacked .agent-outcome { flex: 1.35 1 0; min-height: 120px; margin-top: 0; }
+
+/* split: two equal columns, each a self-scrolling panel */
+.detail-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: var(--sp-4);
+}
+.detail-col {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.detail-col > .detail-panel { flex: 1 1 0; min-height: 0; margin-top: 0; }
+.detail-panel-label { margin: 0; }
+
+/* narrow windows: fold the split back into a stack so neither panel is starved */
+@media (max-width: 900px) {
+  .detail-split { flex-direction: column; }
+  .detail-col { flex: 1 1 auto; min-height: 160px; }
 }
 
 /* ── Result + event stream ─────────────────────────────────────── */
@@ -1194,45 +1190,7 @@ code {
   cursor: not-allowed;
 }
 
-/* ── Running-tasks chip (appears on new-task page when any task runs) ── */
-.running-chip {
-  align-self: center;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  max-width: min(100%, 720px);
-  padding: 7px var(--sp-3);
-  border: var(--hairline);
-  border-radius: var(--r-pill);
-  background: var(--surface);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  color: var(--ink-1);
-  cursor: pointer;
-  transition: border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
-}
-.running-chip:hover { border-color: var(--line-strong); }
-.running-chip:active { transform: scale(0.98); }
-.running-chip-count {
-  font-weight: 500;
-  white-space: nowrap;
-}
-.running-chip-dot { color: var(--fg-soft); }
-.running-chip-task {
-  color: var(--fg-muted);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.running-chip-arrow {
-  color: var(--fg-soft);
-  font-family: var(--font-mono);
-}
-.running-chip:hover .running-chip-arrow { color: var(--ink-0); }
-
-/* ── Connect overlay (shown on disconnected/connecting new-task) ──── */
+/* ── Connect overlay (shown on disconnected/connecting compose) ──── */
 .compose-form-stack {
   position: relative;
   display: flex;
@@ -1297,14 +1255,6 @@ code {
   padding: 9px var(--sp-4);
   font-size: 13px;
   text-align: center;
-}
-.connect-overlay-input {
-  align-self: stretch;
-  font-family: var(--font-mono);
-}
-.connect-overlay-error {
-  margin: 0;
-  align-self: stretch;
 }
 .connect-overlay-link {
   margin: 0;
