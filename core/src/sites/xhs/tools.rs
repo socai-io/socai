@@ -674,6 +674,11 @@ async fn scan_card_note(
     include_media: bool,
     download_media: bool,
     ocr: bool,
+    // When true, images are downloaded inline but OCR is left to the caller (run
+    // in a background task so it overlaps the next note's read+download). The
+    // dedup check still uses the real `ocr` flag, so a cache hit returns the
+    // already-OCR'd entity and needs no background work.
+    defer_ocr: bool,
 ) -> Value {
     let requested_media = include_media;
 
@@ -705,7 +710,9 @@ async fn scan_card_note(
                 level: level.to_string(),
                 include_media,
                 download_media,
-                ocr,
+                // Inline OCR only when not deferred; otherwise just download and
+                // let the caller OCR in the background.
+                ocr: ocr && !defer_ocr,
                 // Pure downloads are cheap compared with OCR/vision, so allow
                 // full XHS carousels instead of the enrichment-oriented default.
                 max_images: if download_media { 100 } else { 12 },
@@ -776,10 +783,11 @@ async fn scan_card_note(
         }
     }
 
-    // Collapse the per-image ocr_text fields into a single note-level `ocr_text`
+    // Collapse the per-image ocr_text fields into a note-level `ocr_text` array
     // so the lean output (which drops the images array) still carries the OCR
-    // signal; the per-image texts stay in the full artifact.
-    if ocr {
+    // signal. Only when OCR ran inline here; the deferred path attaches this
+    // after the background OCR completes.
+    if ocr && !defer_ocr {
         if let Some(entity) = entry.get_mut("entity") {
             attach_note_ocr_summary(entity);
         }
@@ -796,6 +804,84 @@ async fn scan_card_note(
     }
 
     entry
+}
+
+/// Max note OCR tasks in flight at once. The OCR engine serializes inference
+/// behind its own mutex, so this mainly bounds decoded-image memory and blocking
+/// threads while still letting OCR overlap the browse loop.
+const OCR_PIPELINE_CONCURRENCY: usize = 4;
+
+/// Spawn a background task that OCRs a freshly-read note's already-downloaded
+/// images, returning the enriched image array. `None` when there's nothing to
+/// OCR (no media processor, or no image has a `local_path` yet). Runs
+/// concurrently with the browse loop so OCR of note N overlaps the read +
+/// download of note N+1.
+fn spawn_note_ocr(
+    media: &Option<MediaProcessor>,
+    sem: &Arc<tokio::sync::Semaphore>,
+    entry: &Value,
+) -> Option<tokio::task::JoinHandle<Vec<Value>>> {
+    // Only fresh successful reads (they carry `ok`); cache hits carry `skipped`
+    // and already have their ocr_text.
+    if entry.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let images = entry
+        .get("entity")
+        .and_then(|entity| entity.get("images"))
+        .and_then(Value::as_array)
+        .cloned()?;
+    let has_local = images.iter().any(|image| {
+        image
+            .get("local_path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| !path.is_empty())
+    });
+    if !has_local {
+        return None;
+    }
+    let media = media.clone()?;
+    let sem = sem.clone();
+    let mut images = images;
+    Some(tokio::spawn(async move {
+        let _permit = sem.acquire_owned().await;
+        media.ocr_downloaded_images(&mut images).await;
+        images
+    }))
+}
+
+/// Await the background OCR tasks and merge each result back into its note:
+/// replace the note's images with the OCR'd ones, attach the note-level
+/// `ocr_text` array, and re-record the now-OCR'd entity in history (so a repeat
+/// run finds the OCR in cache). Order-independent — each task is keyed by note
+/// index.
+async fn join_note_ocr(
+    notes: &mut [Value],
+    pending: Vec<(usize, tokio::task::JoinHandle<Vec<Value>>)>,
+    history: &XhsHistoryStore,
+    level: &str,
+    include_media: bool,
+) {
+    for (idx, handle) in pending {
+        let Ok(images) = handle.await else {
+            continue;
+        };
+        let Some(note) = notes.get_mut(idx) else {
+            continue;
+        };
+        if let Some(entity) = note.get_mut("entity").and_then(Value::as_object_mut) {
+            entity.insert("image_count".into(), json!(images.len()));
+            entity.insert("images".into(), Value::Array(images));
+        }
+        if let Some(entity) = note.get_mut("entity") {
+            attach_note_ocr_summary(entity);
+        }
+        if note.get("ok").and_then(Value::as_bool) == Some(true) {
+            if let Some(entity) = note.get("entity") {
+                history.record(entity, level, include_media);
+            }
+        }
+    }
 }
 
 /// Trim a search / author_scan bundle to the shape we hand back to the
@@ -1756,6 +1842,10 @@ impl Tool for SearchTool {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut cursor = 0usize;
         let mut stalls = 0usize;
+        // OCR runs in the background so it overlaps the next note's read +
+        // download; tasks are joined after the browse loop.
+        let ocr_sem = Arc::new(tokio::sync::Semaphore::new(OCR_PIPELINE_CONCURRENCY));
+        let mut pending_ocr: Vec<(usize, tokio::task::JoinHandle<Vec<Value>>)> = Vec::new();
 
         while notes.len() < want {
             let cards = xhs.extract_search_cards().await?;
@@ -1795,11 +1885,23 @@ impl Tool for SearchTool {
                 include_media,
                 download_media,
                 ocr,
+                // Defer OCR to a background task when OCR is on, so the loop can
+                // move on to the next note's read + download immediately.
+                ocr,
             )
             .await;
             notes.push(entry);
+            let idx = notes.len() - 1;
+            if ocr {
+                if let Some(handle) = spawn_note_ocr(&media, &ocr_sem, &notes[idx]) {
+                    pending_ocr.push((idx, handle));
+                }
+            }
             let _ = xhs.close_note(0.6).await;
         }
+
+        // Join background OCR and merge results back into the notes in place.
+        join_note_ocr(&mut notes, pending_ocr, &self.history, level, include_media).await;
 
         let media_timing = match (&media, &media_baseline) {
             (Some(media), Some(before)) => timing_delta(before, &media.timing().snapshot()),
@@ -2067,6 +2169,10 @@ impl Tool for AuthorScanTool {
         // `preview` returns the cards only and skips this.
         let mut notes: Vec<Value> = Vec::new();
         if !preview {
+            // OCR runs in the background so it overlaps the next note's read +
+            // download; tasks are joined after the loop.
+            let ocr_sem = Arc::new(tokio::sync::Semaphore::new(OCR_PIPELINE_CONCURRENCY));
+            let mut pending_ocr: Vec<(usize, tokio::task::JoinHandle<Vec<Value>>)> = Vec::new();
             for card in &cards {
                 if !card.note_id.is_empty() {
                     ctx.add_search_note_ids(std::slice::from_ref(&card.note_id));
@@ -2081,11 +2187,19 @@ impl Tool for AuthorScanTool {
                     false,
                     download_media,
                     ocr,
+                    ocr,
                 )
                 .await;
                 notes.push(entry);
+                let idx = notes.len() - 1;
+                if ocr {
+                    if let Some(handle) = spawn_note_ocr(&media, &ocr_sem, &notes[idx]) {
+                        pending_ocr.push((idx, handle));
+                    }
+                }
                 let _ = xhs.close_note(0.6).await;
             }
+            join_note_ocr(&mut notes, pending_ocr, &self.history, "deep", false).await;
         } else if ocr {
             // Preview + OCR: read each note card's cover image (fetched to
             // memory, not saved), mirroring the search preview path.
