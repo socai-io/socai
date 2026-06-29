@@ -676,20 +676,17 @@ async fn scan_card_note(
     ocr: bool,
 ) -> Value {
     let requested_media = include_media;
-    let can_use_cached_reads = !download_media;
 
-    // Dedup: skip notes already processed at this level or deeper within the
-    // same run OR in a previous run (cross-run history). Media downloads are
-    // never cache-skipped: the caller expects fresh files under the run_dir.
-    if can_use_cached_reads
-        && !card.note_id.is_empty()
-        && ctx.has_processed_note(&card.note_id, level, requested_media)
-    {
+    // Dedup applies to every read, including download/OCR runs: if a prior run
+    // already covers this note at the requested level + enrichments (vision,
+    // downloaded media, OCR), reuse the cached entity instead of re-opening,
+    // re-downloading, and re-OCR'ing it. The cached entity carries its prior
+    // ocr_text / local_path, so the reuse is complete.
+    if !card.note_id.is_empty() && ctx.has_processed_note(&card.note_id, level, requested_media) {
         return skipped_note_entry(card, "already_processed", history);
     }
-    if can_use_cached_reads
-        && !card.note_id.is_empty()
-        && history.is_satisfied_by(&card.note_id, level, requested_media)
+    if !card.note_id.is_empty()
+        && history.is_satisfied_by(&card.note_id, level, requested_media, download_media, ocr)
         // Only short-circuit when we actually have the cached entity to return;
         // a pre-upgrade entry without one is re-read so it backfills the cache
         // instead of degrading to a bare card.
@@ -1133,15 +1130,17 @@ impl Tool for ReadNoteTool {
         let options = read_note_options(&input);
 
         // Cross-run dedup: short-circuit when a previous run already covers
-        // this note at the requested level + media. Only fires when note_id
-        // is known up front. Downloads are intentionally never skipped because
-        // the caller expects fresh local files in the current run dir.
+        // this note at the requested level + enrichments (vision, downloaded
+        // media, OCR). Only fires when note_id is known up front; the cached
+        // entity already carries any prior local_path / ocr_text.
         if let Some(id) = note_id.as_deref().filter(|s| !s.trim().is_empty()) {
-            if !options.download_media
-                && self
-                    .history
-                    .is_satisfied_by(id, &options.level, options.include_media)
-            {
+            if self.history.is_satisfied_by(
+                id,
+                &options.level,
+                options.include_media,
+                options.download_media,
+                options.ocr,
+            ) {
                 let entry = self.history.get(id).unwrap_or_default();
                 return Ok(json_result(&json!({
                     "ok": true,

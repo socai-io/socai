@@ -7,9 +7,7 @@ use base64::Engine;
 use futures::StreamExt;
 use serde_json::Value;
 
-use crate::media::common::{
-    detect_media_type, insert_string, insert_value, short, url_suffix, MediaUnavailable,
-};
+use crate::media::common::{detect_media_type, insert_string, short, url_suffix, MediaUnavailable};
 use crate::media::md5;
 use crate::media::processor::MediaProcessor;
 
@@ -37,15 +35,15 @@ impl MediaProcessor {
         }
         let mut results = crate::media::ocr::ocr_images_bytes(vec![(0, payload.to_vec())]);
         match results.pop() {
-            Some((_, Ok(outcome))) => Ok(outcome.text),
+            Some((_, Ok(text))) => Ok(text),
             Some((_, Err(err))) => Err(anyhow::anyhow!(err)),
             None => Ok(String::new()),
         }
     }
 
     /// OCR the already-downloaded images of a note in place: for each image with
-    /// a `local_path`, read the file, run PP-OCRv6, and attach `ocr_text` and
-    /// `ocr_ms` (or `ocr_error`). Runs the CPU-bound inference on a blocking
+    /// a `local_path`, read the file, run PP-OCRv6 (batched), and attach
+    /// `ocr_text` (or `ocr_error`). Runs the CPU-bound inference on a blocking
     /// thread. No-op when OCR is disabled or no image has a local path.
     pub async fn ocr_downloaded_images(&self, images: &mut [Value]) {
         if !self.config.use_ocr || images.is_empty() {
@@ -85,12 +83,10 @@ impl MediaProcessor {
                 continue;
             };
             match result {
-                Ok(outcome) => {
-                    insert_value(item, "ocr_ms", Value::from(outcome.elapsed_ms as u64));
-                    if !outcome.text.trim().is_empty() {
-                        insert_string(item, "ocr_text", short(&outcome.text, 1200));
-                    }
+                Ok(text) if !text.trim().is_empty() => {
+                    insert_string(item, "ocr_text", short(&text, 1200));
                 }
+                Ok(_) => {}
                 Err(err) => insert_string(item, "ocr_error", err),
             }
         }
@@ -99,8 +95,8 @@ impl MediaProcessor {
     /// OCR card cover images *without persisting them* — used by the cards-only
     /// preview path so a search-results scan reads each cover like a human
     /// glancing at the page. Downloads each `cover_url` to memory, OCRs it, and
-    /// attaches `ocr_text` / `ocr_ms` (or `ocr_error`) to the card in place; the
-    /// downloaded bytes are dropped (nothing written to the run dir).
+    /// attaches `ocr_text` (or `ocr_error`) to the card in place; the downloaded
+    /// bytes are dropped (nothing written to the run dir).
     pub async fn ocr_cover_images(&self, cards: &mut [Value], referer: &str) {
         if !self.config.use_ocr || cards.is_empty() {
             return;
@@ -155,12 +151,10 @@ impl MediaProcessor {
                 continue;
             };
             match result {
-                Ok(outcome) => {
-                    insert_value(card, "ocr_ms", Value::from(outcome.elapsed_ms as u64));
-                    if !outcome.text.trim().is_empty() {
-                        insert_string(card, "ocr_text", short(&outcome.text, 1200));
-                    }
+                Ok(text) if !text.trim().is_empty() => {
+                    insert_string(card, "ocr_text", short(&text, 1200));
                 }
+                Ok(_) => {}
                 Err(err) => insert_string(card, "ocr_error", err),
             }
         }

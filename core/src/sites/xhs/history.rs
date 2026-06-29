@@ -33,9 +33,16 @@ pub struct HistoryEntry {
     /// Deepest level ever recorded: "card" | "lite" | "deep".
     #[serde(default)]
     pub level: String,
-    /// True once any past read had media enabled.
+    /// True once any past read had media (vision) enabled.
     #[serde(default)]
     pub include_media: bool,
+    /// True once any past read downloaded the note's media (images/video carry
+    /// a `local_path`).
+    #[serde(default)]
+    pub downloaded: bool,
+    /// True once any past read ran OCR (the entity carries `ocr_text`).
+    #[serde(default)]
+    pub ocr: bool,
     #[serde(default)]
     pub analysis_count: u32,
     #[serde(default)]
@@ -113,10 +120,19 @@ impl XhsHistoryStore {
             .is_some_and(|entry| entry.entity.is_some())
     }
 
-    /// True when a prior analysis already covers what's being requested:
-    /// recorded level is >= requested AND, if media was requested, media
-    /// was included previously.
-    pub fn is_satisfied_by(&self, note_id: &str, level: &str, include_media: bool) -> bool {
+    /// True when a prior analysis already covers what's being requested: recorded
+    /// level is >= requested AND every requested enrichment (vision, downloaded
+    /// media, OCR) was present in a prior read. This is what lets a repeated
+    /// search/scan reuse the cached entity instead of re-opening, re-downloading,
+    /// and re-OCR'ing the same note.
+    pub fn is_satisfied_by(
+        &self,
+        note_id: &str,
+        level: &str,
+        include_media: bool,
+        download_media: bool,
+        ocr: bool,
+    ) -> bool {
         let Some(prev) = self.get(note_id) else {
             return false;
         };
@@ -124,6 +140,12 @@ impl XhsHistoryStore {
             return false;
         }
         if include_media && !prev.include_media {
+            return false;
+        }
+        if download_media && !prev.downloaded {
+            return false;
+        }
+        if ocr && !prev.ocr {
             return false;
         }
         true
@@ -196,6 +218,15 @@ impl XhsHistoryStore {
             if include_media {
                 entry.include_media = true;
             }
+            // Infer the downloaded/OCR flags from the entity itself so a reused
+            // note is only short-circuited when the cache actually covers what a
+            // later run asks for.
+            if entity_has_downloaded(entity) {
+                entry.downloaded = true;
+            }
+            if entity_has_ocr(entity) {
+                entry.ocr = true;
+            }
             // Cache the full entity so a later reuse returns complete data.
             entry.entity = Some(entity.clone());
             entry.analysis_count = entry.analysis_count.saturating_add(1);
@@ -259,6 +290,46 @@ fn string_field(value: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+/// True when the entity carries OCR output: a non-empty note-level `ocr_text`
+/// array, or any image with a non-empty per-image `ocr_text`.
+fn entity_has_ocr(entity: &Value) -> bool {
+    let note_level = entity
+        .get("ocr_text")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| {
+            arr.iter()
+                .any(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
+        });
+    if note_level {
+        return true;
+    }
+    entity
+        .get("images")
+        .and_then(Value::as_array)
+        .is_some_and(|imgs| {
+            imgs.iter().any(|im| {
+                im.get("ocr_text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty())
+            })
+        })
+}
+
+/// True when the entity's media was downloaded to disk (an image or the video
+/// carries a non-empty `local_path`).
+fn entity_has_downloaded(entity: &Value) -> bool {
+    let has_local = |v: &Value| {
+        v.get("local_path")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty())
+    };
+    let image_local = entity
+        .get("images")
+        .and_then(Value::as_array)
+        .is_some_and(|imgs| imgs.iter().any(has_local));
+    image_local || entity.get("video").is_some_and(has_local)
 }
 
 fn load_file(path: &Path) -> Option<HistoryFile> {
@@ -325,11 +396,34 @@ mod tests {
         let store = XhsHistoryStore::open(dir.path().join("h.json"));
         store.record(&json!({"note_id": "n1"}), "lite", false);
 
-        assert!(store.is_satisfied_by("n1", "card", false));
-        assert!(store.is_satisfied_by("n1", "lite", false));
-        assert!(!store.is_satisfied_by("n1", "deep", false));
-        assert!(!store.is_satisfied_by("n1", "lite", true));
-        assert!(!store.is_satisfied_by("unknown", "card", false));
+        assert!(store.is_satisfied_by("n1", "card", false, false, false));
+        assert!(store.is_satisfied_by("n1", "lite", false, false, false));
+        assert!(!store.is_satisfied_by("n1", "deep", false, false, false));
+        assert!(!store.is_satisfied_by("n1", "lite", true, false, false));
+        assert!(!store.is_satisfied_by("unknown", "card", false, false, false));
+        // download / ocr dimensions: a plain read doesn't satisfy them.
+        assert!(!store.is_satisfied_by("n1", "lite", false, true, false));
+        assert!(!store.is_satisfied_by("n1", "lite", false, false, true));
+    }
+
+    #[test]
+    fn satisfied_tracks_downloaded_and_ocr_from_entity() {
+        let dir = tempdir().unwrap();
+        let store = XhsHistoryStore::open(dir.path().join("h.json"));
+        store.record(
+            &json!({
+                "note_id": "n2",
+                "ocr_text": ["cover text", ""],
+                "images": [{"url": "u", "local_path": "/tmp/x.jpg", "ocr_text": "cover text"}],
+            }),
+            "deep",
+            false,
+        );
+
+        assert!(store.is_satisfied_by("n2", "deep", false, true, true));
+        let entry = store.get("n2").unwrap();
+        assert!(entry.downloaded);
+        assert!(entry.ocr);
     }
 
     #[test]
