@@ -4,8 +4,11 @@
 //! filling the pane. When only one panel has content — a running task with no
 //! answer yet, or a failed task that produced only an error — it falls back to a
 //! single stacked panel. (Narrow windows fold split into a stack via CSS.)
+//!
+//! Below the body, a full-width filmstrip shows the notes the agent saw.
 
-import type { AgentTaskEventPayload } from "../main";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import type { AgentTaskEventPayload, NoteMediaAsset, NoteRecord } from "../main";
 import { esc } from "../lib/html";
 import { renderMarkdown } from "../lib/markdown";
 import { formatTaskCount, formatTaskTimestamp, formatTokenUsage, formatTurns, taskStatusLabel, t } from "../lib/i18n";
@@ -84,7 +87,7 @@ export function renderTaskDetail(task: AgentTaskView | undefined): string {
     `;
   }
 
-  return `${renderDetailHead(task, running)}${body}`;
+  return `${renderDetailHead(task, running)}${body}${renderNotesSection(task)}`;
 }
 
 function renderDetailHead(task: AgentTaskView, running: boolean): string {
@@ -153,6 +156,111 @@ function renderEmptyDetail(): string {
       <p class="t-small placeholder">${esc(t("task.emptyDetail"))}</p>
     </div>
   `;
+}
+
+// ── Embedded note cards ───────────────────────────────────────────────────
+// The notes the agent saw this run, rendered from the local archive
+// (`agent_task_notes`). Media is served from disk via the Tauri asset protocol
+// (convertFileSrc), so images and video play locally without re-fetching.
+
+function renderNotesSection(task: AgentTaskView): string {
+  const notes = task.notes ?? [];
+  if (notes.length === 0) return "";
+  return `
+    <section class="note-rail-wrap" aria-label="${esc(t("note.seen"))}">
+      <p class="t-eyebrow result-label">${esc(t("note.seen"))} · ${notes.length}</p>
+      <div class="note-rail">
+        ${notes.map(renderNoteCard).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderNoteCard(note: NoteRecord): string {
+  const title = (note.title ?? "").trim();
+  const author = (note.author ?? "").trim();
+  const content = (note.content ?? "").trim();
+  const stats = noteStatsLine(note);
+  const url = (note.url ?? "").trim();
+  const tags = (note.hashtags ?? []).filter((tag) => tag.trim()).slice(0, 4);
+  return `
+    <article class="note-card">
+      ${renderNoteMedia(note)}
+      <div class="note-card-body">
+        ${title ? `<p class="note-card-title">${esc(title)}</p>` : ""}
+        ${author ? `<p class="note-card-author t-small subtle">${esc(author)}</p>` : ""}
+        ${stats ? `<p class="note-card-stats t-small subtle">${esc(stats)}</p>` : ""}
+        ${content ? `<p class="note-card-content t-small">${esc(content)}</p>` : ""}
+        ${tags.length ? `<div class="note-card-tags">${tags.map((tag) => `<span class="note-card-tag">${esc(formatTag(tag))}</span>`).join("")}</div>` : ""}
+        ${url ? `<button type="button" class="note-card-open" data-open-note-url="${esc(url)}">${esc(t("note.openOriginal"))}</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderNoteMedia(note: NoteRecord): string {
+  const media = note.media ?? [];
+  if (note.type === "video") {
+    const video = pickDownloadedAsset(media, "video");
+    const poster = pickDownloadedAsset(media, "video_poster");
+    const posterSrc = poster?.local_path ? convertFileSrc(poster.local_path) : "";
+    if (video?.local_path) {
+      return `
+        <div class="note-card-media note-card-media-video">
+          <video class="note-card-asset" controls preload="metadata"${posterSrc ? ` poster="${esc(posterSrc)}"` : ""} src="${esc(convertFileSrc(video.local_path))}"></video>
+        </div>`;
+    }
+    // Video not downloadable (e.g. a blob: URL): show the poster if we have it,
+    // flagged, rather than a broken player.
+    if (posterSrc) {
+      return `
+        <div class="note-card-media note-card-media-video">
+          <img class="note-card-asset" src="${esc(posterSrc)}" alt="" loading="lazy" />
+          <span class="note-card-media-flag t-small">${esc(t("note.videoUnavailable"))}</span>
+        </div>`;
+    }
+    return renderNoteMediaEmpty();
+  }
+  // Image note: first downloaded image as the cover; badge the carousel length.
+  const images = media.filter(
+    (asset) => asset.role === "image" && asset.download_status === "downloaded" && asset.local_path,
+  );
+  const cover = images[0];
+  if (cover?.local_path) {
+    const count = images.length > 1 ? `<span class="note-card-media-count t-small">1/${images.length}</span>` : "";
+    return `
+      <div class="note-card-media">
+        <img class="note-card-asset" src="${esc(convertFileSrc(cover.local_path))}" alt="" loading="lazy" />
+        ${count}
+      </div>`;
+  }
+  return renderNoteMediaEmpty();
+}
+
+function renderNoteMediaEmpty(): string {
+  return `<div class="note-card-media note-card-media-empty"><span class="t-small placeholder">${esc(t("note.noMedia"))}</span></div>`;
+}
+
+function pickDownloadedAsset(media: NoteMediaAsset[], role: string): NoteMediaAsset | undefined {
+  return media.find(
+    (asset) => asset.role === role && asset.download_status === "downloaded" && !!asset.local_path,
+  );
+}
+
+function noteStatsLine(note: NoteRecord): string {
+  const parts: string[] = [];
+  const likes = (note.likes ?? "").trim();
+  const favorites = (note.favorites ?? "").trim();
+  const comments = (note.comments_count ?? "").trim();
+  if (likes) parts.push(`${likes} ${t("note.likes")}`);
+  if (favorites) parts.push(`${favorites} ${t("note.saves")}`);
+  if (comments) parts.push(`${comments} ${t("note.comments")}`);
+  return parts.join(" · ");
+}
+
+function formatTag(tag: string): string {
+  const trimmed = tag.trim();
+  return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
 }
 
 export function renderAgentEvent(ev: AgentTaskEventPayload): string {

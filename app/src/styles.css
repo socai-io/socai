@@ -1049,6 +1049,132 @@ body.has-paper > * { position: relative; z-index: 1; }
   max-height: none;
 }
 
+/* ── Embedded note cards ──────────────────────────────────────────
+   A horizontal filmstrip of the notes the agent saw. Fixed-basis so it
+   never fights the timeline (flex:1) / answer (flex:2) for vertical space;
+   scrolls sideways. Media is served locally via the asset protocol. */
+.note-rail-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.note-rail-wrap .result-label { margin: 0; }
+.note-rail {
+  display: flex;
+  gap: var(--sp-3);
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: var(--sp-1);
+}
+.note-card {
+  flex: 0 0 220px;
+  width: 220px;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  border: var(--hairline);
+  border-radius: var(--r-4);
+  background: var(--surface);
+  overflow: hidden;
+}
+.note-card-media {
+  position: relative;
+  height: 150px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink-7);
+  border-bottom: var(--hairline);
+  overflow: hidden;
+}
+.note-card-asset {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.note-card-media-video .note-card-asset {
+  object-fit: contain;
+  background: var(--ink-0);
+}
+.note-card-media-empty { background: var(--canvas); }
+.note-card-media-count,
+.note-card-media-flag {
+  position: absolute;
+  bottom: var(--sp-1);
+  right: var(--sp-1);
+  padding: 1px var(--sp-1);
+  border-radius: var(--r-2);
+  background: rgba(0, 0, 0, 0.62);
+  color: var(--ink-9);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.note-card-media-flag { left: var(--sp-1); right: auto; }
+.note-card-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+}
+.note-card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--fg);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.note-card-author,
+.note-card-stats { margin: 0; }
+.note-card-stats { font-family: var(--font-mono); font-size: 11px; }
+.note-card-content {
+  margin: 0;
+  min-height: 0;
+  max-height: 5.4em;
+  overflow-y: auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.note-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.note-card-tag {
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--fg-soft);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.note-card-open {
+  align-self: flex-start;
+  margin-top: auto;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: var(--sp-1) 0;
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease);
+}
+.note-card-open:hover { color: var(--ink-0); }
+
 code {
   font-family: var(--font-mono);
   font-size: 12px;

@@ -8,6 +8,7 @@ import type {
   AgentTaskSnapshot,
   AgentTaskStatus,
   ModelInfo,
+  NoteRecord,
   ShellState,
 } from "../main";
 import { esc } from "../lib/html";
@@ -18,7 +19,10 @@ import { renderComposePane } from "./task_new";
 // The workspace shows one of two views: the compose form (default / "new task")
 // or the selected task's detail. The sidebar history list is always present.
 type WorkspaceView = "compose" | "detail";
-export type AgentTaskView = AgentTaskSnapshot & { events: AgentTaskEventPayload[] };
+export type AgentTaskView = AgentTaskSnapshot & {
+  events: AgentTaskEventPayload[];
+  notes?: NoteRecord[];
+};
 type CodexLoginStart = { message: string };
 
 // ── Agent task workspace ──────────────────────────────────────────────────
@@ -93,6 +97,29 @@ export namespace agentPanel {
     const before = task.events.length;
     task.events = mergeEvents(task.events, events);
     return task.events.length !== before && taskId === selectedTaskId;
+  }
+
+  export function setTaskNotes(taskId: string, notes: NoteRecord[]): boolean {
+    const task = tasks.find((item) => item.task_id === taskId);
+    if (!task) return false;
+    task.notes = notes;
+    return taskId === selectedTaskId;
+  }
+
+  // Fetch a task's note archive (notes.json) and re-render when it changed the
+  // currently-selected task. Best-effort: a run simply may have no notes.
+  export async function loadTaskNotes(taskId: string, shell: ShellState): Promise<void> {
+    try {
+      const notes = await invoke<NoteRecord[]>("agent_task_notes", { taskId });
+      if (setTaskNotes(taskId, notes)) shell.rerender();
+    } catch (e) {
+      console.error("agent_task_notes failed:", e);
+    }
+  }
+
+  export function loadSelectedTaskNotes(shell: ShellState): void {
+    const selected = selectedTask();
+    if (selected) void loadTaskNotes(selected.task_id, shell);
   }
 
   // Whether any task is running or queued — used to guard the app restart.
@@ -485,6 +512,14 @@ export namespace agentPanel {
         selectedTaskId = btn.dataset.taskId ?? null;
         view = "detail";
         shell.rerender();
+        if (selectedTaskId) void loadTaskNotes(selectedTaskId, shell);
+      });
+    });
+    document.querySelectorAll<HTMLButtonElement>("[data-open-note-url]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const url = btn.dataset.openNoteUrl;
+        if (!url) return;
+        invoke("open_external", { url }).catch((e) => console.error("open_external failed:", e));
       });
     });
     document.querySelectorAll<HTMLButtonElement>("[data-cancel-task]").forEach((btn) => {

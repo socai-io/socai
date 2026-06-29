@@ -139,6 +139,14 @@ const messages = {
   },
   "task.today": { en: "today", zh: "今天" },
   "task.yesterday": { en: "yesterday", zh: "昨天" },
+
+  "note.seen": { en: "notes the agent saw", zh: "智能体看过的笔记" },
+  "note.openOriginal": { en: "open original ↗", zh: "查看原文 ↗" },
+  "note.videoUnavailable": { en: "video unavailable", zh: "视频不可用" },
+  "note.noMedia": { en: "no media", zh: "无媒体" },
+  "note.likes": { en: "likes", zh: "赞" },
+  "note.saves": { en: "saves", zh: "收藏" },
+  "note.comments": { en: "comments", zh: "评论" },
 } as const satisfies Record<string, Record<Language, string>>;
 
 const taskStatusLabels = {

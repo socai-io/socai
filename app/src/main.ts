@@ -65,6 +65,41 @@ export interface TimelineEntity {
   data: unknown;
 }
 
+/** One downloaded (or failed) media asset of a note, from `<run_dir>/notes.json`. */
+export interface NoteMediaAsset {
+  type: string; // "image" | "video"
+  role: string; // "image" | "video" | "video_poster"
+  index: number | null;
+  local_path: string | null; // absolute path on disk; null when not downloaded
+  width: number | null;
+  height: number | null;
+  duration_s: number | null;
+  download_status: string; // "downloaded" | "failed"
+  source_url: string | null;
+}
+
+/** A note the agent saw, archived locally so it can be rendered without re-fetching. */
+export interface NoteRecord {
+  note_id: string;
+  url?: string;
+  title?: string;
+  author?: string;
+  author_url?: string;
+  content?: string;
+  hashtags?: string[];
+  date?: string;
+  location?: string;
+  likes?: string;
+  favorites?: string;
+  comments_count?: string;
+  image_count?: number;
+  type?: string; // "image" | "video"
+  media?: NoteMediaAsset[];
+  first_seen_turn?: number;
+  // Tolerate extra fields the record carries (images, video, top_comments, …).
+  [key: string]: unknown;
+}
+
 export interface AgentTaskEventPayload {
   task_id: string;
   kind:
@@ -451,8 +486,12 @@ async function main(): Promise<void> {
   // rows append in place to preserve scroll.
   await listen<AgentTaskEventPayload>("agent_task:event", (event) => {
     if (agentPanel.appendTaskEvent(event.payload)) render();
-    // A finished task is a good, quiet moment to check for an update.
-    if (isTaskFinishedEvent(event.payload)) void maybeCheckForUpdate();
+    if (isTaskFinishedEvent(event.payload)) {
+      // A finished task is a good, quiet moment to check for an update, and the
+      // point at which its full note archive (notes.json) is on disk to render.
+      void maybeCheckForUpdate();
+      void agentPanel.loadTaskNotes(event.payload.task_id, shell());
+    }
   });
 
   let initialTasks: AgentTaskSnapshot[] = [];
@@ -483,6 +522,7 @@ async function main(): Promise<void> {
   bindGlobalDismiss();
   installUpdatePreviewHook();
   void hydrateTaskEvents(initialTasks);
+  void agentPanel.loadSelectedTaskNotes(shell());
   void maybeCheckForUpdate();
 
   const refresh = (): void => {
