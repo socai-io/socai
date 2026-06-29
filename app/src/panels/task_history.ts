@@ -161,9 +161,13 @@ export function renderAgentEvent(ev: AgentTaskEventPayload): string {
 }
 
 // Elapsed run time: started→finished, or started→now while still running.
+// A terminal task without a finished_at has no meaningful end, so we show no
+// duration rather than a figure that keeps ticking up against the wall clock.
 function formatDuration(task: AgentTaskView): string | null {
   if (!task.started_at) return null;
-  const end = task.finished_at ?? Date.now();
+  const running = task.status === "running" || task.status === "queued";
+  const end = task.finished_at ?? (running ? Date.now() : null);
+  if (end === null) return null;
   const seconds = Math.max(0, Math.round((end - task.started_at) / 1000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
