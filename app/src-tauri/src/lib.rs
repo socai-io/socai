@@ -141,19 +141,20 @@ pub fn run() {
                 // laying out the title bar, and no focus/resize event is guaranteed
                 // to follow to correct it. Re-apply on the main thread shortly after
                 // the window settles. Idempotent — a no-op when already correct, so
-                // it never flickers.
-                for delay_ms in [250u64, 750] {
-                    let win_retry = win.clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                // it never flickers. Runs on the shared async runtime (no dedicated
+                // OS threads); the two waits land the retries ~250ms and ~750ms in.
+                let win_retry = win.clone();
+                tauri::async_runtime::spawn(async move {
+                    for gap_ms in [250u64, 500] {
+                        tokio::time::sleep(std::time::Duration::from_millis(gap_ms)).await;
                         let win_main = win_retry.clone();
                         let _ = win_retry.run_on_main_thread(move || {
                             if let Ok(ptr) = win_main.ns_window() {
                                 reposition_traffic_lights(ptr, x, y);
                             }
                         });
-                    });
-                }
+                    }
+                });
                 let win_for_events = win.clone();
                 win.on_window_event(move |event| {
                     if matches!(
