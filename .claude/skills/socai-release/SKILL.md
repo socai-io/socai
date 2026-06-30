@@ -133,8 +133,15 @@ Vercel Git integration is connected to `socai-io/socai` with production branch `
 After the GitHub release verification, confirm the live site has caught up to the new version. The auto-deploy usually finishes within ~1 minute of the `main` push; allow for that and re-check if it is still mid-build.
 
 ```bash
-# visible version on the live pages must equal the just-published X.Y.Z
-for p in "" "contact"; do printf "/%s -> " "$p"; curl -s "https://socai.io/$p" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | sort -u | tr '\n' ' '; echo; done
+# visible nav release chip on the live pages must equal the just-published X.Y.Z.
+# Use data-release-version instead of grepping every semver-looking string because
+# font/CDN URLs in the HTML can contain unrelated version numbers.
+version="$(gh release view --repo socai-io/socai --json tagName --jq '.tagName' | sed 's/^v//')"
+for p in "" "contact"; do
+  found="$(curl -fsS "https://socai.io/$p" | grep -oE 'data-release-version="[0-9]+\.[0-9]+\.[0-9]+"' | sed -E 's/^data-release-version="([^"]+)"$/\1/' | sort -u)"
+  printf "/%s -> %s\n" "$p" "${found:-<none>}"
+  test "$found" = "$version"
+done
 curl -sI https://socai.io/         | grep -iE '^HTTP'              # 200
 curl -sI https://www.socai.io/     | grep -iE '^HTTP|^location'   # 308 -> https://socai.io/
 curl -sI https://socai.io/download | grep -iE '^HTTP|^location'   # 307 -> GitHub latest DMG

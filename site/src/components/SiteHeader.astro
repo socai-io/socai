@@ -1,17 +1,23 @@
 ---
-import { message } from "../lib/i18n";
+import { formatMessage, message } from "../lib/i18n";
 
 interface Props {
     messages: Record<string, Record<string, unknown>>;
     language: string;
+    releaseVersion?: string;
 }
 
-const { messages, language } = Astro.props;
+const { messages, language, releaseVersion } = Astro.props;
 
 const githubUrl = "/github";
 const contactPath = "/contact";
 
 const t = (path: string) => message(messages, path, language);
+const format = (path: string, values: Record<string, string | number>) =>
+    formatMessage(messages, path, values, language);
+const releaseValues = releaseVersion
+    ? JSON.stringify({ version: releaseVersion })
+    : undefined;
 ---
 
 <header
@@ -60,6 +66,18 @@ const t = (path: string) => message(messages, path, language);
         <a class="nav-text-link" href={contactPath} data-i18n="nav.contact"
             >{t("nav.contact")}</a
         >
+        {
+            releaseVersion && (
+                <span
+                    class="release-chip"
+                    data-release-version={releaseVersion}
+                    data-i18n="nav.releaseLabel"
+                    data-i18n-values={releaseValues}
+                >
+                    {format("nav.releaseLabel", { version: releaseVersion })}
+                </span>
+            )
+        }
         <a class="nav-link nav-link--github" href={githubUrl}>
             <svg
                 viewBox="0 0 16 16"

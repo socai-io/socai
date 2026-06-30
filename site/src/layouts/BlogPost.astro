@@ -8,6 +8,7 @@ import "../styles/global.css";
 import SiteHeader from "../components/SiteHeader.astro";
 import SiteFooter from "../components/SiteFooter.astro";
 import { message as messageFor } from "../lib/i18n";
+import { resolveReleaseVersion } from "../lib/release";
 
 const { frontmatter, headings = [] } = Astro.props;
 const {
@@ -135,6 +136,7 @@ const messages = {
 const message = (path: string, language = defaultLanguage) =>
     messageFor(messages, path, language);
 const pageTitle = message("meta.title");
+const releaseVersion = await resolveReleaseVersion();
 ---
 
 <html lang={defaultHtmlLanguage} data-language={defaultLanguage}>
@@ -194,7 +196,11 @@ const pageTitle = message("meta.title");
     </head>
     <body>
         <div class="site-shell">
-            <SiteHeader messages={messages} language={defaultLanguage} />
+            <SiteHeader
+                messages={messages}
+                language={defaultLanguage}
+                releaseVersion={releaseVersion}
+            />
 
             <main class="article-main">
                 <article class="article">

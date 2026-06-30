@@ -3,6 +3,7 @@ import "../styles/global.css";
 import SiteHeader from "../components/SiteHeader.astro";
 import SiteFooter from "../components/SiteFooter.astro";
 import { message as messageFor } from "../lib/i18n";
+import { resolveReleaseVersion } from "../lib/release";
 
 const currentYear = new Date().getFullYear();
 const siteUrl = "https://socai.io";
@@ -120,6 +121,7 @@ const message = (path: string, language = defaultLanguage) =>
 const pageTitle = message("meta.title");
 const pageDescription = message("meta.description");
 const socialImageAlt = message("meta.socialImageAlt");
+const releaseVersion = await resolveReleaseVersion();
 ---
 
 <html lang={defaultHtmlLanguage} data-language={defaultLanguage}>
@@ -192,6 +194,7 @@ const socialImageAlt = message("meta.socialImageAlt");
             <SiteHeader
                 messages={messages}
                 language={defaultLanguage}
+                releaseVersion={releaseVersion}
             />
 
             <main class="setup-main">

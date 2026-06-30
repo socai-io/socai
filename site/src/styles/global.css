@@ -199,7 +199,19 @@ button:focus-visible {
   color: var(--ink-0);
 }
 
+.release-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  color: var(--fg-soft);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .release-meta,
+.release-chip,
 .site-footer,
 .window-title,
 .status-pill,
