@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::agent::compaction::truncate;
 use crate::agent::tool::{
     ToolProgressEvent, ToolProgressPhase, ToolProgressSender, ToolProgressStatus,
 };
@@ -21,8 +22,8 @@ use crate::sites::registry::{
     required_string, ArgKind, BoxFuture, CommandArg, SiteCommand, SiteSpec, SlowWhen,
 };
 use crate::sites::runner::{
-    get_bool, get_f64, get_i64, get_str, json_result, run_metadata, run_tool_command,
-    trimmed_required, PageHook, ToolCommand,
+    get_bool, get_f64, get_i64, get_str, json_result, run_tool_command, trimmed_required, PageHook,
+    ToolCommand,
 };
 use crate::sites::xhs::media_manifest::{
     ensure_entity_note_id, search_media_manifest, write_media_manifest_file,
@@ -625,7 +626,7 @@ fn media_for(
 ) -> anyhow::Result<Option<MediaProcessor>> {
     if include_media {
         Ok(Some(MediaProcessor::for_run_dir(
-            &ctx.run_dir,
+            ctx.output_dir(),
             llm_provider,
         )?))
     } else {
@@ -1174,8 +1175,8 @@ fn attach_note_ocr_summary(entity: &mut Value) {
             let text = image
                 .get("ocr_text")
                 .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
+                .map(|text| truncate(text, 1200))
+                .unwrap_or_default();
             Value::String(text)
         })
         .collect();
@@ -1191,7 +1192,7 @@ fn attach_note_ocr_summary(entity: &mut Value) {
 }
 
 /// OCR performance/debug record, written to a separate file
-/// (`statistics/ocr_perf.json` in the run dir) rather than the LLM-facing JSON
+/// (`stats/ocr.json` in the tool-call dir) rather than the LLM-facing JSON
 /// artifact. OCR runs as one batched `predict` per note (fast, multi-core), so
 /// timing is per note/batch, not per image. The recognized `ocr_text` stays on
 /// the images for the LLM; only timing lives here.
@@ -1301,23 +1302,20 @@ fn write_cover_ocr_perf(
     write_run_perf_file(ctx, &perf);
 }
 
-/// Write an OCR perf record to `<run_dir>/statistics/ocr_perf.json`. Unlike
-/// artifacts, this is a plain debug file under a dedicated `statistics/` subdir —
-/// not registered, so it isn't surfaced to the LLM. Best-effort: write failures
-/// are ignored (perf logging must never fail a scan).
+/// Write the tool-specific OCR record under the current tool call's `stats/`.
 fn write_run_perf_file(ctx: &ToolContext, perf: &Value) {
-    let dir = ctx.run_dir.join("statistics");
-    if std::fs::create_dir_all(&dir).is_err() {
+    let stats_dir = ctx.output_dir().join("stats");
+    if std::fs::create_dir_all(&stats_dir).is_err() {
         return;
     }
     if let Ok(rendered) = serde_json::to_string_pretty(perf) {
-        let _ = std::fs::write(dir.join("ocr_perf.json"), rendered);
+        let _ = std::fs::write(stats_dir.join("ocr.json"), rendered);
     }
 }
 
 /// Remove OCR timing keys from the media-timing summary so the JSON artifact's
 /// `timing.media` carries only non-OCR (download) timings; OCR timing lives in
-/// the dedicated `ocr_perf.json`.
+/// the dedicated `stats/ocr.json`.
 fn strip_ocr_timing(media_timing: &mut Value) {
     if let Some(map) = media_timing.as_object_mut() {
         map.retain(|key, _| !key.starts_with("ocr"));
@@ -1401,6 +1399,9 @@ fn lean_preview_cards(payload: &mut Value) {
         let Some(obj) = card.as_object_mut() else {
             continue;
         };
+        if let Some(text) = obj.get("ocr_text").and_then(Value::as_str) {
+            obj.insert("ocr_text".into(), json!(truncate(text, 1200)));
+        }
         if let Some(link) = obj.remove("link") {
             obj.insert("url".into(), link);
         }
@@ -1934,6 +1935,33 @@ pub struct SearchTool {
     always_ocr: bool,
 }
 
+fn effective_macro_input(
+    input: &Value,
+    default_num_notes: Option<i64>,
+    always_download_media: bool,
+    always_ocr: bool,
+) -> Value {
+    let mut effective = input.clone();
+    let preview = get_bool(&effective, "preview", false);
+    if effective.get("num_notes").is_none() {
+        if let Some(default) = default_num_notes {
+            effective["num_notes"] = json!(default);
+        }
+    }
+    let ocr = always_ocr || get_bool(&effective, "ocr", false);
+    if ocr {
+        effective["ocr"] = json!(true);
+    }
+    if preview {
+        if let Some(object) = effective.as_object_mut() {
+            object.remove("download_media");
+        }
+    } else if always_download_media || ocr || get_bool(&effective, "download_media", false) {
+        effective["download_media"] = json!(true);
+    }
+    effective
+}
+
 #[async_trait]
 impl Tool for SearchTool {
     fn name(&self) -> &str {
@@ -1989,6 +2017,15 @@ impl Tool for SearchTool {
         })
     }
 
+    fn effective_input(&self, input: &Value) -> Value {
+        effective_macro_input(
+            input,
+            Some(DEFAULT_NUM_NOTES),
+            self.always_download_media,
+            self.always_ocr,
+        )
+    }
+
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         let query = get_str(&input, "query")
             .ok_or_else(|| anyhow::anyhow!("missing query"))?
@@ -2033,7 +2070,7 @@ impl Tool for SearchTool {
                         None,
                         None,
                     );
-                    let media = MediaProcessor::for_run_dir(&ctx.run_dir, None)?;
+                    let media = MediaProcessor::for_run_dir(ctx.output_dir(), None)?;
                     let cover_t0 = std::time::Instant::now();
                     let predict = media.ocr_cover_images(cards, XHS_HOME_URL).await;
                     let wall = cover_t0.elapsed();
@@ -2290,7 +2327,7 @@ impl Tool for SearchTool {
         }
 
         let media_manifest_metadata = if download_media {
-            let media_manifest = search_media_manifest(&notes, &ctx.run_dir);
+            let media_manifest = search_media_manifest(&notes, ctx.output_dir());
             let media_manifest_count = media_manifest.as_array().map(Vec::len).unwrap_or_default();
             let (media_manifest_path, media_manifest_error) =
                 match write_media_manifest_file(ctx, &media_manifest) {
@@ -2309,7 +2346,6 @@ impl Tool for SearchTool {
         let mut payload = json!({
             "ok": search.get("ok").and_then(Value::as_bool).unwrap_or(false),
             "query": query,
-            "run": run_metadata(ctx, download_media),
             "filters": filter_result,
             "search": search,
             "notes": notes,
@@ -2326,7 +2362,7 @@ impl Tool for SearchTool {
             }
         });
         // OCR perf (model / EP / machine / per-image timing) is written to
-        // `ocr_perf.json` (see write_note_ocr_perf above), not the JSON artifact.
+        // `stats/ocr.json` (see write_note_ocr_perf above), not the JSON artifact.
         if let Some((media_manifest_count, media_manifest_path, media_manifest_error)) =
             media_manifest_metadata
         {
@@ -2445,6 +2481,10 @@ impl Tool for AuthorScanTool {
             },
             "required": ["author_id"]
         })
+    }
+
+    fn effective_input(&self, input: &Value) -> Value {
+        effective_macro_input(input, None, self.always_download_media, self.always_ocr)
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
@@ -2610,7 +2650,7 @@ impl Tool for AuthorScanTool {
                     None,
                     None,
                 );
-                let cover_media = MediaProcessor::for_run_dir(&ctx.run_dir, None)?;
+                let cover_media = MediaProcessor::for_run_dir(ctx.output_dir(), None)?;
                 let covers = cards_value.len();
                 let cover_t0 = std::time::Instant::now();
                 let predict = cover_media
@@ -2637,7 +2677,7 @@ impl Tool for AuthorScanTool {
 
         // Build the media manifest from `notes` before they move into payload.
         let media_manifest_metadata = if download_media {
-            let media_manifest = search_media_manifest(&notes, &ctx.run_dir);
+            let media_manifest = search_media_manifest(&notes, ctx.output_dir());
             let media_manifest_count = media_manifest.as_array().map(Vec::len).unwrap_or_default();
             let (path, error) = match write_media_manifest_file(ctx, &media_manifest) {
                 Ok(path) => (Some(path), None),
@@ -2664,7 +2704,7 @@ impl Tool for AuthorScanTool {
             "timing": { "media": media_timing },
         });
 
-        // OCR perf is written to `ocr_perf.json` (see above), not the artifact.
+        // OCR perf is written to `stats/ocr.json` (see above), not the artifact.
 
         if let Some((count, path, error)) = media_manifest_metadata {
             if let Some(map) = payload.as_object_mut() {
@@ -2772,12 +2812,12 @@ mod tests {
     fn run_metadata_includes_media_dir_only_when_requested() {
         let ctx = ToolContext::new("run-1", "/tmp/socai-run");
 
-        let without_media = run_metadata(&ctx, false);
+        let without_media = crate::sites::runner::run_metadata(&ctx, false);
         assert_eq!(without_media["id"], json!("run-1"));
         assert_eq!(without_media["dir"], json!("/tmp/socai-run"));
         assert!(without_media.get("media_dir").is_none());
 
-        let with_media = run_metadata(&ctx, true);
+        let with_media = crate::sites::runner::run_metadata(&ctx, true);
         assert_eq!(with_media["media_dir"], json!("/tmp/socai-run/site_media"));
     }
 

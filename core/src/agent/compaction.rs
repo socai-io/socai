@@ -4,7 +4,7 @@
 //! These are used in two places:
 //! - Agent loop history (keep tool_result bodies bounded so context doesn't
 //!   blow up over many turns).
-//! - RunState/RunDebugLogger (compact entity-like payloads when summarizing
+//! - RunState (compact entity-like payloads when summarizing
 //!   evidence for working_memory.md).
 
 use serde_json::{Map, Value};

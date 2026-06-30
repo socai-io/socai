@@ -104,6 +104,50 @@ impl OpenAICompatBackend {
     fn preserve_reasoning_content(&self) -> bool {
         matches!(self.provider, Provider::Kimi | Provider::Qwen)
     }
+
+    fn build_chat_request(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        max_tokens: u32,
+    ) -> OutgoingRequest {
+        let chat_tools = tools_to_wire(tools);
+        let has_tools = !chat_tools.is_empty();
+        let (max_tokens_field, max_completion_tokens_field) =
+            if matches!(self.provider, Provider::OpenAI) {
+                (None, Some(max_tokens))
+            } else {
+                (Some(max_tokens), None)
+            };
+        OutgoingRequest {
+            model: self.model.clone(),
+            messages: build_chat_messages(system, messages, self.preserve_reasoning_content()),
+            max_tokens: max_tokens_field,
+            max_completion_tokens: max_completion_tokens_field,
+            tools: chat_tools,
+            tool_choice: if has_tools { Some("auto") } else { None },
+            extra: self.extra_body(has_tools),
+        }
+    }
+
+    fn build_responses_request(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+    ) -> ResponsesRequest {
+        ResponsesRequest {
+            model: self.model.clone(),
+            instructions: system.to_string(),
+            input: build_responses_input(messages),
+            tools: responses_tools_to_wire(tools),
+            tool_choice: if tools.is_empty() { None } else { Some("auto") },
+            parallel_tool_calls: true,
+            stream: true,
+            store: false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -599,6 +643,22 @@ impl Backend for OpenAICompatBackend {
         &self.model
     }
 
+    fn request_payload(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        max_tokens: u32,
+    ) -> anyhow::Result<Value> {
+        if matches!(self.credential, Credential::CodexOAuth { .. }) {
+            serde_json::to_value(self.build_responses_request(system, messages, tools))
+                .map_err(Into::into)
+        } else {
+            serde_json::to_value(self.build_chat_request(system, messages, tools, max_tokens))
+                .map_err(Into::into)
+        }
+    }
+
     async fn send(
         &self,
         system: &str,
@@ -610,27 +670,7 @@ impl Backend for OpenAICompatBackend {
             return self.send_codex_responses(system, messages, tools).await;
         }
 
-        let chat_messages =
-            build_chat_messages(system, messages, self.preserve_reasoning_content());
-        let chat_tools = tools_to_wire(tools);
-        let has_tools = !chat_tools.is_empty();
-
-        let (max_tokens_field, max_completion_tokens_field) =
-            if matches!(self.provider, Provider::OpenAI) {
-                (None, Some(max_tokens))
-            } else {
-                (Some(max_tokens), None)
-            };
-
-        let body = OutgoingRequest {
-            model: self.model.clone(),
-            messages: chat_messages,
-            max_tokens: max_tokens_field,
-            max_completion_tokens: max_completion_tokens_field,
-            tools: chat_tools,
-            tool_choice: if has_tools { Some("auto") } else { None },
-            extra: self.extra_body(has_tools),
-        };
+        let body = self.build_chat_request(system, messages, tools, max_tokens);
 
         let response = self
             .client
@@ -702,16 +742,7 @@ impl OpenAICompatBackend {
         messages: &[Message],
         tools: &[ToolSchema],
     ) -> anyhow::Result<LLMResponse> {
-        let body = ResponsesRequest {
-            model: self.model.clone(),
-            instructions: system.to_string(),
-            input: build_responses_input(messages),
-            tools: responses_tools_to_wire(tools),
-            tool_choice: if tools.is_empty() { None } else { Some("auto") },
-            parallel_tool_calls: true,
-            stream: true,
-            store: false,
-        };
+        let body = self.build_responses_request(system, messages, tools);
 
         let response = self.send_codex_responses_once(&body, None).await?;
         self.parse_codex_responses_response(response).await

@@ -1,18 +1,18 @@
 //! Shared one-shot command runner for site commands.
 //!
 //! Every site command (CLI `socai <site> <tool>` / daemon dispatch) needs the
-//! same scaffolding: allocate a run dir, persist the invocation, wrap the
+//! same scaffolding: allocate a run dir, record the invocation, wrap the
 //! whole command in optional snapshot recording, invoke one agent tool by
 //! name, and return the `{command, run_dir, input, data}` envelope. Site
 //! modules supply only the tool set and optional page-state hooks — do not
 //! copy this scaffolding into a site folder.
 
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Instant};
 
 use serde_json::{json, Value};
 
 use crate::agent::tool::ToolProgressSender;
-use crate::agent::{make_run_dir, Tool, ToolContext, ToolResult};
+use crate::agent::{make_run_dir, Tool, ToolCallRecorder, ToolContext, ToolResult};
 use crate::cdp::{with_snapshot_recording, PageSession};
 use crate::sites::registry::BoxFuture;
 
@@ -58,42 +58,57 @@ pub async fn run_tool_command(
         }
     }
     let (run_dir, ctx) = command_context_for_label(cmd.site_id, &label, progress);
-    // Persist the full command input up front (best-effort) so a run is
-    // debuggable from its dir alone — including the exact args — even when the
-    // tool errors out partway.
-    let invocation = json!({
-        "command": cmd.command_name,
-        "tool": cmd.tool_name,
-        "input": input.clone(),
-    });
-    let _ = std::fs::create_dir_all(&ctx.run_dir);
-    if let Ok(bytes) = serde_json::to_vec_pretty(&invocation) {
-        let _ = std::fs::write(ctx.run_dir.join("command_input.json"), bytes);
-    }
+    let effective_input = tools
+        .iter()
+        .find(|tool| tool.name() == cmd.tool_name)
+        .ok_or_else(|| anyhow::anyhow!("site tool not found: {}", cmd.tool_name))?
+        .effective_input(&input);
+    let tool_recorder = ToolCallRecorder::start_standalone(
+        &ctx.run_dir,
+        cmd.site_id,
+        cmd.command_name,
+        cmd.tool_name,
+        &effective_input,
+    )?;
+    let response_input = input.clone();
+    let ctx = ctx.with_tool_dir(tool_recorder.dir());
     // Snapshot recording (when `--debug-snapshot` is on) wraps the whole
     // command — setup navigation, the tool's clicks/scrolls, and teardown. All
     // recorder machinery lives in the generic CDP layer; this is the only hook
     // a site command runner needs.
-    let data = with_snapshot_recording(&page, &ctx.run_dir, debug_snapshot, async {
+    let started = Instant::now();
+    let result = with_snapshot_recording(&page, ctx.output_dir(), debug_snapshot, async {
         if let Some(hook) = cmd.before {
             hook(page.clone()).await?;
         }
-        let data = call_site_tool(tools, cmd.tool_name, input, &ctx).await?;
+        let data = call_site_tool(tools, cmd.tool_name, effective_input, &ctx).await?;
         if let Some(hook) = cmd.after {
             hook(page.clone()).await?;
         }
         Ok::<Value, anyhow::Error>(data)
     })
-    .await?;
+    .await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let data = match result {
+        Ok(data) => {
+            tool_recorder.finish_value(&data, duration_ms, None)?;
+            data
+        }
+        Err(err) => {
+            let message = format!("{err:#}");
+            tool_recorder.finish_error(duration_ms, &message)?;
+            return Err(err);
+        }
+    };
 
     let mut response = json!({
         "command": cmd.command_name,
         "run_dir": run_dir,
-        "input": invocation.get("input").cloned().unwrap_or(Value::Null),
+        "input": response_input.clone(),
         "data": data,
     });
     if cmd.include_run_metadata {
-        let run = run_metadata(&ctx, input_downloads_media(&invocation["input"]));
+        let run = run_metadata(&ctx, input_downloads_media(&response_input));
         response["run"] = run.clone();
         response["data"] = attach_run_metadata(response["data"].take(), &run);
     }
@@ -132,7 +147,10 @@ pub fn run_metadata(ctx: &ToolContext, include_media_dir: bool) -> Value {
         "dir": path_string(&ctx.run_dir),
     });
     if include_media_dir {
-        run["media_dir"] = json!(path_string(&ctx.run_dir.join("site_media")));
+        run["media_dir"] = json!(path_string(&ctx.output_dir().join("site_media")));
+    }
+    if ctx.output_dir() != ctx.run_dir {
+        run["tool_dir"] = json!(path_string(ctx.output_dir()));
     }
     run
 }

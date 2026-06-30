@@ -15,8 +15,8 @@ pub(super) fn write_media_manifest_file(
     ctx: &ToolContext,
     manifest: &Value,
 ) -> std::io::Result<String> {
-    std::fs::create_dir_all(&ctx.run_dir)?;
-    let path = ctx.run_dir.join("media_manifest.json");
+    std::fs::create_dir_all(ctx.output_dir())?;
+    let path = ctx.output_dir().join("media_manifest.json");
     let rendered = serde_json::to_string_pretty(manifest).map_err(std::io::Error::other)?;
     std::fs::write(&path, rendered)?;
     let _ = ctx.register_artifact(

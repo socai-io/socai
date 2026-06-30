@@ -5,8 +5,8 @@ use anyhow::Result;
 use serde_json::{json, Map, Value};
 use socai_core::agent::{
     catalog_models_for, configured_default_model_for, configured_default_provider, make_run_dir,
-    provider_credential_kind, resolve_provider, save_default_model, AgentEvent, CredentialKind,
-    ModelCatalogEntry, Provider,
+    mark_agent_run_status, provider_credential_kind, resolve_provider, save_default_model,
+    AgentEvent, CredentialKind, ModelCatalogEntry, Provider, Session,
 };
 use socai_core::runtime::{
     create_llm_provider_for, ensure_llm_provider_configured_for,
@@ -353,6 +353,9 @@ pub async fn agent_task_start(
     let site_id = app_site().map(|site| site.id).unwrap_or("agent");
     let run_dir = make_run_dir(&format!("{site_id} {task_text}"));
     let _ = std::fs::create_dir_all(&run_dir);
+    let session = Session::new(model.clone())
+        .map_err(|err| format!("failed to create desktop conversation session for task: {err}"))?;
+    let session_dir = session.dir.display().to_string();
     let registry = tasks.inner().clone();
     let snapshot = registry
         .create(
@@ -360,6 +363,7 @@ pub async fn agent_task_start(
             provider.clone(),
             model.clone(),
             run_dir.display().to_string(),
+            session_dir,
         )
         .await;
     let task_id = snapshot.task_id.clone();
@@ -451,6 +455,10 @@ pub async fn agent_task_cancel(
         let _ = runtime.close_target(&target_id).await;
     }
     if changed {
+        if let Some(run_dir) = snapshot.run_dir.as_deref() {
+            let _ = mark_agent_run_status(run_dir, "cancelled", None);
+        }
+        record_desktop_session(&snapshot, "[cancelled by user]", "cancelled");
         telemetry.capture(
             "socai_agent_task_end",
             json!({
@@ -500,6 +508,7 @@ async fn run_agent_task_background(
             })
             .await
         {
+            record_desktop_session(&snapshot, &format!("[task failed: {error}]"), "failed");
             telemetry.capture(
                 "socai_agent_task_end",
                 json!({
@@ -578,6 +587,7 @@ async fn run_agent_task_background(
                 })
                 .await
             {
+                record_desktop_session(&snapshot, &outcome.final_text, "completed");
                 telemetry.capture(
                     "socai_agent_task_end",
                     json!({
@@ -613,6 +623,10 @@ async fn run_agent_task_background(
                 })
                 .await
             {
+                if let Some(run_dir) = snapshot.run_dir.as_deref() {
+                    let _ = mark_agent_run_status(run_dir, "failed", Some(&error));
+                }
+                record_desktop_session(&snapshot, &format!("[task failed: {error}]"), "failed");
                 telemetry.capture(
                     "socai_agent_task_end",
                     json!({
@@ -628,6 +642,30 @@ async fn run_agent_task_background(
             }
         }
     }
+}
+
+pub(crate) fn record_interrupted_run(snapshot: &AgentTaskSnapshot, message: &str) {
+    if let Some(run_dir) = snapshot.run_dir.as_deref() {
+        let _ = mark_agent_run_status(run_dir, "interrupted", Some(message));
+    }
+    record_desktop_session(
+        snapshot,
+        &format!("[task interrupted: {message}]"),
+        "interrupted",
+    );
+}
+
+fn record_desktop_session(snapshot: &AgentTaskSnapshot, assistant: &str, status: &str) {
+    let Some(session_dir) = snapshot.session_dir.as_deref() else {
+        return;
+    };
+    let Some(run_dir) = snapshot.run_dir.as_deref() else {
+        return;
+    };
+    let Ok(mut session) = Session::load(session_dir) else {
+        return;
+    };
+    session.record_run(&snapshot.task, assistant, &PathBuf::from(run_dir), status);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -647,6 +685,20 @@ async fn run_agent_task_on_fresh_page(
     if task.is_empty() {
         anyhow::bail!("task is empty");
     }
+    let session_id = if let Some(registry) = &registry {
+        registry
+            .get(&task_id)
+            .await
+            .and_then(|snapshot| snapshot.session_dir)
+            .and_then(|dir| {
+                PathBuf::from(dir)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string)
+            })
+    } else {
+        None
+    };
 
     ensure_llm_provider_configured_for(provider, model)?;
     let llm_provider = create_llm_provider_for(provider, model)?;
@@ -685,6 +737,7 @@ async fn run_agent_task_on_fresh_page(
             extra_instructions: agent_instructions(TAURI_AGENT_PREAMBLE),
             enabled_sites: vec![site.id.to_string()],
             run_dir,
+            session_id,
             ..AgentRunConfig::default()
         };
         let outcome = run_agent_with_tools(task, llm_provider, tools, config, tx).await;
@@ -794,17 +847,10 @@ async fn emit_timeline_payload(
     snapshot: Option<AgentTaskSnapshot>,
 ) {
     let event = if let Some(registry) = registry {
-        match registry
-            .append_timeline_event(task_id, payload.clone(), snapshot.clone())
+        registry
+            .live_timeline_event(task_id, payload.clone(), snapshot.clone())
             .await
-        {
-            Some(Ok(event)) => event,
-            Some(Err(err)) => {
-                eprintln!("failed to persist timeline event for {task_id}: {err:#}");
-                return;
-            }
-            None => AgentTaskEventPayload::ephemeral(task_id, payload, snapshot),
-        }
+            .unwrap_or_else(|| AgentTaskEventPayload::ephemeral(task_id, payload, snapshot))
     } else {
         AgentTaskEventPayload::ephemeral(task_id, payload, snapshot)
     };
@@ -837,7 +883,12 @@ pub struct DesktopConfig {
 pub fn config_get() -> Result<DesktopConfig, String> {
     let config = socai_core::config::load_config().map_err(|err| format!("{err:#}"))?;
     Ok(DesktopConfig {
-        chrome_source: config.chrome.profile.unwrap_or_default().as_str().to_string(),
+        chrome_source: config
+            .chrome
+            .profile
+            .unwrap_or_default()
+            .as_str()
+            .to_string(),
         chrome_profile_dir: config.chrome.profile_dir.unwrap_or_default(),
         chrome_profile_dir_default: default_managed_profile_dir(),
         output_dir: config.runs.dir.unwrap_or_default(),
@@ -860,7 +911,7 @@ pub fn config_unset(key: String) -> Result<(), String> {
 }
 
 /// Default run-artifact root when `runs.dir` is unset. Mirrors
-/// `socai_core::agent::run_logging::default_runs_root` for the no-config case:
+/// `socai_core::agent::default_runs_root` for the no-config case:
 /// `SOCAI_RUNS_DIR`, then `~/.socai/runs`.
 fn default_runs_root_display() -> String {
     if let Some(dir) = non_empty_env("SOCAI_RUNS_DIR") {

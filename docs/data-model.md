@@ -1,229 +1,165 @@
-# socai data model
+# socai persisted execution model
 
-This document describes the persisted data that backs agent runs and the desktop
-app task history. Keep this current when changing run artifacts, task state, or
-history replay.
+Socai stores execution data in three ownership layers. The rule is simple:
+persist a fact once, in the lowest layer that owns it. Parent layers keep
+references instead of copying child records.
 
-## Guiding rule
+## L1: conversation session
 
-`~/.socai/runs/...` (or the root configured by `runs.dir` / `SOCAI_RUNS_DIR`)
-is the source of truth for task results.
-
-The desktop app may keep an index in `~/.socai/app/tasks.json`, but it should not
-persist duplicate task result payloads such as final answers or event timelines.
-The app can hydrate those fields from the run directory when serving the UI.
-
-## Locations
-
-| Data | Default path | Override | Owner |
-| --- | --- | --- | --- |
-| Core run artifacts | `~/.socai/runs/<timestamp>_<task-slug>/` | `SOCAI_RUNS_DIR`, else `socai config set runs.dir <path>` | `socai-core` |
-| Desktop task index | `~/.socai/app/tasks.json` | `SOCAI_HOME` (`$SOCAI_HOME/app/tasks.json`) | Tauri app |
-
-Do not add a second persistent task-result store under `~/.socai/app/`. If the
-UI needs result data after restart, derive it from the task's `run_dir`.
-
-## Identifiers
-
-### `task_id`
-
-Created by the desktop app task registry before the agent starts.
-
-Example:
-
-```txt
-task-1790000000000-1
+```text
+~/.socai/sessions/<session-id>/
+└── session.json
 ```
 
-Used for desktop UI state: task list rows, selected task, cancellation, and
-mapping an app task to a core run.
+`session.json` is the ordered conversation index. It stores the selected model,
+timestamps, and one entry per user interaction:
 
-### `run_id`
+- user text;
+- L2 run directory;
+- interaction status;
+- an assistant fallback only if the run produced no `report.md`.
 
-Created inside `socai-core` when the agent loop starts.
+The session id comes from the directory name. The final answer is read from the
+referenced run's `report.md`; the effective system prompt is in that run's
+first LLM request. Neither is copied into `session.json`.
 
-Example:
+The TUI can append multiple interactions to one session. Desktop currently
+creates one session per task, but uses the same format so it can add follow-up
+interactions later.
 
-```txt
-20260518-142233-123456
+The session root is `SOCAI_SESSIONS_DIR`, then `SOCAI_HOME/sessions`, then
+`~/.socai/sessions`.
+
+## L2: one agent execution
+
+```text
+~/.socai/runs/<timestamp>_<task>/
+├── run.json
+├── report.md
+├── llm/
+│   ├── 001.request.json
+│   ├── 001.response.json
+│   └── ...
+└── tools/
+    ├── turn-001-call-01-search/
+    └── ...
 ```
 
-Used by the core agent run and persisted in run artifacts / task index once the
-run exists.
+`run.json` owns only run-level facts:
 
-### `run_dir`
+- run id and optional parent session id;
+- task and model;
+- status, start time, and total duration;
+- turn count and aggregate token usage;
+- an error only for failed/interrupted runs.
 
-Created before starting the core run and passed into `socai-core`.
+`report.md` is the single durable copy of the final user-facing answer.
 
-Example:
+Each `llm/NNN.request.json` is the actual JSON body sent after context
+preparation and provider-specific translation, excluding authentication
+headers. Its shape therefore follows the active API (Anthropic Messages,
+OpenAI-compatible Chat Completions, or Responses).
 
-```txt
-~/.socai/runs/20260518_142233_find_xhs_coffee_notes
+The matching response contains text, exposed reasoning, tool calls, stop
+reason, token usage, request duration, and completion time. An unsuccessful
+request contains its duration, completion time, and error. Authentication
+headers, credentials, and raw response bytes are not recorded.
+
+The LLM files are also the canonical ordered execution trace. Socai does not
+write a parallel event log or span log: LLM duration lives on the response,
+tool duration lives on the tool manifest, and total duration lives on
+`run.json`.
+
+The run root is `SOCAI_RUNS_DIR`, then `socai config get runs.dir`, then
+`~/.socai/runs`.
+
+## L3: one tool invocation
+
+An agent tool call is nested under its L2 run:
+
+```text
+tools/turn-001-call-01-search/
+├── tool.json
+├── output.json          # only when the invocation returned a value
+├── artifacts/          # only when the tool saves full domain data
+├── site_media/         # only when media is downloaded
+├── media_manifest.json # only when media needs a registry
+├── stats/
+│   └── ocr.json        # only when OCR ran
+└── snapshots/          # only with debug snapshots enabled
 ```
 
-This directory is the source of truth for final answer and timeline replay.
+The directory name makes the LLM turn, call sequence within that turn, and tool
+name visible. `tool.json` owns the tool name, effective input after
+tool-specific defaults/forced options, lifecycle status, start time, duration,
+and an error when present. The parent LLM response retains the input originally
+requested by the model; when defaults are involved these two values are
+intentionally different.
 
-`task_id` and `run_id` are intentionally different. `task_id` is an app/workflow
-identifier; `run_id` is a core agent-run identifier.
+`output.json` is the raw `ToolResultBlock[]` returned to the agent. It is not
+wrapped with tool names, ids, timestamps, durations, or another `output` field.
 
-## Core run directory
+Artifacts contain full, untrimmed domain results when the model/CLI-facing
+output is intentionally lean. Downloaded media, its manifest, tool-specific
+statistics, and debug snapshots all stay inside the same tool directory.
+There is no artifact index: a consumer can enumerate `artifacts/`, while the
+tool output points to any artifact it expects a caller to use.
 
-Each agent run writes files under `run_dir`.
+## Standalone CLI tool invocation
 
-| Path | Purpose | Notes |
-| --- | --- | --- |
-| `report.md` | Final answer shown by the desktop app | Source of truth for completed task output. May include appended artifact markdown. |
-| `timeline.jsonl` | Canonical typed task timeline | Source of truth for live and historical desktop timeline rows for new runs. |
-| `reasoning_log.jsonl` | Append-only debug/event log | Debug log and legacy fallback source for historical timeline replay. |
-| `conversation.json` | Final system prompt and message history snapshot | Useful for debugging/model replay. |
-| `agent_log.json` | Run summary | Includes task, model, turns, token counts, paths to run files. |
-| `tool_results/<turn>_<seq>_<tool>.json` | Full tool result bodies | `reasoning_log.jsonl` only stores compact summaries. |
-| `run_state/events.jsonl` | Compact run-state timeline | Fallback source for historical timeline replay. |
-| `run_state/working_memory.md` | Rendered working memory | Used by the agent context/memory path. |
-| `run_state/artifacts.json` | Artifact registry | Screenshots/media/other artifacts saved by tools. |
-| `run_state/evidence.json` | Extracted evidence records | Populated from entity-like tool artifacts. |
-| `run_state/plan.json` | Current plan state | Updated by plan tools when used. |
+A site CLI command is already one tool invocation, so its run directory is
+directly L3:
 
-### `reasoning_log.jsonl`
-
-One JSON object per line. Current important event types include:
-
-- `task_start`
-- `llm_response`
-- `reasoning`
-- `tool_call_start`
-- `tool_result`
-- `api_error`
-- `turn_end`
-- `task_end`
-
-For new runs, the desktop app replays timeline rows from `timeline.jsonl` first.
-If `timeline.jsonl` is absent or empty, the app falls back to this file and then
-to `run_state/events.jsonl` for legacy runs.
-
-## Desktop task index: `tasks.json`
-
-`tasks.json` is an app index, not a task result store. It is an array of task
-snapshots with fields like:
-
-```json
-{
-  "task_id": "task-1790000000000-1",
-  "task": "find popular xhs coffee notes",
-  "model": "claude-sonnet-4-5-20250929",
-  "status": "completed",
-  "created_at": 1790000000000,
-  "started_at": 1790000000200,
-  "finished_at": 1790000060000,
-  "run_id": "20260518-142233-123456",
-  "run_dir": "/Users/alice/.socai/runs/20260518_142233_find_popular_xhs_coffee_notes",
-  "target_id": null,
-  "error": null,
-  "turns": 4,
-  "input_tokens": 12345,
-  "output_tokens": 2345
-}
+```text
+~/.socai/runs/<timestamp>_<site>_<command>_<identifier>/
+├── tool.json
+├── output.json          # only when the invocation returned a value
+├── artifacts/
+├── site_media/
+├── media_manifest.json
+├── stats/
+│   └── ocr.json
+└── snapshots/
 ```
 
-Rules:
+There is no parent LLM response, so standalone `tool.json` additionally owns
+the public tool name and effective input. It includes `implementation` only when
+the CLI command and internal tool names differ. `output.json` is the raw tool
+value.
 
-- `final_text` is not persisted in `tasks.json`.
-- If old `tasks.json` files contain `final_text`, the app ignores it on load and
-  omits it the next time the index is written.
-- API responses may still include `final_text`, but it is hydrated from
-  `<run_dir>/report.md`.
-- `error` is status metadata for failed/interrupted tasks; it is not a final
-  answer.
-- Queued/running tasks are marked `interrupted` on app startup because their
-  in-process runner and browser tab no longer exist.
+Optional directories and files are created lazily. A normal search without
+media, OCR, or snapshots should not contain empty `stats/`, `site_media/`, or
+`snapshots/` directories.
 
-## Desktop timeline state
+## Desktop task history
 
-New task timeline rows are appended to `<run_dir>/timeline.jsonl` before they are
-emitted to the webview. The Tauri `agent_task:event` stream is a live delivery
-mechanism for already-persisted rows; frontend memory is only a view cache.
+`~/.socai/app/tasks.json` is a lightweight UI index, not a fourth logging
+layer. It stores task lookup/status fields plus run and session directories.
+Run id, errors, answer text, turn count, and usage are hydrated from
+`run.json` and `report.md`.
 
-Timeline rows use a typed discriminated shape with `kind` at the top level. For
-example:
+Live desktop events exist only in memory. After restart, the desktop rebuilds
+its typed timeline from `run.json`, `llm/*.response.json`, and each referenced
+tool's `tool.json` and `output.json`. It does not persist a duplicate
+`timeline.jsonl`.
 
-```json
-{
-  "task_id": "task-1790000000000-1",
-  "kind": "tool_call",
-  "id": "toolu_123",
-  "turn": 1,
-  "sequence_in_turn": 1,
-  "name": "search",
-  "label": "searched xiaohongshu",
-  "args": { "query": "..." },
-  "repeat_count": 1,
-  "text": "search({\"query\":\"...\"})",
-  "sequence": 4,
-  "created_at": 1790000005000
-}
-```
+## Ownership table
 
-Tool results can additionally carry normalized inline entities:
+| Fact | Single durable owner |
+| --- | --- |
+| Conversation order and user interactions | L1 `session.json` |
+| Run task, model, status, totals | L2 `run.json` |
+| Final answer | L2 `report.md` |
+| Exact LLM request and response | L2 `llm/` pair |
+| Agent tool input | L3 `tool.json` |
+| Provider tool call id | Parent LLM response |
+| Standalone tool input | L3 `tool.json` |
+| Tool status, duration, error | L3 `tool.json` |
+| Tool result | L3 `output.json` |
+| Full domain artifact | L3 `artifacts/` |
+| Downloaded media and registry | L3 `site_media/`, `media_manifest.json` |
+| OCR details | L3 `stats/ocr.json` |
+| Debug browser state | L3 `snapshots/` |
 
-```json
-{
-  "task_id": "task-1790000000000-1",
-  "kind": "tool_result",
-  "id": "toolu_123",
-  "name": "search",
-  "label": "searched xiaohongshu",
-  "ok": true,
-  "duration_ms": 1400,
-  "entities": [{ "type": "xhs_note_card_grid", "data": [] }],
-  "text": "search (1400ms): ...",
-  "sequence": 5,
-  "created_at": 1790000006500
-}
-```
-
-After restart or webview reload, the app does not read a separate app event
-cache. Instead, `agent_task_events(task_id)` reads rows from the task's
-`run_dir`:
-
-1. `<run_dir>/timeline.jsonl`
-2. legacy fallback: `<run_dir>/reasoning_log.jsonl` plus `tool_results/*.json`
-3. legacy fallback: `<run_dir>/run_state/events.jsonl`
-4. terminal status metadata from `tasks.json` when applicable
-
-This keeps timeline and final answer data rooted in the run directory.
-
-## Realtime event stream vs `timeline.jsonl` / `reasoning_log.jsonl`
-
-For new runs, `timeline.jsonl` is the canonical source for both realtime and
-historical timeline rows. The live UI receives rows only after they have been
-written to that file.
-
-The live UI receives two classes of events:
-
-1. App lifecycle/status events emitted by Tauri: `queued`, `running`, `tab`,
-   `completed`, `failed`, `cancelled`, `interrupted`.
-2. Core agent events emitted by `socai-core`: `started`, `turn`, `assistant`,
-   `reasoning`, `tool_call`, `tool_result`, `tool_error`, `api_error`, `done`.
-
-`reasoning_log.jsonl` remains a persistent core debug log and legacy replay
-fallback. It is not an exact byte-for-byte copy of what the user sees in
-realtime.
-
-| UI row | New-run source | Legacy fallback source | Replay behavior |
-| --- | --- | --- | --- |
-| `queued` | `timeline.jsonl` | Not logged | Replayed for new runs. |
-| `running` | `timeline.jsonl` | Not logged | Replayed for new runs. |
-| `tab` | `timeline.jsonl` | Not logged | Replayed for new runs. |
-| `started` | `timeline.jsonl` | `task_start` | Replayed. |
-| `turn` | `timeline.jsonl` | inferred from `turn` fields | Replayed/reconstructed. |
-| `assistant` | `timeline.jsonl` | `llm_response.text` | Replayed. |
-| `reasoning` | `timeline.jsonl` | `reasoning` when present | Replayed for new runs. |
-| `tool_call` | `timeline.jsonl` | `tool_call_start` | Replayed. |
-| `tool_result` / `tool_error` | `timeline.jsonl` | `tool_result` + `tool_results/*.json` | Replayed with normalized entities when possible. |
-| `api_error` | `timeline.jsonl` | `api_error` | Replayed. |
-| `done` | `timeline.jsonl` | `task_end` | Replayed. |
-| terminal app status | `timeline.jsonl` | `tasks.json` status metadata | Replayed/reconstructed. |
-
-New runs persist the typed desktop timeline directly in `timeline.jsonl` under
-`run_dir`. `tasks.json` remains an index and must not grow a duplicate timeline
-cache.
+These local files currently have no external schema consumer or migration
+reader, so they intentionally do not carry a `schema_version` field.

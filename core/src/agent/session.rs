@@ -1,35 +1,30 @@
-//! Chat session: a persistent multi-turn conversation built on top of runs.
+//! Persistent multi-turn conversation index.
 //!
-//! Each session is one folder under `~/.socai/sessions/<id>/` (override with
-//! `SOCAI_SESSIONS_DIR`) holding `session.json` — the structured turns
-//! (user / assistant / run pointers), which is also the seed source.
-//!
-//! Run-dir granularity is unchanged: every user turn still produces its own
-//! run dir. The session only records *pointers* to those run dirs plus the
-//! chat-level text, so the agent can refer back to earlier artifacts (via the
-//! local environment tools) without bloating the seed.
-//!
-//! This lives in core so any entrypoint (TUI today, desktop later) can reuse
-//! it. Nothing constructs a `Session` implicitly — entrypoints opt in.
+//! A session owns user-message order and references to L2 agent runs. Assistant
+//! output is read from each run's `report.md`; an inline fallback is stored
+//! only when a run did not produce a report.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::agent::llm::{Block, Message};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Turn {
     pub user: String,
-    pub assistant: String,
-    pub run_id: String,
     pub run_dir: String,
-    pub ts_ms: u64,
+    pub status: String,
+    pub timestamp_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_fallback: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Session {
+    #[serde(skip)]
     pub id: String,
     #[serde(skip)]
     pub dir: PathBuf,
@@ -40,10 +35,12 @@ pub struct Session {
 }
 
 impl Session {
-    /// Create a fresh session folder and persist its (empty) index.
     pub fn new(model: Option<String>) -> std::io::Result<Self> {
         let now = now_ms();
-        let id = format!("session-{now}");
+        let id = format!(
+            "session-{now}-{}",
+            &Uuid::new_v4().simple().to_string()[..8]
+        );
         let dir = default_sessions_root().join(&id);
         std::fs::create_dir_all(&dir)?;
         let session = Self {
@@ -58,53 +55,64 @@ impl Session {
         Ok(session)
     }
 
-    /// Record a completed turn and flush to disk.
-    pub fn record_turn(&mut self, user: &str, assistant: &str, run_id: &str, run_dir: &Path) {
+    pub fn load(dir: impl AsRef<Path>) -> std::io::Result<Self> {
+        let dir = dir.as_ref().to_path_buf();
+        let mut session: Self =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("session.json"))?)
+                .map_err(std::io::Error::other)?;
+        session.id = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("session")
+            .to_string();
+        session.dir = dir;
+        Ok(session)
+    }
+
+    pub fn record_turn(&mut self, user: &str, assistant: &str, run_dir: &Path) {
+        self.record_run(user, assistant, run_dir, "completed");
+    }
+
+    pub fn record_run(&mut self, user: &str, assistant: &str, run_dir: &Path, status: &str) {
+        let assistant_fallback = (!run_dir.join("report.md").is_file())
+            .then(|| assistant.to_string())
+            .filter(|value| !value.is_empty());
         self.turns.push(Turn {
             user: user.to_string(),
-            assistant: assistant.to_string(),
-            run_id: run_id.to_string(),
             run_dir: run_dir.to_string_lossy().to_string(),
-            ts_ms: now_ms(),
+            status: status.to_string(),
+            timestamp_ms: now_ms(),
+            assistant_fallback,
         });
         self.updated_at_ms = now_ms();
         self.persist();
     }
 
-    /// Chat-level seed messages (prior user inputs + assistant answers) used to
-    /// continue the conversation on the next turn.
     pub fn chat_messages(&self) -> Vec<Message> {
-        let mut out = Vec::with_capacity(self.turns.len() * 2);
+        let mut messages = Vec::with_capacity(self.turns.len() * 2);
         for turn in &self.turns {
-            out.push(Message::user(turn.user.clone()));
-            out.push(Message::assistant_blocks(vec![Block::Text {
-                text: turn.assistant.clone(),
+            messages.push(Message::user(turn.user.clone()));
+            let report = std::fs::read_to_string(Path::new(&turn.run_dir).join("report.md"))
+                .ok()
+                .or_else(|| turn.assistant_fallback.clone())
+                .unwrap_or_default();
+            messages.push(Message::assistant_blocks(vec![Block::Text {
+                text: report,
             }]));
         }
-        out
+        messages
     }
 
-    /// A short note for the agent instructions so it knows which run dirs
-    /// belong to this session and can read their artifacts on demand.
     pub fn context_note(&self) -> String {
-        if self.turns.is_empty() {
-            return format!(
-                "This is an ongoing chat session. Session dir: {}. \
-                 Use the local environment tools (read_file, bash) when the user asks \
-                 to inspect earlier results or produce output files.",
-                self.dir.display()
-            );
-        }
         let mut lines = vec![format!(
-            "This is an ongoing chat session (session dir: {}). Earlier turns saved \
-             artifacts under these run dirs — inspect them with read_file/bash when \
-             the user refers back to them:",
+            "This is an ongoing chat session (session dir: {}). Earlier turns have \
+             their full records in these run dirs:",
             self.dir.display()
         )];
-        for (i, turn) in self.turns.iter().enumerate() {
+        for (index, turn) in self.turns.iter().enumerate() {
             lines.push(format!(
                 "  {}. {} — {}",
-                i + 1,
+                index + 1,
                 turn.run_dir,
                 preview(&turn.user)
             ));
@@ -119,23 +127,22 @@ impl Session {
     }
 }
 
-/// Root directory for chat sessions: `$SOCAI_SESSIONS_DIR` or
-/// `~/.socai/sessions`. Mirrors [`crate::agent::run_logging::default_runs_root`].
 pub fn default_sessions_root() -> PathBuf {
-    if let Ok(env) = std::env::var("SOCAI_SESSIONS_DIR") {
-        return PathBuf::from(env);
+    if let Ok(path) = std::env::var("SOCAI_SESSIONS_DIR") {
+        return PathBuf::from(path);
     }
-    if let Some(home) = dirs::home_dir() {
-        return home.join(".socai/sessions");
+    if let Ok(home) = std::env::var("SOCAI_HOME") {
+        return PathBuf::from(home).join("sessions");
     }
-    PathBuf::from(".socai/sessions")
+    dirs::home_dir()
+        .map(|home| home.join(".socai/sessions"))
+        .unwrap_or_else(|| PathBuf::from(".socai/sessions"))
 }
 
 fn preview(text: &str) -> String {
     let line = text.trim().lines().next().unwrap_or("").trim();
     if line.chars().count() > 60 {
-        let s: String = line.chars().take(60).collect();
-        format!("{s}…")
+        format!("{}…", line.chars().take(60).collect::<String>())
     } else {
         line.to_string()
     }
@@ -144,6 +151,6 @@ fn preview(text: &str) -> String {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
+        .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
 }

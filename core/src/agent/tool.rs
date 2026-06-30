@@ -145,6 +145,7 @@ pub struct ToolContext {
     pub turn: u32,
     pub active_tool_name: String,
     pub run_state: Option<Arc<RunState>>,
+    tool_dir: Option<PathBuf>,
     pub enabled_sites: Arc<Mutex<BTreeSet<String>>>,
     progress: Option<ToolProgressSender>,
     counters: Arc<Mutex<Counters>>,
@@ -190,6 +191,7 @@ impl ToolContext {
             turn: 0,
             active_tool_name: String::new(),
             run_state: None,
+            tool_dir: None,
             enabled_sites: Arc::new(Mutex::new(BTreeSet::new())),
             progress: None,
             counters: Arc::new(Mutex::new(Counters::default())),
@@ -295,6 +297,19 @@ impl ToolContext {
         self
     }
 
+    pub fn with_tool_dir(mut self, tool_dir: impl AsRef<Path>) -> Self {
+        self.tool_dir = Some(tool_dir.as_ref().to_path_buf());
+        self.counters = Arc::new(Mutex::new(Counters::default()));
+        self
+    }
+
+    /// Root owned by the current tool invocation. For standalone CLI calls it
+    /// is the run directory itself; for agent calls it is
+    /// `<run_dir>/tools/<tool-call>/`.
+    pub fn output_dir(&self) -> &Path {
+        self.tool_dir.as_deref().unwrap_or(&self.run_dir)
+    }
+
     pub fn enable_site(&self, site: impl Into<String>) {
         if let Ok(mut guard) = self.enabled_sites.lock() {
             guard.insert(site.into());
@@ -314,7 +329,7 @@ impl ToolContext {
         guard.screenshot += 1;
         let label = sanitize_label(label, "screenshot");
         let path = self
-            .run_dir
+            .output_dir()
             .join(format!("{:03}_{label}.png", guard.screenshot));
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -327,7 +342,7 @@ impl ToolContext {
         let mut guard = self.counters.lock().expect("poisoned");
         guard.artifact += 1;
         let label = sanitize_label(label, "artifact");
-        let dir = self.run_dir.join(subdir);
+        let dir = self.output_dir().join(subdir);
         let _ = std::fs::create_dir_all(&dir);
         dir.join(format!("{:03}_{label}{suffix}", guard.artifact))
     }
@@ -448,6 +463,12 @@ pub trait Tool: Send + Sync {
             return true;
         }
         ctx.site_enabled(site)
+    }
+
+    /// Input after tool-specific defaults or forced runtime options are
+    /// applied. This is what gets executed and persisted in `tool.json`.
+    fn effective_input(&self, input: &Value) -> Value {
+        input.clone()
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult>;

@@ -619,11 +619,11 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     let page = match runtime.ensure_site_page(site.id, site.home_url).await {
         Ok(page) => page,
         Err(err) => {
-            state.session.record_turn(
+            state.session.record_run(
                 task,
                 &format!("[turn did not run — browser/network error: {err:#}]"),
-                "",
                 &run_dir,
+                "failed",
             );
             return Err(err);
         }
@@ -660,6 +660,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
         extra_instructions: agent_instructions(&preamble),
         enabled_sites: vec![site.id.to_string()],
         seed_messages: state.session.chat_messages(),
+        session_id: Some(state.session.id.clone()),
         run_dir: Some(run_dir.clone()),
         ..AgentRunConfig::default()
     };
@@ -672,9 +673,9 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
         outcome = &mut agent => outcome,
         _ = tokio::signal::ctrl_c() => {
             printer.abort();
-            let (run_id, partial) = live
+            let partial = live
                 .lock()
-                .map(|g| (g.run_id.clone(), g.assistant.clone()))
+                .map(|g| g.assistant.clone())
                 .unwrap_or_default();
             let assistant = if partial.trim().is_empty() {
                 "[interrupted by user before producing an answer]".to_string()
@@ -682,7 +683,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
                 format!("{}\n\n[interrupted by user]", partial.trim())
             };
             // Record the interrupted turn so a follow-up keeps its context.
-            state.session.record_turn(task, &assistant, &run_id, &run_dir);
+            state.session.record_run(task, &assistant, &run_dir, "interrupted");
             println!("\n[socai] interrupted — recorded; ask a follow-up, or press Ctrl+C at the prompt to exit.");
             return Ok(());
         }
@@ -694,7 +695,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
             // Record the failed turn too, so its topic survives for follow-ups.
             state
                 .session
-                .record_turn(task, &format!("[turn failed: {err:#}]"), "", &run_dir);
+                .record_run(task, &format!("[turn failed: {err:#}]"), &run_dir, "failed");
             return Err(err);
         }
     };
@@ -717,9 +718,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     } else {
         outcome.final_text.clone()
     };
-    state
-        .session
-        .record_turn(task, &recorded, &outcome.run_id, &outcome.run_dir);
+    state.session.record_turn(task, &recorded, &outcome.run_dir);
     Ok(())
 }
 

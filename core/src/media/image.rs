@@ -7,7 +7,7 @@ use base64::Engine;
 use futures::StreamExt;
 use serde_json::Value;
 
-use crate::media::common::{detect_media_type, insert_string, short, url_suffix, MediaUnavailable};
+use crate::media::common::{detect_media_type, insert_string, url_suffix, MediaUnavailable};
 use crate::media::md5;
 use crate::media::processor::MediaProcessor;
 
@@ -84,7 +84,7 @@ impl MediaProcessor {
             };
             match result {
                 Ok(text) if !text.trim().is_empty() => {
-                    insert_string(item, "ocr_text", short(&text, 1200));
+                    insert_string(item, "ocr_text", text);
                 }
                 Ok(_) => {}
                 Err(err) => insert_string(item, "ocr_error", err),
@@ -99,7 +99,11 @@ impl MediaProcessor {
     /// one batch, and attaches `ocr_text` (or `ocr_error`) to the card in place;
     /// the downloaded bytes are dropped (nothing written to the run dir). Returns
     /// the batch inference time.
-    pub async fn ocr_cover_images(&self, cards: &mut [Value], referer: &str) -> std::time::Duration {
+    pub async fn ocr_cover_images(
+        &self,
+        cards: &mut [Value],
+        referer: &str,
+    ) -> std::time::Duration {
         if !self.config.use_ocr || cards.is_empty() {
             return std::time::Duration::ZERO;
         }
@@ -138,7 +142,8 @@ impl MediaProcessor {
             .filter(|(_, bytes)| futures::future::ready(!bytes.is_empty()))
             .collect()
             .await;
-        self.timing.record("ocr_cover_download_batch", t_dl.elapsed());
+        self.timing
+            .record("ocr_cover_download_batch", t_dl.elapsed());
 
         let batch =
             tokio::task::spawn_blocking(move || crate::media::ocr::ocr_images_bytes(fetched)).await;
@@ -153,7 +158,7 @@ impl MediaProcessor {
             };
             match result {
                 Ok(text) if !text.trim().is_empty() => {
-                    insert_string(card, "ocr_text", short(&text, 1200));
+                    insert_string(card, "ocr_text", text);
                 }
                 Ok(_) => {}
                 Err(err) => insert_string(card, "ocr_error", err),
@@ -399,7 +404,7 @@ impl MediaProcessor {
             if !payload.is_empty() && self.config.use_ocr && item.get("ocr_text").is_none() {
                 match self.ocr_image(payload) {
                     Ok(text) if !text.trim().is_empty() => {
-                        insert_string(item, "ocr_text", short(&text, 800));
+                        insert_string(item, "ocr_text", text);
                     }
                     Ok(_) => {}
                     Err(err) => insert_string(item, "ocr_error", format!("{err:#}")),

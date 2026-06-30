@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use serde_json::json;
 use socai_core::runtime::{RuntimeBrowserEvent, SocaiRuntime};
 use tasks::AgentTaskRegistry;
-use telemetry::{duration_ms, DesktopTelemetry};
 use tauri::{Emitter, Manager};
+use telemetry::{duration_ms, DesktopTelemetry};
 
 /// macOS traffic-light inset (x, y). With this math the close-button center
 /// lands at `y - 2` px from the window top; the `.is-macos .topbar` header is
@@ -96,6 +96,10 @@ pub fn run() {
                                     handle.abort();
                                 }
                                 let task_id = snapshot.task_id.clone();
+                                commands::record_interrupted_run(
+                                    &snapshot,
+                                    "chrome tab was closed",
+                                );
                                 telemetry.capture(
                                     "socai_agent_task_end",
                                     json!({

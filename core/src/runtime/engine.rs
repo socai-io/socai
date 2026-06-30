@@ -307,6 +307,7 @@ pub struct AgentRunConfig {
     pub run_dir: Option<PathBuf>,
     /// Prior chat-level messages to continue a multi-turn session from.
     pub seed_messages: Vec<Message>,
+    pub session_id: Option<String>,
 }
 
 impl Default for AgentRunConfig {
@@ -320,6 +321,7 @@ impl Default for AgentRunConfig {
             enabled_sites: Vec::new(),
             run_dir: None,
             seed_messages: Vec::new(),
+            session_id: None,
         }
     }
 }
@@ -344,6 +346,7 @@ pub async fn run_agent_task(
         keep_recent_messages: config.keep_recent_messages,
         memory_max_chars: config.memory_max_chars,
         seed_messages: config.seed_messages,
+        session_id: config.session_id,
     };
     run_agent_with_events(task, llm_provider, tools, options, events_tx).await
 }

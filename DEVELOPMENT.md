@@ -61,6 +61,17 @@ precedence override for local/dev scripts:
 .socai/runs/<run-dir>/
 ```
 
+Persisted execution data has three ownership layers:
+
+- Session/conversation: `~/.socai/sessions/<session-id>/session.json`.
+- Agent execution: `<run-dir>/run.json`, exact `llm/` steps, and nested
+  `tools/<tool-call>/` records.
+- Standalone CLI command: `<run-dir>/tool.json`; the run directory itself is
+  the single tool-call record.
+
+See [Persisted execution model](docs/data-model.md) for the exact ownership and
+file contracts. No parallel legacy/event/trace format is written.
+
 For app build targets, icon regeneration, the Tauri version-pinning rule, the
 monochrome design system, and macOS icon-cache gotchas, see the
 [Desktop app section in AGENTS.md](./AGENTS.md#desktop-app--app).

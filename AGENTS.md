@@ -9,6 +9,11 @@ Build, run, local-dev workflows, and the reference-docs index live in
 only (CLI install + usage, desktop download); keep developer material out of it
 and in DEVELOPMENT.md instead.
 
+## Engineering rules
+
+- Generally do not add new tests to Rust code. Add them only when the user
+  explicitly asks for tests.
+
 ## Rust core — `core/`
 
 - `core/src/agent/`: generic agent loop, LLM providers, run state, tool trait.

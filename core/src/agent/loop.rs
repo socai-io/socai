@@ -15,7 +15,8 @@
 //! - `memory.rs`    — windowing the message history once it's long
 //! - `report.rs`    — final report enrichment with artifact links
 //! - `compaction.rs` — truncating tool_result bodies for the history budget
-//! - `run_state.rs` / `run_logging.rs` — persisting events + artifacts
+//! - `run_logging.rs` — canonical agent-run / LLM-step / tool-call records
+//! - `run_state.rs` — in-memory context compaction state
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,11 +29,11 @@ use tracing::{debug, info, warn};
 
 use crate::agent::compaction::{compress_text_maybe_json, TOOL_RESULT_TEXT_MAX_CHARS};
 use crate::agent::llm::{
-    Backend, Block, LLMResponse, Message, StopReason, ToolCall, ToolResultContent, ToolSchema,
+    Backend, Block, LLMResponse, Message, ToolCall, ToolResultContent, ToolSchema,
 };
 use crate::agent::memory::prepare_messages_for_context;
 use crate::agent::report::report_with_artifacts;
-use crate::agent::run_logging::{make_run_dir, RunDebugLogger};
+use crate::agent::run_logging::{make_run_dir, AgentRunRecorder};
 use crate::agent::run_state::RunState;
 use crate::agent::signature::tool_call_signature;
 use crate::agent::system_prompt::build_system_prompt;
@@ -103,6 +104,8 @@ pub struct AgentOptions {
     /// continue an ongoing multi-turn session. The current task is appended as
     /// the final user message. Empty = a fresh, single-shot run.
     pub seed_messages: Vec<Message>,
+    /// Optional parent conversation identifier.
+    pub session_id: Option<String>,
 }
 
 impl Default for AgentOptions {
@@ -116,6 +119,7 @@ impl Default for AgentOptions {
             keep_recent_messages: 12,
             memory_max_chars: 6000,
             seed_messages: Vec::new(),
+            session_id: None,
         }
     }
 }
@@ -150,8 +154,14 @@ pub async fn run_agent_with_events(
     let run_id = new_run_id();
     let run_dir = options.run_dir.unwrap_or_else(|| make_run_dir(task));
     ensure_dir(&run_dir)?;
-    let run_state = Arc::new(RunState::new(&run_dir, task, backend.model())?);
-    let debug_log = RunDebugLogger::new(&run_dir);
+    let run_state = Arc::new(RunState::new(task));
+    let run_recorder = AgentRunRecorder::start(
+        &run_dir,
+        &run_id,
+        options.session_id.as_deref(),
+        task,
+        backend.model(),
+    )?;
 
     let mut ctx = ToolContext::new(&run_id, &run_dir).with_run_state(Arc::clone(&run_state));
     for site in &options.enabled_sites {
@@ -161,14 +171,6 @@ pub async fn run_agent_with_events(
     let mut messages: Vec<Message> = options.seed_messages.clone();
     messages.push(Message::user(task.to_string()));
 
-    debug_log.event(
-        "task_start",
-        json!({
-            "task": task,
-            "model": backend.model(),
-            "tools": tools.iter().map(|t| t.name()).collect::<Vec<_>>(),
-        }),
-    );
     emit(
         &events,
         AgentEvent::Started {
@@ -185,6 +187,7 @@ pub async fn run_agent_with_events(
     let mut context_memory: Vec<String> = Vec::new();
     let mut tool_call_history: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut completed = false;
+    let mut terminal_error: Option<String> = None;
     let mut last_system: String = build_system_prompt(&[], &options.extra_instructions);
 
     while turn < options.max_turns {
@@ -204,14 +207,30 @@ pub async fn run_agent_with_events(
             options.keep_recent_messages,
             options.memory_max_chars,
         );
+        let request_payload =
+            backend.request_payload(&system, &request_messages, &schemas, options.max_tokens)?;
+        run_recorder.record_llm_request(turn, &request_payload)?;
 
+        let llm_started = Instant::now();
         let response: LLMResponse = match backend
             .send(&system, &request_messages, &schemas, options.max_tokens)
             .await
         {
-            Ok(r) => r,
+            Ok(response) => {
+                run_recorder.record_llm_response(
+                    turn,
+                    &response,
+                    llm_started.elapsed().as_millis() as u64,
+                )?;
+                response
+            }
             Err(e) => {
                 let msg = format!("{e:#}");
+                run_recorder.record_llm_error(
+                    turn,
+                    &msg,
+                    llm_started.elapsed().as_millis() as u64,
+                )?;
                 warn!(turn, error = %msg, "backend error");
                 emit(
                     &events,
@@ -220,8 +239,8 @@ pub async fn run_agent_with_events(
                         message: msg.clone(),
                     },
                 );
-                debug_log.api_error(turn, &msg, false);
                 final_text = format!("API error: {msg}");
+                terminal_error = Some(msg);
                 break;
             }
         };
@@ -246,10 +265,6 @@ pub async fn run_agent_with_events(
                     text: response.reasoning_content.clone(),
                 },
             );
-            debug_log.event(
-                "reasoning",
-                json!({"turn": turn, "text": response.reasoning_content.clone()}),
-            );
         }
         if !thinking_texts.is_empty() {
             let thinking_text = thinking_texts.join("\n");
@@ -260,7 +275,6 @@ pub async fn run_agent_with_events(
                     text: thinking_text.clone(),
                 },
             );
-            debug_log.event("reasoning", json!({"turn": turn, "text": thinking_text}));
         }
 
         // Build the assistant block list manually instead of using
@@ -288,20 +302,6 @@ pub async fn run_agent_with_events(
             .map(|tc| json!({"name": tc.name, "input": tc.input}))
             .collect();
         run_state.note_assistant_turn(turn, &visible_texts.join("\n"), &tool_call_summary);
-        debug_log.event(
-            "llm_response",
-            json!({
-                "turn": turn,
-                "stop_reason": stop_reason_str(response.stop_reason),
-                "text": visible_texts.join("\n"),
-                "tool_calls": tool_call_summary,
-                "usage": {
-                    "input_tokens": response.input_tokens,
-                    "output_tokens": response.output_tokens,
-                },
-            }),
-        );
-
         if response.tool_calls.is_empty() {
             completed = true;
             break;
@@ -318,6 +318,12 @@ pub async fn run_agent_with_events(
             let repeat_count = history.len() as u32;
 
             let sequence = (idx + 1) as u32;
+            let effective_input = find_tool(&tools, name)
+                .map(|tool| tool.effective_input(input))
+                .unwrap_or_else(|| input.clone());
+            let tool_recorder =
+                run_recorder.start_tool_call(turn, sequence, name, &effective_input)?;
+            let tool_ctx = ctx.clone().with_tool_dir(tool_recorder.dir());
             emit(
                 &events,
                 AgentEvent::ToolCall {
@@ -325,27 +331,16 @@ pub async fn run_agent_with_events(
                     turn,
                     sequence,
                     name: name.clone(),
-                    input: input.clone(),
+                    input: effective_input.clone(),
                     repeat_count,
                 },
             );
-            run_state.note_tool_call(turn, name, input);
-            debug_log.event(
-                "tool_call_start",
-                json!({
-                    "turn": turn,
-                    "sequence": sequence,
-                    "tool_use_id": id,
-                    "tool": name,
-                    "input": input,
-                    "repeat_count": repeat_count,
-                }),
-            );
-
+            run_state.note_tool_call(turn, name, &effective_input);
             let started = Instant::now();
-            let (result, error) = dispatch_tool(&tools, name, input, &ctx).await;
+            let (result, error) = dispatch_tool(&tools, name, &effective_input, &tool_ctx).await;
             let duration_ms = started.elapsed().as_millis() as u64;
             let duration_s = (duration_ms as f64) / 1000.0;
+            tool_recorder.finish_blocks(&result.blocks, duration_ms, error.as_deref())?;
 
             let result_content = tool_result_to_content(&result);
             let content = content_for_log(&result_content);
@@ -358,27 +353,14 @@ pub async fn run_agent_with_events(
                     turn,
                     sequence,
                     name: name.clone(),
-                    input: input.clone(),
+                    input: effective_input.clone(),
                     content: content.clone(),
                     summary: summary.clone(),
                     duration_ms,
                     error: error.clone(),
                 },
             );
-            run_state.note_tool_result(turn, name, input, &summary, duration_s);
-            debug_log.tool_result(
-                turn,
-                sequence,
-                id,
-                name,
-                input,
-                &content,
-                duration_s,
-                &summary,
-                repeat_count,
-                error.as_deref().unwrap_or(""),
-            );
-
+            run_state.note_tool_result(turn, name, &effective_input, &summary, duration_s);
             let mut history_content = bound_content_for_history(&result_content);
             // Break tight loops: when the model fires the *same* call with the
             // same args repeatedly, the bare result won't change its mind. Tell
@@ -404,7 +386,10 @@ pub async fn run_agent_with_events(
 
             context_memory.push(format!(
                 "- turn {turn} {name}({}): {summary}",
-                truncate_summary(&serde_json::to_string(input).unwrap_or_default(), 160)
+                truncate_summary(
+                    &serde_json::to_string(&effective_input).unwrap_or_default(),
+                    160,
+                )
             ));
             if context_memory.len() > 80 {
                 let overflow = context_memory.len() - 80;
@@ -413,7 +398,6 @@ pub async fn run_agent_with_events(
             ctx.active_tool_name.clear();
         }
         messages.push(Message::user_blocks(tool_result_blocks));
-        debug_log.event("turn_end", json!({"turn": turn}));
     }
 
     if !completed && turn >= options.max_turns {
@@ -433,11 +417,20 @@ pub async fn run_agent_with_events(
             options.keep_recent_messages,
             options.memory_max_chars,
         );
+        let request_payload =
+            backend.request_payload(&last_system, &request_messages, &[], options.max_tokens)?;
+        run_recorder.record_llm_request(turn + 1, &request_payload)?;
+        let llm_started = Instant::now();
         match backend
             .send(&last_system, &request_messages, &[], options.max_tokens)
             .await
         {
             Ok(response) => {
+                run_recorder.record_llm_response(
+                    turn + 1,
+                    &response,
+                    llm_started.elapsed().as_millis() as u64,
+                )?;
                 total_input_tokens += response.input_tokens;
                 total_output_tokens += response.output_tokens;
                 let (visible_texts, _) = split_thinking(&response.text_blocks);
@@ -451,21 +444,14 @@ pub async fn run_agent_with_events(
                     );
                     final_text = text.clone();
                 }
-                debug_log.event(
-                    "llm_response",
-                    json!({
-                        "turn": turn + 1,
-                        "forced_summary": true,
-                        "text": final_text,
-                        "usage": {
-                            "input_tokens": response.input_tokens,
-                            "output_tokens": response.output_tokens,
-                        },
-                    }),
-                );
             }
             Err(e) => {
                 let msg = format!("{e:#}");
+                run_recorder.record_llm_error(
+                    turn + 1,
+                    &msg,
+                    llm_started.elapsed().as_millis() as u64,
+                )?;
                 warn!(turn = turn + 1, error = %msg, "forced summary error");
                 emit(
                     &events,
@@ -474,7 +460,7 @@ pub async fn run_agent_with_events(
                         message: msg.clone(),
                     },
                 );
-                debug_log.api_error(turn + 1, &msg, true);
+                terminal_error = Some(msg);
             }
         }
     }
@@ -491,23 +477,17 @@ pub async fn run_agent_with_events(
     let enriched_report = report_with_artifacts(&final_text, Some(&run_state));
     let _ = std::fs::write(run_dir.join("report.md"), &enriched_report);
 
-    let serialized_messages = serde_json::to_value(&messages).unwrap_or(Value::Null);
-    debug_log.write_conversation(&last_system, &serialized_messages);
-
-    let summary = json!({
-        "task": task,
-        "model": backend.label(),
-        "turns": turn,
-        "run_dir": run_dir.to_string_lossy(),
-        "input_tokens": total_input_tokens,
-        "output_tokens": total_output_tokens,
-        "reasoning_log_file": "reasoning_log.jsonl",
-        "conversation_file": "conversation.json",
-        "report_file": "report.md",
-        "tool_results_dir": "tool_results",
-    });
-    debug_log.write_agent_summary(&summary);
-    debug_log.event("task_end", json!({"turn": turn, "completed": completed}));
+    run_recorder.finish(
+        if terminal_error.is_some() {
+            "failed"
+        } else {
+            "completed"
+        },
+        turn,
+        total_input_tokens,
+        total_output_tokens,
+        terminal_error.as_deref(),
+    )?;
 
     Ok(AgentOutcome {
         run_id,
@@ -554,15 +534,6 @@ fn find_tool<'a>(tools: &'a [SharedTool], name: &str) -> Option<&'a SharedTool> 
 
 fn emit(events: &broadcast::Sender<AgentEvent>, event: AgentEvent) {
     let _ = events.send(event);
-}
-
-fn stop_reason_str(reason: StopReason) -> &'static str {
-    match reason {
-        StopReason::EndTurn => "end_turn",
-        StopReason::ToolUse => "tool_use",
-        StopReason::MaxTokens => "max_tokens",
-        StopReason::Other => "other",
-    }
 }
 
 async fn dispatch_tool(
@@ -614,8 +585,8 @@ fn tool_result_to_content(result: &ToolResult) -> Vec<ToolResultContent> {
 ///   model can still cite it in the final report.
 ///
 /// Returns a single Text block (or `(empty result)` when nothing usable
-/// remained). The raw bodies still hit disk via tool_results/*.json, so
-/// nothing is lost — we just keep the chat-history budget bounded.
+/// remained). The raw bodies are preserved by the tool-call recorder, so the
+/// chat-history budget can stay bounded without losing debug data.
 fn bound_content_for_history(content: &[ToolResultContent]) -> Vec<ToolResultContent> {
     let mut screenshot_path: Option<String> = None;
     let mut parts: Vec<String> = Vec::new();
@@ -664,9 +635,8 @@ fn extract_screenshot_hint(text: &str) -> Option<String> {
     }
 }
 
-/// Render tool-result content as a JSON value suitable for the
-/// `reasoning_log.jsonl` debug stream (images are mentioned but bodies
-/// omitted — same convention as `json_safe_for_log`).
+/// Render tool-result content for the live UI event stream. Image bodies stay
+/// in the canonical tool output and are omitted from the event payload.
 fn content_for_log(content: &[ToolResultContent]) -> Value {
     let array: Vec<Value> = content
         .iter()

@@ -107,14 +107,15 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub input: Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,
     ToolUse,
@@ -122,7 +123,7 @@ pub enum StopReason {
     Other,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMResponse {
     pub text_blocks: Vec<String>,
     pub tool_calls: Vec<ToolCall>,
@@ -161,7 +162,7 @@ impl LLMResponse {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
     pub description: String,
@@ -172,6 +173,24 @@ pub struct ToolSchema {
 pub trait Backend: Send + Sync {
     fn label(&self) -> String;
     fn model(&self) -> &str;
+
+    /// JSON body sent to the provider, excluding authentication headers.
+    /// Production backends override this with their wire-format payload.
+    fn request_payload(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        max_tokens: u32,
+    ) -> anyhow::Result<Value> {
+        Ok(serde_json::json!({
+            "model": self.model(),
+            "system": system,
+            "messages": messages,
+            "tools": tools,
+            "max_tokens": max_tokens,
+        }))
+    }
 
     async fn send(
         &self,

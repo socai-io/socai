@@ -1,15 +1,11 @@
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use socai_core::agent::AgentEvent;
 
 use crate::tasks::{now_ms, AgentTaskSnapshot};
 
-const TIMELINE_FILE: &str = "timeline.jsonl";
 const MAX_EVENT_TEXT_CHARS: usize = 8_000;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -256,33 +252,26 @@ impl AgentTaskEventKind {
     }
 }
 
-pub(crate) fn append_timeline_event(
+pub(crate) fn live_timeline_event(
     snapshot: &AgentTaskSnapshot,
     payload: AgentTaskEventKind,
     snapshot_for_emit: Option<AgentTaskSnapshot>,
     sequence: u64,
-) -> anyhow::Result<AgentTaskEventPayload> {
-    let path = timeline_path(snapshot).context("task has no run_dir for timeline")?;
-    let mut event = AgentTaskEventPayload {
+) -> AgentTaskEventPayload {
+    AgentTaskEventPayload {
         task_id: snapshot.task_id.clone(),
         payload,
-        snapshot: None,
+        snapshot: snapshot_for_emit,
         sequence,
         created_at: now_ms(),
-    };
-    append_jsonl(&path, &event).with_context(|| format!("write timeline {}", path.display()))?;
-    event.snapshot = snapshot_for_emit;
-    Ok(event)
+    }
 }
 
 pub(crate) fn load_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload> {
-    let mut events = read_timeline_events(snapshot);
-    if events.is_empty() {
-        events = replay_task_events(snapshot);
-        if !events.is_empty() {
-            ensure_started_event(snapshot, &mut events);
-            reindex_replay_events(snapshot, &mut events);
-        }
+    let mut events = replay_task_events(snapshot);
+    if !events.is_empty() {
+        ensure_started_event(snapshot, &mut events);
+        reindex_replay_events(snapshot, &mut events);
     }
     append_terminal_snapshot_events(snapshot, &mut events);
     events.sort_by(compare_events);
@@ -356,10 +345,7 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
     }
 }
 
-/// Human-readable label for a tool name. Computed when an event is written and
-/// baked into timeline.jsonl; the read path never recomputes it. So only current
-/// tool names ever reach here — renamed tools need no legacy aliases, and old
-/// runs keep the labels they were written with.
+/// Human-readable label for a current tool name.
 pub(crate) fn user_label(name: &str) -> String {
     match name {
         "search" => "searched xiaohongshu",
@@ -382,60 +368,6 @@ pub(crate) fn user_label(name: &str) -> String {
     .into()
 }
 
-fn timeline_path(snapshot: &AgentTaskSnapshot) -> Option<PathBuf> {
-    let run_dir = snapshot
-        .run_dir
-        .as_ref()
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|dir| !dir.is_empty())?;
-    Some(PathBuf::from(run_dir).join(TIMELINE_FILE))
-}
-
-fn append_jsonl(path: &Path, event: &AgentTaskEventPayload) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut line = serde_json::to_string(event).map_err(std::io::Error::other)?;
-    line.push('\n');
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(line.as_bytes())
-}
-
-fn read_timeline_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload> {
-    let Some(path) = timeline_path(snapshot) else {
-        return Vec::new();
-    };
-    let mut events: Vec<AgentTaskEventPayload> = read_jsonl_values(&path)
-        .into_iter()
-        .filter_map(|value| serde_json::from_value::<AgentTaskEventPayload>(value).ok())
-        .map(|mut event| {
-            if event.task_id.is_empty() {
-                event.task_id = snapshot.task_id.clone();
-            }
-            event.snapshot = None;
-            event
-        })
-        .collect();
-    events.sort_by(compare_events);
-    events
-}
-
-pub(crate) fn next_timeline_sequence(snapshot: &AgentTaskSnapshot) -> u64 {
-    timeline_path(snapshot)
-        .map(|path| next_sequence(&path))
-        .unwrap_or(1)
-}
-
-fn next_sequence(path: &Path) -> u64 {
-    read_jsonl_values(path)
-        .into_iter()
-        .filter_map(|value| value.get("sequence").and_then(Value::as_u64))
-        .max()
-        .unwrap_or(0)
-        + 1
-}
-
 fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload> {
     let Some(run_dir) = snapshot
         .run_dir
@@ -445,48 +377,64 @@ fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload
         return Vec::new();
     };
     let run_dir = PathBuf::from(run_dir);
-    let mut events = replay_reasoning_log(snapshot, &run_dir, &run_dir.join("reasoning_log.jsonl"));
-    if events.is_empty() {
-        events = replay_run_state_events(snapshot, &run_dir.join("run_state/events.jsonl"));
-    }
-    events
-}
-
-fn replay_reasoning_log(
-    snapshot: &AgentTaskSnapshot,
-    run_dir: &Path,
-    path: &Path,
-) -> Vec<AgentTaskEventPayload> {
+    let Some(run) = read_json(&run_dir.join("run.json")) else {
+        return Vec::new();
+    };
     let mut events = Vec::new();
+    let task = run
+        .get("task")
+        .and_then(Value::as_str)
+        .unwrap_or(&snapshot.task);
+    let model = run
+        .get("model")
+        .and_then(Value::as_str)
+        .or(snapshot.model.as_deref())
+        .unwrap_or("unknown model");
+    let run_id = run
+        .get("id")
+        .and_then(Value::as_str)
+        .or(snapshot.run_id.as_deref())
+        .unwrap_or("");
+    events.push(replay_event(
+        snapshot,
+        AgentTaskEventKind::Started {
+            run_id: run_id.to_string(),
+            task: task.to_string(),
+            model: model.to_string(),
+            text: started_event_text_fields(task, Some(run_id), model),
+        },
+    ));
+
     let mut last_turn = None;
-    for value in read_jsonl_values(path) {
-        let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-        match event_type {
-            "task_start" => {
-                let task = value.get("task").and_then(Value::as_str);
-                let model = value.get("model").and_then(Value::as_str);
-                events.push(replay_event(
-                    snapshot,
-                    AgentTaskEventKind::Started {
-                        run_id: snapshot.run_id.clone().unwrap_or_default(),
-                        task: task.unwrap_or(&snapshot.task).to_string(),
-                        model: model
-                            .or(snapshot.model.as_deref())
-                            .unwrap_or("unknown model")
-                            .to_string(),
-                        text: started_event_text(snapshot, task, model),
-                    },
-                ));
-            }
-            "llm_response" => {
-                let turn = number_field(&value, "turn") as u32;
-                push_turn_event(snapshot, &mut events, &mut last_turn, turn);
-                let text = value
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim();
-                if !text.is_empty() {
+    for (turn, response) in llm_responses(&run_dir) {
+        push_turn_event(snapshot, &mut events, &mut last_turn, turn);
+        if let Some(error) = response.get("error").and_then(Value::as_str) {
+            events.push(replay_event(
+                snapshot,
+                AgentTaskEventKind::ApiError {
+                    turn,
+                    message: error.to_string(),
+                    text: format!("turn {turn}: {error}"),
+                },
+            ));
+            continue;
+        }
+        if let Some(reasoning) = response
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+        {
+            events.push(replay_event(
+                snapshot,
+                AgentTaskEventKind::Reasoning {
+                    turn,
+                    text: truncate_event_text(reasoning),
+                },
+            ));
+        }
+        if let Some(texts) = response.get("text_blocks").and_then(Value::as_array) {
+            for text in texts.iter().filter_map(Value::as_str) {
+                if !text.trim().is_empty() {
                     events.push(replay_event(
                         snapshot,
                         AgentTaskEventKind::Assistant {
@@ -496,188 +444,67 @@ fn replay_reasoning_log(
                     ));
                 }
             }
-            "reasoning" => {
-                let turn = number_field(&value, "turn") as u32;
-                push_turn_event(snapshot, &mut events, &mut last_turn, turn);
-                let text = value
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim();
-                if !text.is_empty() {
-                    events.push(replay_event(
-                        snapshot,
-                        AgentTaskEventKind::Reasoning {
-                            turn,
-                            text: truncate_event_text(text),
-                        },
-                    ));
-                }
-            }
-            "tool_call_start" => {
-                let turn = number_field(&value, "turn") as u32;
-                push_turn_event(snapshot, &mut events, &mut last_turn, turn);
-                let sequence = number_field(&value, "sequence") as u32;
-                let tool = value.get("tool").and_then(Value::as_str).unwrap_or("tool");
-                let input = value.get("input").unwrap_or(&Value::Null);
-                let repeat_count = number_field(&value, "repeat_count") as u32;
-                let id = tool_use_id(&value, turn, sequence, tool);
-                events.push(replay_event(
-                    snapshot,
-                    tool_call_event(&id, turn, sequence, tool, input, repeat_count),
-                ));
-            }
-            "tool_result" => {
-                let turn = number_field(&value, "turn") as u32;
-                push_turn_event(snapshot, &mut events, &mut last_turn, turn);
-                let sequence = number_field(&value, "sequence") as u32;
-                let tool = value.get("tool").and_then(Value::as_str).unwrap_or("tool");
-                let input = value.get("input").unwrap_or(&Value::Null);
-                let summary = value
-                    .get("result_summary")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let error = value.get("error").and_then(Value::as_str).unwrap_or("");
-                let duration_ms = duration_ms(&value);
-                let result_file = value
-                    .get("result_file")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let content = value
-                    .get("content")
-                    .cloned()
-                    .or_else(|| {
-                        result_file
-                            .as_deref()
-                            .and_then(|file| load_result_content(run_dir, file))
-                    })
-                    .unwrap_or(Value::Null);
-                let id = tool_use_id(&value, turn, sequence, tool);
-                events.push(replay_event(
-                    snapshot,
-                    tool_result_event(
-                        &id,
-                        turn,
-                        sequence,
-                        tool,
-                        input,
-                        summary,
-                        duration_ms,
-                        if error.trim().is_empty() {
-                            None
-                        } else {
-                            Some(error)
-                        },
-                        &content,
-                        result_file,
-                    ),
-                ));
-            }
-            "api_error" => {
-                let turn = number_field(&value, "turn") as u32;
-                push_turn_event(snapshot, &mut events, &mut last_turn, turn);
-                let message = value
-                    .get("error")
-                    .or_else(|| value.get("message"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("api error");
-                events.push(replay_event(
-                    snapshot,
-                    AgentTaskEventKind::ApiError {
-                        turn,
-                        message: message.to_string(),
-                        text: format!("turn {turn}: {message}"),
-                    },
-                ));
-            }
-            "task_end" => {
-                let turn = number_field(&value, "turn") as u32;
-                events.push(replay_event(
-                    snapshot,
-                    AgentTaskEventKind::Done {
-                        run_id: snapshot.run_id.clone(),
-                        turns: turn,
-                        text: if turn > 0 {
-                            format!("done in {turn} turns")
-                        } else {
-                            "done".into()
-                        },
-                    },
-                ));
-            }
-            _ => {}
+        }
+        let calls = response
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (index, call) in calls.iter().enumerate() {
+            let sequence = index as u32 + 1;
+            let name = call.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let id = call
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("tool-call");
+            let tool_rel = format!(
+                "tools/turn-{turn:03}-call-{sequence:02}-{}",
+                safe_component(name, "tool")
+            );
+            let tool_dir = run_dir.join(&tool_rel);
+            let manifest = read_json(&tool_dir.join("tool.json")).unwrap_or(Value::Null);
+            let input = manifest
+                .get("input")
+                .or_else(|| call.get("input"))
+                .unwrap_or(&Value::Null);
+            events.push(replay_event(
+                snapshot,
+                tool_call_event(id, turn, sequence, name, input, 0),
+            ));
+            let output = read_json(&tool_dir.join("output.json")).unwrap_or(Value::Null);
+            let error = manifest.get("error").and_then(Value::as_str);
+            let duration = manifest
+                .get("duration_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let summary = tool_output_summary(&output);
+            events.push(replay_event(
+                snapshot,
+                tool_result_event(
+                    id,
+                    turn,
+                    sequence,
+                    name,
+                    input,
+                    &summary,
+                    duration,
+                    error,
+                    &output,
+                    Some(format!("{tool_rel}/output.json")),
+                ),
+            ));
         }
     }
-    events
-}
-
-fn replay_run_state_events(
-    snapshot: &AgentTaskSnapshot,
-    path: &Path,
-) -> Vec<AgentTaskEventPayload> {
-    let mut events = Vec::new();
-    let mut last_turn = None;
-    for value in read_jsonl_values(path) {
-        let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-        match event_type {
-            "assistant_turn" => {
-                let turn = number_field(&value, "turn") as u32;
-                push_turn_event(snapshot, &mut events, &mut last_turn, turn);
-                let text = value
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim();
-                if !text.is_empty() {
-                    events.push(replay_event(
-                        snapshot,
-                        AgentTaskEventKind::Assistant {
-                            turn,
-                            text: truncate_event_text(text),
-                        },
-                    ));
-                }
-            }
-            "tool_call" => {
-                let turn = number_field(&value, "turn") as u32;
-                push_turn_event(snapshot, &mut events, &mut last_turn, turn);
-                let tool = value.get("tool").and_then(Value::as_str).unwrap_or("tool");
-                let input = value.get("input").unwrap_or(&Value::Null);
-                let id = tool_use_id(&value, turn, 0, tool);
-                events.push(replay_event(
-                    snapshot,
-                    tool_call_event(&id, turn, 0, tool, input, 0),
-                ));
-            }
-            "tool_result" => {
-                let turn = number_field(&value, "turn") as u32;
-                push_turn_event(snapshot, &mut events, &mut last_turn, turn);
-                let tool = value.get("tool").and_then(Value::as_str).unwrap_or("tool");
-                let input = value.get("input").unwrap_or(&Value::Null);
-                let summary = value
-                    .get("result_summary")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let duration_ms = duration_ms(&value);
-                let id = tool_use_id(&value, turn, 0, tool);
-                events.push(replay_event(
-                    snapshot,
-                    tool_result_event(
-                        &id,
-                        turn,
-                        0,
-                        tool,
-                        input,
-                        summary,
-                        duration_ms,
-                        None,
-                        &Value::Null,
-                        None,
-                    ),
-                ));
-            }
-            _ => {}
-        }
+    let turns = run.get("turns").and_then(Value::as_u64).unwrap_or_default() as u32;
+    if run.get("status").and_then(Value::as_str) == Some("completed") {
+        events.push(replay_event(
+            snapshot,
+            AgentTaskEventKind::Done {
+                run_id: Some(run_id.to_string()),
+                turns,
+                text: format!("done in {turns} turns"),
+            },
+        ));
     }
     events
 }
@@ -968,9 +795,8 @@ fn raw_tool_result_value(content: &Value) -> Option<Value> {
 }
 
 fn normalize_entities(tool: &str, value: &Value) -> Vec<TimelineEntity> {
-    // Like user_label, this runs at write time, so only the current tool name
-    // reaches here. `--preview` yields a `cards` array (-> card grid); the
-    // default full scan yields the aggregated bundle (-> xhs_search).
+    // `--preview` yields a `cards` array (-> card grid); the default full scan
+    // yields the aggregated bundle (-> xhs_search).
     match tool {
         "search" => {
             if let Some(cards) = value.get("cards").and_then(Value::as_array) {
@@ -1030,52 +856,54 @@ fn entity(entity_type: &str, data: Value) -> TimelineEntity {
     }
 }
 
-fn load_result_content(run_dir: &Path, result_file: &str) -> Option<Value> {
-    let path = run_dir.join(result_file);
-    let text = std::fs::read_to_string(path).ok()?;
-    let value = serde_json::from_str::<Value>(&text).ok()?;
-    value.get("content").cloned()
+fn read_json(path: &Path) -> Option<Value> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-fn tool_use_id(value: &Value, turn: u32, sequence: u32, tool: &str) -> String {
-    value
-        .get("tool_use_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("turn:{turn}:sequence:{sequence}:tool:{tool}"))
-}
-
-fn duration_ms(value: &Value) -> u64 {
-    if let Some(ms) = value.get("duration_ms").and_then(Value::as_u64) {
-        return ms;
-    }
-    value
-        .get("duration_s")
-        .and_then(Value::as_f64)
-        .map(|seconds| (seconds * 1000.0).round().max(0.0) as u64)
-        .unwrap_or_default()
-}
-
-fn number_field(value: &Value, field: &str) -> u64 {
-    value
-        .get(field)
-        .and_then(|number| {
-            number
-                .as_u64()
-                .or_else(|| number.as_f64().map(|n| n as u64))
-        })
-        .unwrap_or_default()
-}
-
-fn read_jsonl_values(path: &Path) -> Vec<Value> {
-    let Ok(text) = std::fs::read_to_string(path) else {
+fn llm_responses(run_dir: &Path) -> Vec<(u32, Value)> {
+    let Ok(entries) = std::fs::read_dir(run_dir.join("llm")) else {
         return Vec::new();
     };
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .collect()
+    let mut responses: Vec<(u32, Value)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let step = name.strip_suffix(".response.json")?.parse().ok()?;
+            Some((step, read_json(&entry.path())?))
+        })
+        .collect();
+    responses.sort_by_key(|(step, _)| *step);
+    responses
+}
+
+fn tool_output_summary(output: &Value) -> String {
+    let raw = raw_tool_result_value(output).unwrap_or(Value::Null);
+    let text = match raw {
+        Value::String(text) => text,
+        Value::Null => String::new(),
+        value => serde_json::to_string(&value).unwrap_or_default(),
+    };
+    truncate_event_text(&text.chars().take(240).collect::<String>())
+}
+
+fn safe_component(value: &str, fallback: &str) -> String {
+    let cleaned: String = value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('_');
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.chars().take(48).collect()
+    }
 }
 
 fn truncate_event_text(text: &str) -> String {

@@ -59,6 +59,50 @@ impl AnthropicBackend {
         self.enable_prompt_caching = enable;
         self
     }
+
+    fn build_request_payload(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        max_tokens: u32,
+    ) -> Value {
+        let wire_messages: Vec<WireMessage> = messages.iter().map(message_to_wire).collect();
+        let system_value = if self.enable_prompt_caching && !system.is_empty() {
+            json!([{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }])
+        } else {
+            json!(system)
+        };
+        let mut wire_tools: Vec<Value> = tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.input_schema,
+                })
+            })
+            .collect();
+        if self.enable_prompt_caching {
+            if let Some(Value::Object(map)) = wire_tools.last_mut() {
+                map.insert("cache_control".into(), json!({"type": "ephemeral"}));
+            }
+        }
+        json!({
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system_value,
+            "messages": wire_messages.iter().map(|message| json!({
+                "role": message.role,
+                "content": message.content,
+            })).collect::<Vec<_>>(),
+            "tools": wire_tools,
+        })
+    }
 }
 
 fn block_to_wire(block: &Block) -> Option<Value> {
@@ -187,6 +231,16 @@ impl Backend for AnthropicBackend {
         &self.model
     }
 
+    fn request_payload(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        max_tokens: u32,
+    ) -> anyhow::Result<Value> {
+        Ok(self.build_request_payload(system, messages, tools, max_tokens))
+    }
+
     async fn send(
         &self,
         system: &str,
@@ -194,48 +248,7 @@ impl Backend for AnthropicBackend {
         tools: &[ToolSchema],
         max_tokens: u32,
     ) -> anyhow::Result<LLMResponse> {
-        let wire_messages: Vec<WireMessage> = messages.iter().map(message_to_wire).collect();
-
-        // System: pass as a content block when prompt caching is on so we
-        // can attach cache_control; otherwise plain string.
-        let system_value = if self.enable_prompt_caching && !system.is_empty() {
-            json!([{
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }])
-        } else {
-            json!(system)
-        };
-
-        // Tools: drop a cache_control marker on the last one so Anthropic
-        // caches the whole tool-definitions block.
-        let mut wire_tools: Vec<Value> = tools
-            .iter()
-            .map(|t| {
-                json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.input_schema,
-                })
-            })
-            .collect();
-        if self.enable_prompt_caching {
-            if let Some(Value::Object(map)) = wire_tools.last_mut() {
-                map.insert("cache_control".into(), json!({"type": "ephemeral"}));
-            }
-        }
-
-        let body = json!({
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "system": system_value,
-            "messages": wire_messages.iter().map(|m| json!({
-                "role": m.role,
-                "content": m.content,
-            })).collect::<Vec<_>>(),
-            "tools": wire_tools,
-        });
+        let body = self.build_request_payload(system, messages, tools, max_tokens);
 
         let response = self
             .client

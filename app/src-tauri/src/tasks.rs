@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
+use socai_core::agent::{mark_agent_run_status, Session};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::AbortHandle;
 
@@ -38,6 +39,7 @@ pub struct AgentTaskSnapshot {
     pub(crate) finished_at: Option<u64>,
     pub(crate) run_id: Option<String>,
     pub(crate) run_dir: Option<String>,
+    pub(crate) session_dir: Option<String>,
     pub(crate) target_id: Option<String>,
     // Hydrated from `<run_dir>/report.md` for API responses; not persisted in tasks.json.
     pub(crate) final_text: Option<String>,
@@ -57,6 +59,25 @@ impl Default for AgentTaskRegistry {
                 task.finished_at = Some(interrupted_at);
                 task.error = Some("app was closed before this task finished".into());
                 task.target_id = None;
+                if let Some(run_dir) = task.run_dir.as_deref() {
+                    let _ = mark_agent_run_status(
+                        run_dir,
+                        "interrupted",
+                        Some("app was closed before this task finished"),
+                    );
+                }
+                if let (Some(session_dir), Some(run_dir)) =
+                    (task.session_dir.as_deref(), task.run_dir.as_deref())
+                {
+                    if let Ok(mut session) = Session::load(session_dir) {
+                        session.record_run(
+                            &task.task,
+                            "[task interrupted: app was closed before this task finished]",
+                            &PathBuf::from(run_dir),
+                            "interrupted",
+                        );
+                    }
+                }
             }
         }
         let next_seq = tasks.len() as u64;
@@ -83,6 +104,7 @@ impl AgentTaskRegistry {
         provider: Option<String>,
         model: Option<String>,
         run_dir: String,
+        session_dir: String,
     ) -> AgentTaskSnapshot {
         let mut guard = self.inner.lock().await;
         guard.next_seq += 1;
@@ -98,6 +120,7 @@ impl AgentTaskRegistry {
             finished_at: None,
             run_id: None,
             run_dir: Some(run_dir),
+            session_dir: Some(session_dir),
             target_id: None,
             final_text: None,
             error: None,
@@ -230,12 +253,12 @@ impl AgentTaskRegistry {
         Some(timeline::load_task_events(&snapshot))
     }
 
-    pub(crate) async fn append_timeline_event(
+    pub(crate) async fn live_timeline_event(
         &self,
         task_id: &str,
         payload: AgentTaskEventKind,
         snapshot_for_emit: Option<AgentTaskSnapshot>,
-    ) -> Option<anyhow::Result<AgentTaskEventPayload>> {
+    ) -> Option<AgentTaskEventPayload> {
         let (snapshot, timeline_lock) = {
             let mut guard = self.inner.lock().await;
             let snapshot = guard
@@ -252,8 +275,8 @@ impl AgentTaskRegistry {
         };
 
         let _timeline_guard = timeline_lock.lock().await;
-        let sequence = self.next_timeline_sequence(task_id, &snapshot).await;
-        Some(timeline::append_timeline_event(
+        let sequence = self.next_timeline_sequence(task_id).await;
+        Some(timeline::live_timeline_event(
             &snapshot,
             payload,
             snapshot_for_emit,
@@ -261,25 +284,14 @@ impl AgentTaskRegistry {
         ))
     }
 
-    async fn next_timeline_sequence(&self, task_id: &str, snapshot: &AgentTaskSnapshot) -> u64 {
-        {
-            let mut guard = self.inner.lock().await;
-            if let Some(next) = guard.timeline_next_seq.get_mut(task_id) {
-                let sequence = *next;
-                *next = sequence.saturating_add(1);
-                return sequence;
-            }
-        }
-
-        // First append for this task in the current process: scan once to pick
-        // up any existing rows, then cache the next sequence in memory. This
-        // avoids re-reading timeline.jsonl on every streamed event while still
-        // preserving append-after-replay correctness.
-        let sequence = timeline::next_timeline_sequence(snapshot);
+    async fn next_timeline_sequence(&self, task_id: &str) -> u64 {
         let mut guard = self.inner.lock().await;
-        guard
+        let next = guard
             .timeline_next_seq
-            .insert(task_id.to_string(), sequence.saturating_add(1));
+            .entry(task_id.to_string())
+            .or_insert(1);
+        let sequence = *next;
+        *next = sequence.saturating_add(1);
         sequence
     }
 
@@ -305,7 +317,11 @@ impl AgentTaskRegistry {
     /// running→terminal race, or `None` when another path (cancel/interrupt)
     /// already finalized it. This is the single guard that keeps one task from
     /// emitting two terminal events.
-    pub(crate) async fn finalize_if_active<F>(&self, task_id: &str, f: F) -> Option<AgentTaskSnapshot>
+    pub(crate) async fn finalize_if_active<F>(
+        &self,
+        task_id: &str,
+        f: F,
+    ) -> Option<AgentTaskSnapshot>
     where
         F: FnOnce(&mut AgentTaskSnapshot),
     {
@@ -332,10 +348,22 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
-    snapshot.final_text = snapshot
-        .run_dir
-        .as_deref()
-        .and_then(final_text_from_run_dir);
+    if let Some(run_dir) = snapshot.run_dir.as_deref() {
+        snapshot.final_text = final_text_from_run_dir(run_dir);
+        if let Ok(text) = std::fs::read_to_string(PathBuf::from(run_dir).join("run.json")) {
+            if let Ok(run) = serde_json::from_str::<Value>(&text) {
+                snapshot.run_id = run.get("id").and_then(Value::as_str).map(str::to_string);
+                snapshot.error = run.get("error").and_then(Value::as_str).map(str::to_string);
+                snapshot.turns = run
+                    .get("turns")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as u32);
+                snapshot.input_tokens = run.pointer("/usage/input_tokens").and_then(Value::as_u64);
+                snapshot.output_tokens =
+                    run.pointer("/usage/output_tokens").and_then(Value::as_u64);
+            }
+        }
+    }
     snapshot
 }
 
@@ -379,7 +407,8 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // Keep tasks.json as an app index only. Task results live under run_dir.
+    // Keep tasks.json as an app index only. Run id, result, error, usage, and
+    // target state are hydrated from the run or are process-local.
     let records: Vec<Value> = tasks
         .iter()
         .map(|task| {
@@ -392,13 +421,8 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
                 "created_at": task.created_at,
                 "started_at": task.started_at,
                 "finished_at": task.finished_at,
-                "run_id": &task.run_id,
                 "run_dir": &task.run_dir,
-                "target_id": &task.target_id,
-                "error": &task.error,
-                "turns": task.turns,
-                "input_tokens": task.input_tokens,
-                "output_tokens": task.output_tokens,
+                "session_dir": &task.session_dir,
             })
         })
         .collect();

@@ -1,31 +1,35 @@
-//! Persistent debug logging for one agent run.
+//! Minimal persistence for agent runs and tool calls.
 //!
-//! Writes (under the run dir):
-//! - `reasoning_log.jsonl`       — append-only event timeline
-//! - `conversation.json`         — final system + messages snapshot
-//! - `agent_log.json`            — run summary (turns, run_dir, durations, …)
-//! - `tool_results/<turn>_<seq>_<tool>.json` — full tool result body per call
+//! Each fact has one owner:
+//! - `run.json` owns agent-run metadata and aggregate usage.
+//! - `llm/NNN.request.json` and `llm/NNN.response.json` own exact LLM I/O.
+//! - `tools/turn-NNN-call-NN-name/tool.json` owns tool input and lifecycle.
+//! - tool `output.json` owns the raw tool result.
+//! - standalone tool `tool.json` additionally owns its input because there is
+//!   no parent LLM response.
 
-// tool_result takes many fields (turn, sequence, tool_use_id, tool, input,
-// content, duration_s, result_summary, repeat_count, error). Plain function
-// args match the persisted debug payload directly.
-#![allow(clippy::too_many_arguments)]
+#![allow(clippy::expect_used)]
 
-use std::{
-    ffi::OsString,
-    path::{Path, PathBuf},
-};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
 
-use chrono::Local;
-use serde_json::{json, Map, Value};
+use chrono::{Local, Utc};
+use serde_json::{json, Value};
+use uuid::Uuid;
+
+use crate::agent::llm::LLMResponse;
+use crate::agent::tool::ToolResultBlock;
 
 fn timestamp() -> String {
-    Local::now().to_rfc3339()
+    Utc::now().to_rfc3339()
 }
 
-fn safe_slug(text: &str, max_chars: usize) -> String {
-    let raw = text.trim().replace('/', " ");
-    let mut acc: String = raw
+fn safe_component(value: &str, fallback: &str) -> String {
+    let cleaned: String = value
+        .trim()
         .chars()
         .map(|ch| {
             if ch.is_alphanumeric() || ch == '_' || ch == '-' {
@@ -35,16 +39,47 @@ fn safe_slug(text: &str, max_chars: usize) -> String {
             }
         })
         .collect();
-    while acc.contains("__") {
-        acc = acc.replace("__", "_");
-    }
-    let trimmed: String = acc.trim_matches('_').to_string();
-    let final_slug = if trimmed.is_empty() {
-        "agent".to_string()
+    let trimmed = cleaned.trim_matches('_');
+    if trimmed.is_empty() {
+        fallback.to_string()
     } else {
-        trimmed
-    };
-    final_slug.chars().take(max_chars).collect()
+        trimmed.chars().take(48).collect()
+    }
+}
+
+fn write_json_atomic(path: &Path, value: &Value) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("record.json");
+    let temp = path.with_file_name(format!(".{name}.{}.tmp", Uuid::new_v4()));
+    std::fs::write(&temp, bytes)?;
+    if std::fs::rename(&temp, path).is_err() {
+        let _ = std::fs::remove_file(path);
+        std::fs::rename(temp, path)?;
+    }
+    Ok(())
+}
+
+fn env_runs_root(value: Option<OsString>) -> Option<PathBuf> {
+    let value = value?;
+    let value = value.to_string_lossy().trim().to_string();
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
+fn default_runs_root_from_parts(
+    env_root: Option<OsString>,
+    config_root: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> PathBuf {
+    env_runs_root(env_root)
+        .or(config_root)
+        .or_else(|| home.map(|path| path.join(".socai/runs")))
+        .unwrap_or_else(|| PathBuf::from(".socai/runs"))
 }
 
 /// Root for generated run directories. Precedence: `SOCAI_RUNS_DIR`, then
@@ -55,61 +90,34 @@ pub fn default_runs_root() -> PathBuf {
     }
     let config_root = match crate::config::load_config() {
         Ok(config) => config.runs_root(),
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to load socai config for runs.dir; using default runs root");
+        Err(error) => {
+            tracing::warn!(%error, "failed to load runs.dir; using the default");
             None
         }
     };
     default_runs_root_from_parts(None, config_root, dirs::home_dir())
 }
 
-fn env_runs_root(value: Option<OsString>) -> Option<PathBuf> {
-    let value = value?;
-    let trimmed = value.to_string_lossy().trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(trimmed))
-    }
+/// Allocate `<timestamp>_<label>`, adding a numeric suffix on collision.
+pub fn make_run_dir(label: &str) -> PathBuf {
+    make_run_dir_in_root(default_runs_root(), label)
 }
 
-fn default_runs_root_from_parts(
-    env_root: Option<OsString>,
-    config_root: Option<PathBuf>,
-    home: Option<PathBuf>,
-) -> PathBuf {
-    if let Some(root) = env_runs_root(env_root) {
-        return root;
-    }
-    if let Some(root) = config_root {
-        return root;
-    }
-    if let Some(home) = home {
-        return home.join(".socai/runs");
-    }
-    PathBuf::from(".socai/runs")
-}
-
-/// Allocate a unique run directory for the given task:
-/// `<YYYYMMDD_HHMMSS>_<slug>` with a numeric suffix if that name already
-/// exists. The timestamp is local time, matching the per-frame snapshot
-/// folder names.
-pub fn make_run_dir(task: &str) -> PathBuf {
-    make_run_dir_in_root(default_runs_root(), task)
-}
-
-fn make_run_dir_in_root(root: impl AsRef<Path>, task: &str) -> PathBuf {
-    let ts = Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let slug = safe_slug(task, 48);
-    let base = root.as_ref().join(format!("{ts}_{slug}"));
+fn make_run_dir_in_root(root: impl AsRef<Path>, label: &str) -> PathBuf {
+    let base = root.as_ref().join(format!(
+        "{}_{}",
+        Local::now().format("%Y%m%d_%H%M%S"),
+        safe_component(label, "run")
+    ));
     if !base.exists() {
         return base;
     }
     for suffix in 2u32.. {
         let candidate = base.with_file_name(format!(
-            "{}_{}",
-            base.file_name().and_then(|s| s.to_str()).unwrap_or("run"),
-            suffix
+            "{}_{suffix}",
+            base.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("run")
         ));
         if !candidate.exists() {
             return candidate;
@@ -118,248 +126,283 @@ fn make_run_dir_in_root(root: impl AsRef<Path>, task: &str) -> PathBuf {
     base
 }
 
-/// Strip images / huge strings out of a value before logging it. Keeps
-/// reasoning_log lean even when tool outputs are sprawling.
-pub fn json_safe_for_log(value: &Value, max_string_chars: usize) -> Value {
-    match value {
-        Value::String(s) => {
-            if s.chars().count() <= max_string_chars {
-                Value::String(s.clone())
-            } else {
-                let kept: String = s.chars().take(max_string_chars).collect();
-                Value::String(format!(
-                    "{}\n... [truncated {} chars]",
-                    kept,
-                    s.chars().count() - max_string_chars
-                ))
-            }
-        }
-        Value::Object(map) => {
-            if map.get("type").and_then(Value::as_str) == Some("image") {
-                return json!({
-                    "type": "image",
-                    "omitted": true,
-                    "note": "Image data omitted from debug log; use the saved artifact path if present.",
-                });
-            }
-            let mut out = Map::new();
-            for (k, v) in map {
-                out.insert(k.clone(), json_safe_for_log(v, max_string_chars));
-            }
-            Value::Object(out)
-        }
-        Value::Array(arr) => Value::Array(
-            arr.iter()
-                .map(|v| json_safe_for_log(v, max_string_chars))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
+pub struct AgentRunRecorder {
+    run_dir: PathBuf,
+    manifest_path: PathBuf,
+    manifest: Mutex<Value>,
+    started: Instant,
+    finalized: AtomicBool,
 }
 
-fn write_json(path: &Path, payload: &Value) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let safe = json_safe_for_log(payload, 100_000);
-    let rendered = serde_json::to_string_pretty(&safe).map_err(std::io::Error::other)?;
-    std::fs::write(path, rendered)
-}
-
-fn append_jsonl(path: &Path, entry: &Value) -> std::io::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let safe = json_safe_for_log(entry, 100_000);
-    let line = serde_json::to_string(&safe).map_err(std::io::Error::other)?;
-    let mut handle = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    handle.write_all(line.as_bytes())?;
-    handle.write_all(b"\n")
-}
-
-#[derive(Debug, Clone)]
-pub struct RunDebugLogger {
-    pub run_dir: PathBuf,
-    pub reasoning_log_path: PathBuf,
-    pub tool_results_dir: PathBuf,
-    pub conversation_path: PathBuf,
-    pub agent_log_path: PathBuf,
-}
-
-impl RunDebugLogger {
-    pub fn new(run_dir: impl AsRef<Path>) -> Self {
+impl AgentRunRecorder {
+    pub fn start(
+        run_dir: impl AsRef<Path>,
+        run_id: &str,
+        session_id: Option<&str>,
+        task: &str,
+        model: &str,
+    ) -> std::io::Result<Self> {
         let run_dir = run_dir.as_ref().to_path_buf();
-        Self {
-            reasoning_log_path: run_dir.join("reasoning_log.jsonl"),
-            tool_results_dir: run_dir.join("tool_results"),
-            conversation_path: run_dir.join("conversation.json"),
-            agent_log_path: run_dir.join("agent_log.json"),
-            run_dir,
-        }
-    }
-
-    pub fn event(&self, event_type: &str, mut payload: Value) {
-        if let Value::Object(map) = &mut payload {
-            map.insert("type".into(), Value::String(event_type.to_string()));
-            map.insert("timestamp".into(), Value::String(timestamp()));
-        } else {
-            payload = json!({"type": event_type, "timestamp": timestamp(), "value": payload});
-        }
-        let _ = append_jsonl(&self.reasoning_log_path, &payload);
-    }
-
-    pub fn api_error(&self, turn: u32, error: &str, forced_summary: bool) {
-        let mut payload = json!({
-            "turn": turn,
-            "error": error,
+        std::fs::create_dir_all(run_dir.join("llm"))?;
+        let manifest_path = run_dir.join("run.json");
+        let mut manifest = json!({
+            "id": run_id,
+            "task": task,
+            "model": model,
+            "status": "running",
+            "started_at": timestamp(),
         });
-        if forced_summary {
-            payload
-                .as_object_mut()
-                .map(|m| m.insert("forced_summary".into(), Value::Bool(true)));
+        if let Some(session_id) = session_id {
+            manifest["session_id"] = json!(session_id);
         }
-        self.event("api_error", payload);
+        write_json_atomic(&manifest_path, &manifest)?;
+        Ok(Self {
+            run_dir,
+            manifest_path,
+            manifest: Mutex::new(manifest),
+            started: Instant::now(),
+            finalized: AtomicBool::new(false),
+        })
     }
 
-    pub fn tool_result(
+    pub fn record_llm_request(&self, step: u32, payload: &Value) -> std::io::Result<()> {
+        write_json_atomic(
+            &self.run_dir.join(format!("llm/{step:03}.request.json")),
+            payload,
+        )
+    }
+
+    pub fn record_llm_response(
+        &self,
+        step: u32,
+        response: &LLMResponse,
+        duration_ms: u64,
+    ) -> std::io::Result<()> {
+        let mut value = serde_json::to_value(response).map_err(std::io::Error::other)?;
+        value["duration_ms"] = json!(duration_ms);
+        value["completed_at"] = json!(timestamp());
+        write_json_atomic(
+            &self.run_dir.join(format!("llm/{step:03}.response.json")),
+            &value,
+        )
+    }
+
+    pub fn record_llm_error(
+        &self,
+        step: u32,
+        error: &str,
+        duration_ms: u64,
+    ) -> std::io::Result<()> {
+        write_json_atomic(
+            &self.run_dir.join(format!("llm/{step:03}.response.json")),
+            &json!({
+                "duration_ms": duration_ms,
+                "completed_at": timestamp(),
+                "error": error,
+            }),
+        )
+    }
+
+    pub fn start_tool_call(
         &self,
         turn: u32,
         sequence: u32,
-        tool_use_id: &str,
         tool_name: &str,
-        tool_input: &Value,
-        content: &Value,
-        duration_s: f64,
-        result_summary: &str,
-        repeat_count: u32,
-        error: &str,
-    ) -> String {
-        let file_name = format!(
-            "{:03}_{:02}_{}.json",
-            turn,
-            sequence,
-            safe_slug(tool_name, 32)
-        );
-        let path = self.tool_results_dir.join(&file_name);
-        let payload = json!({
-            "type": "tool_result",
-            "timestamp": timestamp(),
-            "turn": turn,
-            "sequence": sequence,
-            "tool_use_id": tool_use_id,
-            "tool": tool_name,
-            "input": tool_input,
-            "duration_s": duration_s,
-            "error": error,
-            "content": content,
+        input: &Value,
+    ) -> std::io::Result<ToolCallRecorder> {
+        let dir = self.run_dir.join("tools").join(format!(
+            "turn-{turn:03}-call-{sequence:02}-{}",
+            safe_component(tool_name, "tool")
+        ));
+        ToolCallRecorder::start_agent(dir, tool_name, input)
+    }
+
+    pub fn finish(
+        &self,
+        status: &str,
+        turns: u32,
+        input_tokens: u64,
+        output_tokens: u64,
+        error: Option<&str>,
+    ) -> std::io::Result<()> {
+        let mut manifest = self.manifest.lock().expect("poisoned");
+        manifest["status"] = json!(status);
+        manifest["duration_ms"] = json!(self.started.elapsed().as_millis() as u64);
+        manifest["turns"] = json!(turns);
+        manifest["usage"] = json!({
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
         });
-        let _ = write_json(&path, &payload);
-        let relative = path
-            .strip_prefix(&self.run_dir)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| file_name.clone());
-
-        self.event(
-            "tool_result",
-            json!({
-                "turn": turn,
-                "sequence": sequence,
-                "tool_use_id": tool_use_id,
-                "tool": tool_name,
-                "input": tool_input,
-                "duration_s": duration_s,
-                "result_summary": result_summary,
-                "result_file": relative,
-                "error": error,
-                "repeat_count": repeat_count,
-            }),
-        );
-        relative
-    }
-
-    pub fn write_conversation(&self, system_prompt: &str, messages: &Value) -> PathBuf {
-        let _ = write_json(
-            &self.conversation_path,
-            &json!({"system": system_prompt, "messages": messages}),
-        );
-        self.conversation_path.clone()
-    }
-
-    pub fn write_agent_summary(&self, summary: &Value) {
-        let _ = write_json(&self.agent_log_path, summary);
+        if let Some(error) = error {
+            manifest["error"] = json!(error);
+        }
+        write_json_atomic(&self.manifest_path, &manifest)?;
+        self.finalized.store(true, Ordering::Release);
+        Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl Drop for AgentRunRecorder {
+    fn drop(&mut self) {
+        if self.finalized.load(Ordering::Acquire) {
+            return;
+        }
+        if let Ok(mut manifest) = self.manifest.lock() {
+            manifest["status"] = json!("interrupted");
+            manifest["duration_ms"] = json!(self.started.elapsed().as_millis() as u64);
+            let _ = write_json_atomic(&self.manifest_path, &manifest);
+        }
+    }
+}
 
-    #[test]
-    fn slug_replaces_punctuation() {
-        assert_eq!(safe_slug("hello, world!", 64), "hello_world");
+pub struct ToolCallRecorder {
+    tool_dir: PathBuf,
+    manifest_path: PathBuf,
+    manifest: Mutex<Value>,
+    started: Instant,
+    finalized: AtomicBool,
+}
+
+impl ToolCallRecorder {
+    fn start_agent(tool_dir: PathBuf, tool_name: &str, input: &Value) -> std::io::Result<Self> {
+        Self::start(
+            tool_dir,
+            json!({
+                "tool": tool_name,
+                "input": input,
+                "status": "running",
+                "started_at": timestamp(),
+            }),
+        )
     }
 
-    #[test]
-    fn slug_fallback_when_empty() {
-        assert_eq!(safe_slug("!!!", 64), "agent");
+    pub fn start_standalone(
+        tool_dir: impl AsRef<Path>,
+        site_id: &str,
+        command_name: &str,
+        implementation_name: &str,
+        input: &Value,
+    ) -> std::io::Result<Self> {
+        let public_name = format!("{site_id}.{command_name}");
+        let mut manifest = json!({
+            "tool": public_name,
+            "input": input,
+            "status": "running",
+            "started_at": timestamp(),
+        });
+        if implementation_name != command_name {
+            manifest["implementation"] = json!(implementation_name);
+        }
+        Self::start(tool_dir.as_ref().to_path_buf(), manifest)
     }
 
-    #[test]
-    fn json_safe_omits_images() {
-        let v = json!({"type": "image", "source": {"data": "aGVsbG8="}});
-        let safe = json_safe_for_log(&v, 1000);
-        assert_eq!(safe.get("omitted"), Some(&Value::Bool(true)));
+    fn start(tool_dir: PathBuf, manifest: Value) -> std::io::Result<Self> {
+        std::fs::create_dir_all(&tool_dir)?;
+        let manifest_path = tool_dir.join("tool.json");
+        write_json_atomic(&manifest_path, &manifest)?;
+        Ok(Self {
+            tool_dir,
+            manifest_path,
+            manifest: Mutex::new(manifest),
+            started: Instant::now(),
+            finalized: AtomicBool::new(false),
+        })
     }
 
-    #[test]
-    fn default_runs_root_uses_configured_runs_dir() {
-        let home = PathBuf::from("/tmp/socai-home");
-        let configured_runs_dir = PathBuf::from("/tmp/socai-configured-runs");
-
-        assert_eq!(
-            default_runs_root_from_parts(None, Some(configured_runs_dir.clone()), Some(home)),
-            configured_runs_dir
-        );
-        let run_dir = make_run_dir_in_root(&configured_runs_dir, "author scan");
-        assert!(run_dir.starts_with(&configured_runs_dir));
-        let file_name = run_dir.file_name().and_then(|name| name.to_str()).unwrap();
-        assert!(file_name.ends_with("author_scan"));
+    pub fn dir(&self) -> &Path {
+        &self.tool_dir
     }
 
-    #[test]
-    fn default_runs_root_prefers_env_over_configured_runs_dir() {
-        let home = PathBuf::from("/tmp/socai-home");
-        let configured_runs_dir = PathBuf::from("/tmp/socai-configured-runs");
-        let env_runs_dir = PathBuf::from("/tmp/socai-env-runs");
-
-        assert_eq!(
-            default_runs_root_from_parts(
-                Some(OsString::from(env_runs_dir.to_string_lossy().to_string())),
-                Some(configured_runs_dir),
-                Some(home),
-            ),
-            env_runs_dir
-        );
-        let run_dir = make_run_dir_in_root(&env_runs_dir, "topic scan");
-        assert!(run_dir.starts_with(&env_runs_dir));
+    pub fn finish_blocks(
+        &self,
+        blocks: &[ToolResultBlock],
+        duration_ms: u64,
+        error: Option<&str>,
+    ) -> std::io::Result<()> {
+        self.finish_output(
+            &serde_json::to_value(blocks).map_err(std::io::Error::other)?,
+            duration_ms,
+            error,
+        )
     }
 
-    #[test]
-    fn default_runs_root_ignores_empty_env_override() {
-        let home = PathBuf::from("/tmp/socai-home");
-        let configured_runs_dir = PathBuf::from("/tmp/socai-configured-runs");
-
-        assert_eq!(
-            default_runs_root_from_parts(
-                Some(OsString::from("  \t  ")),
-                Some(configured_runs_dir.clone()),
-                Some(home),
-            ),
-            configured_runs_dir
-        );
+    pub fn finish_value(
+        &self,
+        output: &Value,
+        duration_ms: u64,
+        error: Option<&str>,
+    ) -> std::io::Result<()> {
+        self.finish_output(output, duration_ms, error)
     }
+
+    pub fn finish_error(&self, duration_ms: u64, error: &str) -> std::io::Result<()> {
+        self.finish_manifest(duration_ms, Some(error))
+    }
+
+    fn finish_output(
+        &self,
+        output: &Value,
+        duration_ms: u64,
+        error: Option<&str>,
+    ) -> std::io::Result<()> {
+        write_json_atomic(&self.tool_dir.join("output.json"), output)?;
+        self.finish_manifest(duration_ms, error)
+    }
+
+    fn finish_manifest(&self, duration_ms: u64, error: Option<&str>) -> std::io::Result<()> {
+        let mut manifest = self.manifest.lock().expect("poisoned");
+        manifest["status"] = json!(if error.is_some() {
+            "failed"
+        } else {
+            "completed"
+        });
+        manifest["duration_ms"] = json!(duration_ms);
+        if let Some(error) = error {
+            manifest["error"] = json!(error);
+        }
+        write_json_atomic(&self.manifest_path, &manifest)?;
+        self.finalized.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+impl Drop for ToolCallRecorder {
+    fn drop(&mut self) {
+        if self.finalized.load(Ordering::Acquire) {
+            return;
+        }
+        if let Ok(mut manifest) = self.manifest.lock() {
+            manifest["status"] = json!("interrupted");
+            manifest["duration_ms"] = json!(self.started.elapsed().as_millis() as u64);
+            let _ = write_json_atomic(&self.manifest_path, &manifest);
+        }
+    }
+}
+
+/// Best-effort terminal update when an entrypoint cancels the agent future.
+pub fn mark_agent_run_status(
+    run_dir: impl AsRef<Path>,
+    status: &str,
+    error: Option<&str>,
+) -> std::io::Result<()> {
+    let path = run_dir.as_ref().join("run.json");
+    let mut manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path)?).map_err(std::io::Error::other)?;
+    let duration_ms = manifest
+        .get("started_at")
+        .and_then(Value::as_str)
+        .and_then(|started| chrono::DateTime::parse_from_rfc3339(started).ok())
+        .map(|started| {
+            (Utc::now() - started.with_timezone(&Utc))
+                .num_milliseconds()
+                .max(0) as u64
+        });
+    manifest["status"] = json!(status);
+    if let Some(duration_ms) = duration_ms {
+        manifest["duration_ms"] = json!(duration_ms);
+    }
+    if let Some(error) = error {
+        manifest["error"] = json!(error);
+    }
+    write_json_atomic(&path, &manifest)
 }
