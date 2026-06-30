@@ -19,6 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true }
 anyhow.workspace = true
+dirs = "5"
 socai-core.workspace = true
 
 # macOS-only: attach an empty unified toolbar so AppKit centers the native

@@ -5040,6 +5040,7 @@ name = "socai_app"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "dirs 5.0.1",
  "objc2",
  "objc2-app-kit",
  "serde",

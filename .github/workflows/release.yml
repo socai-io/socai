@@ -800,6 +800,135 @@ jobs:
           path: dist-artifacts/*
           if-no-files-found: error
 
+  build-windows-app:
+    name: build windows app installer
+    needs: prepare
+    runs-on: windows-latest
+
+    steps:
+      - name: checkout release base commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+
+      - name: apply release version
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python .github/scripts/set-app-version.py $env:VERSION
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml app/package.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml Cargo.lock
+          git commit -m "chore: release socai v$env:VERSION"
+          $versionedSha = git rev-parse HEAD
+          "SOCAI_BUILD_SHA=$versionedSha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "versioned build tree $versionedSha"
+
+      - name: set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+          run_install: false
+
+      - name: set up node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: install frontend dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          key: windows-app
+
+      - name: clear stale bundle outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item -Recurse -Force target\release\bundle -ErrorAction SilentlyContinue
+
+      - name: build app installer
+        working-directory: app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # NSIS only (the user-selected installer). Authenticode code signing is
+          # intentionally not configured yet, so the installer ships unsigned and
+          # SmartScreen will warn — updater signing below is independent of this.
+          pnpm exec tauri build --ci --bundles nsis
+
+      - name: collect and sign updater artifact
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $bundleDir = 'target\release\bundle\nsis'
+          $dist = 'dist-artifacts'
+          Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          $installer = Get-ChildItem -Path $bundleDir -Filter '*-setup.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw "no NSIS installer found in $bundleDir" }
+          $assetRel = Join-Path $dist 'socai-windows-x86_64-setup.exe'
+          $assetFull = Join-Path $env:GITHUB_WORKSPACE $assetRel
+          Copy-Item $installer.FullName $assetFull
+          "collected $($installer.Name) -> $assetRel"
+
+          # Desktop auto-updater signing (minisign) — independent of Authenticode.
+          # The updater verifies each release against the pubkey baked into
+          # tauri.conf.json, so the matching private key must sign the installer.
+          if ($env:TAURI_SIGNING_PRIVATE_KEY -and $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+            Push-Location app
+            try {
+              pnpm exec tauri signer sign `
+                --private-key $env:TAURI_SIGNING_PRIVATE_KEY `
+                --password $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD `
+                $assetFull
+            } finally {
+              Pop-Location
+            }
+            $sigFull = "$assetFull.sig"
+            if (-not (Test-Path $sigFull)) { throw "expected $sigFull from tauri signer sign" }
+            $signature = (Get-Content -Raw $sigFull).Trim()
+            $downloadUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$($env:VERSION)/socai-windows-x86_64-setup.exe"
+            # Partial updater manifest merged into latest.json by the publish job,
+            # so the macOS-produced darwin keys are not clobbered.
+            [ordered]@{
+              'windows-x86_64' = [ordered]@{ signature = $signature; url = $downloadUrl }
+            } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM (Join-Path $dist 'latest-windows-x86_64.json')
+            "generated windows updater fragment:"
+            Get-Content (Join-Path $dist 'latest-windows-x86_64.json')
+          } elseif ($env:GITHUB_REF -eq 'refs/heads/main') {
+            throw 'main releases require TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets for the desktop auto-updater'
+          } else {
+            "no updater signing key for this branch build; skipping installer signature and updater fragment"
+          }
+
+          Get-ChildItem $dist
+
+      - name: upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: socai-${{ needs.prepare.outputs.version }}-windows-app
+          path: dist-artifacts/*
+          if-no-files-found: error
+
   release:
     name: publish github release
     if: github.ref == 'refs/heads/main'
@@ -808,6 +937,7 @@ jobs:
       - build-macos-app-dmg
       - build-macos-cli
       - build-windows-cli
+      - build-windows-app
     runs-on: ubuntu-latest
 
     steps:
@@ -823,6 +953,45 @@ jobs:
           pattern: socai-${{ needs.prepare.outputs.version }}-*
           merge-multiple: true
           path: dist-artifacts
+
+      - name: merge windows entry into updater manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The macOS app job produces latest.json with only the darwin-* keys;
+          # the windows app job produces a windows-x86_64 fragment. Merge the
+          # fragment into the canonical manifest here (rather than letting two
+          # latest.json files collide under merge-multiple), then drop the
+          # fragment so it is not published as a release asset.
+          manifest="dist-artifacts/latest.json"
+          fragment="dist-artifacts/latest-windows-x86_64.json"
+
+          if [ ! -f "${manifest}" ]; then
+            echo "missing ${manifest} (expected from the macOS app job)" >&2
+            exit 1
+          fi
+          if [ ! -f "${fragment}" ]; then
+            echo "missing ${fragment} (expected from the windows app job)" >&2
+            exit 1
+          fi
+
+          python3 - "${manifest}" "${fragment}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest_path, fragment_path = sys.argv[1], sys.argv[2]
+          manifest = json.loads(Path(manifest_path).read_text())
+          fragment = json.loads(Path(fragment_path).read_text())
+          manifest.setdefault("platforms", {}).update(fragment)
+          Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+
+          rm -f "${fragment}"
+
+          echo "merged latest.json:"
+          cat "${manifest}"
 
       - name: publish release
         shell: bash
@@ -854,6 +1023,8 @@ jobs:
             dist-artifacts/socai-cli-windows-x86_64.zip
             dist-artifacts/socai-cli-windows-x86_64.zip.sha256
             dist-artifacts/install.ps1
+            dist-artifacts/socai-windows-x86_64-setup.exe
+            dist-artifacts/socai-windows-x86_64-setup.exe.sig
           )
           for artifact in "${required_artifacts[@]}"; do
             if [ ! -f "${artifact}" ]; then
@@ -904,6 +1075,7 @@ jobs:
           ## downloads
 
           - [universal mac dmg](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-macos-universal.dmg) — supports Apple Silicon and Intel Macs.
+          - [windows app installer (.exe)](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-windows-x86_64-setup.exe) — desktop app for Windows 10/11 (x64).
           - [macOS CLI installer](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install.sh) — one-command macOS CLI install.
           - [universal mac CLI tarball](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-macos-universal.tar.gz) — standalone `socai` CLI.
           - [macOS CLI checksum](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-macos-universal.tar.gz.sha256)
@@ -911,7 +1083,7 @@ jobs:
           - [Windows CLI zip](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-windows-x86_64.zip) — standalone `socai.exe` CLI.
           - [Windows CLI checksum](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-windows-x86_64.zip.sha256)
 
-          The macOS app build is signed and notarized.
+          The macOS app build is signed and notarized. The Windows app installer is not yet code-signed, so SmartScreen may warn on first run — choose "More info" then "Run anyway".
 
           ## changes
 
@@ -1075,13 +1247,13 @@ jobs:
             exit 1
           fi
 
-          for arch in darwin-aarch64 darwin-x86_64; do
-            tarball_url="$(printf '%s' "${manifest}" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['${arch}']['url'])")"
+          for arch in darwin-aarch64 darwin-x86_64 windows-x86_64; do
+            asset_url="$(printf '%s' "${manifest}" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['${arch}']['url'])")"
             signature="$(printf '%s' "${manifest}" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['${arch}']['signature'])")"
             if [ -z "${signature}" ]; then
               echo "latest.json ${arch} signature is empty" >&2
               exit 1
             fi
-            echo "checking ${arch} updater tarball: ${tarball_url}"
-            curl -fsSL -I "${tarball_url}" > /dev/null
+            echo "checking ${arch} updater asset: ${asset_url}"
+            curl -fsSL -I "${asset_url}" > /dev/null
           done

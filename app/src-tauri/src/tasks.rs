@@ -402,8 +402,13 @@ pub(crate) fn app_data_dir() -> PathBuf {
     if let Ok(home) = std::env::var("SOCAI_HOME") {
         return PathBuf::from(home).join("app");
     }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".socai/app");
+    // `dirs::home_dir()` resolves `%USERPROFILE%` on Windows (where `HOME` is
+    // usually unset) and `$HOME` on unix — keeping the `~/.socai/app` layout on
+    // every platform. The bare relative path is a last resort that should never
+    // be hit once a home dir resolves; falling back to it on Windows would
+    // scatter `tasks.json` into the CWD and lose it across launches.
+    if let Some(home) = dirs::home_dir() {
+        return home.join(".socai/app");
     }
     PathBuf::from(".socai/app")
 }

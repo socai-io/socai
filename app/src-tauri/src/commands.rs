@@ -1007,11 +1007,11 @@ fn non_empty_env(key: &str) -> Option<String> {
 }
 
 fn join_home(relative: &str) -> String {
-    match std::env::var_os("HOME").filter(|home| !home.is_empty()) {
-        Some(home) => PathBuf::from(home)
-            .join(relative)
-            .to_string_lossy()
-            .into_owned(),
+    // `dirs::home_dir()` resolves `%USERPROFILE%` on Windows and `$HOME` on
+    // unix, so the settings-UI placeholder shows the real `~/.socai/...` path on
+    // every platform instead of a bare relative string on Windows.
+    match dirs::home_dir() {
+        Some(home) => home.join(relative).to_string_lossy().into_owned(),
         None => relative.to_string(),
     }
 }
