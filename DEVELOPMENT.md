@@ -26,6 +26,14 @@ Browser/session ownership lives in `core/src/runtime/` and `core/src/cdp/`; the
 CLI daemon/socket plumbing stays thin. See the
 [Rust CLI rules in AGENTS.md](./AGENTS.md#rust-cli--cli).
 
+Long-running site commands keep stdout machine-readable: the final command
+result is the only JSON written there. Interactive progress is transported as
+structured core events through the daemon and rendered on stderr. The default
+behavior draws English progress bars only when stderr is an interactive
+terminal, so non-interactive agents and scripts receive no progress output.
+Desktop and TUI agents call core tools directly and continue to receive the
+unchanged `ToolResult`.
+
 ### TUI
 
 Running `socai` with no subcommand opens the terminal UI (same `socai-cli`

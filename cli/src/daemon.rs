@@ -4,6 +4,7 @@ use socai_core::telemetry::{query_text_enabled, telemetry_enabled, Telemetry, Te
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use socai_core::agent::tool::{ToolProgressEvent, ToolProgressSender};
 use socai_core::runtime::SocaiRuntime;
 use socai_core::sites::{find_site, SiteCommand, SiteSpec};
 #[cfg(unix)]
@@ -18,7 +19,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{sleep, timeout, Instant};
 
 pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
@@ -146,6 +147,19 @@ struct DaemonResponse {
     build_id: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct DaemonProgressFrame {
+    #[serde(rename = "type")]
+    kind: String,
+    id: String,
+    event: ToolProgressEvent,
+}
+
+enum DaemonLine {
+    Progress(ToolProgressEvent),
+    Response(DaemonResponse),
+}
+
 impl DaemonResponse {
     fn success(id: String, result: Value) -> Self {
         Self {
@@ -255,8 +269,9 @@ pub async fn send_or_spawn(
     command: &str,
     args: Value,
     command_timeout: Duration,
+    on_progress: &mut dyn FnMut(ToolProgressEvent),
 ) -> Result<Value> {
-    let err = match send_request(site, command, args.clone(), command_timeout).await {
+    let err = match send_request(site, command, args.clone(), command_timeout, on_progress).await {
         Ok(result) => return Ok(result),
         Err(err) => err,
     };
@@ -274,11 +289,19 @@ pub async fn send_or_spawn(
         None => {}
     }
     spawn_daemon().await?;
-    send_request(site, command, args, command_timeout).await
+    send_request(site, command, args, command_timeout, on_progress).await
 }
 
 pub async fn stop_daemon() -> Result<bool> {
-    match send_request("", "shutdown", json!({}), Duration::from_secs(10)).await {
+    match send_request(
+        "",
+        "shutdown",
+        json!({}),
+        Duration::from_secs(10),
+        &mut |_| {},
+    )
+    .await
+    {
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
@@ -295,19 +318,46 @@ async fn serve_client(
 
     while reader.read_line(&mut line).await? != 0 {
         let request: DaemonRequest = serde_json::from_str(line.trim_end())?;
+        let request_id = request.id.clone();
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
         let mut disconnect_probe = String::new();
-        tokio::select! {
-            response = handle_request(request, state.clone(), stop.clone()) => {
-                writer
-                    .write_all(serde_json::to_string(&response)?.as_bytes())
-                    .await?;
-                writer.write_all(b"\n").await?;
-            }
-            read = reader.read_line(&mut disconnect_probe) => {
-                if read? == 0 {
-                    return Ok(());
+        let response = handle_request(request, state.clone(), stop.clone(), Some(progress_tx));
+        tokio::pin!(response);
+        let disconnect = reader.read_line(&mut disconnect_probe);
+        tokio::pin!(disconnect);
+        let mut progress_open = true;
+        loop {
+            tokio::select! {
+                biased;
+                event = progress_rx.recv(), if progress_open => {
+                    match event {
+                        Some(event) => {
+                            let frame = DaemonProgressFrame {
+                                kind: "progress".to_string(),
+                                id: request_id.clone(),
+                                event,
+                            };
+                            writer
+                                .write_all(serde_json::to_string(&frame)?.as_bytes())
+                                .await?;
+                            writer.write_all(b"\n").await?;
+                        }
+                        None => progress_open = false,
+                    }
                 }
-                anyhow::bail!("daemon client sent another request before the previous response");
+                response = &mut response => {
+                    writer
+                        .write_all(serde_json::to_string(&response)?.as_bytes())
+                        .await?;
+                    writer.write_all(b"\n").await?;
+                    break;
+                }
+                read = &mut disconnect => {
+                    if read? == 0 {
+                        return Ok(());
+                    }
+                    anyhow::bail!("daemon client sent another request before the previous response");
+                }
             }
         }
         line.clear();
@@ -320,6 +370,7 @@ async fn handle_request(
     request: DaemonRequest,
     state: Arc<Mutex<DaemonState>>,
     stop: Arc<Notify>,
+    progress: Option<ToolProgressSender>,
 ) -> DaemonResponse {
     let id = request.id.clone();
     let command = request.command.clone();
@@ -382,7 +433,7 @@ async fn handle_request(
         let mut state = state.lock().await;
         state.last_activity = Instant::now();
         state
-            .run_site_command(&id, site, spec, request.args, &telemetry)
+            .run_site_command(&id, site, spec, request.args, &telemetry, progress)
             .await
     }
     .await;
@@ -411,6 +462,7 @@ impl DaemonState {
         spec: &'static SiteCommand,
         args: Value,
         telemetry: &DaemonTelemetry,
+        progress: Option<ToolProgressSender>,
     ) -> Result<Value> {
         let started = Instant::now();
         let result = async {
@@ -422,7 +474,7 @@ impl DaemonState {
             // home_url here would force an extra `/explore` load before the
             // command then navigates again — wasted time for no benefit.
             let page = self.runtime.ensure_site_page(site.id, "").await?;
-            (spec.run)(page, args.clone(), debug_snapshot).await
+            (spec.run)(page, args.clone(), debug_snapshot, progress).await
         }
         .await;
         self.track_tool_trace(
@@ -519,6 +571,7 @@ async fn send_request(
     command: &str,
     args: Value,
     request_timeout: Duration,
+    on_progress: &mut dyn FnMut(ToolProgressEvent),
 ) -> Result<Value> {
     let paths = daemon_paths()?;
     let (stream, auth) = connect_daemon(&paths).await?;
@@ -544,42 +597,60 @@ async fn send_request(
             .write_all(serde_json::to_string(&request)?.as_bytes())
             .await?;
         writer.write_all(b"\n").await?;
-        reader.read_line(&mut line).await?;
-        if line.trim().is_empty() {
-            return Err(anyhow!("empty daemon response"));
-        }
-        let response: DaemonResponse = serde_json::from_str(line.trim_end())?;
-        if !response.ok {
-            let message = response
-                .error
-                .unwrap_or_else(|| "daemon command failed".to_string());
-            return Err(match response.code.as_deref() {
-                Some(CODE_VERSION_MISMATCH) => {
-                    anyhow::Error::new(DaemonClientError::VersionMismatch(message))
+        loop {
+            line.clear();
+            let read = reader.read_line(&mut line).await?;
+            if read == 0 || line.trim().is_empty() {
+                return Err(anyhow!("empty daemon response"));
+            }
+            let response = match parse_daemon_line(line.trim_end())? {
+                DaemonLine::Progress(event) => {
+                    on_progress(event);
+                    continue;
                 }
-                Some(CODE_STALE_DAEMON) => {
-                    anyhow::Error::new(DaemonClientError::StaleDaemon(message))
-                }
-                _ => anyhow!("{message}"),
-            });
+                DaemonLine::Response(response) => response,
+            };
+            if !response.ok {
+                let message = response
+                    .error
+                    .unwrap_or_else(|| "daemon command failed".to_string());
+                return Err(match response.code.as_deref() {
+                    Some(CODE_VERSION_MISMATCH) => {
+                        anyhow::Error::new(DaemonClientError::VersionMismatch(message))
+                    }
+                    Some(CODE_STALE_DAEMON) => {
+                        anyhow::Error::new(DaemonClientError::StaleDaemon(message))
+                    }
+                    _ => anyhow!("{message}"),
+                });
+            }
+            // Legacy daemons (pre build checking) execute commands without
+            // validating; their responses lack the build identity. Treat them as
+            // stale so they get replaced rather than silently serving old code.
+            if !matches!(command, "ping" | "shutdown")
+                && (response.version.as_deref() != Some(PROTOCOL_VERSION)
+                    || response.build_id.as_deref() != Some(process_build_id()))
+            {
+                return Err(anyhow::Error::new(DaemonClientError::StaleDaemon(
+                    "socai daemon predates build checking or runs a different build".to_string(),
+                )));
+            }
+            return response
+                .result
+                .ok_or_else(|| anyhow!("daemon response missing result"));
         }
-        // Legacy daemons (pre build checking) execute commands without
-        // validating; their responses lack the build identity. Treat them as
-        // stale so they get replaced rather than silently serving old code.
-        if !matches!(command, "ping" | "shutdown")
-            && (response.version.as_deref() != Some(PROTOCOL_VERSION)
-                || response.build_id.as_deref() != Some(process_build_id()))
-        {
-            return Err(anyhow::Error::new(DaemonClientError::StaleDaemon(
-                "socai daemon predates build checking or runs a different build".to_string(),
-            )));
-        }
-        response
-            .result
-            .ok_or_else(|| anyhow!("daemon response missing result"))
     })
     .await
     .map_err(|_| anyhow!("daemon request timed out after {:?}", request_timeout))?
+}
+
+fn parse_daemon_line(line: &str) -> Result<DaemonLine> {
+    let value: Value = serde_json::from_str(line)?;
+    if value.get("type").and_then(Value::as_str) == Some("progress") {
+        let frame: DaemonProgressFrame = serde_json::from_value(value)?;
+        return Ok(DaemonLine::Progress(frame.event));
+    }
+    Ok(DaemonLine::Response(serde_json::from_value(value)?))
 }
 
 async fn spawn_daemon() -> Result<()> {
@@ -591,7 +662,7 @@ async fn spawn_daemon() -> Result<()> {
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
-        if send_request("", "ping", json!({}), Duration::from_secs(2))
+        if send_request("", "ping", json!({}), Duration::from_secs(2), &mut |_| {})
             .await
             .is_ok()
         {

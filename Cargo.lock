@@ -4991,6 +4991,7 @@ version = "0.3.3"
 dependencies = [
  "anyhow",
  "clap",
+ "indicatif",
  "inquire",
  "libc",
  "reqwest 0.12.28",

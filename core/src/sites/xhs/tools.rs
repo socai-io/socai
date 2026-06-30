@@ -5,8 +5,12 @@
 //! visible, note modal open, etc.). The caller is responsible for creating
 //! the page and closing it after `run_agent` returns.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::agent::tool::{
+    ToolProgressEvent, ToolProgressPhase, ToolProgressSender, ToolProgressStatus,
+};
 use crate::agent::{Backend as LlmProvider, Tool, ToolContext, ToolResult};
 use crate::cdp::PageSession;
 use crate::media::{ocr_diagnostics, ocr_warm_up, timing_delta, MediaProcessor, TimingSnapshot};
@@ -289,7 +293,12 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
 /// `search` dispatches on `--preview`: default opens each result (full scan —
 /// body + top comments); `--preview` returns result cards only (titles/likes/
 /// covers) without opening any note.
-fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+fn run_search(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
     Box::pin(async move {
         let query = required_string(&args, "query")?;
         let filters = args.get("filters").cloned();
@@ -325,12 +334,18 @@ fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxF
             ocr,
             preview,
             debug_snapshot,
+            progress,
         )
         .await
     })
 }
 
-fn run_author_scan(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+fn run_author_scan(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
     Box::pin(async move {
         let author_id = required_string(&args, "author_id")?;
         // Default to DEFAULT_NUM_NOTES so omitting --num-notes collects a fixed
@@ -363,6 +378,7 @@ fn run_author_scan(page: Arc<PageSession>, args: Value, debug_snapshot: bool) ->
             download_media,
             ocr,
             debug_snapshot,
+            progress,
         )
         .await
     })
@@ -413,6 +429,7 @@ pub async fn search_command(
     ocr: bool,
     preview: bool,
     debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
 ) -> anyhow::Result<Value> {
     // `command_name` is passed through so the run-dir label and envelope reflect
     // the actual command the caller invoked. `preview` selects the cards-only
@@ -426,6 +443,7 @@ pub async fn search_command(
         spec,
         search_input(query, filters, num_notes, download_media, ocr, preview)?,
         debug_snapshot,
+        progress,
     )
     .await
 }
@@ -439,12 +457,14 @@ pub async fn author_scan_command(
     download_media: bool,
     ocr: bool,
     debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
 ) -> anyhow::Result<Value> {
     run_xhs_tool_command(
         page,
         AUTHOR_SCAN_COMMAND,
         author_scan_input(author_id, num_notes, preview, download_media, ocr)?,
         debug_snapshot,
+        progress,
     )
     .await
 }
@@ -508,6 +528,7 @@ async fn run_xhs_tool_command(
     spec: XhsCommandSpec,
     input: Value,
     debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
 ) -> anyhow::Result<Value> {
     let tools = xhs_tools(page.clone());
     run_tool_command(
@@ -523,6 +544,7 @@ async fn run_xhs_tool_command(
         &tools,
         input,
         debug_snapshot,
+        progress,
     )
     .await
 }
@@ -655,6 +677,120 @@ fn skipped_note_entry(card: &XhsNoteCard, reason: &str, history: &XhsHistoryStor
         "skipped": skipped,
         "entity": entity,
     })
+}
+
+fn progress_title(card: &XhsNoteCard) -> Option<String> {
+    let title = card.title.trim();
+    (!title.is_empty()).then(|| title.to_string())
+}
+
+fn report_item_progress(
+    ctx: &ToolContext,
+    phase: ToolProgressPhase,
+    status: ToolProgressStatus,
+    current: usize,
+    total: usize,
+    item_index: Option<usize>,
+    title: Option<String>,
+) {
+    ctx.report_progress(ToolProgressEvent {
+        phase,
+        status,
+        current: current as u64,
+        total: total as u64,
+        item_index: item_index.map(|value| value as u64),
+        title,
+    });
+}
+
+#[derive(Clone)]
+struct ScanProgress {
+    ctx: ToolContext,
+    total: usize,
+    ocr_completed: Arc<AtomicU64>,
+}
+
+impl ScanProgress {
+    fn new(ctx: &ToolContext, total: usize) -> Self {
+        Self {
+            ctx: ctx.clone(),
+            total,
+            ocr_completed: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn reading_started(&self, item_index: usize, title: Option<String>) {
+        report_item_progress(
+            &self.ctx,
+            ToolProgressPhase::Reading,
+            ToolProgressStatus::ItemStarted,
+            item_index.saturating_sub(1),
+            self.total,
+            Some(item_index),
+            title,
+        );
+    }
+
+    fn reading_completed(&self, item_index: usize, title: Option<String>) {
+        report_item_progress(
+            &self.ctx,
+            ToolProgressPhase::Reading,
+            ToolProgressStatus::ItemCompleted,
+            item_index,
+            self.total,
+            Some(item_index),
+            title,
+        );
+    }
+
+    fn ocr_started(&self, item_index: usize, title: Option<String>) {
+        report_item_progress(
+            &self.ctx,
+            ToolProgressPhase::Ocr,
+            ToolProgressStatus::ItemStarted,
+            self.ocr_completed.load(Ordering::Relaxed) as usize,
+            self.total,
+            Some(item_index),
+            title,
+        );
+    }
+
+    fn ocr_completed(&self, item_index: usize, title: Option<String>) {
+        let current = self.ocr_completed.fetch_add(1, Ordering::Relaxed) + 1;
+        report_item_progress(
+            &self.ctx,
+            ToolProgressPhase::Ocr,
+            ToolProgressStatus::ItemCompleted,
+            current as usize,
+            self.total,
+            Some(item_index),
+            title,
+        );
+    }
+
+    fn finish_reading(&self, actual: usize) {
+        report_item_progress(
+            &self.ctx,
+            ToolProgressPhase::Reading,
+            ToolProgressStatus::Finished,
+            actual,
+            actual,
+            None,
+            None,
+        );
+    }
+
+    fn finish_ocr(&self, actual: usize) {
+        report_item_progress(
+            &self.ctx,
+            ToolProgressPhase::Ocr,
+            ToolProgressStatus::Finished,
+            actual,
+            actual,
+            None,
+            None,
+        );
+    }
 }
 
 /// Open one already-selected card, read its body at `level`, attach top
@@ -814,6 +950,9 @@ fn spawn_note_ocr(
     sem: &Arc<tokio::sync::Semaphore>,
     entry: &Value,
     epoch: std::time::Instant,
+    progress: ScanProgress,
+    item_index: usize,
+    title: Option<String>,
 ) -> Option<tokio::task::JoinHandle<NoteOcrResult>> {
     // Only fresh successful reads (they carry `ok`); cache hits carry `skipped`
     // and already have their ocr_text.
@@ -839,12 +978,14 @@ fn spawn_note_ocr(
     let mut images = images;
     Some(tokio::spawn(async move {
         let _permit = sem.acquire_owned().await;
+        progress.ocr_started(item_index, title.clone());
         // Measure wall start→end relative to the shared scan epoch so the perf
         // file can show each note's OCR span on the same timeline as the browse
         // loop (started_ms < browse_ms ⇒ that OCR ran while browsing continued).
         let started_ms = epoch.elapsed().as_millis() as u64;
         let predict = media.ocr_downloaded_images(&mut images).await;
         let finished_ms = epoch.elapsed().as_millis() as u64;
+        progress.ocr_completed(item_index, title);
         NoteOcrResult {
             images,
             started_ms,
@@ -1883,12 +2024,30 @@ impl Tool for SearchTool {
             // OCR'd without being saved to the run dir.
             if ocr {
                 if let Some(cards) = value.get_mut("cards").and_then(Value::as_array_mut) {
+                    report_item_progress(
+                        ctx,
+                        ToolProgressPhase::Ocr,
+                        ToolProgressStatus::ItemStarted,
+                        0,
+                        cards.len(),
+                        None,
+                        None,
+                    );
                     let media = MediaProcessor::for_run_dir(&ctx.run_dir, None)?;
                     let cover_t0 = std::time::Instant::now();
                     let predict = media.ocr_cover_images(cards, XHS_HOME_URL).await;
                     let wall = cover_t0.elapsed();
                     // Cover OCR timing goes to the perf file; cards keep only ocr_text.
                     write_cover_ocr_perf(ctx, cards.len(), predict, wall);
+                    report_item_progress(
+                        ctx,
+                        ToolProgressPhase::Ocr,
+                        ToolProgressStatus::Finished,
+                        cards.len(),
+                        cards.len(),
+                        None,
+                        None,
+                    );
                 }
             }
             let failed = value.get("ok").and_then(Value::as_bool) == Some(false);
@@ -2030,6 +2189,7 @@ impl Tool for SearchTool {
         // download; tasks are joined after the browse loop.
         let ocr_sem = Arc::new(tokio::sync::Semaphore::new(OCR_PIPELINE_CONCURRENCY));
         let mut pending_ocr: Vec<(usize, tokio::task::JoinHandle<NoteOcrResult>)> = Vec::new();
+        let scan_progress = ScanProgress::new(ctx, want);
         // Wall-clock markers so the perf file can show how much OCR overlapped
         // the browse loop (the pipeline benefit) vs. spilled past it.
         let browse_t0 = std::time::Instant::now();
@@ -2061,6 +2221,9 @@ impl Tool for SearchTool {
                 ctx.add_search_note_ids(std::slice::from_ref(&card.note_id));
             }
             selected.push(card.clone());
+            let item_index = notes.len() + 1;
+            let title = progress_title(&card);
+            scan_progress.reading_started(item_index, title.clone());
 
             let entry = scan_card_note(
                 &xhs,
@@ -2080,13 +2243,25 @@ impl Tool for SearchTool {
             notes.push(entry);
             let idx = notes.len() - 1;
             if ocr {
-                if let Some(handle) = spawn_note_ocr(&media, &ocr_sem, &notes[idx], browse_t0) {
+                if let Some(handle) = spawn_note_ocr(
+                    &media,
+                    &ocr_sem,
+                    &notes[idx],
+                    browse_t0,
+                    scan_progress.clone(),
+                    item_index,
+                    title.clone(),
+                ) {
                     pending_ocr.push((idx, handle));
+                } else {
+                    scan_progress.ocr_completed(item_index, title.clone());
                 }
             }
             let _ = xhs.close_note(0.6).await;
+            scan_progress.reading_completed(item_index, title);
         }
 
+        scan_progress.finish_reading(notes.len());
         let browse_ms = browse_t0.elapsed().as_millis() as u64;
         // Join background OCR (epoch = browse start, so the timings line up with
         // browse_ms) and merge results back into the notes in place.
@@ -2096,6 +2271,7 @@ impl Tool for SearchTool {
         // the notes so the JSON artifact stays LLM-facing (ocr_text only).
         if ocr {
             write_note_ocr_perf(ctx, &notes, browse_ms, &ocr_timings);
+            scan_progress.finish_ocr(notes.len());
         }
 
         let mut media_timing = match (&media, &media_baseline) {
@@ -2368,11 +2544,15 @@ impl Tool for AuthorScanTool {
             // download; tasks are joined after the loop.
             let ocr_sem = Arc::new(tokio::sync::Semaphore::new(OCR_PIPELINE_CONCURRENCY));
             let mut pending_ocr: Vec<(usize, tokio::task::JoinHandle<NoteOcrResult>)> = Vec::new();
+            let scan_progress = ScanProgress::new(ctx, cards.len());
             let browse_t0 = std::time::Instant::now();
             for card in &cards {
                 if !card.note_id.is_empty() {
                     ctx.add_search_note_ids(std::slice::from_ref(&card.note_id));
                 }
+                let item_index = notes.len() + 1;
+                let title = progress_title(card);
+                scan_progress.reading_started(item_index, title.clone());
                 let entry = scan_card_note(
                     &xhs,
                     &self.history,
@@ -2389,28 +2569,63 @@ impl Tool for AuthorScanTool {
                 notes.push(entry);
                 let idx = notes.len() - 1;
                 if ocr {
-                    if let Some(handle) = spawn_note_ocr(&media, &ocr_sem, &notes[idx], browse_t0) {
+                    if let Some(handle) = spawn_note_ocr(
+                        &media,
+                        &ocr_sem,
+                        &notes[idx],
+                        browse_t0,
+                        scan_progress.clone(),
+                        item_index,
+                        title.clone(),
+                    ) {
                         pending_ocr.push((idx, handle));
+                    } else {
+                        scan_progress.ocr_completed(item_index, title.clone());
                     }
                 }
                 let _ = xhs.close_note(0.6).await;
+                scan_progress.reading_completed(item_index, title);
             }
+            scan_progress.finish_reading(notes.len());
             let browse_ms = browse_t0.elapsed().as_millis() as u64;
             let ocr_timings =
                 join_note_ocr(&mut notes, pending_ocr, &self.history, "deep", false).await;
             if ocr {
                 write_note_ocr_perf(ctx, &notes, browse_ms, &ocr_timings);
+                scan_progress.finish_ocr(notes.len());
             }
         } else if ocr {
             // Preview + OCR: read each note card's cover image (fetched to
             // memory, not saved), mirroring the search preview path.
-            if let Some(cards_value) = profile_value.get_mut("note_cards").and_then(Value::as_array_mut)
+            if let Some(cards_value) = profile_value
+                .get_mut("note_cards")
+                .and_then(Value::as_array_mut)
             {
+                report_item_progress(
+                    ctx,
+                    ToolProgressPhase::Ocr,
+                    ToolProgressStatus::ItemStarted,
+                    0,
+                    cards_value.len(),
+                    None,
+                    None,
+                );
                 let cover_media = MediaProcessor::for_run_dir(&ctx.run_dir, None)?;
                 let covers = cards_value.len();
                 let cover_t0 = std::time::Instant::now();
-                let predict = cover_media.ocr_cover_images(cards_value, XHS_HOME_URL).await;
+                let predict = cover_media
+                    .ocr_cover_images(cards_value, XHS_HOME_URL)
+                    .await;
                 write_cover_ocr_perf(ctx, covers, predict, cover_t0.elapsed());
+                report_item_progress(
+                    ctx,
+                    ToolProgressPhase::Ocr,
+                    ToolProgressStatus::Finished,
+                    covers,
+                    covers,
+                    None,
+                    None,
+                );
             }
         }
 

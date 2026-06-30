@@ -11,6 +11,7 @@ use std::{path::Path, sync::Arc};
 
 use serde_json::{json, Value};
 
+use crate::agent::tool::ToolProgressSender;
 use crate::agent::{make_run_dir, Tool, ToolContext, ToolResult};
 use crate::cdp::{with_snapshot_recording, PageSession};
 use crate::sites::registry::BoxFuture;
@@ -40,6 +41,7 @@ pub async fn run_tool_command(
     tools: &[Arc<dyn Tool>],
     input: Value,
     debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
 ) -> anyhow::Result<Value> {
     // Run-dir label: site + command, plus the command's identifying input when
     // it has one, so runs are tellable apart at a glance
@@ -55,7 +57,7 @@ pub async fn run_tool_command(
             }
         }
     }
-    let (run_dir, ctx) = command_context_for_label(cmd.site_id, &label);
+    let (run_dir, ctx) = command_context_for_label(cmd.site_id, &label, progress);
     // Persist the full command input up front (best-effort) so a run is
     // debuggable from its dir alone — including the exact args — even when the
     // tool errors out partway.
@@ -121,7 +123,7 @@ pub async fn call_site_tool(
 /// run-dir name (`<ts>_<site>_<command>[_<identifier>]`, where the optional
 /// identifier is the command's first non-empty `query`/`author_id` input).
 pub fn command_context(site_id: &str, label: &str) -> (String, ToolContext) {
-    command_context_for_label(site_id, &format!("{site_id}_{label}"))
+    command_context_for_label(site_id, &format!("{site_id}_{label}"), None)
 }
 
 pub fn run_metadata(ctx: &ToolContext, include_media_dir: bool) -> Value {
@@ -153,14 +155,18 @@ pub(crate) fn attach_run_metadata(mut data: Value, run: &Value) -> Value {
     data
 }
 
-fn command_context_for_label(site_id: &str, label: &str) -> (String, ToolContext) {
+fn command_context_for_label(
+    site_id: &str,
+    label: &str,
+    progress: Option<ToolProgressSender>,
+) -> (String, ToolContext) {
     let run_dir = make_run_dir(label);
     let run_id = run_dir
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(label)
         .to_string();
-    let ctx = ToolContext::new(run_id, run_dir.clone());
+    let ctx = ToolContext::new(run_id, run_dir.clone()).with_progress_sender(progress);
     ctx.enable_site(site_id);
     (run_dir.display().to_string(), ctx)
 }

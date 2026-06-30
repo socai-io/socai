@@ -21,6 +21,7 @@ uuid = { version = "1", features = ["v4"] }
 tracing-subscriber.workspace = true
 rustyline.workspace = true
 inquire.workspace = true
+indicatif = "0.18"
 
 [lints]
 workspace = true

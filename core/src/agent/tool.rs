@@ -19,8 +19,42 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::mpsc;
 
 use crate::agent::run_state::RunState;
+
+/// Machine-readable progress emitted by long-running tools. Core code reports
+/// state only; entrypoints decide whether and how to render it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolProgressPhase {
+    Reading,
+    Ocr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolProgressStatus {
+    ItemStarted,
+    ItemCompleted,
+    Finished,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolProgressEvent {
+    pub phase: ToolProgressPhase,
+    pub status: ToolProgressStatus,
+    /// Completed items in this phase.
+    pub current: u64,
+    /// Current target. A final event may lower this when a feed ends early.
+    pub total: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+pub type ToolProgressSender = mpsc::UnboundedSender<ToolProgressEvent>;
 
 /// Content block returned by a tool. Mirrors the subset of Anthropic's
 /// content blocks we actually use.
@@ -112,6 +146,7 @@ pub struct ToolContext {
     pub active_tool_name: String,
     pub run_state: Option<Arc<RunState>>,
     pub enabled_sites: Arc<Mutex<BTreeSet<String>>>,
+    progress: Option<ToolProgressSender>,
     counters: Arc<Mutex<Counters>>,
     /// Notes the agent has already processed at a given level. Used by
     /// macros like `search` to short-circuit repeated reads of the
@@ -156,9 +191,23 @@ impl ToolContext {
             active_tool_name: String::new(),
             run_state: None,
             enabled_sites: Arc::new(Mutex::new(BTreeSet::new())),
+            progress: None,
             counters: Arc::new(Mutex::new(Counters::default())),
             processed_notes: Arc::new(Mutex::new(BTreeMap::new())),
             search_note_ids: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn with_progress_sender(mut self, progress: Option<ToolProgressSender>) -> Self {
+        self.progress = progress;
+        self
+    }
+
+    /// Best-effort progress delivery. A closed receiver must never fail the
+    /// underlying tool call.
+    pub fn report_progress(&self, event: ToolProgressEvent) {
+        if let Some(progress) = &self.progress {
+            let _ = progress.send(event);
         }
     }
 

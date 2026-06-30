@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::agent::tool::ToolProgressSender;
 use crate::agent::{Backend as LlmProvider, Tool};
 use crate::cdp::PageSession;
 
@@ -20,8 +21,9 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + Send>>;
 pub type AgentToolsFn = fn(Arc<PageSession>, Arc<dyn LlmProvider>) -> BoxFuture<Vec<Arc<dyn Tool>>>;
 pub type AgentInstructionsFn = fn(&str) -> String;
 
-/// One-shot CLI/daemon command: `(page, JSON args, debug_snapshot)` → JSON.
-pub type CommandRunFn = fn(Arc<PageSession>, Value, bool) -> BoxFuture<Value>;
+/// One-shot CLI/daemon command: `(page, JSON args, debug_snapshot, progress)` → JSON.
+pub type CommandRunFn =
+    fn(Arc<PageSession>, Value, bool, Option<ToolProgressSender>) -> BoxFuture<Value>;
 
 pub struct SiteSpec {
     /// Short site id — doubles as the CLI subcommand (`socai <id> <tool>`),

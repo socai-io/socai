@@ -1,4 +1,5 @@
 mod daemon;
+mod progress;
 mod tui;
 mod version;
 
@@ -175,7 +176,24 @@ async fn run_site_command(
     } else {
         daemon::DEFAULT_COMMAND_TIMEOUT
     };
-    let result = daemon::send_or_spawn(site.id, command.name, args, timeout).await?;
+    let preview = args
+        .get("preview")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let show_reading = site.id == "xhs" && !preview;
+    let show_ocr = args.get("ocr").and_then(Value::as_bool).unwrap_or(false);
+    let total = args
+        .get("num_notes")
+        .and_then(Value::as_i64)
+        .unwrap_or(10)
+        .max(1) as u64;
+    let mut renderer = progress::ProgressRenderer::new(show_reading, show_ocr, total);
+    let result = {
+        let mut on_progress = |event| renderer.update(event);
+        daemon::send_or_spawn(site.id, command.name, args, timeout, &mut on_progress).await
+    };
+    renderer.finish();
+    let result = result?;
     print_command_result(&result, matches.get_flag("pretty"))
 }
 

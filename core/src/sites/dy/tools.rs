@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::agent::tool::ToolProgressSender;
 use crate::agent::{Backend as LlmProvider, Tool, ToolContext, ToolResult};
 use crate::cdp::PageSession;
 use crate::sites::dy::DouyinPageRuntime;
@@ -109,7 +110,12 @@ pub static DY_SITE: SiteSpec = SiteSpec {
     ],
 };
 
-fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+fn run_search(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
     Box::pin(async move {
         run_tool_command(
             ToolCommand {
@@ -124,12 +130,18 @@ fn run_search(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxF
             &dy_tools(page),
             args,
             debug_snapshot,
+            progress,
         )
         .await
     })
 }
 
-fn run_page_state(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> BoxFuture<Value> {
+fn run_page_state(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
     Box::pin(async move {
         let wait_seconds = get_f64(&args, "wait_seconds", 330.0);
         run_tool_command(
@@ -152,6 +164,7 @@ fn run_page_state(page: Arc<PageSession>, args: Value, debug_snapshot: bool) -> 
             &dy_tools(page),
             args,
             debug_snapshot,
+            progress,
         )
         .await
     })
