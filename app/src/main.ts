@@ -137,7 +137,7 @@ function render(): void {
   root.innerHTML = `
     <div class="shell">
       <header class="topbar" data-tauri-drag-region>
-        <div class="topbar-left ${sidebarOpen ? "topbar-left--bordered" : ""}">
+        <div class="topbar-left ${sidebarOpen ? "topbar-left--bordered" : ""}" data-tauri-drag-region>
           <button
             id="sidebar-toggle"
             type="button"
@@ -147,7 +147,7 @@ function render(): void {
           >${PANEL_ICON_SVG}</button>
           ${renderUpdateChip()}
         </div>
-        <div class="topbar-controls">
+        <div class="topbar-controls" data-tauri-drag-region>
           <div class="status-capsule" role="group" aria-label="${htmlEsc(t("status.capsuleAria"))}">
             ${connectionStatusBar()}
             <span class="status-capsule__divider" aria-hidden="true"></span>

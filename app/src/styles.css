@@ -142,11 +142,15 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex: 0 0 auto;
   z-index: 30;
 }
-/* Overlay titlebar drag surface — the bare header area drags; the buttons and
-   toggles inside stay clickable (they lack the attribute). Tauri's drag.js
-   turns a mousedown here into `plugin:window|start_dragging`, which the ACL
-   gates: the window only moves because capabilities/default.json grants
-   `core:window:allow-start-dragging` (NOT part of core:default). Don't drop it. */
+/* Overlay titlebar drag surface — the header AND its two zone wrappers
+   (.topbar-left, .topbar-controls) each carry data-tauri-drag-region so the
+   whole bar drags, including the left gutter under the traffic lights. A bare
+   attribute only fires on a *direct* hit (Tauri's isDragRegion), so interactive
+   children (toggle, badges, gear) and popover text are never the drag target and
+   stay clickable/selectable. Tauri's drag.js turns a qualifying mousedown into
+   `plugin:window|start_dragging`, which the ACL gates: the window only moves
+   because capabilities/default.json grants `core:window:allow-start-dragging`
+   (NOT part of core:default). Don't drop it. */
 .topbar[data-tauri-drag-region] {
   cursor: default;
   -webkit-user-select: none;
@@ -391,10 +395,10 @@ body.has-paper > * { position: relative; z-index: 1; }
   border-radius: var(--r-4);
   box-shadow: var(--shadow-pop);
   /* Re-enable selection inside popovers: they are descendants of the drag
-     region (.topbar) and would otherwise inherit its user-select:none, making
-     copyable text — the CDP endpoint URL, the Chrome profile path — unselectable.
+     region and would otherwise inherit its user-select:none, making copyable
+     text — the CDP endpoint URL, the Chrome profile path — unselectable.
      Safe for dragging: a bare data-tauri-drag-region only drags when the mousedown
-     target IS .topbar, never these descendants. */
+     target IS the element carrying it, never these descendants. */
   -webkit-user-select: text;
   user-select: text;
 }

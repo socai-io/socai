@@ -136,6 +136,24 @@ pub fn run() {
                 if let Ok(ptr) = win.ns_window() {
                     reposition_traffic_lights(ptr, x, y);
                 }
+                // Cold-launch backstop: on first launch (Gatekeeper scan, busy
+                // system) the setup-time placement can run before AppKit finishes
+                // laying out the title bar, and no focus/resize event is guaranteed
+                // to follow to correct it. Re-apply on the main thread shortly after
+                // the window settles. Idempotent — a no-op when already correct, so
+                // it never flickers.
+                for delay_ms in [250u64, 750] {
+                    let win_retry = win.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                        let win_main = win_retry.clone();
+                        let _ = win_retry.run_on_main_thread(move || {
+                            if let Ok(ptr) = win_main.ns_window() {
+                                reposition_traffic_lights(ptr, x, y);
+                            }
+                        });
+                    });
+                }
                 let win_for_events = win.clone();
                 win.on_window_event(move |event| {
                     if matches!(
