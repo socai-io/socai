@@ -15,6 +15,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use oar_ocr::oarocr::{OAROCRBuilder, OAROCR};
@@ -32,14 +33,15 @@ pub const MODEL_NAME: &str = "PP-OCRv6_tiny (det+rec, ONNX)";
 static ENGINE: OnceLock<std::result::Result<Mutex<OAROCR>, String>> = OnceLock::new();
 
 /// Run OCR on a batch of already-decoded image byte blobs, tagged with a caller
-/// index so results can be mapped back. Successfully-decoded images are run as a
-/// single batched `predict` call (oar-ocr parallelizes the batch across cores —
-/// ~1.5× faster than one-at-a-time). Decode/engine/predict failures are returned
-/// per item as `Err(message)` and never panic. Designed to be called from inside
+/// index so results can be mapped back. All successfully-decoded images are run
+/// in a **single batched `predict`** call — oar-ocr parallelizes the batch across
+/// cores (rayon), which is ~1.5× faster than predicting one image at a time —
+/// and `predict` is the timed wall of that one call. Per-image inference time is
+/// therefore not available (that's the cost of batching); callers measure per
+/// note/batch instead. Decode/engine/predict failures are returned per item as
+/// `Err(message)` and never panic. Designed to be called from inside
 /// `tokio::task::spawn_blocking`.
-pub fn ocr_images_bytes(
-    items: Vec<(usize, Vec<u8>)>,
-) -> Vec<(usize, std::result::Result<String, String>)> {
+pub fn ocr_images_bytes(items: Vec<(usize, Vec<u8>)>) -> OcrBatch {
     let mut out: Vec<(usize, std::result::Result<String, String>)> = Vec::new();
     let mut idxs: Vec<usize> = Vec::new();
     let mut imgs: Vec<image::RgbImage> = Vec::new();
@@ -53,7 +55,10 @@ pub fn ocr_images_bytes(
         }
     }
     if imgs.is_empty() {
-        return out;
+        return OcrBatch {
+            results: out,
+            predict: Duration::ZERO,
+        };
     }
 
     let engine = match engine() {
@@ -62,17 +67,29 @@ pub fn ocr_images_bytes(
             for idx in idxs {
                 out.push((idx, Err(err.clone())));
             }
-            return out;
+            return OcrBatch {
+                results: out,
+                predict: Duration::ZERO,
+            };
         }
     };
 
-    let predicted = match engine.lock() {
-        Ok(ocr) => ocr.predict(imgs),
+    // Time only the predict() call (inside the lock) so the reported cost is the
+    // true batch inference time, not engine-mutex wait.
+    let (predicted, predict) = match engine.lock() {
+        Ok(ocr) => {
+            let t0 = Instant::now();
+            let predicted = ocr.predict(imgs);
+            (predicted, t0.elapsed())
+        }
         Err(_) => {
             for idx in idxs {
                 out.push((idx, Err("ocr engine mutex poisoned".into())));
             }
-            return out;
+            return OcrBatch {
+                results: out,
+                predict: Duration::ZERO,
+            };
         }
     };
 
@@ -97,23 +114,54 @@ pub fn ocr_images_bytes(
             }
         }
     }
-    out
+    OcrBatch {
+        results: out,
+        predict,
+    }
 }
 
-/// Static OCR diagnostics for the run artifact: model identity, ONNX runtime,
-/// execution provider, and host machine parameters. Useful for debugging the
-/// cost of OCR across machines.
+/// Result of one batched OCR call: per-image text outcomes (in input order) plus
+/// the wall time of the single `predict` call (excludes decode and mutex wait).
+pub struct OcrBatch {
+    pub results: Vec<(usize, std::result::Result<String, String>)>,
+    pub predict: Duration,
+}
+
+/// Build the OCR engine and run one tiny prediction so the model load + ORT
+/// session init + graph compilation happen off the critical path. Safe to call
+/// from `spawn_blocking` at the start of an OCR run; the global engine is built
+/// once, so a later real OCR reuses it. Best-effort: errors are ignored.
+pub fn warm_up() {
+    let Ok(engine) = engine() else {
+        return;
+    };
+    let probe = image::RgbImage::from_pixel(32, 32, image::Rgb([255, 255, 255]));
+    if let Ok(ocr) = engine.lock() {
+        let _ = ocr.predict(vec![probe]);
+    }
+}
+
+/// OCR diagnostics for the performance/debug record: model identity, ONNX
+/// runtime, execution provider, and host machine parameters (incl. the concrete
+/// CPU/chip model, e.g. "Apple M4"). The machine info comes from the shared
+/// [`crate::machine`] snapshot — the same source telemetry uploads — so the
+/// local `ocr_perf.json` and the reported device info stay consistent. Not
+/// written into the LLM-facing JSON artifact.
 pub fn diagnostics() -> Value {
+    let machine = crate::util::machine::machine_info();
     json!({
         "model": MODEL_NAME,
         "runtime": "onnxruntime (ort 2.0.0-rc.12)",
         "execution_provider": "cpu",
+        // Debug builds run OCR ~7-8× slower than release; surface it so a slow
+        // perf record is obviously attributable to an unoptimized build.
+        "build": if cfg!(debug_assertions) { "debug" } else { "release" },
         "machine": {
-            "os": std::env::consts::OS,
-            "arch": std::env::consts::ARCH,
-            "logical_cpus": std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(0),
+            "os": machine.os,
+            "arch": machine.arch,
+            "cpu_model": machine.cpu_model,
+            "cpu_count": machine.cpu_count,
+            "memory_total_mb": machine.memory_total_mb,
         },
     })
 }
@@ -173,7 +221,21 @@ fn write_asset(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::time::Instant;
+
+    #[test]
+    fn diagnostics_reports_machine_and_model() {
+        let d = diagnostics();
+        assert_eq!(d["execution_provider"], "cpu");
+        assert!(d["model"].as_str().is_some_and(|s| s.contains("PP-OCRv6")));
+        let machine = &d["machine"];
+        assert_eq!(machine["os"], std::env::consts::OS);
+        assert_eq!(machine["arch"], std::env::consts::ARCH);
+        // cpu_model / cpu_count / memory_total_mb are best-effort; the keys must
+        // always be present (sourced from the shared crate::machine snapshot).
+        assert!(machine.get("cpu_model").is_some());
+        assert!(machine.get("cpu_count").is_some());
+        assert!(machine.get("memory_total_mb").is_some());
+    }
 
     /// Manual smoke test: exercises the full embedded-model → ort → predict path
     /// against a real image. Ignored by default (loads the models + runs
@@ -186,10 +248,13 @@ mod tests {
         let path = std::env::var("SOCAI_OCR_TEST_IMAGE")
             .expect("set SOCAI_OCR_TEST_IMAGE to an image path");
         let bytes = std::fs::read(&path).expect("read test image");
-        let mut results = ocr_images_bytes(vec![(0, bytes)]);
-        let (_, result) = results.pop().expect("one result");
+        let mut batch = ocr_images_bytes(vec![(0, bytes)]);
+        let (_, result) = batch.results.pop().expect("one result");
         let text = result.expect("ocr ran");
-        eprintln!("--- OCR result ---\n{text}\n--- end ---");
+        eprintln!(
+            "--- OCR result (batch predict {} ms) ---\n{text}\n--- end ---",
+            batch.predict.as_millis()
+        );
         assert!(!text.trim().is_empty(), "expected some recognized text");
     }
 

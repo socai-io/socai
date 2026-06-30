@@ -66,6 +66,7 @@ struct DeviceInfo {
     os_kernel_version: String,
     memory_total_mb: Option<u64>,
     cpu_count: Option<usize>,
+    cpu_model: String,
     terminal_app: String,
     parent_process: String,
 }
@@ -188,6 +189,7 @@ fn enrich_properties(properties: Value, config: &WorkerConfig, timestamp_ms: u64
     if let Some(cpu_count) = device.cpu_count {
         map.insert("cpu_count".into(), json!(cpu_count));
     }
+    insert_nonempty(&mut map, "cpu_model", &device.cpu_model);
 
     Value::Object(map)
 }
@@ -296,98 +298,21 @@ pub fn query_text_enabled() -> bool {
 
 fn device_info() -> &'static DeviceInfo {
     static DEVICE_INFO: OnceLock<DeviceInfo> = OnceLock::new();
-    DEVICE_INFO.get_or_init(|| DeviceInfo {
-        os_version: os_version(),
-        os_kernel_version: os_kernel_version(),
-        memory_total_mb: memory_total_mb(),
-        cpu_count: std::thread::available_parallelism()
-            .ok()
-            .map(|count| count.get()),
-        terminal_app: terminal_app(),
-        parent_process: parent_process_name(),
+    DEVICE_INFO.get_or_init(|| {
+        // Reuse the shared machine snapshot so uploaded device fields match the
+        // local OCR diagnostics exactly. Terminal/parent-process are telemetry's
+        // own session context and stay here.
+        let machine = crate::util::machine::machine_info();
+        DeviceInfo {
+            os_version: machine.os_version.clone(),
+            os_kernel_version: machine.os_kernel_version.clone(),
+            memory_total_mb: machine.memory_total_mb,
+            cpu_count: machine.cpu_count,
+            cpu_model: machine.cpu_model.clone(),
+            terminal_app: terminal_app(),
+            parent_process: parent_process_name(),
+        }
     })
-}
-
-fn os_version() -> String {
-    #[cfg(target_os = "macos")]
-    {
-        return command_output("sw_vers", &["-productVersion"]);
-    }
-    #[cfg(target_os = "linux")]
-    {
-        return linux_pretty_name().unwrap_or_default();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        return command_output("cmd", &["/C", "ver"]);
-    }
-    #[allow(unreachable_code)]
-    String::new()
-}
-
-fn os_kernel_version() -> String {
-    #[cfg(unix)]
-    {
-        return command_output("uname", &["-r"]);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        return command_output("cmd", &["/C", "ver"]);
-    }
-    #[allow(unreachable_code)]
-    String::new()
-}
-
-#[cfg(target_os = "linux")]
-fn linux_pretty_name() -> Option<String> {
-    let text = std::fs::read_to_string("/etc/os-release").ok()?;
-    for line in text.lines() {
-        let Some(value) = line.strip_prefix("PRETTY_NAME=") else {
-            continue;
-        };
-        return Some(value.trim_matches('"').to_string());
-    }
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn memory_total_mb() -> Option<u64> {
-    use std::ffi::CString;
-    let name = CString::new("hw.memsize").ok()?;
-    let mut value: u64 = 0;
-    let mut size = std::mem::size_of::<u64>();
-    let rc = unsafe {
-        libc::sysctlbyname(
-            name.as_ptr(),
-            (&mut value as *mut u64).cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc == 0 {
-        Some(value / 1024 / 1024)
-    } else {
-        None
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn memory_total_mb() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    for line in text.lines() {
-        let Some(rest) = line.strip_prefix("MemTotal:") else {
-            continue;
-        };
-        let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
-        return Some(kb / 1024);
-    }
-    None
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn memory_total_mb() -> Option<u64> {
-    None
 }
 
 fn terminal_app() -> String {
@@ -437,22 +362,12 @@ fn terminal_app() -> String {
 #[cfg(unix)]
 fn parent_process_name() -> String {
     let ppid = unsafe { libc::getppid() };
-    command_output("ps", &["-p", &ppid.to_string(), "-o", "comm="])
+    crate::util::machine::command_output("ps", &["-p", &ppid.to_string(), "-o", "comm="])
 }
 
 #[cfg(not(unix))]
 fn parent_process_name() -> String {
     String::new()
-}
-
-fn command_output(program: &str, args: &[&str]) -> String {
-    let Ok(output) = std::process::Command::new(program).args(args).output() else {
-        return String::new();
-    };
-    if !output.status.success() {
-        return String::new();
-    }
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 fn env_value_is(name: &str, values: &[&str]) -> bool {
