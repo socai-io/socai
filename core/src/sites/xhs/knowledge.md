@@ -40,34 +40,33 @@ the route, and otherwise explain the blocker to the user.
 
 ## Tool Use
 
-### Topic / search research
+### `search` and `author_scan`
 
-Call `search(query=..., num_notes=N, filters=..., download_media=...)` when
-the task asks about a topic, keyword, market, trend, product category, or group
-of XHS posts.
+These two macros work the same way — collect up to `num_notes` note cards
+(scrolling as needed), open each note for its body + top comments, write
+artifacts, and return a compact bundle. They differ only in where they enter:
 
-`search` searches, optionally applies filters, samples notes from results,
-reads note bodies and top comments, writes artifacts, and returns a compact
-bundle. Default `num_notes` is modest; increase it only when the question needs
-broader evidence. Use `download_media=true` when the user explicitly needs local
-image/video files. Pass `preview=true` for a fast cards-only pass (result cards
-without opening any note).
+- `search(query=..., filters=...)` — enters from a keyword search. Use for a
+  topic, keyword, market, trend, product category, or group of posts. `filters`
+  are search-result filters (sort, note_type, publish_time, search_scope,
+  distance).
+- `author_scan(author_id=...)` — enters from one author's profile (also returns
+  the profile header). Use for a specific creator. Needs an `author_id` (trailing
+  segment of `/user/profile/<id>`); if the user only gives a display name/handle,
+  discover it with a focused `search` first or ask for the profile URL.
 
-### Author / creator research
+Shared options (same meaning for both):
 
-Call `author_scan(author_id=..., num_notes=N, preview=true|false,
-download_media=...)` when the task asks about a specific author/creator and you
-have an `author_id`, can extract the trailing id from a profile URL, or a
-previous macro result surfaced an author id worth expanding.
-
-If the user only gives a display name or handle, first discover candidates with
-a focused `search` or ask the user for the profile URL/author id.
-
-By default it opens each note for its body + top comments; pass `preview=true`
-for a fast cards-only pass when the profile header plus note cards are enough.
-For author media downloads, `download_media=true` only matters on a full scan
-(it is ignored with `preview=true`), because media is downloaded while reading
-notes.
+- `num_notes=N` — how many notes to collect. Modest default; raise only when the
+  question needs broader evidence.
+- `preview=true` — fast cards-only pass (titles/likes/covers), without opening
+  any note. `download_media` is ignored in this mode.
+- `download_media=true` — download note images/videos into the run dir; use when
+  the user needs local files.
+- `ocr=true` — also read text inside the images (local PP-OCRv6, offline, run
+  pipelined behind the browse loop so it's near-free). Each note gets `ocr_text`
+  as a per-image array (cover first); implies `download_media`; in `preview` mode
+  it OCRs each card's cover only.
 
 ### Note details
 

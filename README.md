@@ -74,6 +74,7 @@ Options:
 - `--download-media` — 打开每篇帖子的时候 (不加`--preview`时): 把图像和视频下载到 `run_dir`
   (`site_media/`), 输出 top-level `run` (`id`, `dir`, `media_dir`), 并创建列表
   `<run_dir>/media_manifest.json`.
+- `--ocr` — 对每张图片做 OCR 文字识别，本地运行，快速、免费
 - `--pretty` — 输出JSON按换行格式.
 - `--debug-snapshot` — 把网页 DOM + a11y tree + screenshots 写入文件，用于开发调试
 
