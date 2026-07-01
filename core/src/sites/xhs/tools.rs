@@ -2633,8 +2633,6 @@ impl Tool for AuthorScanTool {
             return Ok(json_result(&json!({
                 "ok": false,
                 "author_id": author_id,
-                "open": open,
-                "profile": Value::Null,
                 "notes": [],
                 "reason": reason,
             })));

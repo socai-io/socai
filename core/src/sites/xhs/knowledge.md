@@ -38,6 +38,13 @@ as a platform/session/rate-limit blocker: use whatever evidence was collected,
 try at most one narrower or slower query/profile path if it materially changes
 the route, and otherwise explain the blocker to the user.
 
+## Login Detection
+
+Both macros run a pre-flight login gate before interacting: if logged out they
+return `{ok:false, reason:"login_required"}` immediately. Login is read from the
+persistent sidebar (logged out shows a `登录` button, logged in shows the `我`
+entry), so a dismissed QR modal is never mistaken for a session.
+
 ## Tool Use
 
 ### `search` and `author_scan`

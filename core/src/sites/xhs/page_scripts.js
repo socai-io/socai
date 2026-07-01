@@ -191,17 +191,38 @@ const SocaiXhsPageScripts = (() => {
       card_count: cards.length,
       loading,
       has_no_results: hasNoResults,
-      login_required: hasLoginModal(),
+      login_required: loginWallVisible(),
     };
   }
 
-  function hasLoginModal() {
-    const bodyText = text(document.body);
-    const modal = $$('.login-container, .login-modal, .login-box, [class*="login"]').some((el) => {
-      if (!isVisible(el)) return false;
-      return /手机号登录|扫码|登录后|获取验证码/.test(text(el));
-    });
-    return modal || /手机号登录[\s\S]{0,80}获取验证码|登录后查看搜索结果|登录后推荐更懂你的笔记/.test(bodyText);
+  // ── login state ──────────────────────────────────────────────
+  // The logged-out wall: XHS's .reds-modal.login-modal / .login-container (QR +
+  // phone-login form). Structural classes verified against snapshot DOM (not
+  // hashed build classes); text fallback catches an unanticipated variant. This
+  // is the single wall primitive — loginState() and the pageState/searchState
+  // login_required flags all read it.
+  function loginWallVisible() {
+    if ($$('.login-container, .reds-modal.login-modal, .login-modal').some(isVisible)) {
+      return true;
+    }
+    return $$('[class*="login"]').some(
+      (el) => isVisible(el) && /手机号登录|扫码登录|获取验证码/.test(text(el)),
+    );
+  }
+
+  // Tri-state login read for the pre-flight gate, keyed off the persistent left
+  // sidebar so a dismissed QR modal isn't misread: the "登录" button
+  // (.side-bar-component.login-btn) shows only logged out and survives closing
+  // the modal; the "我" entry (.user.side-bar-component) replaces it once logged
+  // in. 'unknown' = sidebar not rendered yet, so the gate keeps polling.
+  function loginState() {
+    if (loginWallVisible() || $$('.side-bar-component.login-btn').some(isVisible)) {
+      return { ok: true, login: 'out' };
+    }
+    if ($$('.user.side-bar-component').some(isVisible)) {
+      return { ok: true, login: 'in' };
+    }
+    return { ok: true, login: 'unknown' };
   }
 
   function pageState() {
@@ -218,7 +239,7 @@ const SocaiXhsPageScripts = (() => {
       title: document.title,
       note_open: noteOpen(),
       search: searchState(),
-      login_required: hasLoginModal(),
+      login_required: loginWallVisible(),
     };
   }
 
@@ -431,7 +452,7 @@ const SocaiXhsPageScripts = (() => {
       url,
       on_detail_route: /\/(?:explore|discovery|search_result)\/[^/?#]+/.test(url),
       has_modal: !!getNoteOverlay(),
-      login_required: hasLoginModal(),
+      login_required: loginWallVisible(),
     };
   }
 
@@ -1281,6 +1302,7 @@ const SocaiXhsPageScripts = (() => {
     note,
     noteWithWait,
     pageState,
+    loginState,
     searchCards,
     searchInput,
     setSearchInput,

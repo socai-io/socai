@@ -18,11 +18,22 @@ const PAGE_SCRIPTS_JS: &str = include_str!("page_scripts.js");
 /// generous ceiling only costs time on genuinely slow loads (e.g. over a VPN) —
 /// the fast path is unaffected.
 const SEARCH_TRANSITION_TIMEOUT_S: f64 = 12.0;
+/// Upper bound the login gate polls the sidebar for a definitive login read
+/// before falling back to "logged in" (only hit if no sidebar ever renders).
+const LOGIN_GATE_TIMEOUT_S: f64 = 6.0;
+
+/// Outcome of the pre-flight [`XhsPageRuntime::login_gate`] check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginGate {
+    LoggedIn,
+    Required,
+}
 
 const XHS_PAGE_SCRIPT_FUNCTIONS: &[&str] = &[
     "note",
     "noteWithWait",
     "pageState",
+    "loginState",
     "searchCards",
     "searchInput",
     "setSearchInput",
@@ -177,6 +188,28 @@ impl<'a> XhsPageRuntime<'a> {
         );
     }
 
+    /// Pre-flight login check every browsing workflow runs before it interacts.
+    /// Ensures we're on XHS, then polls `loginState` until it reads `"out"`
+    /// (→ `Required`) or `"in"` (→ `LoggedIn`); `"unknown"` means the sidebar
+    /// hasn't rendered yet (it appears ~1-3s after a fresh navigation), so keep
+    /// polling. The timeout fallback is only reached if no sidebar ever renders.
+    pub async fn login_gate(&self, navigate_if_needed: bool) -> Result<LoginGate> {
+        self.ensure_xhs(navigate_if_needed).await?;
+        let deadline = Instant::now() + Duration::from_secs_f64(LOGIN_GATE_TIMEOUT_S);
+        loop {
+            let state = self.expect_object("loginState", None).await?;
+            match state.get("login").and_then(Value::as_str) {
+                Some("out") => return Ok(LoginGate::Required),
+                Some("in") => return Ok(LoginGate::LoggedIn),
+                _ => {}
+            }
+            if Instant::now() >= deadline {
+                return Ok(LoginGate::LoggedIn);
+            }
+            sleep_ms(200).await;
+        }
+    }
+
     pub async fn detect_state(&self) -> Result<Value> {
         self.ensure_xhs(false).await?;
         self.expect_object("pageState", None).await
@@ -194,7 +227,20 @@ impl<'a> XhsPageRuntime<'a> {
             anyhow::bail!("query is required");
         }
 
-        self.ensure_xhs(true).await?;
+        // Pre-flight login gate: if logged out, bail immediately with
+        // `login_required` instead of paying the full input→Enter→click→wait
+        // retry cycle (which would grind for ~30s behind the wall). Same
+        // failure shape (`ok:false` + `reason`) the transition-failure path
+        // below returns, so callers handle both identically.
+        if self.login_gate(true).await? == LoginGate::Required {
+            return Ok(json!({
+                "ok": false,
+                "query": keyword,
+                "count": 0,
+                "cards": [],
+                "reason": "login_required",
+            }));
+        }
         let submit = self.submit_search(keyword, wait_seconds).await?;
         let ok = script_ok(&submit);
         // Apply any search-result filters before reading cards, so the returned
@@ -1073,6 +1119,16 @@ impl<'a> XhsPageRuntime<'a> {
         if id.is_empty() {
             anyhow::bail!("author id is required");
         }
+        // Pre-flight login gate before navigating to the profile: bail fast with
+        // `login_required` rather than loading the profile only to hit the wall.
+        // (The wait loop below still catches a session that expires mid-scan.)
+        if self.login_gate(true).await? == LoginGate::Required {
+            return Ok(json!({
+                "ok": false,
+                "url": self.current_url().await?,
+                "reason": "login_required",
+            }));
+        }
         let url = format!("https://www.xiaohongshu.com/user/profile/{id}");
         self.page.navigate_with_timeout(&url, 60.0).await?;
 
@@ -1098,10 +1154,7 @@ impl<'a> XhsPageRuntime<'a> {
             .unwrap_or(false);
         Ok(json!({
             "ok": kind == "profile_page",
-            "author_id": id,
             "url": self.current_url().await?,
-            "login_required": login,
-            "state": state,
             "reason": if kind == "profile_page" {
                 ""
             } else if login {
