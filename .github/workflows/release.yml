@@ -897,9 +897,9 @@ jobs:
             Push-Location app
             try {
               pnpm exec tauri signer sign `
-                --private-key $env:TAURI_SIGNING_PRIVATE_KEY `
-                --password $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD `
-                $assetFull
+                --private-key "$env:TAURI_SIGNING_PRIVATE_KEY" `
+                --password "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" `
+                "$assetFull"
             } finally {
               Pop-Location
             }
