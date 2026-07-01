@@ -57,8 +57,14 @@ artifacts, and return a compact bundle. They differ only in where they enter:
 
 Shared options (same meaning for both):
 
-- `num_notes=N` — how many notes to collect. Modest default; raise only when the
+- `num_notes=N` — how many notes to collect (default 10); raise only when the
   question needs broader evidence.
+- `num_comments=N` — how many comments to load per note (default 8). The comment
+  area is scrolled and reply threads ("展开 N 条回复") are expanded until the count
+  is reached or the thread ends; **replies count toward N**. Each parent keeps its
+  replies as a nested `sub_comments`/`replies` array. Raising this adds latency per
+  note (more scroll + expand rounds), so lift it only when the question is about
+  the discussion itself. `0` skips comments. Ignored in `preview` mode. 
 - `preview=true` — fast cards-only pass (titles/likes/covers), without opening
   any note. `download_media` is ignored in this mode.
 - `download_media=true` — download note images/videos into the run dir; use when

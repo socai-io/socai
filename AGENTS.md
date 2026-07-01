@@ -11,8 +11,11 @@ and in DEVELOPMENT.md instead.
 
 ## Engineering rules
 
-- Generally do not add new tests to Rust code. Add them only when the user
-  explicitly asks for tests.
+- **Do NOT add new tests to Rust code unless the user explicitly asks.** This
+  applies even when you add a new function or change behavior — ship the change
+  without a test. It is fine (and expected) to *update* an existing test when you
+  change an API it already covers, but do not create new `#[test]` functions or
+  grow `mod tests` on your own initiative.
 
 ## Rust core — `core/`
 

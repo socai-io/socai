@@ -43,7 +43,7 @@ const SEARCH_WAIT_SECONDS: f64 = 2.0;
 /// Top comments attached to every note read (read_note, extract_note,
 /// search, author_scan). Comments are read from the already-open note's DOM
 /// (one extra JS read, no extra navigation), so every note read includes them.
-const TOP_COMMENTS_PER_NOTE: i64 = 12;
+const TOP_COMMENTS_PER_NOTE: i64 = 8;
 
 /// XHS macro-agent playbook for the single app/TUI agent interface. Embedded
 /// at compile time so the agent prompt always carries the latest copy.
@@ -199,6 +199,16 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     kind: ArgKind::Int,
                 },
                 CommandArg {
+                    key: "num_comments",
+                    long: Some("num-comments"),
+                    value_name: "N",
+                    help: "Comments to load per note, scrolling the comment area and expanding \
+                           reply threads to reach it (replies count toward N). Default 8; \
+                           ignored with --preview.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
                     key: "download_media",
                     long: Some("download-media"),
                     value_name: "DOWNLOAD_MEDIA",
@@ -251,6 +261,16 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     long: Some("num-notes"),
                     value_name: "N",
                     help: "Scroll the profile grid to collect this many notes (default 10).",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "num_comments",
+                    long: Some("num-comments"),
+                    value_name: "N",
+                    help: "Comments to load per note, scrolling the comment area and expanding \
+                           reply threads to reach it (replies count toward N). Default 8; \
+                           ignored with --preview.",
                     required: false,
                     kind: ArgKind::Int,
                 },
@@ -309,6 +329,7 @@ fn run_search(
             .get("num_notes")
             .and_then(Value::as_i64)
             .or(Some(DEFAULT_NUM_NOTES));
+        let num_comments = args.get("num_comments").and_then(Value::as_i64);
         let preview = args
             .get("preview")
             .and_then(Value::as_bool)
@@ -331,6 +352,7 @@ fn run_search(
             &query,
             filters.as_ref(),
             num_notes,
+            num_comments,
             download_media,
             ocr,
             preview,
@@ -355,6 +377,7 @@ fn run_author_scan(
             .get("num_notes")
             .and_then(Value::as_i64)
             .or(Some(DEFAULT_NUM_NOTES));
+        let num_comments = args.get("num_comments").and_then(Value::as_i64);
         // Default opens each note; --preview returns cards only.
         let preview = args
             .get("preview")
@@ -375,6 +398,7 @@ fn run_author_scan(
             page,
             &author_id,
             num_notes,
+            num_comments,
             preview,
             download_media,
             ocr,
@@ -420,12 +444,14 @@ const AUTHOR_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
 };
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub async fn search_command(
     page: Arc<PageSession>,
     command_name: &'static str,
     query: &str,
     filters: Option<&Value>,
     num_notes: Option<i64>,
+    num_comments: Option<i64>,
     download_media: bool,
     ocr: bool,
     preview: bool,
@@ -442,7 +468,15 @@ pub async fn search_command(
     run_xhs_tool_command(
         page,
         spec,
-        search_input(query, filters, num_notes, download_media, ocr, preview)?,
+        search_input(
+            query,
+            filters,
+            num_notes,
+            num_comments,
+            download_media,
+            ocr,
+            preview,
+        )?,
         debug_snapshot,
         progress,
     )
@@ -454,6 +488,7 @@ pub async fn author_scan_command(
     page: Arc<PageSession>,
     author_id: &str,
     num_notes: Option<i64>,
+    num_comments: Option<i64>,
     preview: bool,
     download_media: bool,
     ocr: bool,
@@ -463,17 +498,19 @@ pub async fn author_scan_command(
     run_xhs_tool_command(
         page,
         AUTHOR_SCAN_COMMAND,
-        author_scan_input(author_id, num_notes, preview, download_media, ocr)?,
+        author_scan_input(author_id, num_notes, num_comments, preview, download_media, ocr)?,
         debug_snapshot,
         progress,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_input(
     query: &str,
     filters: Option<&Value>,
     num_notes: Option<i64>,
+    num_comments: Option<i64>,
     download_media: bool,
     ocr: bool,
     preview: bool,
@@ -486,6 +523,9 @@ fn search_input(
     }
     if let Some(n) = num_notes {
         input["num_notes"] = json!(n.max(1));
+    }
+    if let Some(n) = num_comments {
+        input["num_comments"] = json!(n.max(0));
     }
     if download_media {
         input["download_media"] = json!(true);
@@ -502,6 +542,7 @@ fn search_input(
 fn author_scan_input(
     author_id: &str,
     num_notes: Option<i64>,
+    num_comments: Option<i64>,
     preview: bool,
     download_media: bool,
     ocr: bool,
@@ -511,6 +552,9 @@ fn author_scan_input(
     });
     if let Some(n) = num_notes {
         input["num_notes"] = json!(n.max(1));
+    }
+    if let Some(n) = num_comments {
+        input["num_comments"] = json!(n.max(0));
     }
     if preview {
         input["preview"] = json!(true);
@@ -634,12 +678,20 @@ fn media_for(
     }
 }
 
-/// Read up to `TOP_COMMENTS_PER_NOTE` top comments from the currently open note
+/// Wall-clock safety net for the comment load loop, per note. The loop's real
+/// stop conditions are the budget being met, the thread being exhausted, or
+/// growth stalling; this only exists so a pathological page (DOM that keeps
+/// "growing" a sliver each round, or a hang) can't loop forever. It is a fixed
+/// generous cap on purpose — scaling it with the requested count would truncate a
+/// large request that is still legitimately loading.
+const COMMENT_LOAD_TIMEOUT_S: f64 = 120.0;
+
+/// Load up to `TOP_COMMENTS_PER_NOTE` top comments from the currently open note
 /// and insert them under `note["top_comments"]`. Best-effort: on failure the
 /// note is left without the field. Shared by `read_note` and `extract_note`.
 async fn attach_top_comments(xhs: &XhsPageRuntime<'_>, note: &mut Value) {
     let Ok(payload) = xhs
-        .extract_comments_with_wait(TOP_COMMENTS_PER_NOTE, 5.0)
+        .load_comments(TOP_COMMENTS_PER_NOTE, COMMENT_LOAD_TIMEOUT_S)
         .await
     else {
         return;
@@ -828,7 +880,7 @@ async fn scan_card_note(
         return skipped_note_entry(card, "already_processed", history);
     }
     if !card.note_id.is_empty()
-        && history.is_satisfied_by(&card.note_id, level, requested_media, download_media, ocr)
+        && history.is_satisfied_by(&card.note_id, level, requested_media, download_media, ocr, comment_count)
         // Only short-circuit when we actually have the cached entity to return;
         // a pre-upgrade entry without one is re-read so it backfills the cache
         // instead of degrading to a bare card.
@@ -895,12 +947,16 @@ async fn scan_card_note(
         }),
     };
 
-    // Pull comments separately after waiting for the slower comment list to
-    // hydrate. Body content often appears before comments. Scans always include
-    // comments — there is no longer a level gate.
+    // Pull comments separately after the body read: the list hydrates slower
+    // than the body, and reaching `comment_count` may require scrolling the
+    // comment area and expanding reply threads (replies count toward the total).
+    // Scans always include comments — there is no longer a level gate.
     if comment_count > 0 {
-        if let Ok(comments_payload) = xhs.extract_comments_with_wait(comment_count, 5.0).await {
-            let comments = comments_payload
+        if let Ok(payload) = xhs
+            .load_comments(comment_count, COMMENT_LOAD_TIMEOUT_S)
+            .await
+        {
+            let comments = payload
                 .get("comments")
                 .and_then(Value::as_array)
                 .cloned()
@@ -910,10 +966,11 @@ async fn scan_card_note(
                 map.insert(
                     "top_comments_wait".into(),
                     json!({
-                        "ready": comments_payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
-                        "reason": comments_payload.get("reason").and_then(Value::as_str).unwrap_or(""),
-                        "waited_ms": comments_payload.get("waited_ms").and_then(Value::as_i64).unwrap_or(0),
-                        "attempts": comments_payload.get("attempts").and_then(Value::as_i64).unwrap_or(0),
+                        "ready": payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
+                        "loaded_total": payload.get("loaded_total").and_then(Value::as_i64).unwrap_or(0),
+                        "returned_total": payload.get("returned_total").and_then(Value::as_i64).unwrap_or(0),
+                        "rounds": payload.get("rounds").and_then(Value::as_i64).unwrap_or(0),
+                        "stop_reason": payload.get("stop_reason").and_then(Value::as_str).unwrap_or(""),
                     }),
                 );
             }
@@ -1118,6 +1175,33 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     "ocr_text",
 ];
 
+/// Collapse one full comment object to its lean form: `null` when it has no text,
+/// a plain text string when it has no replies, or `{text, replies:[…]}` when it
+/// does. Reply objects are flattened to their text the same way (one level deep —
+/// XHS replies don't nest further).
+fn lean_comment(comment: &Value) -> Option<Value> {
+    let text = comment.get("text").and_then(Value::as_str).unwrap_or("");
+    if text.is_empty() {
+        return None;
+    }
+    let replies: Vec<Value> = comment
+        .get("sub_comments")
+        .and_then(Value::as_array)
+        .map(|subs| {
+            subs.iter()
+                .filter_map(|s| s.get("text").and_then(Value::as_str))
+                .filter(|s| !s.is_empty())
+                .map(|s| Value::String(s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if replies.is_empty() {
+        Some(Value::String(text.to_string()))
+    } else {
+        Some(json!({ "text": text, "replies": replies }))
+    }
+}
+
 /// Trim one scanned-note entry to the lean shape: drop the per-entry provenance
 /// wrappers (`source_position`, `ok`, `skipped`, plus failure detail), collapse
 /// `top_comments` to a plain array of comment texts, and whitelist the entity to
@@ -1145,15 +1229,17 @@ fn lean_scan_note(note: &mut Value) {
     let Some(entity) = entity.as_object_mut() else {
         return;
     };
-    // Collapse comment objects to their text before the whitelist runs (the
-    // whitelist keeps `top_comments`, but we want the plain-string form).
+    // Collapse comment objects before the whitelist runs (which keeps
+    // `top_comments`): a comment with no replies becomes its plain text; one with
+    // replies becomes `{text, replies:[reply text, …]}` so the lean view keeps
+    // the thread structure. The full objects (usernames, likes, times) stay in
+    // the run artifact.
     if let Some(comments) = entity.get_mut("top_comments").and_then(Value::as_array_mut) {
-        let texts: Vec<Value> = comments
+        let lean: Vec<Value> = comments
             .iter()
-            .filter_map(|comment| comment.get("text").cloned())
-            .filter(|text| text.as_str().is_some_and(|s| !s.is_empty()))
+            .filter_map(lean_comment)
             .collect();
-        entity.insert("top_comments".into(), Value::Array(texts));
+        entity.insert("top_comments".into(), Value::Array(lean));
     }
     entity.retain(|key, _| LEAN_NOTE_FIELDS.contains(&key.as_str()));
 }
@@ -1335,7 +1421,7 @@ const ARTIFACT_EXTRA_NOTE_PROPERTIES: &[&str] = &[
     "author_url",
     "location",
     "content_source",
-    "top_comments (full objects: text, author, likes, time)",
+    "top_comments (full objects: text, author, likes, time, sub_comments[])",
 ];
 
 /// Per-card properties that live only in the `search --preview` artifact
@@ -1540,6 +1626,7 @@ impl Tool for ReadNoteTool {
                 options.include_media,
                 options.download_media,
                 options.ocr,
+                TOP_COMMENTS_PER_NOTE,
             ) {
                 let entry = self.history.get(id).unwrap_or_default();
                 return Ok(json_result(&json!({
@@ -1997,6 +2084,12 @@ impl Tool for SearchTool {
                     "default": DEFAULT_NUM_NOTES,
                     "minimum": 1
                 },
+                "num_comments": {
+                    "type": "integer",
+                    "description": "Comments to load per note. Scrolls the comment area and expands reply threads to reach this many; replies count toward the total. Higher values add latency per note. Ignored in preview mode.",
+                    "default": TOP_COMMENTS_PER_NOTE,
+                    "minimum": 0
+                },
                 "download_media": {
                     "type": "boolean",
                     "description": "Download note images/videos into the command run_dir, include local_path fields in returned notes, and write a stable media_manifest.json surfaced by media_manifest_path. Ignored in preview mode.",
@@ -2208,7 +2301,7 @@ impl Tool for SearchTool {
         // Every sampled note is read with the same extraction level (body +
         // top comments).
         let level = "deep";
-        let comment_count = TOP_COMMENTS_PER_NOTE;
+        let comment_count = get_i64(&input, "num_comments", TOP_COMMENTS_PER_NOTE).max(0);
         let want = num_notes.max(1) as usize;
 
         // Read top-to-bottom: pull cards from the results state (which only
@@ -2352,7 +2445,7 @@ impl Tool for SearchTool {
             "sampling": {
                 "num_notes": num_notes,
                 "selected": selected.len(),
-                "comments_per_note": TOP_COMMENTS_PER_NOTE,
+                "comments_per_note": comment_count,
                 "include_media": include_media,
                 "download_media": download_media,
                 "ocr": ocr,
@@ -2463,6 +2556,12 @@ impl Tool for AuthorScanTool {
                     "description": "Collect at least this many note cards, scrolling the profile grid (lazy-loaded). Omit for the first screen only.",
                     "minimum": 1
                 },
+                "num_comments": {
+                    "type": "integer",
+                    "description": "Comments to load per note. Scrolls the comment area and expands reply threads to reach this many; replies count toward the total. Higher values add latency per note. Ignored in preview mode.",
+                    "default": TOP_COMMENTS_PER_NOTE,
+                    "minimum": 0
+                },
                 "preview": {
                     "type": "boolean",
                     "description": "Fast cards-only mode: return the note cards (titles/likes/covers) without opening notes or reading bodies/comments. Off by default (full scan: each note opened for its body + top comments).",
@@ -2512,6 +2611,7 @@ impl Tool for AuthorScanTool {
             .and_then(Value::as_i64)
             .filter(|n| *n > 0)
             .map(|n| n as usize);
+        let comment_count = get_i64(&input, "num_comments", TOP_COMMENTS_PER_NOTE).max(0);
 
         // Media processor only needed when downloading note media (no vision,
         // so no LLM provider required).
@@ -2599,7 +2699,7 @@ impl Tool for AuthorScanTool {
                     ctx,
                     card,
                     "deep",
-                    TOP_COMMENTS_PER_NOTE,
+                    comment_count,
                     false,
                     download_media,
                     ocr,
@@ -2697,7 +2797,7 @@ impl Tool for AuthorScanTool {
                 "num_notes": num_notes,
                 "collected": cards.len(),
                 "preview": preview,
-                "comments_per_note": if preview { 0 } else { TOP_COMMENTS_PER_NOTE },
+                "comments_per_note": if preview { 0 } else { comment_count },
                 "download_media": download_media,
                 "ocr": ocr,
             },
@@ -2785,6 +2885,8 @@ fn sanitize_for_filename(value: &str) -> String {
         .collect()
 }
 
+// AGENTS.md: do NOT add new Rust tests unless the user explicitly asks. Update
+// the existing ones when an API they cover changes; don't grow this module.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -34,6 +34,8 @@ const XHS_PAGE_SCRIPT_FUNCTIONS: &[&str] = &[
     "noteOpen",
     "comments",
     "commentsWithWait",
+    "commentAreaState",
+    "expandCommentReplies",
     "scrollFeed",
     "scrollInNote",
     "carouselImages",
@@ -670,6 +672,107 @@ impl<'a> XhsPageRuntime<'a> {
             })),
         )
         .await
+    }
+
+    /// Load up to `max_total` comments on the currently open note by driving the
+    /// page like a human: wait for the list to hydrate, then loop
+    /// scroll-comment-area → click "展开 N 条回复" → re-measure until the budget is
+    /// met, the "- THE END -" sentinel shows with no reply buttons left, growth
+    /// stalls, or the timeout hits. `max_total` counts primary comments *and*
+    /// their replies together; `0`/negative means "load everything available".
+    /// The returned `comments` array is hot-sorted and trimmed so primary + reply
+    /// count does not exceed the budget.
+    pub async fn load_comments(&self, max_total: i64, timeout_seconds: f64) -> Result<Value> {
+        self.ensure_xhs(false).await?;
+        // Let the (slow) comment list hydrate before the first measurement.
+        let first = self.extract_comments_with_wait(0, 5.0).await.ok();
+
+        let deadline = Instant::now() + Duration::from_secs_f64(timeout_seconds.max(2.0));
+        let mut last_total: i64 = -1;
+        let mut stale_rounds = 0;
+        let mut rounds = 0;
+        let stop_reason;
+        loop {
+            let state = self
+                .expect_object("commentAreaState", None)
+                .await
+                .unwrap_or_else(|_| json!({}));
+            let loaded_total = state.get("loaded_total").and_then(Value::as_i64).unwrap_or(0);
+            let pending = state
+                .get("pending_show_more")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let has_end = state.get("has_end").and_then(Value::as_bool).unwrap_or(false);
+
+            // Budget reached — no need to load more.
+            if max_total > 0 && loaded_total >= max_total {
+                stop_reason = "budget_reached";
+                break;
+            }
+            // Everything that exists is loaded and expanded: the end sentinel is
+            // showing, no reply threads are left to expand, and the count has
+            // settled.
+            if has_end && pending == 0 && loaded_total == last_total {
+                stop_reason = "exhausted";
+                break;
+            }
+            if loaded_total == last_total {
+                stale_rounds += 1;
+            } else {
+                stale_rounds = 0;
+            }
+            // No growth across several rounds despite scrolling/expanding.
+            if stale_rounds >= 3 {
+                stop_reason = "stalled";
+                break;
+            }
+            if Instant::now() >= deadline {
+                stop_reason = "timeout";
+                break;
+            }
+            last_total = loaded_total;
+            rounds += 1;
+
+            // Expand any visible reply buttons first (cheap, surfaces sub-comments
+            // that count toward the budget), then scroll for more parents.
+            if pending > 0 {
+                let _ = self.expect_object("expandCommentReplies", None).await;
+                sleep_ms(500).await;
+            }
+            if !has_end {
+                let _ = self.scroll_in_note(1200).await;
+            }
+            sleep_ms(500).await;
+        }
+
+        let all = self.extract_comments(0).await.unwrap_or_default();
+        let loaded_primary = all.len() as i64;
+        let loaded_total: i64 = loaded_primary
+            + all
+                .iter()
+                .map(|c| c.get("sub_comments").and_then(Value::as_array).map_or(0, Vec::len) as i64)
+                .sum::<i64>();
+        let comments = trim_comments_to_budget(all, max_total);
+        let returned_total: i64 = comments.len() as i64
+            + comments
+                .iter()
+                .map(|c| c.get("sub_comments").and_then(Value::as_array).map_or(0, Vec::len) as i64)
+                .sum::<i64>();
+
+        Ok(json!({
+            "ok": true,
+            "comments": comments,
+            "loaded_primary": loaded_primary,
+            "loaded_total": loaded_total,
+            "returned_total": returned_total,
+            "rounds": rounds,
+            "stop_reason": stop_reason,
+            "ready": first
+                .as_ref()
+                .and_then(|v| v.get("ready"))
+                .and_then(Value::as_bool)
+                .unwrap_or(loaded_total > 0),
+        }))
     }
 
     pub async fn collect_carousel_images(&self, max_images: i64) -> Result<Vec<String>> {
@@ -1649,6 +1752,36 @@ async fn sleep_ms(ms: u64) {
     tokio::time::sleep(Duration::from_millis(ms)).await;
 }
 
+/// Trim a hot-sorted comment list so primary comments plus their replies do not
+/// exceed `max_total`. Each parent counts as one; its `sub_comments` are then
+/// truncated to whatever budget remains. `max_total <= 0` keeps everything.
+fn trim_comments_to_budget(comments: Vec<Value>, max_total: i64) -> Vec<Value> {
+    if max_total <= 0 {
+        return comments;
+    }
+    let mut out = Vec::new();
+    let mut count: i64 = 0;
+    for mut comment in comments {
+        if count >= max_total {
+            break;
+        }
+        count += 1; // the parent comment itself
+        let remaining = max_total - count;
+        if let Some(subs) = comment.get_mut("sub_comments").and_then(Value::as_array_mut) {
+            if remaining <= 0 {
+                subs.clear();
+            } else if subs.len() as i64 > remaining {
+                subs.truncate(remaining as usize);
+            }
+            count += subs.len() as i64;
+        }
+        out.push(comment);
+    }
+    out
+}
+
+// AGENTS.md: do NOT add new Rust tests unless the user explicitly asks. Update
+// the existing ones when an API they cover changes; don't grow this module.
 #[cfg(test)]
 mod tests {
     use super::*;

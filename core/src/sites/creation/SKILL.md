@@ -6,7 +6,7 @@ socai总是用模拟人的方式，通过CDP和DOM进行每一步的网页操作
 
 每个网站目录包含以下几类文件：
 - tools.rs：定义了网站的工具函数，接口层，可以是偏底层的原子操作，也可以有偏工作流的连续操作，便于完成用户高频流程。工具实现 `Tool` trait（`core/src/agent/tool.rs`）：`name`/`description`/`input_schema`/`call`，返回 JSON 文本。description 里写清楚成本与耗时（是否打开页面、是否耗 token/需要本地 ASR 等），agent 靠它做性价比决策。命令包装一律复用共享 runner（`core/src/sites/runner.rs` 的 `run_tool_command`/`ToolCommand`，输入小工具 `get_*`/`trimmed_required`/`json_result` 也从那里 import，参考 xhs 的 `run_xhs_tool_command`）——**不要把 run_dir/快照/工具分发这套脚手架复制进站点文件夹**。
-- page.rs：tools背后的实现，包含业务逻辑和 CDP 操作编排。选择器尽量稳定，优先结构性选择器、`data-*`、aria 属性；不要依赖构建生成的 hash class。
+- page.rs：tools背后的实现，包含业务逻辑和 CDP 操作编排。选择器尽量稳定，优先结构性选择器、`data-*`、aria 属性；不要依赖构建生成的 hash class。**只用 snapshot DOM 里真实见过的元素/类名写选择器，绝不凭猜测。**
 - page_scripts.js：页面内 DOM 逻辑，每次 `run_script()` 时注入页面执行。JS 只做提取，返回 JSON。page_scripts.js 是一个 IIFE，在 window 上挂一个命名函数表（参考 xhs 的 `SocaiXhsPageScripts`）。每个函数接收一个 JSON 参数、返回可序列化的 JSON——不返回 DOM 节点、不在 JS 里做多步编排。点击/滚动/等待等编排都在 Rust 侧（page.rs），通过 `run_script(name, arg)` 注入调用并校验结果。
 - entities.rs：定义网站数据类型
 - knowledge.md：关于这个网站的know-hows，包括工具信息、网页功能、布局、页面动态、跳转、登录、风控等信息，便于后续agent快速上手
@@ -23,34 +23,23 @@ socai总是用模拟人的方式，通过CDP和DOM进行每一步的网页操作
 
 当用户想要增加新网站或新能力时，**严格**遵循以下步骤，逐步执行：
 
-1. 首先，不能直接开始写实现代码，而是先让用户尽可能详细地描述如下信息：
+### 1. 确认需求
+首先，不能直接开始写实现代码，而是先让用户尽可能详细地描述如下信息：
   1) 目标网页 URL / 入口页。
   2) 用户想完成的具体流程，用自然语言。
   3) 详细描述每一步预期的人类操作方式，例如点击、输入、滚动、悬浮、快捷键。比如点击还是悬浮鼠标、在哪个区域上下滑滚轮，是否有键盘按键能更准确地操作（比如上下左右键切换帖子、esc键退出当前页面等等）。
   4) 目标输出的数据结构或至少要抽取哪些字段。
   5) 是否需要登录，以及当前账号/浏览器是否已经处于可用状态。
   
-2. 详细了解以上的用户回答后，如果sites目录下面还没有关于这个网站的文件夹，则增加一个，然后按照上面的代码准则scaffold出所需文件，并构建出接口。注意，先不实现具体工具逻辑。如果已有这个网站的文件夹，则可按需看是否需要增加文件或接口。新增的site_id和文件夹名保持一致，都用简写，比如小红书 `xhs`、抖音 `dy`。
+  
+### 2. Scaffold代码
+详细了解以上的用户回答后，如果sites目录下面还没有关于这个网站的文件夹，则增加一个，然后按照上面的代码准则scaffold出所需文件，并构建出接口。注意，先不实现具体工具逻辑。如果已有这个网站的文件夹，则可按需看是否需要增加文件或接口。新增的site_id和文件夹名保持一致，都用简写，比如小红书 `xhs`、抖音 `dy`。
 
-3. 然后，按以下的3步流程逐步执行，并且不断循环这3步流程，一步一步地添加：
+### 3. （核心）开发Loop
+然后，按以下的3步流程逐步执行，并且不断循环这3步流程，一步一步地添加：
   1) 首先，添加下一步单点操作的代码。代码结构要符合上面的代码准则。如果是刚开始实现第一步，则新增一个打开网页的操作；如果是后面的步骤，则是新增一个鼠标或键盘操作或页面js操作等等，你需要基于上一个循环中对snapshot理解，去准确写出代码。避免猜测页面元素，总是根据上一个循环中的实际DOM信息来写代码。确保新增的工具函数里支持--debug-snapshot参数，确保每执行一个动作都能保存下来变化的snapshots。
   2) 然后，你调用目前代码已有的半成品工具函数，比如 `cargo run -p socai-cli -- <site_id> <command> ... --debug-snapshot`。此时cli会开始操作Chrome，每次命令在 stderr 打印 `run_dir`（目录名形如 `<本地时间>_<site_id>_<command>[_<搜索词>]`，位于 ~/.socai/runs/ 下），snapshots 保存在 `<run_dir>/snapshots/`。
 
-**开发前先把 Chrome 切到 managed profile，避免反复弹 allow-debugging。** socai 默认复用用户日常 Chrome，每次 rebuild 重启 daemon 后首次连接都会弹一次 allow-debugging；开发时反复 rebuild 会很烦。所以在开始这一轮自我创建开发前，先执行一次：
-
-```bash
-cargo run -p socai-cli -- config set chrome.profile managed
-cargo run -p socai-cli -- stop   # 让 daemon 下次用新 profile
-```
-
-之后 socai 会拉起一个它自己管理的独立 Chrome（profile 目录 `~/.socai/chrome-profile`），不碰用户日常浏览器，**不再弹 allow-debugging**，daemon 反复重启也不会。代价是这个独立 Chrome 是干净 profile：首次运行时请提醒用户在弹出的 Chrome 窗口里手动登录一次目标网站（如小红书），登录态会持久化在该 profile 目录里，后续重建无需再登录。
-
-开发全部完成后，把 profile 改回去，恢复日常使用默认 Chrome 的行为：
-
-```bash
-cargo run -p socai-cli -- config unset chrome.profile
-cargo run -p socai-cli -- stop
-```
   3) 这步工具运行完成后，你需要查看最新一步的增量snapshot。每帧目录包含：`screenshot.jpg`（用户视窗）、`screenshot_full.jpg`（全页截图，和DOM范围对应）、`a11y.json`（精简无障碍树）、`dom.html`（精简DOM）、`dom.raw.html`（原始DOM，很大，一般不需要）。你每次先用多模态能力看两张截图来理解页面，再读 `a11y.json` 理解页面区块与状态，然后重点从 `dom.html` 里面来确认元素。确认当前操作是否符合预期。由于你是一步一步添加操作的，这时候的工具结果只是中间结果，你要检验的是so far这个中间结果是否符合预期。如果符合预期，则基于这一步snapshot的结果，继续实现下一步的代码。如果结果不符合预期，说明上一步的代码有问题，你排查snapshot，修改上一步的代码。
 重复以上3步循环，直到新加的工具完整执行每一步，能完成用户的需求。总是按照上面的三部曲，每一步都要确认snapshot再添加下一步的代码，避免跳步。如果再开发过程中发现有和用户描述不符或者一开始用户没有描述清楚的地方，这时你应该用户再次交互对话，来理清楚操作细节。
 代码实现过程中，多参考sites目录下已有的其他网站代码。
@@ -65,8 +54,29 @@ cargo run -p socai-cli -- stop
 - 第六轮，上一轮的成功运行结果中，snapshot应该已经显示出了搜索结果页的帖子信息是什么样的结构，因此，这一步在工具函数中增加“从搜索结果页中获取帖子信息并返回”的操作，然后和前面所有轮次类似，做运行、查看、验证。
 - 如果用户有更详细的需求，比如逐个点开帖子拿详细内容或评论、或者需要传入能拿的帖子数因而需要滚动页面，等等，则根据具体的需求修改，原理和步骤都和上面类似。
 
-4. 新工具能力实现之后，运行3-5组不同参数，来全面测试新能力。如果遇到问题，返回上一步的流程进行修复。
+#### 开发前先把 Chrome 切到 managed profile，避免反复弹 allow-debugging。
+socai 默认复用用户日常 Chrome，每次 rebuild 重启 daemon 后首次连接都会弹一次 allow-debugging；开发时反复 rebuild 会很烦。所以在开始这一轮自我创建开发前，先执行一次：
 
-5. 代码完成后，把新增的工具信息和发现的有价值的网站知识写到knowledge.md。不要一上来先写knowledge.md，而是在代码全部实现完成后再写。
+```bash
+cargo run -p socai-cli -- config set chrome.profile managed
+cargo run -p socai-cli -- stop   # 让 daemon 下次用新 profile
+```
 
-完成后，向用户汇报上面的结果，并把上面的3-5次不同参数的运行结果汇报给用户。
+之后 socai 会拉起一个它自己管理的独立 Chrome（profile 目录 `~/.socai/chrome-profile`），不碰用户日常浏览器，不再弹 allow-debugging，daemon 反复重启也不会。代价是这个独立 Chrome 是干净 profile：首次运行时请提醒用户在弹出的 Chrome 窗口里手动登录一次目标网站（如小红书），登录态会持久化在该 profile 目录里，后续重建无需再登录。
+
+开发全部完成后，把 profile 改回去，恢复日常使用默认 Chrome 的行为：
+
+```bash
+cargo run -p socai-cli -- config unset chrome.profile
+cargo run -p socai-cli -- stop
+```
+
+### 4. 测试
+新工具能力实现之后，运行3-5组不同参数，来全面测试新能力。如果遇到问题，返回上一步的流程进行修复。
+
+### 5. 更新知识
+代码完成后，把新增的工具信息和发现的有价值的网站知识写到knowledge.md。不要一上来先写knowledge.md，而是在代码全部实现完成后再写。
+
+
+
+以上流程都完成后，向用户汇报上面的结果，并把上面的3-5次不同参数的运行结果汇报给用户。

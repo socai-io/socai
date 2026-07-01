@@ -988,7 +988,14 @@ const SocaiXhsPageScripts = (() => {
 
   // ── comments ─────────────────────────────────────────────────
   const COMMENT_ROOT_SELECTOR = '.comment-item, .parent-comment, .comment-inner, .comments-container .comment-item-inner, .comment-wrapper';
-  const SUB_COMMENT_SELECTOR = '.reply-item, .sub-comment-item, .child-comment-item, .reply-comment-item';
+  // All three verified against the live note DOM (image + video notes):
+  //   `.comment-item-sub` — a reply node, inside `.parent-comment > .reply-container`.
+  //   `.show-more`        — the "展开 N 条回复 / 展开更多回复" reply-pagination button.
+  //   `.end-container`    — the " - THE END - " sentinel, present once every parent
+  //                          comment is loaded.
+  const SUB_COMMENT_SELECTOR = '.comment-item-sub';
+  const SHOW_MORE_SELECTOR = '.show-more';
+  const COMMENT_END_SELECTOR = '.end-container';
 
   function parseCount(raw) {
     const v = String(raw || '').trim().toLowerCase().replace(/,/g, '').replace(/\+/g, '');
@@ -1112,6 +1119,45 @@ const SocaiXhsPageScripts = (() => {
       };
       tick();
     });
+  }
+
+  // Snapshot of the comment area used by the Rust-side load loop to decide when
+  // to stop scrolling/expanding: how many primary + reply comments are currently
+  // in the DOM, whether unexpanded reply buttons remain, and whether the
+  // "- THE END -" sentinel (all parent comments loaded) is present.
+  function commentAreaState() {
+    const root = getNoteRoot();
+    const scope = $('.comments-el', root) || root;
+    const items = comments({ prefer_hot: false, max_comments: 0 });
+    const subs = items.reduce((n, c) => n + ((c.sub_comments && c.sub_comments.length) || 0), 0);
+    const totalText = firstText(['.total'], scope);
+    const pending = $$(SHOW_MORE_SELECTOR, scope)
+      .filter((b) => isVisible(b) && !/收起/.test(text(b)));
+    return {
+      ok: true,
+      total: parseCount(totalText),
+      loaded_primary: items.length,
+      loaded_total: items.length + subs,
+      pending_show_more: pending.length,
+      has_end: !!$(COMMENT_END_SELECTOR, scope),
+    };
+  }
+
+  // Click every visible "展开 N 条回复 / 展开更多回复" button to load the next batch
+  // of replies. These are Vue-bound divs, so a synthetic .click() drives the same
+  // handler a human click would. Skips "收起" (collapse). Returns how many fired.
+  function expandCommentReplies(opts = {}) {
+    const root = getNoteRoot();
+    const scope = $('.comments-el', root) || root;
+    const max = Number(opts.max_clicks) || 60;
+    const buttons = $$(SHOW_MORE_SELECTOR, scope)
+      .filter((b) => isVisible(b) && !/收起/.test(text(b)));
+    let clicked = 0;
+    for (const b of buttons) {
+      if (clicked >= max) break;
+      try { b.click(); clicked += 1; } catch (e) { /* ignore */ }
+    }
+    return { ok: true, clicked, remaining: Math.max(0, buttons.length - clicked) };
   }
 
   // ── search/feed scroll ───────────────────────────────────────
@@ -1246,6 +1292,8 @@ const SocaiXhsPageScripts = (() => {
     noteOpen,
     comments,
     commentsWithWait,
+    commentAreaState,
+    expandCommentReplies,
     scrollFeed,
     scrollInNote,
     carouselImages,

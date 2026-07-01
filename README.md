@@ -69,7 +69,8 @@ Options:
   `publish_time` (不限/一天内/一周内/半年内), `search_scope` (不限/已看过/未看过/已关注),
   `distance` (不限/同城/附近). 不写则按默认.
   e.g. `--filter publish_time=一天内 --filter note_type=图文`
-- `--num-notes <N>` — 返回多少个帖子。如果设置的数量大，socai 会自动往下翻页，获取更多帖子。
+- `--num-notes <N>` — 返回多少个帖子。默认10个。如果设置的数量大，socai 会自动往下翻页，获取更多帖子。
+- `--num-comments <N>` — 每个帖子返回多少条评论。默认8条。如果设置的数量大，socai 会自动下滑评论区，获取更多评论。
 - `--preview` — 只拿帖子概要（标题、封面等等），不逐个打开帖子拿详情。
 - `--download-media` — 打开每篇帖子的时候 (不加`--preview`时): 把图像和视频下载到 `run_dir`
   (`site_media/`), 输出 top-level `run` (`id`, `dir`, `media_dir`), 并创建列表

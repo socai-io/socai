@@ -43,6 +43,16 @@ pub struct HistoryEntry {
     /// True once any past read ran OCR (the entity carries `ocr_text`).
     #[serde(default)]
     pub ocr: bool,
+    /// Most comments (primary + replies) ever cached for this note. Lets a later
+    /// scan asking for more comments than we have re-read instead of short-
+    /// circuiting on the stale, smaller set.
+    #[serde(default)]
+    pub comments_loaded: u32,
+    /// The note's own total comment count (from `comments_count`, includes
+    /// replies) as last seen. When `comments_loaded` reaches this we've captured
+    /// everything, so a bigger request is still satisfied. `0` when unknown.
+    #[serde(default)]
+    pub comments_total: u32,
     #[serde(default)]
     pub analysis_count: u32,
     #[serde(default)]
@@ -132,6 +142,7 @@ impl XhsHistoryStore {
         include_media: bool,
         download_media: bool,
         ocr: bool,
+        min_comments: i64,
     ) -> bool {
         let Some(prev) = self.get(note_id) else {
             return false;
@@ -146,6 +157,15 @@ impl XhsHistoryStore {
             return false;
         }
         if ocr && !prev.ocr {
+            return false;
+        }
+        // A request for more comments than we cached forces a re-read — unless we
+        // already captured the whole thread (loaded >= the note's own total), in
+        // which case there is nothing more to fetch.
+        if min_comments > 0
+            && (prev.comments_loaded as i64) < min_comments
+            && (prev.comments_total == 0 || prev.comments_loaded < prev.comments_total)
+        {
             return false;
         }
         true
@@ -227,6 +247,16 @@ impl XhsHistoryStore {
             if entity_has_ocr(entity) {
                 entry.ocr = true;
             }
+            // Track comment coverage (primary + replies) so a later, larger
+            // request re-reads instead of reusing a smaller cached set.
+            let loaded = entity_comment_count(entity);
+            if loaded > entry.comments_loaded {
+                entry.comments_loaded = loaded;
+            }
+            let total = entity_comment_total(entity);
+            if total > entry.comments_total {
+                entry.comments_total = total;
+            }
             // Cache the full entity so a later reuse returns complete data.
             entry.entity = Some(entity.clone());
             entry.analysis_count = entry.analysis_count.saturating_add(1);
@@ -292,6 +322,55 @@ fn string_field(value: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// Count the comments cached on an entity: primary comments plus their replies.
+/// `top_comments` may be full objects (with `sub_comments`) or already-leaned
+/// (a string, or `{text, replies}`), so cover both shapes.
+fn entity_comment_count(entity: &Value) -> u32 {
+    let Some(comments) = entity.get("top_comments").and_then(Value::as_array) else {
+        return 0;
+    };
+    let mut count = 0u32;
+    for comment in comments {
+        count += 1;
+        let replies = comment
+            .get("sub_comments")
+            .or_else(|| comment.get("replies"))
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        count += replies as u32;
+    }
+    count
+}
+
+/// Parse the note's own total comment count from `comments_count` (e.g. "170",
+/// "1.2万", "3,456"). `0` when absent or unparseable.
+fn entity_comment_total(entity: &Value) -> u32 {
+    let raw = entity
+        .get("comments_count")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if raw.is_empty() {
+        return 0;
+    }
+    let cleaned: String = raw.chars().filter(|c| !matches!(c, ',' | '+' | ' ')).collect();
+    let digits: String = cleaned
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let Ok(base) = digits.parse::<f64>() else {
+        return 0;
+    };
+    let mult = if cleaned.contains('万') || cleaned.contains('w') || cleaned.contains('W') {
+        10_000.0
+    } else if cleaned.contains('k') || cleaned.contains('K') {
+        1_000.0
+    } else {
+        1.0
+    };
+    (base * mult).round() as u32
+}
+
 /// True when the entity carries OCR output: a non-empty note-level `ocr_text`
 /// array, or any image with a non-empty per-image `ocr_text`.
 fn entity_has_ocr(entity: &Value) -> bool {
@@ -349,6 +428,8 @@ fn save_file(path: &Path, data: &HistoryFile) -> std::io::Result<()> {
     Ok(())
 }
 
+// AGENTS.md: do NOT add new Rust tests unless the user explicitly asks. Update
+// the existing ones when an API they cover changes; don't grow this module.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,14 +477,14 @@ mod tests {
         let store = XhsHistoryStore::open(dir.path().join("h.json"));
         store.record(&json!({"note_id": "n1"}), "lite", false);
 
-        assert!(store.is_satisfied_by("n1", "card", false, false, false));
-        assert!(store.is_satisfied_by("n1", "lite", false, false, false));
-        assert!(!store.is_satisfied_by("n1", "deep", false, false, false));
-        assert!(!store.is_satisfied_by("n1", "lite", true, false, false));
-        assert!(!store.is_satisfied_by("unknown", "card", false, false, false));
+        assert!(store.is_satisfied_by("n1", "card", false, false, false, 0));
+        assert!(store.is_satisfied_by("n1", "lite", false, false, false, 0));
+        assert!(!store.is_satisfied_by("n1", "deep", false, false, false, 0));
+        assert!(!store.is_satisfied_by("n1", "lite", true, false, false, 0));
+        assert!(!store.is_satisfied_by("unknown", "card", false, false, false, 0));
         // download / ocr dimensions: a plain read doesn't satisfy them.
-        assert!(!store.is_satisfied_by("n1", "lite", false, true, false));
-        assert!(!store.is_satisfied_by("n1", "lite", false, false, true));
+        assert!(!store.is_satisfied_by("n1", "lite", false, true, false, 0));
+        assert!(!store.is_satisfied_by("n1", "lite", false, false, true, 0));
     }
 
     #[test]
@@ -420,7 +501,7 @@ mod tests {
             false,
         );
 
-        assert!(store.is_satisfied_by("n2", "deep", false, true, true));
+        assert!(store.is_satisfied_by("n2", "deep", false, true, true, 0));
         let entry = store.get("n2").unwrap();
         assert!(entry.downloaded);
         assert!(entry.ocr);
