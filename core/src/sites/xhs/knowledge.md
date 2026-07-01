@@ -40,10 +40,16 @@ the route, and otherwise explain the blocker to the user.
 
 ## Login Detection
 
-Both macros run a pre-flight login gate before interacting: if logged out they
-return `{ok:false, reason:"login_required"}` immediately. Login is read from the
-persistent sidebar (logged out shows a `登录` button, logged in shows the `我`
-entry), so a dismissed QR modal is never mistaken for a session.
+Both macros run a pre-flight login gate: if logged out they return
+`{ok:false, reason:"login_required"}` immediately (login is read from the
+persistent sidebar, so a dismissed QR modal is never mistaken for a session).
+
+**On `reason:"login_required"`, do NOT retry the tool.** Retrying just hits the
+same wall. Instead: tell the user to scan the QR / sign in to Xiaohongshu in the
+browser, and call `wait_for_login` (which opens the login page and blocks until
+they're in). When it returns `logged_in:true`, re-run the original tool once and
+continue. If it returns `logged_in:false`, remind the user and call
+`wait_for_login` again.
 
 ## Tool Use
 

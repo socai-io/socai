@@ -96,6 +96,7 @@ pub fn xhs_tools_with_llm_provider(
             always_download_media: false,
             always_ocr: false,
         }),
+        Arc::new(WaitForLoginTool { page: page.clone() }),
         Arc::new(PageStateTool { page }),
     ]
 }
@@ -117,11 +118,12 @@ pub fn xhs_macro_tools_with_llm_provider(
             always_ocr: true,
         }) as Arc<dyn Tool>,
         Arc::new(AuthorScanTool {
-            page,
+            page: page.clone(),
             history,
             always_download_media: true,
             always_ocr: true,
         }),
+        Arc::new(WaitForLoginTool { page }),
     ]
 }
 
@@ -1789,6 +1791,83 @@ impl Tool for PageStateTool {
         // report whatever the current page is.
         let value = xhs.detect_state().await?;
         Ok(json_result(&value))
+    }
+}
+
+/// wait_for_login — the login-recovery tool. When a macro returns
+/// `reason: login_required`, the agent surfaces the login prompt to the user and
+/// calls this instead of retrying; it brings up the XHS login page and blocks
+/// (polling) until the user finishes scanning, then returns so the agent can
+/// resume the original task.
+pub struct WaitForLoginTool {
+    page: Arc<PageSession>,
+}
+
+/// How long `wait_for_login` polls before giving up so the agent can re-prompt.
+const WAIT_FOR_LOGIN_DEFAULT_SECS: i64 = 180;
+const WAIT_FOR_LOGIN_MAX_SECS: i64 = 600;
+
+#[async_trait]
+impl Tool for WaitForLoginTool {
+    fn name(&self) -> &str {
+        "wait_for_login"
+    }
+
+    fn description(&self) -> &str {
+        "Recover from a login wall: after a tool returns `reason:login_required`, \
+         call this (don't retry) to open the login page and block until the user \
+         signs in. Returns `logged_in:true` when done, else `logged_in:false` on \
+         timeout. See the login protocol in the instructions."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Seconds to wait before returning (default 180, max 600)."
+                }
+            }
+        })
+    }
+
+    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let xhs = XhsPageRuntime::new(&self.page);
+        // Already logged in? Return right away — nothing to wait for.
+        if xhs.is_logged_in().await.unwrap_or(false) {
+            return Ok(json_result(&json!({
+                "logged_in": true,
+                "message": "Already logged in. Re-run the original tool.",
+            })));
+        }
+        // Bring the XHS login wall on screen so the user has a QR to scan.
+        xhs.ensure_xhs(true).await?;
+
+        let timeout = get_i64(&input, "timeout_seconds", WAIT_FOR_LOGIN_DEFAULT_SECS)
+            .clamp(10, WAIT_FOR_LOGIN_MAX_SECS);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(timeout as u64);
+        loop {
+            if xhs.is_logged_in().await.unwrap_or(false) {
+                return Ok(json_result(&json!({
+                    "logged_in": true,
+                    "message": "Login detected. Re-run the original tool to continue.",
+                })));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(json_result(&json!({
+                    "logged_in": false,
+                    "timed_out": true,
+                    "message": format!(
+                        "Still not logged in after {timeout}s. Ask the user to scan \
+                         the QR / sign in on xiaohongshu.com in the browser, then \
+                         call wait_for_login again."
+                    ),
+                })));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
     }
 }
 

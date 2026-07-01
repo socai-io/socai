@@ -210,6 +210,14 @@ impl<'a> XhsPageRuntime<'a> {
         }
     }
 
+    /// One-shot login read (no navigation, no polling): `true` only when the
+    /// sidebar shows the logged-in "我" entry. Used by the `wait_for_login` tool
+    /// to poll for the user completing a QR scan.
+    pub async fn is_logged_in(&self) -> Result<bool> {
+        let state = self.expect_object("loginState", None).await?;
+        Ok(state.get("login").and_then(Value::as_str) == Some("in"))
+    }
+
     pub async fn detect_state(&self) -> Result<Value> {
         self.ensure_xhs(false).await?;
         self.expect_object("pageState", None).await
