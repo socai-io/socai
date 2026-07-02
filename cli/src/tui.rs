@@ -22,7 +22,7 @@ use socai_core::agent::{
 };
 use socai_core::agent::{local_agent_tools, make_run_dir, Session};
 use socai_core::runtime::{
-    create_llm_provider, run_agent_task as run_agent_with_tools, AgentRunConfig, SocaiRuntime,
+    create_llm_provider_for, run_agent_task as run_agent_with_tools, AgentRunConfig, SocaiRuntime,
 };
 use socai_core::sites::{find_site, SiteSpec};
 
@@ -64,6 +64,10 @@ const TUI_AGENT_PREAMBLE: &str =
 
 struct AppState {
     model: Option<String>,
+    // Set alongside `model` by /model. Threaded through to the run so the
+    // selection is honored verbatim — model-prefix inference can't tell
+    // apart providers that share model ids (mainland vs international Qwen).
+    provider: Option<Provider>,
     session: Session,
 }
 
@@ -162,6 +166,7 @@ pub async fn run() -> Result<()> {
     let session = Session::new(None).context("failed to create chat session")?;
     let mut state = AppState {
         model: None,
+        provider: None,
         session,
     };
 
@@ -376,11 +381,13 @@ fn model_options() -> Vec<ModelOption> {
 
 async fn handle_model_command(state: &mut AppState, rest: &str) -> Result<()> {
     if !rest.trim().is_empty() {
-        let provider = resolve_provider(None, Some(rest))?;
-        let model = if Provider::from_name(rest).is_some() {
-            configured_default_model_for(provider)
+        let trimmed = rest.trim();
+        // Provider names take precedence over model-prefix inference — the
+        // prefix match can't distinguish "qwen-intl" from a qwen model id.
+        let (provider, model) = if let Some(provider) = Provider::from_name(trimmed) {
+            (provider, configured_default_model_for(provider))
         } else {
-            rest.trim().to_string()
+            (resolve_provider(None, Some(trimmed))?, trimmed.to_string())
         };
         set_active_model(state, provider, model).await?;
         return Ok(());
@@ -420,6 +427,7 @@ async fn set_active_model(state: &mut AppState, provider: Provider, model: Strin
 
     let path = save_default_model(provider, &model)?;
     state.model = Some(model.clone());
+    state.provider = Some(provider);
     println!(
         "[socai] model set to {model}; saved defaults to {}",
         path.display()
@@ -572,8 +580,7 @@ async fn ensure_any_llm_key() -> Result<()> {
     Ok(())
 }
 
-async fn ensure_model_key(model: &str) -> Result<()> {
-    let provider = resolve_provider(None, Some(model))?;
+async fn ensure_model_key(provider: Provider) -> Result<()> {
     if provider_credential_kind(provider).is_some() {
         return Ok(());
     }
@@ -603,7 +610,7 @@ fn active_model(state: &AppState) -> Result<String> {
 }
 
 async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState) -> Result<()> {
-    let llm_provider = build_llm_provider(state.model.as_deref()).await?;
+    let llm_provider = build_llm_provider(state.provider, state.model.as_deref()).await?;
     println!();
     println!("[socai] using {}", llm_provider.label());
 
@@ -723,19 +730,20 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     Ok(())
 }
 
-async fn build_llm_provider(model: Option<&str>) -> Result<Arc<dyn Backend>> {
+async fn build_llm_provider(
+    provider: Option<Provider>,
+    model: Option<&str>,
+) -> Result<Arc<dyn Backend>> {
     let model_or_env = model
         .map(str::to_string)
         .filter(|m| !m.trim().is_empty())
         .or_else(env_model);
-    let effective = if let Some(model) = model_or_env.as_deref() {
-        model.to_string()
-    } else {
-        let provider = resolve_provider(None, None)?;
-        configured_default_model_for(provider)
+    let effective_provider = match provider {
+        Some(provider) => provider,
+        None => resolve_provider(None, model_or_env.as_deref())?,
     };
-    ensure_model_key(&effective).await?;
-    create_llm_provider(model_or_env.as_deref())
+    ensure_model_key(effective_provider).await?;
+    create_llm_provider_for(Some(effective_provider.as_str()), model_or_env.as_deref())
 }
 
 fn env_model() -> Option<String> {
