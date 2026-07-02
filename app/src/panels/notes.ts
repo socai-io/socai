@@ -382,7 +382,21 @@ export function bindNoteInteractions(): void {
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeViewer();
+    if (e.key === "Escape") {
+      closeViewer();
+      return;
+    }
+    // Activate role="button" note controls from the keyboard: Enter/Space
+    // synthesize a click so the delegated click handler above does the rest.
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const target = e.target as HTMLElement;
+    if (target.closest("input, textarea, select, [contenteditable]")) return;
+    const actionable = target.closest<HTMLElement>(
+      "[data-note-open], [data-note-external], [data-note-nav], [data-gallery-nav], [data-gallery-thumb], [data-note-close], .note-viewer-close",
+    );
+    if (!actionable) return;
+    e.preventDefault();
+    actionable.click();
   });
 
   // citation hover preview (position:fixed popover so it escapes overflow)
@@ -414,7 +428,12 @@ export function bindNoteInteractions(): void {
     "mouseout",
     (e) => {
       const wrap = (e.target as HTMLElement).closest<HTMLElement>(".note-cite-wrap");
-      if (wrap) wrap.querySelector(".note-cite-pop")?.remove();
+      if (!wrap) return;
+      // mouseout bubbles for moves between the pill's children (including onto
+      // the popover itself) — only remove once the pointer truly leaves the wrap.
+      const to = e.relatedTarget as Node | null;
+      if (to && wrap.contains(to)) return;
+      wrap.querySelector(".note-cite-pop")?.remove();
     },
     true,
   );

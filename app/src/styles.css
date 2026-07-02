@@ -1147,9 +1147,10 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
 .note-card {
   display: flex; border: var(--hairline); border-radius: var(--r-4); background: var(--surface);
   overflow: hidden; cursor: pointer; text-align: left; color: var(--fg);
-  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+  transition: border-color var(--t-fast) var(--ease);
 }
-.note-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-pop); }
+/* hover = hairline strengthens; --shadow-pop stays reserved for popovers */
+.note-card:hover { border-color: var(--line-strong); }
 .note-card__cover { position: relative; flex: 0 0 auto; }
 .note-card__body { min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 10px 12px 11px; }
 .note-card__title {

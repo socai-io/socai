@@ -1065,11 +1065,12 @@ async fn join_note_ocr(
 }
 
 /// Build the archived note record from a freshly-read scan entry
-/// (`{ ok, entity }`): the full note entity, plus a normalized, on-disk-validated
-/// `media` array (reusing the media-manifest asset builder, which resolves each
-/// image/video/poster `local_path`, confirms the file exists, and reads dims),
-/// plus run provenance (`site`, `first_seen_turn`, `level`). Returns
-/// `(note_id, record)`, or `None` when the entity carries no usable note id.
+/// (`{ ok, entity }`): the full note entity, an on-disk-validated
+/// `media_manifest` (manifest asset shape — `local_path`, `download_status`,
+/// dims — NOT the app's `NoteMedia` contract; the `media` key is left free for
+/// the normalized `NoteData` array a follow-up emits), plus run provenance
+/// (`site`, `first_seen_turn`, `level`). Returns `(note_id, record)`, or
+/// `None` when the entity carries no usable note id.
 fn build_note_record(entry: &Value, ctx: &ToolContext, level: &str) -> Option<(String, Value)> {
     let entity = entry.get("entity").filter(|v| v.is_object())?;
     let note_id = entity
@@ -1081,11 +1082,11 @@ fn build_note_record(entry: &Value, ctx: &ToolContext, level: &str) -> Option<(S
     if note_id.is_empty() {
         return None;
     }
-    let media = search_media_manifest(std::slice::from_ref(entry), ctx.output_dir());
+    let manifest = search_media_manifest(std::slice::from_ref(entry), ctx.output_dir());
     let mut record = entity.clone();
     if let Some(map) = record.as_object_mut() {
         map.insert("site".into(), Value::String("xhs".into()));
-        map.insert("media".into(), media);
+        map.insert("media_manifest".into(), manifest);
         map.insert("first_seen_turn".into(), Value::from(ctx.turn));
         map.insert("level".into(), Value::String(level.to_string()));
     }
