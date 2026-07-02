@@ -38,6 +38,7 @@ fn tui_site() -> Result<&'static SiteSpec> {
 const PROVIDER_ORDER: &[Provider] = &[
     Provider::Kimi,
     Provider::Qwen,
+    Provider::QwenIntl,
     Provider::DeepSeek,
     Provider::OpenAI,
     Provider::Anthropic,

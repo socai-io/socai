@@ -17,7 +17,13 @@ pub enum Provider {
     Anthropic,
     OpenAI,
     Kimi,
+    /// Qwen via mainland DashScope (dashscope.aliyuncs.com). DashScope api
+    /// keys are region-bound, so the international deployment is a separate
+    /// provider with its own key rather than a toggle on this one.
     Qwen,
+    /// Qwen via international DashScope (dashscope-intl.aliyuncs.com),
+    /// keyed from modelstudio.console.alibabacloud.com.
+    QwenIntl,
     DeepSeek,
 }
 
@@ -28,6 +34,7 @@ impl Provider {
             Provider::OpenAI => "openai",
             Provider::Kimi => "kimi",
             Provider::Qwen => "qwen",
+            Provider::QwenIntl => "qwen-intl",
             Provider::DeepSeek => "deepseek",
         }
     }
@@ -38,8 +45,18 @@ impl Provider {
             "openai" | "gpt" => Some(Self::OpenAI),
             "kimi" | "moonshot" => Some(Self::Kimi),
             "qwen" | "dashscope" => Some(Self::Qwen),
+            "qwen-intl" | "qwen_intl" | "dashscope-intl" => Some(Self::QwenIntl),
             "deepseek" => Some(Self::DeepSeek),
             _ => None,
+        }
+    }
+
+    /// Key into the generated model catalog. Qwen International serves the
+    /// same model lineup as mainland Qwen, so both share the "qwen" entry.
+    fn catalog_key(self) -> &'static str {
+        match self {
+            Provider::QwenIntl => Provider::Qwen.as_str(),
+            other => other.as_str(),
         }
     }
 }
@@ -152,6 +169,17 @@ pub static PROVIDERS: &[ProviderConfig] = &[
         model_prefixes: &["qwen", "qwq-", "qvq-"],
     },
     ProviderConfig {
+        provider: Provider::QwenIntl,
+        display_name: "Qwen International",
+        default_model: "qwen3.6-plus-2026-04-02",
+        env_keys: &["QWEN_INTL_API_KEY", "DASHSCOPE_INTL_API_KEY"],
+        base_url: Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+        // Model ids are identical to mainland Qwen, so prefix inference
+        // intentionally resolves to the mainland entry; the international
+        // deployment is reached by explicit provider selection.
+        model_prefixes: &[],
+    },
+    ProviderConfig {
         provider: Provider::DeepSeek,
         display_name: "DeepSeek",
         default_model: "deepseek-v4-pro",
@@ -180,7 +208,7 @@ pub fn default_model_for(provider: Provider) -> &'static str {
 pub fn catalog_models_for(provider: Provider) -> Vec<ModelCatalogEntry> {
     let cfg = config_for(provider);
     let mut models = generated_model_catalog()
-        .and_then(|catalog| catalog.providers.get(cfg.provider.as_str()))
+        .and_then(|catalog| catalog.providers.get(cfg.provider.catalog_key()))
         .cloned()
         .unwrap_or_default();
 
@@ -547,6 +575,7 @@ mod tests {
         assert_eq!(Provider::from_name("claude"), Some(Provider::Anthropic));
         assert_eq!(Provider::from_name("MOONSHOT"), Some(Provider::Kimi));
         assert_eq!(Provider::from_name("DashScope"), Some(Provider::Qwen));
+        assert_eq!(Provider::from_name("qwen-intl"), Some(Provider::QwenIntl));
         assert_eq!(Provider::from_name("DeepSeek"), Some(Provider::DeepSeek));
         assert_eq!(Provider::from_name("nope"), None);
     }
@@ -558,6 +587,7 @@ mod tests {
             Provider::OpenAI,
             Provider::Kimi,
             Provider::Qwen,
+            Provider::QwenIntl,
             Provider::DeepSeek,
         ] {
             let cfg = config_for(p);

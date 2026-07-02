@@ -90,7 +90,7 @@ impl OpenAICompatBackend {
             Provider::Kimi if self.model.starts_with("kimi-k2.6") => {
                 extra.insert("thinking".into(), json!({"type": "disabled"}));
             }
-            Provider::Qwen => {
+            Provider::Qwen | Provider::QwenIntl => {
                 extra.insert("enable_thinking".into(), Value::Bool(false));
             }
             _ => {}
@@ -102,7 +102,10 @@ impl OpenAICompatBackend {
     /// in the assistant message when tool_calls are present. Others
     /// (OpenAI proper) ignore it. Toggle is per-provider.
     fn preserve_reasoning_content(&self) -> bool {
-        matches!(self.provider, Provider::Kimi | Provider::Qwen)
+        matches!(
+            self.provider,
+            Provider::Kimi | Provider::Qwen | Provider::QwenIntl
+        )
     }
 
     fn build_chat_request(
