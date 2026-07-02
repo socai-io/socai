@@ -1,4 +1,5 @@
 ---
+import Analytics from "@vercel/analytics/astro";
 import { message } from "../lib/i18n";
 
 interface Props {
@@ -31,3 +32,4 @@ const t = (path: string) => message(messages, path, language);
         >
     </nav>
 </footer>
+<Analytics />

@@ -1,6 +1,6 @@
 # socai
 
-[![website](https://img.shields.io/badge/website-socai.io-blue?style=flat-square)](https://socai.io)
+[![website](https://img.shields.io/badge/website-socai.io-blue?style=flat-square)](https://socai.io/?utm_source=github&utm_medium=readme)
 [![release](https://img.shields.io/github/v/release/socai-io/socai?style=flat-square&color=blue&label=release)](https://github.com/socai-io/socai/releases/latest)
 
 专为小红书优化的 web use agent，执行小红书调研、内容抽取和自定义 agent 任务。
@@ -143,3 +143,5 @@ socai具有自我迭代能力，如果你是AI（Claude Code, Codex, Cursor等�
 ## 欢迎加群交流
 
 <img src="docs/assets/wechat-group-qr.jpg" alt="socai 小红书使用 微信群二维码" width="280">
+
+> 如果 socai 可能对你有帮助，欢迎点右上角的 ⭐ Star 支持一下，这对项目的持续更新很重要，感谢！
