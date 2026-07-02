@@ -18,6 +18,7 @@ const messages = {
   "common.or": { en: "or,", zh: "或" },
   "common.save": { en: "save", zh: "保存" },
   "common.saving": { en: "saving…", zh: "保存中…" },
+  "common.cancel": { en: "cancel", zh: "取消" },
 
   "chrome.label": { en: "chrome", zh: "chrome" },
   "chrome.connectAria": { en: "connect chrome", zh: "连接 chrome" },
@@ -98,6 +99,11 @@ const messages = {
   "agent.provider": { en: "provider", zh: "服务商" },
   "agent.apiKey": { en: "api key", zh: "api key" },
   "agent.credentialConfigured": { en: "{provider} credential configured.", zh: "{provider} 凭证已配置。" },
+  "agent.updateCredential": { en: "update credential", zh: "更新凭证" },
+  "agent.replaceCredential": {
+    en: "saving replaces the stored {provider} credential.",
+    zh: "保存后将替换已保存的 {provider} 凭证。",
+  },
   "agent.modelVersion": { en: "model version", zh: "模型版本" },
   "agent.loading": { en: "loading", zh: "加载中" },
   "agent.keyNeeded": { en: "api key needed", zh: "需要 api key" },

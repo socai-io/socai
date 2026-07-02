@@ -43,6 +43,8 @@ export namespace agentPanel {
   let keyMessage = "";
   let keyError = "";
   let configOpen = false;
+  // Shows the key-entry form for a provider that already has a credential.
+  let editingKey = false;
 
   export function setModels(models: ModelInfo[]): void {
     modelsCache = models;
@@ -114,6 +116,23 @@ export namespace agentPanel {
     document.getElementById("agent-config-toggle")?.addEventListener("click", (event) => {
       event.stopPropagation();
       configOpen = selectedNeedsKey() ? true : !configOpen;
+      if (!configOpen) editingKey = false;
+      shell.rerender();
+    });
+
+    document.getElementById("agent-header-key-edit")?.addEventListener("click", () => {
+      editingKey = true;
+      pendingKey = "";
+      keyMessage = "";
+      keyError = "";
+      shell.rerender();
+    });
+
+    document.getElementById("agent-header-key-cancel")?.addEventListener("click", () => {
+      editingKey = false;
+      pendingKey = "";
+      keyMessage = "";
+      keyError = "";
       shell.rerender();
     });
 
@@ -124,6 +143,7 @@ export namespace agentPanel {
         keyMessage = "";
         keyError = "";
         pendingKey = "";
+        editingKey = false;
         const picked = preferredModelForProvider(nextProvider);
         selectModelInfo(picked);
         if (picked) persistModelChoice(picked);
@@ -140,6 +160,7 @@ export namespace agentPanel {
       keyMessage = "";
       keyError = "";
       pendingKey = "";
+      editingKey = false;
       const picked = modelsCache.find((m) => sameModel(m, nextProvider, next));
       selectModelInfo(picked);
       if (picked) persistModelChoice(picked);
@@ -167,6 +188,7 @@ export namespace agentPanel {
         await invoke("agent_save_api_key", { provider, apiKey: key });
         setModels(await invoke<ModelInfo[]>("agent_list_models"));
         pendingKey = "";
+        editingKey = false;
       } catch (err) {
         keyError = `${err}`;
       } finally {
@@ -200,6 +222,7 @@ export namespace agentPanel {
     if (selectedNeedsKey()) return false;
     if (!configOpen) return false;
     configOpen = false;
+    editingKey = false;
     return true;
   }
 
@@ -284,7 +307,8 @@ export namespace agentPanel {
 
   function renderCredentialSection(selected: ModelInfo | undefined): string {
     if (!selected) return "";
-    return selected.has_key ? renderCredentialConfigured(selected) : renderHeaderKeyEntry(selected);
+    if (selected.has_key && !editingKey) return renderCredentialConfigured(selected);
+    return renderHeaderKeyEntry(selected);
   }
 
   function renderCredentialConfigured(selected: ModelInfo): string {
@@ -292,6 +316,11 @@ export namespace agentPanel {
       <div class="agent-config-key agent-config-key-ready">
         <p class="t-eyebrow agent-config-title">${esc(t("agent.apiKey"))}</p>
         <p class="t-small subtle">${esc(t("agent.credentialConfigured", { provider: providerDisplayLabel(selected) }))}</p>
+        <div class="agent-config-actions">
+          <button id="agent-header-key-edit" type="button" class="btn-ghost btn-compact" ${savingKey || submittingTask ? "disabled" : ""}>
+            ${esc(t("agent.updateCredential"))}
+          </button>
+        </div>
       </div>
     `;
   }
@@ -301,7 +330,11 @@ export namespace agentPanel {
     return `
       <div class="agent-config-key">
         <p class="t-eyebrow agent-config-title">${esc(t("agent.apiKey"))}</p>
-        <p class="t-small subtle">${esc(t("agent.needsCredential", { model: providerDisplayLabel(selected) }))}</p>
+        <p class="t-small subtle">${esc(
+          selected.has_key
+            ? t("agent.replaceCredential", { provider: providerDisplayLabel(selected) })
+            : t("agent.needsCredential", { model: providerDisplayLabel(selected) }),
+        )}</p>
         ${openai ? `
           <div class="agent-config-actions">
             <button id="agent-header-codex-login" type="button" class="btn-primary btn-compact" ${codexStarting ? "disabled" : ""}>
@@ -323,6 +356,11 @@ export namespace agentPanel {
           <button id="agent-header-key-save" type="button" data-provider="${esc(selected.provider)}" class="btn-primary btn-compact" ${savingKey ? "disabled" : ""}>
             ${savingKey ? esc(t("common.saving")) : esc(t("common.save"))}
           </button>
+          ${selected.has_key ? `
+            <button id="agent-header-key-cancel" type="button" class="btn-ghost btn-compact" ${savingKey ? "disabled" : ""}>
+              ${esc(t("common.cancel"))}
+            </button>
+          ` : ""}
         </div>
         ${keyMessage ? `<p class="t-small subtle">${esc(keyMessage)}</p>` : ""}
         ${keyError ? `<p class="t-small result-error">${esc(keyError)}</p>` : ""}
@@ -545,6 +583,7 @@ export namespace agentPanel {
           keyMessage = "";
           keyError = "";
           savingKey = false;
+          editingKey = false;
           shell.rerender();
           return;
         }
