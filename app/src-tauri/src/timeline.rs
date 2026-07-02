@@ -269,13 +269,39 @@ pub(crate) fn live_timeline_event(
 
 pub(crate) fn load_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload> {
     let mut events = replay_task_events(snapshot);
-    if !events.is_empty() {
+    if events.is_empty() {
+        // Runs recorded before the run.json/llm/tools layout kept the full
+        // sequenced stream in timeline.jsonl — replay that directly so old runs
+        // still show their timeline.
+        events = read_legacy_timeline(snapshot);
+    } else {
         ensure_started_event(snapshot, &mut events);
         reindex_replay_events(snapshot, &mut events);
     }
     append_terminal_snapshot_events(snapshot, &mut events);
     events.sort_by(compare_events);
     events
+}
+
+// Fallback event source for runs predating the run.json/llm/tools layout: the
+// per-event timeline.jsonl the app wrote at run time (one AgentTaskEventPayload
+// per line, already sequenced with entities). append_terminal_snapshot_events is
+// idempotent, so any done/completed already present is not duplicated.
+fn read_legacy_timeline(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload> {
+    let Some(run_dir) = snapshot
+        .run_dir
+        .as_ref()
+        .filter(|dir| !dir.trim().is_empty())
+    else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(PathBuf::from(run_dir).join("timeline.jsonl")) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<AgentTaskEventPayload>(line).ok())
+        .collect()
 }
 
 pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind {
