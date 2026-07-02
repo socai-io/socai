@@ -22,17 +22,22 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
-// The note-citation rule lives in this desktop preamble, not the shared site
-// knowledge: only the app renders `note:` links (as rich note pills); in the
-// TUI's plain-markdown answer they would be dead links.
-const TAURI_AGENT_PREAMBLE: &str = "You are running inside the socai desktop app.\n\
-    When your final answer references a specific note you read (including cached \
-    notes returned by scans), cite it inline as a markdown link: \
-    [<note title>](note:<note_id>), with the exact note_id from tool results and \
-    the note's title as the link text (drop any square brackets inside the \
-    title). For notes only seen as preview cards and never read, link their url \
-    instead. Cite each note where it is discussed rather than in a separate \
-    list.";
+const TAURI_AGENT_PREAMBLE: &str = "You are running inside the socai desktop app.";
+
+// Appended AFTER the site playbook so it sits at the tail of the system
+// prompt — the position models weight most (prepended into the preamble,
+// qwen3.7-max ignored it). Desktop-only, not shared site knowledge: only the
+// app renders `note:` links (as rich note pills); in the TUI's plain-markdown
+// answer they would be dead links.
+const TAURI_CITATION_RULES: &str = "\n\n## Citing notes in the final answer (required)\n\
+    The app renders note citations as rich note cards. In your final answer, \
+    every time you mention a specific note you read (including cached notes \
+    returned by scans), cite it inline as a markdown link — \
+    [<note title>](note:<note_id>) — using the exact note_id from tool results.\n\
+    Example: 推荐 [湾区遛娃|坐小火车喂羊驼](note:65f0a1b2000000000c030d1e) 的路线。\n\
+    - Link text is the note's title; drop any square brackets inside it.\n\
+    - For notes only seen as preview cards and never read, link their url instead.\n\
+    - Cite each note where it is discussed, not in a separate list at the end.";
 
 /// Site the desktop agent runner drives. Becomes a runtime choice once the
 /// app grows a site switcher.
@@ -765,7 +770,11 @@ async fn run_agent_task_on_fresh_page(
             .default_agent_instructions
             .unwrap_or(site.agent_instructions);
         let config = AgentRunConfig {
-            extra_instructions: agent_instructions(TAURI_AGENT_PREAMBLE),
+            extra_instructions: format!(
+                "{}{}",
+                agent_instructions(TAURI_AGENT_PREAMBLE),
+                TAURI_CITATION_RULES
+            ),
             enabled_sites: vec![site.id.to_string()],
             run_dir,
             session_id,
