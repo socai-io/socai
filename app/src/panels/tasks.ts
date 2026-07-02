@@ -315,7 +315,11 @@ export namespace agentPanel {
     return `
       <div class="agent-config-key agent-config-key-ready">
         <p class="t-eyebrow agent-config-title">${esc(t("agent.apiKey"))}</p>
-        <p class="t-small subtle">${esc(t("agent.credentialConfigured", { provider: providerDisplayLabel(selected) }))}</p>
+        <p class="t-small subtle">${esc(
+          selected.credential_kind === "codex_oauth"
+            ? t("agent.chatgptConnected")
+            : t("agent.credentialConfigured", { provider: providerDisplayLabel(selected) }),
+        )}</p>
         <div class="agent-config-actions">
           <button id="agent-header-key-edit" type="button" class="btn-ghost btn-compact" ${savingKey || submittingTask ? "disabled" : ""}>
             ${esc(t("agent.updateCredential"))}
