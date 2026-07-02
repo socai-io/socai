@@ -22,7 +22,17 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
-const TAURI_AGENT_PREAMBLE: &str = "You are running inside the socai desktop app.";
+// The note-citation rule lives in this desktop preamble, not the shared site
+// knowledge: only the app renders `note:` links (as rich note pills); in the
+// TUI's plain-markdown answer they would be dead links.
+const TAURI_AGENT_PREAMBLE: &str = "You are running inside the socai desktop app.\n\
+    When your final answer references a specific note you read (including cached \
+    notes returned by scans), cite it inline as a markdown link: \
+    [<note title>](note:<note_id>), with the exact note_id from tool results and \
+    the note's title as the link text (drop any square brackets inside the \
+    title). For notes only seen as preview cards and never read, link their url \
+    instead. Cite each note where it is discussed rather than in a separate \
+    list.";
 
 /// Site the desktop agent runner drives. Becomes a runtime choice once the
 /// app grows a site switcher.

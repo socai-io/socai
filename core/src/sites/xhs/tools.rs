@@ -5,6 +5,7 @@
 //! visible, note modal open, etc.). The caller is responsible for creating
 //! the page and closing it after `run_agent` returns.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ use crate::sites::xhs::media_manifest::{
     ensure_entity_note_id, search_media_manifest, write_media_manifest_file,
 };
 use crate::sites::xhs::page::XHS_SEARCH_FILTERS;
+use crate::sites::xhs::entities::{parse_posted_at_ms, parse_stat_count};
 use crate::sites::xhs::{
     ReadNoteOptions, XhsAuthorProfile, XhsHistoryStore, XhsNoteCard, XhsPageRuntime, XHS_HOME_URL,
 };
@@ -737,6 +739,32 @@ fn skipped_note_entry(card: &XhsNoteCard, reason: &str, history: &XhsHistoryStor
     })
 }
 
+/// A cache hit still lands in the run's note archive: the cached entity is
+/// evidence the agent may cite, so the app needs a record to resolve the
+/// citation against. Cached media paths point (absolute) into the run that
+/// downloaded them; the app resolves absolute paths as-is, and the asset
+/// scope covers the whole runs root.
+fn recorded_skip_entry(
+    card: &XhsNoteCard,
+    reason: &str,
+    history: &XhsHistoryStore,
+    ctx: &ToolContext,
+    level: &str,
+) -> Value {
+    let entry = skipped_note_entry(card, reason, history);
+    if let Some(entity) = entry.get("entity").filter(|v| v.is_object()) {
+        // note_data_record expects an ok-shaped entry (the media-manifest
+        // builder ignores anything that isn't `ok: true`).
+        let readable = json!({ "ok": true, "entity": entity });
+        if let Some((note_id, record)) =
+            note_data_record(&readable, ctx.output_dir(), &ctx.run_dir, ctx.turn, level)
+        {
+            ctx.record_note(&note_id, record);
+        }
+    }
+    entry
+}
+
 fn progress_title(card: &XhsNoteCard) -> Option<String> {
     let title = card.title.trim();
     (!title.is_empty()).then(|| title.to_string())
@@ -887,7 +915,7 @@ async fn scan_card_note(
     // re-downloading, and re-OCR'ing it. The cached entity carries its prior
     // ocr_text / local_path, so the reuse is complete.
     if !card.note_id.is_empty() && ctx.has_processed_note(&card.note_id, level, requested_media) {
-        return skipped_note_entry(card, "already_processed", history);
+        return recorded_skip_entry(card, "already_processed", history, ctx, level);
     }
     if !card.note_id.is_empty()
         && history.is_satisfied_by(&card.note_id, level, requested_media, download_media_requested, ocr, comment_count)
@@ -897,7 +925,7 @@ async fn scan_card_note(
         && history.has_cached_entity(&card.note_id)
     {
         ctx.mark_processed_note(&card.note_id, level, requested_media);
-        return skipped_note_entry(card, "already_analyzed", history);
+        return recorded_skip_entry(card, "already_analyzed", history, ctx, level);
     }
 
     let read_result = xhs
@@ -1157,32 +1185,212 @@ async fn join_note_ocr(
 }
 
 /// Build the archived note record from a freshly-read scan entry
-/// (`{ ok, entity }`): the full note entity, an on-disk-validated
-/// `media_manifest` (manifest asset shape — `local_path`, `download_status`,
-/// dims — NOT the app's `NoteMedia` contract; the `media` key is left free for
-/// the normalized `NoteData` array a follow-up emits), plus run provenance
-/// (`site`, `first_seen_turn`, `level`). Returns `(note_id, record)`, or
-/// `None` when the entity carries no usable note id.
-fn build_note_record(entry: &Value, ctx: &ToolContext, level: &str) -> Option<(String, Value)> {
+/// (`{ ok, entity }`) in the desktop app's `NoteData` shape (see
+/// app/src/main.ts): identity + title/excerpt, author, `posted_at` (epoch
+/// ms), numeric `stats` (a key is omitted when XHS hid the count; `shares`
+/// has no source at all), and a `media` array of locally-downloaded assets —
+/// cover first, a video before its carousel — with run-relative paths, plus
+/// run provenance (`site`, `first_seen_turn`, `level`). Media entries come
+/// from the on-disk-validated media manifest, so only files that actually
+/// downloaded are listed. Returns `(note_id, record)`, or `None` when the
+/// entity carries no usable note id.
+pub fn note_data_record(
+    entry: &Value,
+    media_base: &Path,
+    run_dir: &Path,
+    turn: u32,
+    level: &str,
+) -> Option<(String, Value)> {
     let entity = entry.get("entity").filter(|v| v.is_object())?;
-    let note_id = entity
-        .get("note_id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let text = |key: &str| -> String {
+        entity
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let note_id = text("note_id");
     if note_id.is_empty() {
         return None;
     }
-    let manifest = search_media_manifest(std::slice::from_ref(entry), ctx.output_dir());
-    let mut record = entity.clone();
-    if let Some(map) = record.as_object_mut() {
-        map.insert("site".into(), Value::String("xhs".into()));
-        map.insert("media_manifest".into(), manifest);
-        map.insert("first_seen_turn".into(), Value::from(ctx.turn));
-        map.insert("level".into(), Value::String(level.to_string()));
+
+    let manifest = search_media_manifest(std::slice::from_ref(entry), media_base);
+    let media = note_media_from_manifest(&manifest, run_dir);
+
+    let mut record = Map::new();
+    record.insert("note_id".into(), Value::String(note_id.clone()));
+    let url = text("url");
+    if !url.is_empty() {
+        record.insert("url".into(), Value::String(url));
     }
-    Some((note_id, record))
+    record.insert("title".into(), Value::String(text("title")));
+    if let Some(excerpt) = note_excerpt(&text("content")) {
+        record.insert("excerpt".into(), Value::String(excerpt));
+    }
+    let author_name = text("author");
+    if !author_name.is_empty() {
+        // Just the display name: XHS note pages expose no avatar, and the
+        // internal author_id is not the user-facing handle (小红书号) — a
+        // fabricated "@<id-prefix>" would masquerade as one. `handle` stays
+        // absent until the extractor captures the real thing.
+        let mut author = Map::new();
+        author.insert("name".into(), Value::String(author_name));
+        record.insert("author".into(), Value::Object(author));
+    }
+    if let Some(posted_at) = parse_posted_at_ms(&text("date")) {
+        record.insert("posted_at".into(), Value::from(posted_at));
+    }
+    let mut stats = Map::new();
+    for (stat, field) in [
+        ("likes", "likes"),
+        ("collects", "favorites"),
+        ("comments", "comments_count"),
+    ] {
+        if let Some(count) = parse_stat_count(&text(field)) {
+            stats.insert(stat.into(), Value::from(count));
+        }
+    }
+    record.insert("stats".into(), Value::Object(stats));
+    record.insert("media".into(), Value::Array(media.clone()));
+    record.insert("media_dir".into(), Value::String(String::new()));
+    record.insert("saved".into(), Value::Bool(!media.is_empty()));
+    record.insert("site".into(), Value::String("xhs".into()));
+    record.insert("first_seen_turn".into(), Value::from(turn));
+    record.insert("level".into(), Value::String(level.to_string()));
+    Some((note_id, Value::Object(record)))
+}
+
+fn build_note_record(entry: &Value, ctx: &ToolContext, level: &str) -> Option<(String, Value)> {
+    note_data_record(entry, ctx.output_dir(), &ctx.run_dir, ctx.turn, level)
+}
+
+/// Map validated manifest rows to the app's `NoteMedia` entries: only assets
+/// that downloaded, the video first as the cover (it renders even when only
+/// its poster came down — blob-URL videos can't be fetched, and the app falls
+/// back to poster + play glyph), then carousel images in index order.
+fn note_media_from_manifest(manifest: &Value, run_dir: &Path) -> Vec<Value> {
+    let rows: Vec<&Map<String, Value>> = manifest
+        .as_array()
+        .map(|items| items.iter().filter_map(Value::as_object).collect())
+        .unwrap_or_default();
+    fn role(row: &Map<String, Value>) -> &str {
+        row.get("role").and_then(Value::as_str).unwrap_or("")
+    }
+    let downloaded_path = |row: &Map<String, Value>| -> Option<String> {
+        if row.get("download_status").and_then(Value::as_str) != Some("downloaded") {
+            return None;
+        }
+        row.get("local_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .map(|path| run_relative_path(path, run_dir))
+    };
+
+    let mut media = Vec::new();
+    let video_row = rows.iter().find(|row| role(row) == "video");
+    let video_src = video_row.and_then(|row| downloaded_path(row));
+    let poster = rows
+        .iter()
+        .find(|row| role(row) == "video_poster")
+        .and_then(|row| downloaded_path(row));
+    if video_src.is_some() || poster.is_some() {
+        let mut item = Map::new();
+        item.insert("kind".into(), Value::String("video".into()));
+        item.insert("ratio".into(), Value::String("9:16".into()));
+        if let Some(src) = video_src {
+            item.insert("src".into(), Value::String(src));
+        }
+        if let Some(poster) = poster {
+            item.insert("poster".into(), Value::String(poster));
+        }
+        if let Some(duration_s) = video_row.and_then(|row| {
+            row.get("duration_s")
+                .and_then(Value::as_f64)
+                .filter(|s| *s > 0.0)
+        }) {
+            item.insert(
+                "dur".into(),
+                Value::String(format_media_duration(duration_s)),
+            );
+        }
+        media.push(Value::Object(item));
+    }
+
+    let mut images: Vec<(i64, String)> = rows
+        .iter()
+        .filter(|row| role(row) == "image")
+        .filter_map(|row| {
+            downloaded_path(row).map(|path| {
+                let index = row.get("index").and_then(Value::as_i64).unwrap_or(i64::MAX);
+                (index, path)
+            })
+        })
+        .collect();
+    images.sort_by_key(|(index, _)| *index);
+    for (_, src) in images {
+        media.push(json!({ "kind": "image", "ratio": "3:4", "src": src }));
+    }
+    media
+}
+
+/// First ~90 code points of the note body, whitespace collapsed. Truncation
+/// counts chars, not bytes — a byte slice could split a multi-byte char and
+/// panic (the JS fixture generator had the UTF-16 twin of this bug) — and the
+/// tail is trimmed so the cut can't end mid grapheme cluster (a ZWJ-joined
+/// emoji family, a skin-tone modifier, or half a regional-indicator flag).
+fn note_excerpt(content: &str) -> Option<String> {
+    let collapsed = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    let mut chars: Vec<char> = collapsed.chars().collect();
+    if chars.len() <= 90 {
+        return Some(collapsed);
+    }
+    chars.truncate(88);
+    let fragile = |c: char| {
+        c == '\u{200D}' // zero-width joiner
+            || ('\u{FE00}'..='\u{FE0F}').contains(&c) // variation selectors
+            || ('\u{1F3FB}'..='\u{1F3FF}').contains(&c) // skin-tone modifiers
+    };
+    loop {
+        match chars.last() {
+            Some(&c) if fragile(c) => {
+                chars.pop();
+            }
+            // A char right after a ZWJ is a fragment of a joined sequence —
+            // drop it together with its joiner and re-check the new tail.
+            Some(_) if chars.len() >= 2 && chars[chars.len() - 2] == '\u{200D}' => {
+                chars.pop();
+                chars.pop();
+            }
+            _ => break,
+        }
+    }
+    let regional = |c: &&char| ('\u{1F1E6}'..='\u{1F1FF}').contains(*c);
+    if chars.iter().rev().take_while(regional).count() % 2 == 1 {
+        chars.pop();
+    }
+    let mut excerpt: String = chars.into_iter().collect();
+    excerpt.push('…');
+    Some(excerpt)
+}
+
+/// Media paths are emitted relative to the run dir so the archive survives the
+/// run being moved or synced to another machine; paths outside the run dir
+/// (custom output roots) stay absolute, which the app also resolves.
+fn run_relative_path(path: &str, run_dir: &Path) -> String {
+    Path::new(path)
+        .strip_prefix(run_dir)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string())
+}
+
+/// Seconds → the app's display duration, "M:SS".
+fn format_media_duration(seconds: f64) -> String {
+    let total = seconds.round().max(0.0) as i64;
+    format!("{}:{:02}", total / 60, total % 60)
 }
 
 /// Trim a search / author_scan bundle to the shape we hand back to the

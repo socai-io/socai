@@ -1,3 +1,4 @@
+use chrono::{Datelike, FixedOffset, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -127,6 +128,60 @@ pub fn parse_count_text(raw: &str) -> i64 {
         _ => 1.0,
     };
     (number * multiplier).round() as i64
+}
+
+/// Parse a count display string into a stat value, distinguishing "no count
+/// shown" from zero: strings without any digit — empty, or the bare button
+/// labels ("收藏", "评论") XHS renders when a count is hidden — yield `None`
+/// rather than 0.
+pub fn parse_stat_count(raw: &str) -> Option<i64> {
+    let trimmed = raw.trim();
+    if !trimmed.chars().any(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(parse_count_text(trimmed))
+}
+
+/// Parse a note's normalized `date` string — "YYYY-M-D", or "M-D" with the
+/// current year implied (the page scripts resolve relative forms like 昨天 to
+/// this) — into epoch milliseconds. Returns `None` for empty strings,
+/// non-date text, and score-like junk that occasionally leaks into the field
+/// ("6-0"): real calendar validation via `NaiveDate` rejects impossible
+/// month/day pairs.
+///
+/// The instant is pinned at 20:00 Beijing = 12:00 UTC — noon-UTC anchoring
+/// makes viewer-local date formatting reproduce the Beijing calendar date for
+/// every timezone in UTC-12…UTC+11 (an 08:00 anchor would be midnight UTC and
+/// render one day early across the Americas).
+pub fn parse_posted_at_ms(raw: &str) -> Option<i64> {
+    let beijing = FixedOffset::east_opt(8 * 3600)?;
+    let stamp = |year: i32, month: u32, day: u32| -> Option<i64> {
+        if !(2000..=2100).contains(&year) {
+            return None;
+        }
+        NaiveDate::from_ymd_opt(year, month, day)?
+            .and_hms_opt(20, 0, 0)?
+            .and_local_timezone(beijing)
+            .single()
+            .map(|dt| dt.timestamp_millis())
+    };
+    let parts: Vec<&str> = raw.trim().split('-').collect();
+    match parts.as_slice() {
+        [y, m, d] => stamp(y.parse().ok()?, m.parse().ok()?, d.parse().ok()?),
+        [m, d] => {
+            let (month, day) = (m.parse().ok()?, d.parse().ok()?);
+            let now = Utc::now().with_timezone(&beijing);
+            let ms = stamp(now.year(), month, day)?;
+            // A yearless label can never be in the future: "12-31" read in
+            // early January belongs to the year that just ended.
+            if ms > now.timestamp_millis() + 24 * 3600 * 1000 {
+                stamp(now.year() - 1, month, day)
+            } else {
+                Some(ms)
+            }
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
