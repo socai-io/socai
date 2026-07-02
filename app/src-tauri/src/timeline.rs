@@ -283,10 +283,13 @@ pub(crate) fn load_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEve
     events
 }
 
-// Fallback event source for runs predating the run.json/llm/tools layout: the
-// per-event timeline.jsonl the app wrote at run time (one AgentTaskEventPayload
-// per line, already sequenced with entities). append_terminal_snapshot_events is
-// idempotent, so any done/completed already present is not duplicated.
+// Read-only compat for runs recorded before the run.json/llm/tools layout
+// (#160): those run dirs carry only the per-event timeline.jsonl the app used
+// to write (one AgentTaskEventPayload per line, already sequenced with
+// entities). Nothing writes timeline.jsonl anymore, so new runs never take
+// this path — delete it once pre-#160 local history stops mattering.
+// append_terminal_snapshot_events is idempotent, so any done/completed already
+// present is not duplicated.
 fn read_legacy_timeline(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload> {
     let Some(run_dir) = snapshot
         .run_dir

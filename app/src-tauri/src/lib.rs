@@ -77,9 +77,11 @@ pub fn run() {
         .setup(|app| {
             // Let the webview load locally-downloaded note media (images/video)
             // from the run-artifact root via the asset protocol (convertFileSrc).
-            // The static scope in tauri.conf.json covers the default ~/.socai/runs;
-            // extend it to the resolved root so a custom SOCAI_RUNS_DIR / `runs.dir`
-            // also resolves. allow_directory tolerates a not-yet-created dir.
+            // The static scope in tauri.conf.json can only name the default
+            // ~/.socai/runs — build-time config can't know the user's setting —
+            // so the runs dir stays fully relocatable: whatever root
+            // SOCAI_RUNS_DIR / `runs.dir` resolves to is granted here at
+            // startup. allow_directory tolerates a not-yet-created dir.
             let runs_root = socai_core::agent::run_logging::default_runs_root();
             if let Err(err) = app.asset_protocol_scope().allow_directory(&runs_root, true) {
                 eprintln!(
