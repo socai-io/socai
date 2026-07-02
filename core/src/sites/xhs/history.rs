@@ -372,7 +372,8 @@ fn entity_comment_total(entity: &Value) -> u32 {
 }
 
 /// True when the entity carries OCR output: a non-empty note-level `ocr_text`
-/// array, or any image with a non-empty per-image `ocr_text`.
+/// array, any image with a non-empty per-image `ocr_text`, or a video with a
+/// non-empty `poster_ocr` (the video-note cover OCR).
 fn entity_has_ocr(entity: &Value) -> bool {
     let note_level = entity
         .get("ocr_text")
@@ -382,6 +383,14 @@ fn entity_has_ocr(entity: &Value) -> bool {
                 .any(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
         });
     if note_level {
+        return true;
+    }
+    let poster = entity
+        .get("video")
+        .and_then(|video| video.get("poster_ocr"))
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty());
+    if poster {
         return true;
     }
     entity

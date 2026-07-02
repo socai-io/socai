@@ -84,9 +84,15 @@ pub struct ReadNoteOptions {
     pub level: String,
     pub include_media: bool,
     pub download_media: bool,
-    /// OCR each downloaded image and attach `ocr_text` per image. Implies
-    /// `download_media` (the caller forces it on), since OCR reads the saved
-    /// files. Ignored for video notes.
+    /// When downloading a video note's media, whether to fetch the video file
+    /// itself (the poster/cover is always fetched). Scans turn this off for
+    /// OCR-only runs, where the poster is the whole OCR surface. Ignored for
+    /// image notes.
+    pub download_video_file: bool,
+    /// OCR each downloaded file — every carousel image for an image note, the
+    /// poster (cover) for a video note — and attach `ocr_text` / `poster_ocr`.
+    /// Implies `download_media` (the caller forces it on), since OCR reads the
+    /// saved files.
     pub ocr: bool,
     pub max_images: usize,
     pub max_video_frames: usize,
@@ -100,6 +106,7 @@ impl Default for ReadNoteOptions {
             level: "lite".into(),
             include_media: false,
             download_media: false,
+            download_video_file: true,
             ocr: false,
             max_images: 12,
             max_video_frames: 4,
@@ -1298,14 +1305,18 @@ impl<'a> XhsPageRuntime<'a> {
                 .await?;
         }
         if options.download_media {
-            self.download_note_media(&mut note, options.max_images)
+            self.download_note_media(&mut note, options.max_images, options.download_video_file)
                 .await?;
-            // OCR runs over the just-downloaded image files. Only meaningful for
-            // image notes; for video the images vec is empty so this no-ops.
+            // OCR runs over the just-downloaded files: each carousel image for
+            // an image note, the poster (cover) for a video note.
             if options.ocr {
                 if let Some(media) = &self.media {
-                    media.ocr_downloaded_images(&mut note.images).await;
-                    note.image_count = note.images.len() as i64;
+                    if note.r#type == "video" {
+                        media.ocr_downloaded_video_poster(&mut note.video).await;
+                    } else {
+                        media.ocr_downloaded_images(&mut note.images).await;
+                        note.image_count = note.images.len() as i64;
+                    }
                 }
             }
         }
@@ -1313,7 +1324,12 @@ impl<'a> XhsPageRuntime<'a> {
         Ok(note)
     }
 
-    async fn download_note_media(&self, note: &mut XhsNote, max_images: usize) -> Result<()> {
+    async fn download_note_media(
+        &self,
+        note: &mut XhsNote,
+        max_images: usize,
+        download_video_file: bool,
+    ) -> Result<()> {
         let Some(media) = &self.media else {
             if note.r#type == "video" {
                 insert_value_string(
@@ -1340,9 +1356,15 @@ impl<'a> XhsPageRuntime<'a> {
         };
 
         if note.r#type == "video" {
-            note.video = media
-                .download_video(&note.video, &note.note_id, &note.title, &note.url)
-                .await;
+            note.video = if download_video_file {
+                media
+                    .download_video(&note.video, &note.note_id, &note.title, &note.url)
+                    .await
+            } else {
+                media
+                    .download_video_poster(&note.video, &note.note_id, &note.title, &note.url)
+                    .await
+            };
             return Ok(());
         }
 

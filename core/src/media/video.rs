@@ -13,12 +13,53 @@ use crate::media::md5;
 use crate::media::processor::MediaProcessor;
 
 impl MediaProcessor {
-    /// Download the playable video (and poster, when present) to the run's
-    /// media directory without transcription, frame extraction, OCR, or vision.
-    /// The returned video object preserves the input shape and adds
-    /// `local_path` / `poster_local_path` where downloads succeed. Posters are
-    /// saved at the stable note-local path `site_media/<note>/post.jpg`.
-    pub async fn download_video(
+    /// OCR a video note's already-downloaded poster in place: read
+    /// `poster_local_path` and attach `poster_ocr` (or `poster_ocr_error`).
+    /// The video-note counterpart of `ocr_downloaded_images` — the poster is
+    /// the note's cover, so it's the whole OCR surface without touching the
+    /// video file. Returns the batch inference time. No-op (returns zero) when
+    /// OCR is disabled, the poster isn't on disk, or `poster_ocr` is already
+    /// present.
+    pub async fn ocr_downloaded_video_poster(&self, video: &mut Value) -> Duration {
+        if !self.config.use_ocr || video.get("poster_ocr").is_some() {
+            return Duration::ZERO;
+        }
+        let Some(path) = video
+            .get("poster_local_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+        else {
+            return Duration::ZERO;
+        };
+        let batch = tokio::task::spawn_blocking(move || {
+            let items = std::fs::read(&path)
+                .map(|bytes| vec![(0, bytes)])
+                .unwrap_or_default();
+            crate::media::ocr::ocr_images_bytes(items)
+        })
+        .await;
+        let Ok(mut batch) = batch else {
+            return Duration::ZERO;
+        };
+        self.timing.record("ocr_predict", batch.predict);
+        match batch.results.pop() {
+            Some((_, Ok(text))) if !text.trim().is_empty() => {
+                insert_string(video, "poster_ocr", text)
+            }
+            Some((_, Err(err))) => insert_string(video, "poster_ocr_error", err),
+            _ => {}
+        }
+        batch.predict
+    }
+
+    /// Download only a video note's poster (its cover image) to the run's
+    /// media directory, at the stable note-local path
+    /// `site_media/<note>/post.jpg`. The returned video object preserves the
+    /// input shape and adds `poster_local_path` (or `poster_download_error`).
+    /// The video file itself is never fetched — this is the cheap path for
+    /// OCR-only runs, where the poster is the whole OCR surface.
+    pub async fn download_video_poster(
         &self,
         video: &Value,
         note_id: &str,
@@ -51,6 +92,31 @@ impl MediaProcessor {
                 Err(err) => insert_string(&mut result, "poster_download_error", format!("{err:#}")),
             }
         }
+        result
+    }
+
+    /// Download the playable video (and poster, when present) to the run's
+    /// media directory without transcription, frame extraction, OCR, or vision.
+    /// The returned video object preserves the input shape and adds
+    /// `local_path` / `poster_local_path` where downloads succeed. Posters are
+    /// saved at the stable note-local path `site_media/<note>/post.jpg`.
+    pub async fn download_video(
+        &self,
+        video: &Value,
+        note_id: &str,
+        title: &str,
+        referer: &str,
+    ) -> Value {
+        let mut result = self
+            .download_video_poster(video, note_id, title, referer)
+            .await;
+        let label = if !note_id.trim().is_empty() {
+            note_id
+        } else if !title.trim().is_empty() {
+            title
+        } else {
+            "video"
+        };
 
         let source = downloadable_video_url(&result);
         if source.is_empty() {
