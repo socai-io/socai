@@ -268,43 +268,17 @@ pub(crate) fn live_timeline_event(
 }
 
 pub(crate) fn load_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload> {
+    // Replays the run.json/llm/tools layout only. Runs recorded before that
+    // layout (#160, pre-2026-07) replay as just their terminal state —
+    // legacy timeline.jsonl support was deliberately dropped.
     let mut events = replay_task_events(snapshot);
-    if events.is_empty() {
-        // Runs recorded before the run.json/llm/tools layout kept the full
-        // sequenced stream in timeline.jsonl — replay that directly so old runs
-        // still show their timeline.
-        events = read_legacy_timeline(snapshot);
-    } else {
+    if !events.is_empty() {
         ensure_started_event(snapshot, &mut events);
         reindex_replay_events(snapshot, &mut events);
     }
     append_terminal_snapshot_events(snapshot, &mut events);
     events.sort_by(compare_events);
     events
-}
-
-// Read-only compat for runs recorded before the run.json/llm/tools layout
-// (#160): those run dirs carry only the per-event timeline.jsonl the app used
-// to write (one AgentTaskEventPayload per line, already sequenced with
-// entities). Nothing writes timeline.jsonl anymore, so new runs never take
-// this path — delete it once pre-#160 local history stops mattering.
-// append_terminal_snapshot_events is idempotent, so any done/completed already
-// present is not duplicated.
-fn read_legacy_timeline(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload> {
-    let Some(run_dir) = snapshot
-        .run_dir
-        .as_ref()
-        .filter(|dir| !dir.trim().is_empty())
-    else {
-        return Vec::new();
-    };
-    let Ok(text) = std::fs::read_to_string(PathBuf::from(run_dir).join("timeline.jsonl")) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str::<AgentTaskEventPayload>(line).ok())
-        .collect()
 }
 
 pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind {
