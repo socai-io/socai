@@ -65,38 +65,30 @@ export interface TimelineEntity {
   data: unknown;
 }
 
-/** One downloaded (or failed) media asset of a note, from `<run_dir>/notes.json`. */
-export interface NoteMediaAsset {
-  type: string; // "image" | "video"
-  role: string; // "image" | "video" | "video_poster"
-  index: number | null;
-  local_path: string | null; // absolute path on disk; null when not downloaded
-  width: number | null;
-  height: number | null;
-  duration_s: number | null;
-  download_status: string; // "downloaded" | "failed"
-  source_url: string | null;
+/** One media item of a note (SocaiV2 design contract). media[0] === cover. */
+export interface NoteMedia {
+  kind: "image" | "video";
+  ratio?: string; // "3:4" | "1:1" | "9:16" | "16:9"
+  src?: string; // downloaded file — absolute path, or media_dir-relative
+  poster?: string; // video only — first-frame still (path)
+  dur?: string; // video only — "0:48"
+  w?: number;
+  h?: number;
 }
 
-/** A note the agent saw, archived locally so it can be rendered without re-fetching. */
-export interface NoteRecord {
+/** A note the agent saw/cited — one canonical object per note (the registry unit). */
+export interface NoteData {
   note_id: string;
   url?: string;
   title?: string;
-  author?: string;
-  author_url?: string;
-  content?: string;
-  hashtags?: string[];
-  date?: string;
-  location?: string;
-  likes?: string;
-  favorites?: string;
-  comments_count?: string;
-  image_count?: number;
-  type?: string; // "image" | "video"
-  media?: NoteMediaAsset[];
-  first_seen_turn?: number;
-  // Tolerate extra fields the record carries (images, video, top_comments, …).
+  excerpt?: string;
+  author?: { name?: string; handle?: string; avatar?: string };
+  posted_at?: number; // epoch ms
+  stats?: { likes?: number; collects?: number; comments?: number; shares?: number };
+  media?: NoteMedia[]; // media[0] === cover
+  media_dir?: string; // run-relative folder, when src paths are relative
+  saved?: boolean;
+  // Tolerate extra fields the archive may carry.
   [key: string]: unknown;
 }
 

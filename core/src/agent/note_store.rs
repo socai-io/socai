@@ -33,9 +33,10 @@ pub(crate) fn write_notes(run_dir: &Path, notes: &BTreeMap<String, Value>) -> st
 }
 
 /// Load a run's recorded notes as an array of records (empty when the run
-/// recorded none or hasn't scanned yet). Missing/unreadable/malformed files
-/// degrade to an empty list rather than an error — a run simply may have no
-/// notes. The array form is tolerated alongside the canonical object map.
+/// recorded none or hasn't scanned yet). A missing file is normal and silent;
+/// a file that exists but fails to parse degrades to an empty list with a
+/// warning — never an error. The array form is tolerated alongside the
+/// canonical object map.
 pub fn load_notes(run_dir: &Path) -> Vec<Value> {
     let Ok(text) = std::fs::read_to_string(notes_path(run_dir)) else {
         return Vec::new();
@@ -43,6 +44,20 @@ pub fn load_notes(run_dir: &Path) -> Vec<Value> {
     match serde_json::from_str::<Value>(&text) {
         Ok(Value::Object(map)) => map.into_iter().map(|(_, v)| v).collect(),
         Ok(Value::Array(items)) => items,
-        _ => Vec::new(),
+        Ok(_) => {
+            tracing::warn!(
+                path = %notes_path(run_dir).display(),
+                "notes.json is not an object map or array; ignoring"
+            );
+            Vec::new()
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                path = %notes_path(run_dir).display(),
+                "failed to parse notes.json; ignoring"
+            );
+            Vec::new()
+        }
     }
 }

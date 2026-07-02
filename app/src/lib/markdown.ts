@@ -7,10 +7,19 @@ import DOMPurify from "dompurify";
 
 marked.setOptions({ gfm: true, breaks: true });
 
+// Preserve `note:<id>` citation links (a custom scheme the answer upgrades into
+// embedded note pills). DOMPurify's default URI allowlist would strip them.
+DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+  if (data.attrName === "href" && data.attrValue.startsWith("note:")) {
+    data.forceKeepAttr = true;
+  }
+});
+
 // Open links in a new tab/window and harden against reverse-tabnabbing. Runs
 // after sanitization so the attributes we add are not themselves stripped.
+// `note:` links are left as-is — the answer renderer upgrades them.
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-  if (node.tagName === "A") {
+  if (node.tagName === "A" && !(node.getAttribute("href") || "").startsWith("note:")) {
     node.setAttribute("target", "_blank");
     node.setAttribute("rel", "noopener noreferrer");
   }

@@ -8,12 +8,13 @@ import type {
   AgentTaskSnapshot,
   AgentTaskStatus,
   ModelInfo,
-  NoteRecord,
+  NoteData,
   ShellState,
 } from "../main";
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
 import { renderAgentEvent, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
+import { bindNoteInteractions } from "./notes";
 import { renderComposePane } from "./task_new";
 
 // The workspace shows one of two views: the compose form (default / "new task")
@@ -21,7 +22,7 @@ import { renderComposePane } from "./task_new";
 type WorkspaceView = "compose" | "detail";
 export type AgentTaskView = AgentTaskSnapshot & {
   events: AgentTaskEventPayload[];
-  notes?: NoteRecord[];
+  notes?: NoteData[];
 };
 type CodexLoginStart = { message: string };
 
@@ -99,7 +100,7 @@ export namespace agentPanel {
     return task.events.length !== before && taskId === selectedTaskId;
   }
 
-  export function setTaskNotes(taskId: string, notes: NoteRecord[]): boolean {
+  export function setTaskNotes(taskId: string, notes: NoteData[]): boolean {
     const task = tasks.find((item) => item.task_id === taskId);
     if (!task) return false;
     task.notes = notes;
@@ -110,7 +111,7 @@ export namespace agentPanel {
   // currently-selected task. Best-effort: a run simply may have no notes.
   export async function loadTaskNotes(taskId: string, shell: ShellState): Promise<void> {
     try {
-      const notes = await invoke<NoteRecord[]>("agent_task_notes", { taskId });
+      const notes = await invoke<NoteData[]>("agent_task_notes", { taskId });
       if (setTaskNotes(taskId, notes)) shell.rerender();
     } catch (e) {
       console.error("agent_task_notes failed:", e);
@@ -515,13 +516,9 @@ export namespace agentPanel {
         if (selectedTaskId) void loadTaskNotes(selectedTaskId, shell);
       });
     });
-    document.querySelectorAll<HTMLButtonElement>("[data-open-note-url]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const url = btn.dataset.openNoteUrl;
-        if (!url) return;
-        invoke("open_external", { url }).catch((e) => console.error("open_external failed:", e));
-      });
-    });
+    // Note interactions (viewer, card carousel, citation hover, external links)
+    // are wired once via delegation on document.
+    bindNoteInteractions();
     document.querySelectorAll<HTMLButtonElement>("[data-cancel-task]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const taskId = btn.dataset.cancelTask;
