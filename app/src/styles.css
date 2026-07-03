@@ -1246,16 +1246,14 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
   padding: var(--sp-6); background: rgba(10, 10, 10, 0.42); animation: noteFade var(--t-base) var(--ease);
 }
 @keyframes noteFade { from { opacity: 0; } to { opacity: 1; } }
+/* The tall panel is deliberate: media viewing wants the vertical room. For
+   9:16 video the height also drives the width — wide enough that the native
+   controls render their full timeline instead of the scrubber-less pill. */
 .note-viewer-panel {
   display: flex; flex-direction: column; background: var(--surface); border: var(--hairline);
-  overflow: hidden; min-height: 0; width: min(900px, 96vw); max-height: min(620px, 90vh);
+  overflow: hidden; min-height: 0; width: min(900px, 96vw); max-height: min(800px, 90vh);
   border-radius: var(--r-5); box-shadow: var(--shadow-pop);
 }
-/* Video notes are mostly 9:16 portrait — a taller panel gives the stage the
-   vertical room, which in turn widens the height-driven video column so the
-   native controls render their full timeline (narrow videos collapse to a
-   scrubber-less pill). */
-.note-viewer-panel--video { max-height: min(800px, 90vh); }
 .note-viewer-head {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 11px 12px 11px 14px; border-bottom: var(--hairline); background: var(--surface);

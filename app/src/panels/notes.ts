@@ -285,13 +285,9 @@ function metaPanel(note: NoteData): string {
 function viewerHTML(note: NoteData): string {
   const name = esc((note.author && note.author.name) || "");
   const handle = esc((note.author && note.author.handle) || note.note_id);
-  // Video notes get the taller panel: a portrait 9:16 stage needs the vertical
-  // room, and the extra height widens the height-driven video column enough
-  // for the native controls to show their full timeline.
-  const video = coverOf(note).kind === "video" ? " note-viewer-panel--video" : "";
   return `
     <div class="note-viewer-backdrop" data-note-close>
-      <div class="note-viewer-panel${video}" role="dialog" aria-label="${esc(note.title || "note")}" data-note-stop>
+      <div class="note-viewer-panel" role="dialog" aria-label="${esc(note.title || "note")}" data-note-stop>
         <div class="note-viewer-head">
           <span class="note-viewer-head__author">
             ${avatar(note, "note-viewer-head__avatar")}
