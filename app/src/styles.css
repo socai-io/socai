@@ -1092,15 +1092,20 @@ body.has-paper > * { position: relative; z-index: 1; }
   background: rgba(250, 250, 249, 0.82); padding: 2px 7px; border-radius: var(--r-pill);
   white-space: nowrap; pointer-events: none;
 }
+/* Overlay badges set the mono face themselves rather than via .t-mono — the
+   utility class is defined later in this sheet, so at equal specificity its
+   13px/fg-muted would override the badges' 10px/ink-9 on-image styling. */
 .note-media__count {
   position: absolute; top: 6px; right: 6px;
   display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono); letter-spacing: var(--ls-mono);
   font-size: 10px; color: var(--ink-9); background: rgba(10, 10, 10, 0.55);
   padding: 2px 6px; border-radius: var(--r-pill); pointer-events: none;
 }
 .note-media__count svg { width: 11px; height: 11px; }
 .note-media__dur {
   position: absolute; bottom: 6px; right: 6px;
+  font-family: var(--font-mono); letter-spacing: var(--ls-mono);
   font-size: 10px; color: var(--ink-9); background: rgba(10, 10, 10, 0.62);
   padding: 1px 6px; border-radius: var(--r-2); pointer-events: none;
 }
@@ -1178,6 +1183,7 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
 .note-card__nav--next { right: 7px; }
 .note-card__idx {
   position: absolute; top: 7px; right: 7px; font-size: 10px; color: var(--ink-9);
+  font-family: var(--font-mono); letter-spacing: var(--ls-mono);
   background: rgba(10, 10, 10, 0.55); padding: 2px 7px; border-radius: var(--r-pill); pointer-events: none;
 }
 .note-card[data-density="rich"] { flex-direction: column; width: 208px; }

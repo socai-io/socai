@@ -103,7 +103,7 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
     }
     return `<span class="note-media note-media--pillarbox" data-kind="video"><span class="note-media__inner">${posterImg}${
       decorative ? "" : `<span class="note-media__play">${IC.play()}</span>`
-    }${m.dur && !decorative ? `<span class="note-media__dur t-mono">${esc(m.dur)}</span>` : ""}</span></span>`;
+    }${m.dur && !decorative ? `<span class="note-media__dur">${esc(m.dur)}</span>` : ""}</span></span>`;
   }
   const url = assetUrl(note, m.src);
   // gallery slides are pre-rendered hidden — lazy would defer them to first
@@ -111,7 +111,7 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
   const img = url
     ? `<img class="note-media__img" src="${esc(url)}" alt=""${variant === "gallery" ? "" : ` loading="lazy"`} />`
     : `<span class="note-media--placeholder" style="position:absolute;inset:0"></span>`;
-  const badge = count > 1 && !decorative ? `<span class="note-media__count t-mono">${IC.stack()}${count}</span>` : "";
+  const badge = count > 1 && !decorative ? `<span class="note-media__count">${IC.stack()}${count}</span>` : "";
   return `<span class="note-media" data-kind="image">${img}${badge}</span>`;
 }
 
@@ -142,7 +142,7 @@ function coverInner(note: NoteData, idx: number): string {
   const nav = multi
     ? `<button type="button" class="note-card__nav note-card__nav--prev" data-note-nav="-1" aria-label="previous image">${IC.chevL()}</button>` +
       `<button type="button" class="note-card__nav note-card__nav--next" data-note-nav="1" aria-label="next image">${IC.chevR()}</button>` +
-      `<span class="note-card__idx t-mono">${i + 1}/${media.length}</span>`
+      `<span class="note-card__idx">${i + 1}/${media.length}</span>`
     : "";
   return mediaFrame(note, media[i], "cover") + nav;
 }
