@@ -780,8 +780,9 @@ fn format_tool_result_text(
 }
 
 fn format_tool_duration(duration_ms: u64) -> String {
-    if duration_ms < 1000 {
-        return format!("{:.1}s", duration_ms as f64 / 1000.0);
+    let tenths = (duration_ms + 50) / 100;
+    if tenths < 10 {
+        return format!("0.{tenths}s");
     }
     let secs = (duration_ms + 500) / 1000;
     if secs < 60 {
@@ -793,33 +794,43 @@ fn format_tool_duration(duration_ms: u64) -> String {
 // No provider reports per-tool-result tokens, so estimate: ~4 ASCII chars per
 // token, ~1 token per non-ASCII (CJK) char. Image blocks carry no text here.
 fn estimate_result_tokens(content: &Value) -> u64 {
-    let text = match content {
-        Value::Array(items) => items
-            .iter()
-            .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
-            .filter_map(|item| item.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Value::String(text) => text.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    };
-    let (mut ascii, mut wide) = (0u64, 0u64);
-    for ch in text.chars() {
-        if ch.is_ascii() {
-            ascii += 1;
-        } else {
-            wide += 1;
+    let mut ascii = 0u64;
+    let mut wide = 0u64;
+    let mut count = |text: &str| {
+        for ch in text.chars() {
+            if ch.is_ascii() {
+                ascii += 1;
+            } else {
+                wide += 1;
+            }
         }
+    };
+    match content {
+        Value::Array(items) => {
+            for item in items {
+                if item.get("type").and_then(Value::as_str) != Some("text") {
+                    continue;
+                }
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    count(text);
+                }
+            }
+        }
+        Value::String(text) => count(text),
+        Value::Null => {}
+        other => count(&other.to_string()),
     }
     ascii / 4 + wide
 }
 
 fn format_token_estimate(tokens: u64) -> String {
-    if tokens >= 10_000 {
+    // 9_950+ rounds to 10k under {:.1}, so switch to the integer-k format there.
+    if tokens >= 9_950 {
         format!("~{}k tokens", (tokens + 500) / 1000)
     } else if tokens >= 1_000 {
         format!("~{:.1}k tokens", tokens as f64 / 1000.0)
+    } else if tokens == 1 {
+        "~1 token".into()
     } else {
         format!("~{tokens} tokens")
     }
