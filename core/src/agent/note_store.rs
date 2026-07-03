@@ -1,34 +1,50 @@
 //! Per-run archive of the notes the agent actually saw.
 //!
 //! As site tools fully read a note, they record it (full content + resolved
-//! local media) into `<run_dir>/notes.json` — a `{ "<note_id>": <record> }`
-//! map. This is the local, re-fetch-free source the desktop app renders as
-//! rich embedded note cards in the run timeline and the final answer.
+//! local media) into `<run_dir>/notes.json` — an array of records in the
+//! order they were first recorded (for `search`, result order). This is the
+//! local, re-fetch-free source the desktop app renders as rich embedded note
+//! cards in the run timeline and the final answer; keeping recorded order on
+//! disk is what lets the mid-run live strip and the finished result row show
+//! the same order. Older runs wrote a `{ "<note_id>": <record> }` map, which
+//! still loads (in id order).
 //!
 //! The record *shape* is site-specific and built by the site's tools (see
 //! `sites/xhs/tools.rs`); this module only owns the file path, persistence,
-//! and load. Records are keyed by note id, so re-reading a note overwrites the
-//! prior entry (latest read wins) and the archive stays deduped.
+//! and load. Entries are deduped by note id upstream (`ToolContext::
+//! record_note`): re-reading a note overwrites the prior record but keeps its
+//! position.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// Path to a run's note archive: `<run_dir>/notes.json`.
 pub fn notes_path(run_dir: &Path) -> PathBuf {
     run_dir.join("notes.json")
 }
 
-/// Persist the full `note_id -> record` map to `<run_dir>/notes.json`.
+/// Persist the note records to `<run_dir>/notes.json` as an array, in the
+/// order given (first-recorded order). Each record carries its own `note_id`;
+/// the entry id is injected if a site-built record ever omits it.
 ///
 /// Rewrites the whole file each call; the archive is small (tens of notes per
 /// run) and recording is sequential within a run, so this stays cheap.
-pub(crate) fn write_notes(run_dir: &Path, notes: &BTreeMap<String, Value>) -> std::io::Result<()> {
+pub(crate) fn write_notes(run_dir: &Path, notes: &[(String, Value)]) -> std::io::Result<()> {
     std::fs::create_dir_all(run_dir)?;
-    let map: Map<String, Value> = notes.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let items: Vec<Value> = notes
+        .iter()
+        .map(|(id, record)| {
+            let mut record = record.clone();
+            if let Some(map) = record.as_object_mut() {
+                map.entry("note_id".to_string())
+                    .or_insert_with(|| Value::String(id.clone()));
+            }
+            record
+        })
+        .collect();
     let rendered =
-        serde_json::to_string_pretty(&Value::Object(map)).map_err(std::io::Error::other)?;
+        serde_json::to_string_pretty(&Value::Array(items)).map_err(std::io::Error::other)?;
     // The desktop app polls this file mid-run to show notes as they are
     // recorded, so go through a temp file + rename: readers must never see a
     // half-written JSON.
@@ -45,8 +61,9 @@ pub(crate) fn write_notes(run_dir: &Path, notes: &BTreeMap<String, Value>) -> st
 /// Load a run's recorded notes as an array of records (empty when the run
 /// recorded none or hasn't scanned yet). A missing file is normal and silent;
 /// a file that exists but fails to parse degrades to an empty list with a
-/// warning — never an error. The array form is tolerated alongside the
-/// canonical object map.
+/// warning — never an error. The legacy object-map form (older runs) is
+/// tolerated alongside the canonical array; it loads in id order since the
+/// map never carried recorded order.
 pub fn load_notes(run_dir: &Path) -> Vec<Value> {
     let Ok(text) = std::fs::read_to_string(notes_path(run_dir)) else {
         return Vec::new();
