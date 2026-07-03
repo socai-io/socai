@@ -84,8 +84,10 @@ function kindIcon(note: NoteData): string {
 }
 
 // ── media frame ─────────────────────────────────────────────────────
-// Universal 3:4 frame. Images fill (cover). A 9:16 video is pillarboxed inside.
-// `gallery` renders a real <video controls>; elsewhere video shows poster+play.
+// Cards/thumbs/dots: universal 3:4 frame — images fill (cover), a 9:16 video
+// is pillarboxed inside. `gallery` is full-bleed: the gallery frame adopts the
+// media's own ratio (see frameRatio), so a real <video controls> spans the
+// frame's full width and the native timeline scrubber has room to render.
 type MediaVariant = "cover" | "thumb" | "dot" | "gallery";
 function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count = 0): string {
   const decorative = variant === "thumb" || variant === "dot";
@@ -97,7 +99,7 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
       const inner = videoUrl
         ? `<video class="note-media__img" controls preload="metadata"${posterUrl ? ` poster="${esc(posterUrl)}"` : ""} src="${esc(videoUrl)}"></video>`
         : `${posterImg}<span class="note-media__play">${IC.play()}</span>`;
-      return `<span class="note-media note-media--pillarbox" data-kind="video"><span class="note-media__inner">${inner}</span></span>`;
+      return `<span class="note-media" data-kind="video">${inner}</span>`;
     }
     return `<span class="note-media note-media--pillarbox" data-kind="video"><span class="note-media__inner">${posterImg}${
       decorative ? "" : `<span class="note-media__play">${IC.play()}</span>`
@@ -213,6 +215,14 @@ export function renderNoteAnswer(src: string): string {
 }
 
 // ── viewer (lightbox) ───────────────────────────────────────────────
+// The gallery frame hugs the current media's own ratio (core stamps "9:16" on
+// videos, "3:4" on images) rather than the cards' universal 3:4 — no gray
+// pillarbox bars, and the video's native controls get the full frame width.
+function frameRatio(m: NoteMedia): string {
+  const parsed = /^(\d+)\s*:\s*(\d+)$/.exec(m.ratio || "");
+  if (parsed) return `${parsed[1]} / ${parsed[2]}`;
+  return m.kind === "video" ? "9 / 16" : "3 / 4";
+}
 function galleryStage(note: NoteData, idx: number): string {
   const media = note.media && note.media.length ? note.media : [coverOf(note)];
   const i = Math.max(0, Math.min(idx, media.length - 1));
@@ -221,7 +231,7 @@ function galleryStage(note: NoteData, idx: number): string {
     ? `<button type="button" class="note-gallery__nav note-gallery__nav--prev" data-gallery-nav="-1"${i === 0 ? " disabled" : ""} aria-label="previous">${IC.chevL()}</button>` +
       `<button type="button" class="note-gallery__nav note-gallery__nav--next" data-gallery-nav="1"${i === media.length - 1 ? " disabled" : ""} aria-label="next">${IC.chevR()}</button>`
     : "";
-  return `<div class="note-gallery__frame">${mediaFrame(note, media[i], "gallery")}</div>${nav}`;
+  return `<div class="note-gallery__frame" style="aspect-ratio: ${frameRatio(media[i])}">${mediaFrame(note, media[i], "gallery")}</div>${nav}`;
 }
 function galleryThumbs(note: NoteData, idx: number): string {
   const media = note.media || [];
@@ -267,9 +277,13 @@ function metaPanel(note: NoteData): string {
 function viewerHTML(note: NoteData): string {
   const name = esc((note.author && note.author.name) || "");
   const handle = esc((note.author && note.author.handle) || note.note_id);
+  // Video notes get the taller panel: a portrait 9:16 stage needs the vertical
+  // room, and the extra height widens the height-driven video column enough
+  // for the native controls to show their full timeline.
+  const video = coverOf(note).kind === "video" ? " note-viewer-panel--video" : "";
   return `
     <div class="note-viewer-backdrop" data-note-close>
-      <div class="note-viewer-panel" role="dialog" aria-label="${esc(note.title || "note")}" data-note-stop>
+      <div class="note-viewer-panel${video}" role="dialog" aria-label="${esc(note.title || "note")}" data-note-stop>
         <div class="note-viewer-head">
           <span class="note-viewer-head__author">
             ${avatar(note, "note-viewer-head__avatar")}

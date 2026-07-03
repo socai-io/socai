@@ -1055,7 +1055,8 @@ body.has-paper > * { position: relative; z-index: 1; }
    download served via the asset protocol (convertFileSrc). Ported from the
    Claude Design handoff (notes.css). */
 
-/* ── media frame (universal 3:4; video pillarboxed to 9:16 inside) ── */
+/* ── media frame (cards: universal 3:4, video pillarboxed to 9:16 inside;
+      the viewer gallery instead adopts the media's own ratio — full-bleed) ── */
 .note-media {
   position: relative;
   width: 100%;
@@ -1250,6 +1251,11 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
   overflow: hidden; min-height: 0; width: min(900px, 96vw); max-height: min(620px, 90vh);
   border-radius: var(--r-5); box-shadow: var(--shadow-pop);
 }
+/* Video notes are mostly 9:16 portrait — a taller panel gives the stage the
+   vertical room, which in turn widens the height-driven video column so the
+   native controls render their full timeline (narrow videos collapse to a
+   scrubber-less pill). */
+.note-viewer-panel--video { max-height: min(800px, 90vh); }
 .note-viewer-head {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 11px 12px 11px 14px; border-bottom: var(--hairline); background: var(--surface);
@@ -1270,6 +1276,8 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
 
 .note-gallery { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--ink-8); }
 .note-gallery__stage { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; padding: 18px; min-height: 0; }
+/* aspect-ratio here is only the fallback — galleryStage sets the current
+   media's own ratio inline (9:16 videos render full-bleed, no pillarbox). */
 .note-gallery__frame { position: relative; max-width: 100%; max-height: 100%; aspect-ratio: 3 / 4; height: 100%; border-radius: var(--r-3); overflow: hidden; border: var(--hairline); }
 .note-gallery__frame .note-media__img { object-fit: contain; background: var(--ink-8); }
 .note-gallery__nav {
