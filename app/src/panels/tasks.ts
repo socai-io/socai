@@ -666,6 +666,13 @@ export namespace agentPanel {
     // Poll the note archive while the selected task runs (bind runs after
     // every render, so this tracks selection and status changes).
     syncNotesPolling(shell);
+    // A full render rebuilds the stream without the DOM-only live strip, and
+    // the poll skips ticks where no new note was recorded — so restore the
+    // strip here or it stays hidden until the next note lands.
+    const selected = selectedTask();
+    if (selected && (selected.status === "running" || selected.status === "queued")) {
+      updateLiveStrip(selected);
+    }
   }
 
   // Keep the event stream pinned to its newest row when the detail (re)renders,
