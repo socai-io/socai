@@ -29,7 +29,17 @@ pub(crate) fn write_notes(run_dir: &Path, notes: &BTreeMap<String, Value>) -> st
     let map: Map<String, Value> = notes.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let rendered =
         serde_json::to_string_pretty(&Value::Object(map)).map_err(std::io::Error::other)?;
-    std::fs::write(notes_path(run_dir), rendered)
+    // The desktop app polls this file mid-run to show notes as they are
+    // recorded, so go through a temp file + rename: readers must never see a
+    // half-written JSON.
+    let path = notes_path(run_dir);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, rendered)?;
+    // Windows can't rename over an existing file; a reader hitting the gap
+    // sees a missing file, which load_notes treats as "no notes yet".
+    #[cfg(windows)]
+    let _ = std::fs::remove_file(&path);
+    std::fs::rename(&tmp, &path)
 }
 
 /// Load a run's recorded notes as an array of records (empty when the run

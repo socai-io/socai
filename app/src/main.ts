@@ -478,6 +478,11 @@ async function main(): Promise<void> {
   // rows append in place to preserve scroll.
   await listen<AgentTaskEventPayload>("agent_task:event", (event) => {
     if (agentPanel.appendTaskEvent(event.payload)) render();
+    if (event.payload.kind === "tool_result") {
+      // Each finished step's notes are on disk — refresh so the result row's
+      // embed renders them now, not when the whole task ends.
+      void agentPanel.loadTaskNotes(event.payload.task_id, shell());
+    }
     if (isTaskFinishedEvent(event.payload)) {
       // A finished task is a good, quiet moment to check for an update, and the
       // point at which its full note archive (notes.json) is on disk to render.

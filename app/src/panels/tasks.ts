@@ -13,8 +13,8 @@ import type {
 } from "../main";
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
-import { renderAgentEvent, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
-import { bindNoteInteractions } from "./notes";
+import { noteRefsFromEvent, renderAgentEvent, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
+import { bindNoteInteractions, renderTimelineEmbed, setNoteRegistry } from "./notes";
 import { renderComposePane } from "./task_new";
 
 // The workspace shows one of two views: the compose form (default / "new task")
@@ -123,6 +123,69 @@ export namespace agentPanel {
   export function loadSelectedTaskNotes(shell: ShellState): void {
     const selected = selectedTask();
     if (selected) void loadTaskNotes(selected.task_id, shell);
+  }
+
+  // ── live notes while a task runs ─────────────────────────────────────
+  // notes.json is written incrementally (one rewrite per note read), but no
+  // event fires mid-tool-call — a scan is silent for minutes. Poll the archive
+  // while the selected task runs so each note's card appears right after its
+  // media lands, in a "live strip" pinned to the bottom of the stream. Rows
+  // for finished steps render their own embeds from tool_result entities, so
+  // the strip only shows notes no result row has claimed yet.
+  let notesPollTimer: number | null = null;
+
+  function syncNotesPolling(shell: ShellState): void {
+    const selected = selectedTask();
+    const running = !!selected && (selected.status === "running" || selected.status === "queued");
+    if (running && notesPollTimer === null) {
+      notesPollTimer = window.setInterval(() => void pollLiveNotes(shell), 2000);
+    } else if (!running && notesPollTimer !== null) {
+      window.clearInterval(notesPollTimer);
+      notesPollTimer = null;
+    }
+  }
+
+  async function pollLiveNotes(shell: ShellState): Promise<void> {
+    const task = selectedTask();
+    if (!task || (task.status !== "running" && task.status !== "queued")) {
+      syncNotesPolling(shell);
+      return;
+    }
+    try {
+      const notes = await invoke<NoteData[]>("agent_task_notes", { taskId: task.task_id });
+      // Within a run records only accumulate; no growth means nothing to do.
+      if (notes.length <= (task.notes?.length ?? 0)) return;
+      task.notes = notes;
+      setNoteRegistry(notes, task.run_dir);
+      updateLiveStrip(task);
+    } catch (e) {
+      console.error("agent_task_notes poll failed:", e);
+    }
+  }
+
+  let liveStripKey = "";
+
+  function updateLiveStrip(task: AgentTaskView): void {
+    const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${task.task_id}"]`);
+    if (!stream) return;
+    const claimed = new Set<string>();
+    for (const ev of task.events) {
+      if (ev.kind !== "tool_result") continue;
+      for (const ref of noteRefsFromEvent(ev)) claimed.add(ref);
+    }
+    const refs = (task.notes ?? []).map((n) => n.note_id).filter((id) => !claimed.has(id));
+    const key = refs.join(",");
+    const existing = stream.querySelector("[data-live-strip]");
+    if (key === liveStripKey && existing) return;
+    liveStripKey = key;
+    existing?.remove();
+    if (refs.length === 0) return;
+    const html = renderTimelineEmbed(refs, "rich");
+    if (!html) return;
+    const pinned = stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 8;
+    stream.insertAdjacentHTML("beforeend", html);
+    stream.lastElementChild?.setAttribute("data-live-strip", "1");
+    if (pinned) stream.scrollTop = stream.scrollHeight;
   }
 
   // Whether any task is running or queued — used to guard the app restart.
@@ -600,6 +663,9 @@ export namespace agentPanel {
 
     // Auto-follow the selected task's timeline to the latest row after a render.
     scrollSelectedEventsToBottom();
+    // Poll the note archive while the selected task runs (bind runs after
+    // every render, so this tracks selection and status changes).
+    syncNotesPolling(shell);
   }
 
   // Keep the event stream pinned to its newest row when the detail (re)renders,
@@ -787,7 +853,17 @@ export namespace agentPanel {
     const placeholder = stream.querySelector("[data-events-placeholder]");
     if (placeholder) placeholder.remove();
 
+    // A result row claims its notes (its own embed renders them), so refresh
+    // the live strip right away instead of waiting for the next poll tick.
+    if (payload.kind === "tool_result") {
+      stream.querySelector("[data-live-strip]")?.remove();
+      liveStripKey = "";
+    }
     stream.insertAdjacentHTML("beforeend", renderAgentEvent(payload));
     stream.scrollTop = stream.scrollHeight;
+    if (payload.kind === "tool_result") {
+      const task = tasks.find((item) => item.task_id === payload.task_id);
+      if (task) updateLiveStrip(task);
+    }
   }
 }

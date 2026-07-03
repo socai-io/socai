@@ -174,8 +174,9 @@ export function renderAgentEvent(ev: AgentTaskEventPayload): string {
 
 // Note refs a tool_result surfaced: the design's `{type:"note", data:{ref}}`
 // entities, plus (for the current bulk `search`/`author_scan` tools) the note
-// ids nested in the xhs_search / card-grid / note entities.
-function noteRefsFromEvent(ev: AgentTaskEventPayload): string[] {
+// ids nested in the xhs_search / card-grid / note entities. Exported for the
+// live strip in tasks.ts, which shows only notes no result row has claimed yet.
+export function noteRefsFromEvent(ev: AgentTaskEventPayload): string[] {
   const refs: string[] = [];
   const push = (v: unknown): void => {
     if (typeof v === "string" && v && !refs.includes(v)) refs.push(v);
