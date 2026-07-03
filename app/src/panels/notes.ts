@@ -132,6 +132,9 @@ function avatar(note: NoteData, cls = ""): string {
 }
 
 // ── rich card (the timeline embed unit + answer sources) ────────────
+// The carousel corner belongs to the `1/2` idx chip alone — the ▣-count badge
+// (same corner, same pill) is for static covers only; stacking both reads as
+// a broken chip. Rich covers carousel, compact covers stay static (design).
 function coverInner(note: NoteData, idx: number): string {
   const media = note.media && note.media.length ? note.media : [coverOf(note)];
   const i = Math.max(0, Math.min(idx, media.length - 1));
@@ -141,14 +144,18 @@ function coverInner(note: NoteData, idx: number): string {
       `<button type="button" class="note-card__nav note-card__nav--next" data-note-nav="1" aria-label="next image">${IC.chevR()}</button>` +
       `<span class="note-card__idx t-mono">${i + 1}/${media.length}</span>`
     : "";
-  return mediaFrame(note, media[i], "cover", media.length) + nav;
+  return mediaFrame(note, media[i], "cover") + nav;
 }
 function renderCard(note: NoteData, density: "rich" | "compact" = "rich"): string {
   const title = esc(note.title || "");
   const name = esc((note.author && note.author.name) || "");
+  const cover =
+    density === "rich"
+      ? `<div class="note-card__cover" data-note-cover="${esc(note.note_id)}" data-idx="0">${coverInner(note, 0)}</div>`
+      : `<div class="note-card__cover">${mediaFrame(note, coverOf(note), "cover", (note.media || []).length)}</div>`;
   return `
     <div class="note-card" data-density="${density}" data-note-open="${esc(note.note_id)}" role="button" tabindex="0" title="${title}">
-      <div class="note-card__cover" data-note-cover="${esc(note.note_id)}" data-idx="0">${coverInner(note, 0)}</div>
+      ${cover}
       <div class="note-card__body">
         <div class="note-card__title">${title}</div>
         ${statsRow(note)}
