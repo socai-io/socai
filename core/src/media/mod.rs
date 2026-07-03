@@ -8,6 +8,12 @@ mod audio;
 mod common;
 mod image;
 mod md5;
+// ort has no x86_64-apple-darwin prebuilt, so the Intel slice of the macOS
+// universal binary compiles a same-surface stub that reports OCR unavailable.
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+mod ocr;
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+#[path = "ocr_stub.rs"]
 mod ocr;
 mod processor;
 mod timing;
