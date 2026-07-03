@@ -165,6 +165,16 @@ export namespace agentPanel {
 
   let liveStripKey = "";
 
+  // Per-task scroll memory for the event stream. A full render rebuilds the
+  // stream DOM (dropping its scroll offset), so a scroll listener records the
+  // position here and the post-render bind restores it. No entry, or a pinned
+  // entry, means auto-follow: keep the stream glued to its newest row.
+  const streamScroll = new Map<string, { top: number; pinned: boolean }>();
+
+  function isPinnedToBottom(stream: HTMLDivElement): boolean {
+    return stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 8;
+  }
+
   function updateLiveStrip(task: AgentTaskView): void {
     const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${task.task_id}"]`);
     if (!stream) return;
@@ -182,7 +192,7 @@ export namespace agentPanel {
     if (refs.length === 0) return;
     const html = renderTimelineEmbed(refs, "rich");
     if (!html) return;
-    const pinned = stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 8;
+    const pinned = isPinnedToBottom(stream);
     stream.insertAdjacentHTML("beforeend", html);
     stream.lastElementChild?.setAttribute("data-live-strip", "1");
     if (pinned) stream.scrollTop = stream.scrollHeight;
@@ -660,8 +670,9 @@ export namespace agentPanel {
         );
       });
 
-    // Auto-follow the selected task's timeline to the latest row after a render.
-    scrollSelectedEventsToBottom();
+    // Re-apply the selected task's timeline scroll position after a render:
+    // follow the latest row unless the user had scrolled up to read.
+    restoreSelectedEventsScroll();
     // Poll the note archive while the selected task runs (bind runs after
     // every render, so this tracks selection and status changes).
     syncNotesPolling(shell);
@@ -674,12 +685,19 @@ export namespace agentPanel {
     }
   }
 
-  // Keep the event stream pinned to its newest row when the detail (re)renders,
-  // mirroring the incremental append in `appendEventRowIfSelected`.
-  function scrollSelectedEventsToBottom(): void {
-    if (!selectedTaskId) return;
-    const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${selectedTaskId}"]`);
-    if (stream) stream.scrollTop = stream.scrollHeight;
+  // Put the freshly rebuilt event stream back where the user left it: at the
+  // saved offset when they had scrolled up, otherwise pinned to the newest row.
+  // Also (re)attaches the scroll listener that feeds `streamScroll`.
+  function restoreSelectedEventsScroll(): void {
+    const taskId = selectedTaskId;
+    if (!taskId) return;
+    const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${taskId}"]`);
+    if (!stream) return;
+    const saved = streamScroll.get(taskId);
+    stream.scrollTop = saved && !saved.pinned ? saved.top : stream.scrollHeight;
+    stream.addEventListener("scroll", () => {
+      streamScroll.set(taskId, { top: stream.scrollTop, pinned: isPinnedToBottom(stream) });
+    });
   }
 
   async function pollCodexOAuth(shell: ShellState): Promise<void> {
@@ -865,8 +883,9 @@ export namespace agentPanel {
       stream.querySelector("[data-live-strip]")?.remove();
       liveStripKey = "";
     }
+    const pinned = isPinnedToBottom(stream);
     stream.insertAdjacentHTML("beforeend", renderAgentEvent(payload));
-    stream.scrollTop = stream.scrollHeight;
+    if (pinned) stream.scrollTop = stream.scrollHeight;
     if (payload.kind === "tool_result") {
       const task = tasks.find((item) => item.task_id === payload.task_id);
       if (task) updateLiveStrip(task);
