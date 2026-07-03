@@ -1,0 +1,122 @@
+name: model-catalog-sync
+
+on:
+  schedule:
+    # mondays 01:00 UTC (09:00 Beijing)
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: model-catalog-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: refresh model catalog from latest pi-ai
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+          run_install: false
+
+      - name: set up node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: install frontend dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: snapshot current catalog
+        run: cp core/src/agent/model_catalog.generated.json /tmp/catalog-before.json
+
+      - name: bump pi-ai to latest
+        working-directory: app
+        run: pnpm add -D -E @earendil-works/pi-ai@latest
+
+      - name: regenerate model catalog
+        run: node scripts/sync-model-catalog.mjs --no-official --write
+
+      - name: summarize catalog changes
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- core/src/agent/model_catalog.generated.json; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "catalog unchanged; skipping PR"
+            exit 0
+          fi
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+
+          PI_AI_VERSION="$(node -p "require('./app/node_modules/@earendil-works/pi-ai/package.json').version")"
+          echo "pi_ai_version=${PI_AI_VERSION}" >> "${GITHUB_OUTPUT}"
+
+          node - <<'EOF' > /tmp/pr-body.md
+          const fs = require("node:fs");
+          const before = JSON.parse(fs.readFileSync("/tmp/catalog-before.json", "utf8")).providers;
+          const after = JSON.parse(fs.readFileSync("core/src/agent/model_catalog.generated.json", "utf8")).providers;
+          const piVersion = require("./app/node_modules/@earendil-works/pi-ai/package.json").version;
+
+          const lines = [
+            "Weekly automated refresh of `core/src/agent/model_catalog.generated.json`",
+            `against pi-ai **${piVersion}** (\`sync-model-catalog.mjs --no-official --write\`).`,
+            "",
+            "## model changes",
+            "",
+          ];
+          const providers = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+          for (const provider of providers) {
+            const ids = (entries) => new Set((entries || []).map((m) => m.id));
+            const b = ids(before[provider]);
+            const a = ids(after[provider]);
+            const added = [...a].filter((id) => !b.has(id));
+            const removed = [...b].filter((id) => !a.has(id));
+            if (added.length === 0 && removed.length === 0) continue;
+            lines.push(`### ${provider}`);
+            for (const id of added) lines.push(`- added \`${id}\``);
+            for (const id of removed) lines.push(`- removed \`${id}\``);
+            lines.push("");
+          }
+          if (lines.length === 5) {
+            lines.push("_No model ids added or removed; ordering or metadata changed._", "");
+          }
+          lines.push(
+            "## review checklist",
+            "",
+            "- [ ] Qwen ids are valid DashScope model ids (pi routes Qwen through third-party providers; normalization is judgment-based)",
+            "- [ ] every provider still lists its compiled default from `core/src/agent/provider.rs`",
+            "- [ ] exactly one `recommended` entry per provider",
+            "",
+            "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          );
+          console.log(lines.join("\n"));
+          EOF
+
+      - name: create pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: chore/model-catalog-sync
+          delete-branch: true
+          commit-message: "chore: refresh model catalog from pi-ai ${{ steps.diff.outputs.pi_ai_version }}"
+          title: "chore: refresh model catalog from pi-ai ${{ steps.diff.outputs.pi_ai_version }}"
+          body-path: /tmp/pr-body.md
+          add-paths: |
+            core/src/agent/model_catalog.generated.json
+            app/package.json
+            app/pnpm-lock.yaml

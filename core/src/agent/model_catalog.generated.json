@@ -3,6 +3,12 @@
   "providers": {
     "anthropic": [
       {
+        "id": "claude-sonnet-5",
+        "display_name": "Claude Sonnet 5",
+        "source": "pi-ai",
+        "recommended": true
+      },
+      {
         "id": "claude-fable-5",
         "display_name": "Claude Fable 5",
         "source": "pi-ai"
@@ -25,8 +31,7 @@
       {
         "id": "claude-sonnet-4-6",
         "display_name": "Claude Sonnet 4.6",
-        "source": "pi-ai",
-        "recommended": true
+        "source": "pi-ai"
       },
       {
         "id": "claude-opus-4-5-20251101",
@@ -99,18 +104,8 @@
         "source": "pi-ai"
       },
       {
-        "id": "claude-3-5-haiku-20241022",
-        "display_name": "Claude Haiku 3.5",
-        "source": "pi-ai"
-      },
-      {
         "id": "claude-3-5-sonnet-20240620",
         "display_name": "Claude Sonnet 3.5",
-        "source": "pi-ai"
-      },
-      {
-        "id": "claude-3-5-haiku-latest",
-        "display_name": "Claude Haiku 3.5 (latest)",
         "source": "pi-ai"
       },
       {
@@ -334,9 +329,14 @@
     ],
     "kimi": [
       {
+        "id": "kimi-k2.7-code-highspeed",
+        "display_name": "Kimi K2.7 Code HighSpeed",
+        "source": "pi-ai"
+      },
+      {
         "id": "kimi-k2.7-code",
         "display_name": "Kimi K2.7 Code",
-        "source": "fallback"
+        "source": "pi-ai"
       },
       {
         "id": "kimi-k2.6",
@@ -384,13 +384,13 @@
       {
         "id": "qwen3.7-plus",
         "display_name": "Qwen 3.7 Plus",
-        "source": "pi-ai"
+        "source": "pi-ai",
+        "recommended": true
       },
       {
         "id": "qwen3.6-plus-2026-04-02",
         "display_name": "Qwen 3.6 Plus (2026-04-02)",
-        "source": "fallback",
-        "recommended": true
+        "source": "fallback"
       },
       {
         "id": "qwen3.6-max-preview",

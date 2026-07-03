@@ -123,7 +123,7 @@ PY
 Expected UI behavior:
 
 - The desktop model menu groups rows by provider.
-- Each row shows a human name plus the concrete API model id.
+- Each row shows only the human display name.
 - API-key entry remains provider-level, not model-level.
 - Selecting a model persists `defaults.provider` and `defaults.{provider}_model`
   in `~/.socai/auth.json`.

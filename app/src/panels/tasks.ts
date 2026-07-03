@@ -470,10 +470,9 @@ export namespace agentPanel {
   }
 
   function modelOptionLabel(info: ModelInfo): string {
-    const id = modelId(info);
     const name = modelNameLabel(info);
     const recommended = info.recommended ? ` (${t("agent.defaultModel")})` : "";
-    return name === id ? `${name}${recommended}` : `${name} — ${id}${recommended}`;
+    return `${name}${recommended}`;
   }
 
   function modelDisplayLabel(info: ModelInfo): string {

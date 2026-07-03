@@ -139,7 +139,7 @@ pub static PROVIDERS: &[ProviderConfig] = &[
     ProviderConfig {
         provider: Provider::Anthropic,
         display_name: "Anthropic",
-        default_model: "claude-sonnet-4-6",
+        default_model: "claude-sonnet-5",
         env_keys: &["ANTHROPIC_API_KEY"],
         base_url: None,
         model_prefixes: &["claude-"],
@@ -163,7 +163,7 @@ pub static PROVIDERS: &[ProviderConfig] = &[
     ProviderConfig {
         provider: Provider::Qwen,
         display_name: "Qwen",
-        default_model: "qwen3.6-plus-2026-04-02",
+        default_model: "qwen3.7-plus",
         env_keys: &["QWEN_API_KEY", "DASHSCOPE_API_KEY"],
         base_url: Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
         model_prefixes: &["qwen", "qwq-", "qvq-"],
@@ -171,7 +171,7 @@ pub static PROVIDERS: &[ProviderConfig] = &[
     ProviderConfig {
         provider: Provider::QwenIntl,
         display_name: "Qwen International",
-        default_model: "qwen3.6-plus-2026-04-02",
+        default_model: "qwen3.7-plus",
         env_keys: &["QWEN_INTL_API_KEY", "DASHSCOPE_INTL_API_KEY"],
         base_url: Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
         // Model ids are identical to mainland Qwen, so prefix inference

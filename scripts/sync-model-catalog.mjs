@@ -16,7 +16,8 @@ const noPi = args.has("--no-pi");
 
 const FALLBACK = {
   anthropic: [
-    entry("claude-sonnet-4-6", "Claude Sonnet 4.6", "fallback", true),
+    entry("claude-sonnet-5", "Claude Sonnet 5", "fallback", true),
+    entry("claude-sonnet-4-6", "Claude Sonnet 4.6"),
     entry("claude-opus-4-8", "Claude Opus 4.8"),
     entry("claude-opus-4-6", "Claude Opus 4.6"),
     entry("claude-haiku-4-5", "Claude Haiku 4.5"),
@@ -36,8 +37,8 @@ const FALLBACK = {
     entry("kimi-k2-thinking", "Kimi K2 Thinking"),
   ],
   qwen: [
-    entry("qwen3.6-plus-2026-04-02", "Qwen 3.6 Plus (2026-04-02)", "fallback", true),
-    entry("qwen3.7-plus", "Qwen 3.7 Plus"),
+    entry("qwen3.7-plus", "Qwen 3.7 Plus", "fallback", true),
+    entry("qwen3.6-plus-2026-04-02", "Qwen 3.6 Plus (2026-04-02)"),
     entry("qwen3.7-max", "Qwen 3.7 Max"),
     entry("qwen3.6-plus", "Qwen 3.6 Plus"),
     entry("qwen3.6-max-preview", "Qwen 3.6 Max Preview"),
@@ -156,15 +157,22 @@ async function loadPiAi() {
   const tried = [];
   const tryImport = async (specifier) => {
     try {
-      return await import(specifier);
+      const mod = await import(specifier);
+      // pi-ai < 0.80 exports getModels(provider) from the package root;
+      // 0.80+ keeps that legacy read on the "compat" entry point.
+      if (mod?.getModels) return mod;
+      tried.push(`${specifier}: no getModels export`);
+      return undefined;
     } catch (error) {
       tried.push(`${specifier}: ${error.message}`);
       return undefined;
     }
   };
 
-  const direct = await tryImport("@earendil-works/pi-ai");
-  if (direct?.getModels) return direct;
+  for (const specifier of ["@earendil-works/pi-ai", "@earendil-works/pi-ai/compat"]) {
+    const direct = await tryImport(specifier);
+    if (direct) return direct;
+  }
 
   let globalRoot;
   try {
@@ -173,17 +181,20 @@ async function loadPiAi() {
     globalRoot = "";
   }
 
-  const candidates = [
-    path.join(repoRoot, "app/node_modules/@earendil-works/pi-ai/dist/index.js"),
-    globalRoot && path.join(globalRoot, "@earendil-works/pi-ai/dist/index.js"),
-    globalRoot && path.join(globalRoot, "@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js"),
-    "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js",
+  const packageRoots = [
+    path.join(repoRoot, "app/node_modules/@earendil-works/pi-ai"),
+    globalRoot && path.join(globalRoot, "@earendil-works/pi-ai"),
+    globalRoot && path.join(globalRoot, "@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai"),
+    "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai",
   ].filter(Boolean);
 
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
-    const imported = await tryImport(pathToFileURL(candidate).href);
-    if (imported?.getModels) return imported;
+  for (const root of packageRoots) {
+    for (const file of ["dist/index.js", "dist/compat.js"]) {
+      const candidate = path.join(root, file);
+      if (!existsSync(candidate)) continue;
+      const imported = await tryImport(pathToFileURL(candidate).href);
+      if (imported) return imported;
+    }
   }
   return undefined;
 }
