@@ -655,14 +655,31 @@ impl<'a> XhsPageRuntime<'a> {
         mut options: ReadNoteOptions,
     ) -> Result<Value> {
         let mut open = None;
+        // Per-phase wall times (open/extract/enrich/download/inline OCR),
+        // returned as `perf` on the payload so callers can record read timing
+        // without re-measuring. `open_strategy` tells whether the first card
+        // click opened the overlay or a retry click was needed.
+        let mut perf = Map::new();
         if options.note_id_fallback.trim().is_empty() && !note_id.trim().is_empty() {
             options.note_id_fallback = note_id.trim().to_string();
         }
         if !note_id.is_empty() || index.is_some() {
+            let t_open = Instant::now();
             let opened = self.open_note(note_id, index, wait_seconds).await?;
+            perf.insert(
+                "open_ms".into(),
+                json!(t_open.elapsed().as_millis() as u64),
+            );
+            if let Some(strategy) = opened
+                .get("strategy")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                perf.insert("open_strategy".into(), json!(strategy));
+            }
             if !script_ok(&opened) {
                 return Ok(
-                    json!({ "ok": false, "open": opened, "error": opened.get("error").and_then(Value::as_str).unwrap_or("open_failed") }),
+                    json!({ "ok": false, "open": opened, "error": opened.get("error").and_then(Value::as_str).unwrap_or("open_failed"), "perf": perf }),
                 );
             }
             if options.poster_url_fallback.trim().is_empty() {
@@ -688,7 +705,7 @@ impl<'a> XhsPageRuntime<'a> {
             open = Some(opened);
         }
         let note = self
-            .extract_note_with_options(wait_seconds, options.clone())
+            .extract_note_with_perf(wait_seconds, options.clone(), &mut perf)
             .await?;
         if !note_id.is_empty() && !note.note_id.is_empty() && note.note_id != note_id {
             // Opened the wrong note. Do NOT fall back to a full-page navigate
@@ -702,9 +719,10 @@ impl<'a> XhsPageRuntime<'a> {
                 "entity": note,
                 "open": open,
                 "error": format!("stale_note: expected {note_id}, got {}", note.note_id),
+                "perf": perf,
             }));
         }
-        Ok(json!({ "ok": true, "entity": note, "open": open }))
+        Ok(json!({ "ok": true, "entity": note, "open": open, "perf": perf }))
     }
 
     pub async fn extract_comments(&self, max_comments: i64) -> Result<Vec<Value>> {
@@ -1250,6 +1268,22 @@ impl<'a> XhsPageRuntime<'a> {
         wait_seconds: f64,
         options: ReadNoteOptions,
     ) -> Result<XhsNote> {
+        let mut perf = Map::new();
+        self.extract_note_with_perf(wait_seconds, options, &mut perf)
+            .await
+    }
+
+    /// `extract_note_with_options`, with per-phase wall times recorded into
+    /// `perf`: `extract_ms` (JS extraction + parsing), `enrich_ms`,
+    /// `download_ms`, and `ocr_inline_ms` — each present only when that phase
+    /// actually ran.
+    async fn extract_note_with_perf(
+        &self,
+        wait_seconds: f64,
+        options: ReadNoteOptions,
+        perf: &mut Map<String, Value>,
+    ) -> Result<XhsNote> {
+        let t_extract = Instant::now();
         let timeout_ms = (wait_seconds.max(0.5) * 1000.0) as i64;
         let raw = self
             .run_script("noteWithWait", Some(&json!({ "timeout_ms": timeout_ms })))
@@ -1299,24 +1333,43 @@ impl<'a> XhsPageRuntime<'a> {
         if note.r#type == "video" && !options.poster_url_fallback.trim().is_empty() {
             apply_video_poster_fallback(&mut note.video, &options.poster_url_fallback);
         }
+        perf.insert(
+            "extract_ms".into(),
+            json!(t_extract.elapsed().as_millis() as u64),
+        );
 
         if options.include_media {
+            let t_enrich = Instant::now();
             self.enrich_note_media(&mut note, options.max_images, options.max_video_frames)
                 .await?;
+            perf.insert(
+                "enrich_ms".into(),
+                json!(t_enrich.elapsed().as_millis() as u64),
+            );
         }
         if options.download_media {
+            let t_download = Instant::now();
             self.download_note_media(&mut note, options.max_images, options.download_video_file)
                 .await?;
+            perf.insert(
+                "download_ms".into(),
+                json!(t_download.elapsed().as_millis() as u64),
+            );
             // OCR runs over the just-downloaded files: each carousel image for
             // an image note, the poster (cover) for a video note.
             if options.ocr {
                 if let Some(media) = &self.media {
+                    let t_ocr = Instant::now();
                     if note.r#type == "video" {
                         media.ocr_downloaded_video_poster(&mut note.video).await;
                     } else {
                         media.ocr_downloaded_images(&mut note.images).await;
                         note.image_count = note.images.len() as i64;
                     }
+                    perf.insert(
+                        "ocr_inline_ms".into(),
+                        json!(t_ocr.elapsed().as_millis() as u64),
+                    );
                 }
             }
         }

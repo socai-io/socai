@@ -159,6 +159,7 @@ fn image_manifest_entry(
         "resolved_url_status": direct_resolution_status(&source_url),
         "download_status": status,
         "download_error": option_string_or_null(error.as_deref()),
+        "download_ms": option_i64_or_null(integer_field(image, "download_ms")),
     })
 }
 
@@ -190,6 +191,7 @@ fn video_manifest_entry(note_id: &str, video: &Value, run_dir: &Path) -> Value {
         "resolved_url_status": video_resolution_status(video, &source_url),
         "download_status": status,
         "download_error": option_string_or_null(error.as_deref()),
+        "download_ms": option_i64_or_null(integer_field(video, "download_ms")),
     })
 }
 
@@ -224,6 +226,7 @@ fn poster_manifest_entry(note_id: &str, video: &Value, run_dir: &Path) -> Option
         "resolved_url_status": direct_resolution_status(&source_url),
         "download_status": status,
         "download_error": option_string_or_null(error.as_deref()),
+        "download_ms": option_i64_or_null(integer_field(video, "poster_download_ms")),
     }))
 }
 

@@ -928,6 +928,13 @@ async fn scan_card_note(
         return recorded_skip_entry(card, "already_analyzed", history, ctx, level);
     }
 
+    // Per-phase wall times for the scan perf record (stats/scan.json). Seeded
+    // from the read payload's `perf` (open/extract/download), then extended
+    // with the comment-loading time below. Attached to the entry under the
+    // transient `scan_perf` key; the browse loop strips it before the entry
+    // reaches the artifact or the LLM payload.
+    let mut scan_perf = serde_json::Map::new();
+    let t_read = std::time::Instant::now();
     let read_result = xhs
         .read_note_with_options(
             &card.note_id,
@@ -950,8 +957,17 @@ async fn scan_card_note(
             },
         )
         .await;
+    scan_perf.insert(
+        "read_ms".into(),
+        json!(t_read.elapsed().as_millis() as u64),
+    );
     let mut entry = match read_result {
         Ok(payload) => {
+            if let Some(perf) = payload.get("perf").and_then(Value::as_object) {
+                for (key, value) in perf {
+                    scan_perf.insert(key.clone(), value.clone());
+                }
+            }
             let ok = payload.get("ok").and_then(Value::as_bool).unwrap_or(false);
             let mut entity = payload.get("entity").cloned().unwrap_or(Value::Null);
             ensure_entity_note_id(&mut entity, card);
@@ -991,10 +1007,13 @@ async fn scan_card_note(
     // comment area and expanding reply threads (replies count toward the total).
     // Scans always include comments — there is no longer a level gate.
     if comment_count > 0 {
-        if let Ok(payload) = xhs
-            .load_comments(comment_count, COMMENT_LOAD_TIMEOUT_S)
-            .await
-        {
+        let t_comments = std::time::Instant::now();
+        let comments_result = xhs.load_comments(comment_count, COMMENT_LOAD_TIMEOUT_S).await;
+        scan_perf.insert(
+            "comments_ms".into(),
+            json!(t_comments.elapsed().as_millis() as u64),
+        );
+        if let Ok(payload) = comments_result {
             let comments = payload
                 .get("comments")
                 .and_then(Value::as_array)
@@ -1034,6 +1053,10 @@ async fn scan_card_note(
         if let Some((note_id, record)) = build_note_record(&entry, ctx, level) {
             ctx.record_note(&note_id, record);
         }
+    }
+
+    if let Some(map) = entry.as_object_mut() {
+        map.insert("scan_perf".into(), Value::Object(scan_perf));
     }
 
     entry
@@ -1137,6 +1160,41 @@ struct NoteOcrTiming {
     started_ms: u64,
     finished_ms: u64,
     predict_ms: u64,
+}
+
+/// Pop the transient `scan_perf` off a scanned entry (so it never reaches the
+/// artifact or the LLM payload) and fold it into one per-note record for
+/// stats/scan.json: the read's phase times (open/extract/download/comments)
+/// plus the loop-level markers measured by the browse loop itself. Cache hits
+/// carry no `scan_perf` and are marked `cached` instead.
+fn harvest_note_perf(
+    entry: &mut Value,
+    idx: usize,
+    started_ms: u64,
+    close_ms: u64,
+    total_ms: u64,
+) -> Value {
+    let mut record = match entry.as_object_mut().and_then(|map| map.remove("scan_perf")) {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    let note_id = entry
+        .get("entity")
+        .and_then(|e| e.get("note_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    record.insert("idx".into(), json!(idx));
+    record.insert("note_id".into(), json!(note_id));
+    if entry.get("skipped").is_some() {
+        record.insert("cached".into(), json!(true));
+    }
+    if let Some(ok) = entry.get("ok").and_then(Value::as_bool) {
+        record.insert("ok".into(), json!(ok));
+    }
+    record.insert("started_ms".into(), json!(started_ms));
+    record.insert("close_ms".into(), json!(close_ms));
+    record.insert("total_ms".into(), json!(total_ms));
+    Value::Object(record)
 }
 
 /// Await the background OCR tasks and merge each result back into its note:
@@ -1608,13 +1666,36 @@ fn attach_note_ocr_summary(entity: &mut Value) {
     }
 }
 
-/// OCR performance/debug record, written to a separate file
-/// (`stats/ocr.json` in the tool-call dir) rather than the LLM-facing JSON
-/// artifact. OCR runs as one batched `predict` per note (fast, multi-core), so
-/// timing is per note/batch, not per image. The recognized `ocr_text` stays on
-/// the images for the LLM; only timing lives here.
+/// Per-note phase keys accumulated into `*_total_ms` summary fields by
+/// [`write_scan_perf`]. `total_ms` is summarized as `notes_total_ms`.
+const SCAN_PHASE_KEYS: &[&str] = &[
+    "open_ms",
+    "extract_ms",
+    "enrich_ms",
+    "download_ms",
+    "ocr_inline_ms",
+    "comments_ms",
+    "close_ms",
+];
+
+/// Scan performance/debug record, written to a separate file
+/// (`stats/scan.json` in the tool-call dir) rather than the LLM-facing JSON
+/// artifact.
+///
+/// Each note carries the phases of its serial browse-loop cost —
+/// `started_ms` (relative to scan start), `open_ms` + `open_strategy` (whether
+/// the first card click opened the overlay or a retry was needed),
+/// `extract_ms`, `download_ms`, `comments_ms`, `close_ms`, `read_ms`
+/// (open+extract+download combined, as measured around the whole read), and
+/// `total_ms` — plus, when OCR ran for it, `predict_ms` and
+/// `ocr_started_ms`/`ocr_finished_ms`/`ocr_wall_ms` on the same timeline.
+/// Cache hits are marked `cached` and carry only the loop-level markers.
 ///
 /// `summary` is the key to reading the pipeline. All `*_ms` are wall time:
+///   - per-phase `*_total_ms` — summed serial cost of that phase across notes;
+///     the biggest one is the scan's bottleneck.
+///   - `open_retries` — notes whose overlay needed a retry click (each burns
+///     the per-attempt open wait before the retry).
 ///   - `ocr_predict_total_ms` — summed per-note batch inference (total OCR CPU
 ///     cost).
 ///   - `ocr_wall_ms` — **measured** first-OCR-start → last-OCR-end. OCR tasks
@@ -1624,77 +1705,110 @@ fn attach_note_ocr_summary(entity: &mut Value) {
 ///   - `ocr_overhang_ms` — OCR still running after the browse loop ended (the
 ///     part the pipeline could NOT hide).
 ///   - `scan_total_ms` — whole scan wall.
-///
-/// Each note carries `predict_ms` (its batch inference), plus
-/// `ocr_started_ms`/`ocr_finished_ms`/`ocr_wall_ms` (relative to scan start) so
-/// you can see its OCR span on the same timeline as the browse loop.
-fn write_note_ocr_perf(
+fn write_scan_perf(
     ctx: &ToolContext,
     notes: &[Value],
     browse_loop_ms: u64,
-    timings: &[NoteOcrTiming],
+    ocr_timings: &[NoteOcrTiming],
+    note_perfs: &[Value],
 ) {
-    if timings.is_empty() {
+    if note_perfs.is_empty() && ocr_timings.is_empty() {
         return;
     }
+    let ocr_by_idx: std::collections::HashMap<usize, &NoteOcrTiming> =
+        ocr_timings.iter().map(|t| (t.idx, t)).collect();
+
     let mut note_reports: Vec<Value> = Vec::new();
     let mut total_images: u64 = 0;
     let mut predict_total_ms: u64 = 0;
-    for t in timings {
-        let Some(note) = notes.get(t.idx) else {
+    let mut cached_count: u64 = 0;
+    let mut open_retries: u64 = 0;
+    let mut notes_total_ms: u64 = 0;
+    let mut phase_totals: std::collections::BTreeMap<&str, u64> =
+        std::collections::BTreeMap::new();
+    for perf in note_perfs {
+        let Some(record) = perf.as_object() else {
             continue;
         };
-        let entity = note.get("entity");
-        let note_id = entity
-            .and_then(|e| e.get("note_id"))
+        let mut record = record.clone();
+        let idx = record.get("idx").and_then(Value::as_u64).unwrap_or(0) as usize;
+
+        if record.get("cached").and_then(Value::as_bool) == Some(true) {
+            cached_count += 1;
+        }
+        if record
+            .get("open_strategy")
             .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let images = entity
+            .is_some_and(|s| s.starts_with("retry"))
+        {
+            open_retries += 1;
+        }
+        notes_total_ms += record.get("total_ms").and_then(Value::as_u64).unwrap_or(0);
+        for key in SCAN_PHASE_KEYS {
+            if let Some(ms) = record.get(*key).and_then(Value::as_u64) {
+                *phase_totals.entry(key).or_insert(0) += ms;
+            }
+        }
+
+        let images = notes
+            .get(idx)
+            .and_then(|note| note.get("entity"))
             .and_then(|e| e.get("images"))
             .and_then(Value::as_array)
             .map(|a| a.len())
             .unwrap_or(0) as u64;
         total_images += images;
-        predict_total_ms += t.predict_ms;
-        note_reports.push(json!({
-            "note_id": note_id,
-            "images": images,
-            "predict_ms": t.predict_ms,
-            "ocr_started_ms": t.started_ms,
-            "ocr_finished_ms": t.finished_ms,
-            "ocr_wall_ms": t.finished_ms.saturating_sub(t.started_ms),
-        }));
-    }
-    if note_reports.is_empty() {
-        return;
+        record.insert("images".into(), json!(images));
+        if let Some(t) = ocr_by_idx.get(&idx) {
+            predict_total_ms += t.predict_ms;
+            record.insert("predict_ms".into(), json!(t.predict_ms));
+            record.insert("ocr_started_ms".into(), json!(t.started_ms));
+            record.insert("ocr_finished_ms".into(), json!(t.finished_ms));
+            record.insert(
+                "ocr_wall_ms".into(),
+                json!(t.finished_ms.saturating_sub(t.started_ms)),
+            );
+        }
+        note_reports.push(Value::Object(record));
     }
 
     // Overall OCR wall = first start → last finish, measured across all notes.
     let ocr_wall_ms = match (
-        timings.iter().map(|t| t.started_ms).min(),
-        timings.iter().map(|t| t.finished_ms).max(),
+        ocr_timings.iter().map(|t| t.started_ms).min(),
+        ocr_timings.iter().map(|t| t.finished_ms).max(),
     ) {
         (Some(start), Some(end)) => end.saturating_sub(start),
         _ => 0,
     };
-    let last_finish = timings.iter().map(|t| t.finished_ms).max().unwrap_or(0);
+    let last_finish = ocr_timings.iter().map(|t| t.finished_ms).max().unwrap_or(0);
     let scan_total_ms = browse_loop_ms.max(last_finish);
     let ocr_overhang_ms = last_finish.saturating_sub(browse_loop_ms);
 
-    let perf = json!({
-        "ocr": ocr_diagnostics(),
-        "summary": {
-            "images": total_images,
-            "ocr_predict_total_ms": predict_total_ms,
-            "ocr_wall_ms": ocr_wall_ms,
-            "browse_loop_ms": browse_loop_ms,
-            "ocr_overhang_ms": ocr_overhang_ms,
-            "scan_total_ms": scan_total_ms,
-        },
-        "notes": note_reports,
-    });
-    write_run_perf_file(ctx, &perf);
+    let mut summary = serde_json::Map::new();
+    summary.insert("notes".into(), json!(note_perfs.len()));
+    summary.insert("notes_cached".into(), json!(cached_count));
+    summary.insert("open_retries".into(), json!(open_retries));
+    summary.insert("images".into(), json!(total_images));
+    summary.insert("notes_total_ms".into(), json!(notes_total_ms));
+    for (key, total) in &phase_totals {
+        let name = format!("{}_total_ms", key.trim_end_matches("_ms"));
+        summary.insert(name, json!(total));
+    }
+    summary.insert("browse_loop_ms".into(), json!(browse_loop_ms));
+    summary.insert("scan_total_ms".into(), json!(scan_total_ms));
+    if !ocr_timings.is_empty() {
+        summary.insert("ocr_predict_total_ms".into(), json!(predict_total_ms));
+        summary.insert("ocr_wall_ms".into(), json!(ocr_wall_ms));
+        summary.insert("ocr_overhang_ms".into(), json!(ocr_overhang_ms));
+    }
+
+    let mut perf = serde_json::Map::new();
+    if !ocr_timings.is_empty() {
+        perf.insert("ocr".into(), ocr_diagnostics());
+    }
+    perf.insert("summary".into(), Value::Object(summary));
+    perf.insert("notes".into(), Value::Array(note_reports));
+    write_run_perf_file(ctx, "scan.json", &Value::Object(perf));
 }
 
 /// OCR performance record for the preview path: all card covers are OCR'd in one
@@ -1716,17 +1830,17 @@ fn write_cover_ocr_perf(
             "ocr_wall_ms": wall.as_millis() as u64,
         },
     });
-    write_run_perf_file(ctx, &perf);
+    write_run_perf_file(ctx, "ocr.json", &perf);
 }
 
-/// Write the tool-specific OCR record under the current tool call's `stats/`.
-fn write_run_perf_file(ctx: &ToolContext, perf: &Value) {
+/// Write a tool-specific perf record under the current tool call's `stats/`.
+fn write_run_perf_file(ctx: &ToolContext, name: &str, perf: &Value) {
     let stats_dir = ctx.output_dir().join("stats");
     if std::fs::create_dir_all(&stats_dir).is_err() {
         return;
     }
     if let Ok(rendered) = serde_json::to_string_pretty(perf) {
-        let _ = std::fs::write(stats_dir.join("ocr.json"), rendered);
+        let _ = std::fs::write(stats_dir.join(name), rendered);
     }
 }
 
@@ -1992,13 +2106,27 @@ impl Tool for ReadNoteTool {
         if value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             // The note modal is still open here (the command's `after` hook
             // closes it), so always attach top comments before recording.
+            let mut comments_ms = None;
             if let Some(entity) = value.get_mut("entity") {
+                let t_comments = std::time::Instant::now();
                 attach_top_comments(&xhs, entity).await;
+                comments_ms = Some(t_comments.elapsed().as_millis() as u64);
+            }
+            if let (Some(ms), Some(perf)) = (
+                comments_ms,
+                value.get_mut("perf").and_then(Value::as_object_mut),
+            ) {
+                perf.insert("comments_ms".into(), json!(ms));
             }
             if let Some(entity) = value.get("entity") {
                 self.history
                     .record(entity, &options.level, options.include_media);
             }
+        }
+        // Phase timing is a debug record, not analysis input: move it out of
+        // the LLM-facing payload into stats/read.json.
+        if let Some(perf) = value.as_object_mut().and_then(|map| map.remove("perf")) {
+            write_run_perf_file(ctx, "read.json", &json!({ "read": perf }));
         }
         Ok(json_result(&value))
     }
@@ -2750,6 +2878,7 @@ impl Tool for SearchTool {
         // download; tasks are joined after the browse loop.
         let ocr_sem = Arc::new(tokio::sync::Semaphore::new(OCR_PIPELINE_CONCURRENCY));
         let mut pending_ocr: Vec<(usize, tokio::task::JoinHandle<NoteOcrResult>)> = Vec::new();
+        let mut note_perfs: Vec<Value> = Vec::new();
         let scan_progress = ScanProgress::new(ctx, want);
         // Wall-clock markers so the perf file can show how much OCR overlapped
         // the browse loop (the pipeline benefit) vs. spilled past it.
@@ -2785,6 +2914,7 @@ impl Tool for SearchTool {
             let item_index = notes.len() + 1;
             let title = progress_title(&card);
             scan_progress.reading_started(item_index, title.clone());
+            let note_started_ms = browse_t0.elapsed().as_millis() as u64;
 
             let entry = scan_card_note(
                 &xhs,
@@ -2819,8 +2949,18 @@ impl Tool for SearchTool {
                     scan_progress.ocr_completed(item_index, title.clone());
                 }
             }
+            let t_close = std::time::Instant::now();
             let _ = xhs.close_note(0.6).await;
+            let close_ms = t_close.elapsed().as_millis() as u64;
             scan_progress.reading_completed(item_index, title);
+            let total_ms = (browse_t0.elapsed().as_millis() as u64).saturating_sub(note_started_ms);
+            note_perfs.push(harvest_note_perf(
+                &mut notes[idx],
+                idx,
+                note_started_ms,
+                close_ms,
+                total_ms,
+            ));
         }
 
         scan_progress.finish_reading(notes.len());
@@ -2829,10 +2969,10 @@ impl Tool for SearchTool {
         // browse_ms) and merge results back into the notes in place.
         let ocr_timings =
             join_note_ocr(&mut notes, pending_ocr, &self.history, level, include_media).await;
-        // Write OCR perf to a separate debug file and strip per-image ocr_ms from
-        // the notes so the JSON artifact stays LLM-facing (ocr_text only).
+        // Write the scan perf record (per-note phase timing + OCR pipeline) to a
+        // separate debug file; the JSON artifact stays LLM-facing.
+        write_scan_perf(ctx, &notes, browse_ms, &ocr_timings, &note_perfs);
         if ocr {
-            write_note_ocr_perf(ctx, &notes, browse_ms, &ocr_timings);
             scan_progress.finish_ocr(notes.len());
         }
 
@@ -2893,8 +3033,9 @@ impl Tool for SearchTool {
                 map.insert("filters".into(), summary);
             }
         }
-        // OCR perf (model / EP / machine / per-image timing) is written to
-        // `stats/ocr.json` (see write_note_ocr_perf above), not the JSON artifact.
+        // Scan perf (per-note phases + OCR model / EP / machine timing) is
+        // written to `stats/scan.json` (see write_scan_perf above), not the
+        // JSON artifact.
         if let Some((media_manifest_count, media_manifest_path, media_manifest_error)) =
             media_manifest_metadata
         {
@@ -3127,6 +3268,7 @@ impl Tool for AuthorScanTool {
             // download; tasks are joined after the loop.
             let ocr_sem = Arc::new(tokio::sync::Semaphore::new(OCR_PIPELINE_CONCURRENCY));
             let mut pending_ocr: Vec<(usize, tokio::task::JoinHandle<NoteOcrResult>)> = Vec::new();
+            let mut note_perfs: Vec<Value> = Vec::new();
             let scan_progress = ScanProgress::new(ctx, cards.len());
             let browse_t0 = std::time::Instant::now();
             for card in &cards {
@@ -3136,6 +3278,7 @@ impl Tool for AuthorScanTool {
                 let item_index = notes.len() + 1;
                 let title = progress_title(card);
                 scan_progress.reading_started(item_index, title.clone());
+                let note_started_ms = browse_t0.elapsed().as_millis() as u64;
                 let entry = scan_card_note(
                     &xhs,
                     &self.history,
@@ -3167,15 +3310,26 @@ impl Tool for AuthorScanTool {
                         scan_progress.ocr_completed(item_index, title.clone());
                     }
                 }
+                let t_close = std::time::Instant::now();
                 let _ = xhs.close_note(0.6).await;
+                let close_ms = t_close.elapsed().as_millis() as u64;
                 scan_progress.reading_completed(item_index, title);
+                let total_ms =
+                    (browse_t0.elapsed().as_millis() as u64).saturating_sub(note_started_ms);
+                note_perfs.push(harvest_note_perf(
+                    &mut notes[idx],
+                    idx,
+                    note_started_ms,
+                    close_ms,
+                    total_ms,
+                ));
             }
             scan_progress.finish_reading(notes.len());
             let browse_ms = browse_t0.elapsed().as_millis() as u64;
             let ocr_timings =
                 join_note_ocr(&mut notes, pending_ocr, &self.history, "deep", false).await;
+            write_scan_perf(ctx, &notes, browse_ms, &ocr_timings, &note_perfs);
             if ocr {
-                write_note_ocr_perf(ctx, &notes, browse_ms, &ocr_timings);
                 scan_progress.finish_ocr(notes.len());
             }
         } else if ocr {
@@ -3248,7 +3402,7 @@ impl Tool for AuthorScanTool {
             "timing": { "media": media_timing },
         });
 
-        // OCR perf is written to `stats/ocr.json` (see above), not the artifact.
+        // Scan perf is written to `stats/scan.json` (see above), not the artifact.
 
         if let Some((count, path, error)) = media_manifest_metadata {
             if let Some(map) = payload.as_object_mut() {

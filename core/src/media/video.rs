@@ -84,12 +84,19 @@ impl MediaProcessor {
             .unwrap_or("")
             .to_string();
         if !poster_url.is_empty() {
+            let t_poster = Instant::now();
             match self
                 .download_named_file(&poster_url, referer, label, "post.jpg")
                 .await
             {
                 Ok(path) => insert_string(&mut result, "poster_local_path", path.to_string_lossy()),
                 Err(err) => insert_string(&mut result, "poster_download_error", format!("{err:#}")),
+            }
+            if let Some(map) = result.as_object_mut() {
+                map.insert(
+                    "poster_download_ms".into(),
+                    serde_json::json!(t_poster.elapsed().as_millis() as u64),
+                );
             }
         }
         result
@@ -128,6 +135,7 @@ impl MediaProcessor {
             return result;
         }
 
+        let t_file = Instant::now();
         match self
             .download_file_with_timeout(
                 &source,
@@ -144,6 +152,12 @@ impl MediaProcessor {
         {
             Ok(path) => insert_string(&mut result, "local_path", path.to_string_lossy()),
             Err(err) => insert_string(&mut result, "download_error", format!("{err:#}")),
+        }
+        if let Some(map) = result.as_object_mut() {
+            map.insert(
+                "download_ms".into(),
+                serde_json::json!(t_file.elapsed().as_millis() as u64),
+            );
         }
         result
     }

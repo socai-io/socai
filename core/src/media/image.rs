@@ -295,9 +295,17 @@ impl MediaProcessor {
                     .to_string()
             })
             .collect();
-        let downloads = urls
-            .into_iter()
-            .map(|url| self.safe_download(url, referer.to_string()));
+        let downloads = urls.into_iter().map(|url| {
+            let referer = referer.to_string();
+            // Per-item wall time (from admission into the concurrency window to
+            // completion) so a single slow CDN fetch is visible inside the
+            // otherwise-concurrent batch.
+            async move {
+                let t_item = Instant::now();
+                let result = self.safe_download(url, referer).await;
+                (result, t_item.elapsed().as_millis() as u64)
+            }
+        });
         let download_results: Vec<_> = futures::stream::iter(downloads)
             .buffered(IMAGE_DOWNLOAD_CONCURRENCY)
             .collect()
@@ -308,13 +316,16 @@ impl MediaProcessor {
         images
             .iter()
             .zip(download_results)
-            .map(|(image, (payload, error))| {
+            .map(|(image, ((payload, error), download_ms))| {
                 let url = image
                     .get("url")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .trim();
                 let mut item = image.clone();
+                if let Some(map) = item.as_object_mut() {
+                    map.insert("download_ms".into(), serde_json::json!(download_ms));
+                }
                 if url.is_empty() {
                     insert_string(&mut item, "download_error", "image URL is empty");
                     return item;
