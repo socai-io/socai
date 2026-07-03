@@ -93,6 +93,13 @@ impl OpenAICompatBackend {
             Provider::Qwen | Provider::QwenIntl => {
                 extra.insert("enable_thinking".into(), Value::Bool(false));
             }
+            // Reasoning on by default for OpenAI reasoning models — newer
+            // GPT-5.x releases default reasoning_effort to "none". Chat
+            // completions never returns the reasoning content, but the model
+            // still reasons (tokens count against max_completion_tokens).
+            Provider::OpenAI if is_openai_reasoning_model(&self.model) => {
+                extra.insert("reasoning_effort".into(), json!("medium"));
+            }
             _ => {}
         }
         extra
@@ -149,8 +156,25 @@ impl OpenAICompatBackend {
             parallel_tool_calls: true,
             stream: true,
             store: false,
+            // All Codex models reason. summary: "auto" surfaces the summary
+            // text; encrypted_content is what store:false replay needs.
+            reasoning: json!({"effort": "medium", "summary": "auto"}),
+            include: vec!["reasoning.encrypted_content"],
         }
     }
+}
+
+/// OpenAI models that accept the `reasoning_effort` chat-completions
+/// parameter. The `-chat` variants (gpt-5-chat-latest, …) are the
+/// non-reasoning conversational builds and reject it.
+fn is_openai_reasoning_model(model: &str) -> bool {
+    if model.contains("-chat") {
+        return false;
+    }
+    model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
 }
 
 #[cfg(test)]
@@ -269,7 +293,9 @@ fn build_chat_messages(system: &str, messages: &[Message], preserve_reasoning: b
                                 },
                             }));
                         }
-                        Block::ToolResult { .. } | Block::Thinking { .. } => {}
+                        Block::ToolResult { .. }
+                        | Block::Thinking { .. }
+                        | Block::OpenAIReasoning { .. } => {}
                     }
                 }
                 let content_str = text_parts.join("\n").trim().to_string();
@@ -317,7 +343,8 @@ fn build_chat_messages(system: &str, messages: &[Message], preserve_reasoning: b
                         }
                         Block::ReasoningContent { .. }
                         | Block::ToolUse { .. }
-                        | Block::Thinking { .. } => {}
+                        | Block::Thinking { .. }
+                        | Block::OpenAIReasoning { .. } => {}
                     }
                 }
                 let joined = user_text_parts.join("\n").trim().to_string();
@@ -401,7 +428,8 @@ fn responses_content_parts(blocks: Vec<Block>, output: bool) -> Vec<Value> {
             Block::ReasoningContent { .. }
             | Block::ToolUse { .. }
             | Block::ToolResult { .. }
-            | Block::Thinking { .. } => {}
+            | Block::Thinking { .. }
+            | Block::OpenAIReasoning { .. } => {}
             Block::Image { .. } => {}
         }
     }
@@ -418,6 +446,10 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
                 for block in blocks {
                     match block {
                         Block::Text { .. } => text_blocks.push(block),
+                        // Replay the reasoning item exactly as received —
+                        // required with store:false to keep the model's chain
+                        // of thought across tool calls.
+                        Block::OpenAIReasoning { item } => out.push(item),
                         Block::ToolUse { id, name, input } => {
                             out.push(json!({
                                 "type": "function_call",
@@ -454,7 +486,8 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
                         Block::Text { .. } | Block::Image { .. } => message_blocks.push(block),
                         Block::ReasoningContent { .. }
                         | Block::ToolUse { .. }
-                        | Block::Thinking { .. } => {}
+                        | Block::Thinking { .. }
+                        | Block::OpenAIReasoning { .. } => {}
                     }
                 }
                 let content = responses_content_parts(message_blocks, false);
@@ -549,11 +582,15 @@ struct ResponsesRequest {
     parallel_tool_calls: bool,
     stream: bool,
     store: bool,
+    reasoning: Value,
+    include: Vec<&'static str>,
 }
 
 fn parse_responses_sse(body: &str) -> anyhow::Result<LLMResponse> {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
+    let mut reasoning_items: Vec<Value> = Vec::new();
+    let mut reasoning_texts: Vec<String> = Vec::new();
     let mut input_tokens = 0;
     let mut output_tokens = 0;
     let mut completed = false;
@@ -574,6 +611,21 @@ fn parse_responses_sse(body: &str) -> anyhow::Result<LLMResponse> {
             }
             Some("response.output_item.done") => {
                 if let Some(item) = value.get("item").and_then(Value::as_object) {
+                    if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                        for part in item
+                            .get("summary")
+                            .and_then(Value::as_array)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default()
+                        {
+                            if let Some(t) = part.get("text").and_then(Value::as_str) {
+                                if !t.trim().is_empty() {
+                                    reasoning_texts.push(t.trim().to_string());
+                                }
+                            }
+                        }
+                        reasoning_items.push(Value::Object(item.clone()));
+                    }
                     if item.get("type").and_then(Value::as_str) == Some("function_call") {
                         let id = item
                             .get("call_id")
@@ -640,8 +692,9 @@ fn parse_responses_sse(body: &str) -> anyhow::Result<LLMResponse> {
         stop_reason,
         input_tokens,
         output_tokens,
-        reasoning_content: String::new(),
+        reasoning_content: reasoning_texts.join("\n\n"),
         thinking_blocks: Vec::new(),
+        reasoning_items,
     })
 }
 
@@ -735,6 +788,7 @@ impl Backend for OpenAICompatBackend {
             output_tokens: parsed.usage.completion_tokens,
             reasoning_content: choice.message.reasoning_content.unwrap_or_default(),
             thinking_blocks: Vec::new(),
+            reasoning_items: Vec::new(),
         })
     }
 }

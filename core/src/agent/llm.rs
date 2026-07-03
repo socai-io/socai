@@ -57,6 +57,14 @@ pub enum Block {
         thinking: String,
         signature: String,
     },
+    /// OpenAI Responses API reasoning item, kept as raw JSON. With
+    /// `store: false` the encrypted reasoning must be replayed verbatim in
+    /// the next request's `input`, or the model loses its chain of thought
+    /// between tool calls. Other backends drop it on the wire.
+    #[serde(rename = "openai_reasoning")]
+    OpenAIReasoning {
+        item: Value,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -153,6 +161,10 @@ pub struct LLMResponse {
     /// Empty for non-Anthropic providers.
     #[serde(default)]
     pub thinking_blocks: Vec<ThinkingBlock>,
+    /// OpenAI Responses API reasoning items (raw JSON), in response order,
+    /// for verbatim replay. Empty for other providers.
+    #[serde(default)]
+    pub reasoning_items: Vec<Value>,
 }
 
 impl LLMResponse {
@@ -160,6 +172,9 @@ impl LLMResponse {
     /// Thinking / reasoning first, text, then tool_use blocks.
     pub fn to_assistant_blocks(&self) -> Vec<Block> {
         let mut blocks: Vec<Block> = Vec::new();
+        for item in &self.reasoning_items {
+            blocks.push(Block::OpenAIReasoning { item: item.clone() });
+        }
         for tb in &self.thinking_blocks {
             blocks.push(Block::Thinking {
                 thinking: tb.thinking.clone(),
@@ -167,6 +182,7 @@ impl LLMResponse {
             });
         }
         if self.thinking_blocks.is_empty()
+            && self.reasoning_items.is_empty()
             && !self.reasoning_content.trim().is_empty()
             && !self.tool_calls.is_empty()
         {

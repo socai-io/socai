@@ -154,6 +154,7 @@ fn block_to_wire(block: &Block) -> Option<Value> {
             "thinking": thinking,
             "signature": signature,
         })),
+        Block::OpenAIReasoning { .. } => None,
         Block::ToolUse { id, name, input } => Some(json!({
             "type": "tool_use",
             "id": id,
@@ -344,6 +345,7 @@ impl Backend for AnthropicBackend {
             output_tokens: parsed.usage.output_tokens,
             reasoning_content,
             thinking_blocks,
+            reasoning_items: Vec::new(),
         })
     }
 }

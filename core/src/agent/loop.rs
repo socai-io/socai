@@ -727,9 +727,13 @@ fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
 fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> Vec<Block> {
     use crate::agent::compaction::{truncate, ASSISTANT_TEXT_MAX_CHARS};
     let mut blocks: Vec<Block> = Vec::new();
-    // Anthropic thinking blocks go first, verbatim (never truncated) — the
-    // API rejects modified blocks on replay. When present they already carry
-    // the reasoning text, so the ReasoningContent mirror is skipped.
+    // Provider-native reasoning goes first, verbatim (never truncated):
+    // OpenAI Responses reasoning items and Anthropic thinking blocks must be
+    // replayed unmodified. When present they already carry the reasoning
+    // text, so the ReasoningContent mirror is skipped.
+    for item in &response.reasoning_items {
+        blocks.push(Block::OpenAIReasoning { item: item.clone() });
+    }
     for tb in &response.thinking_blocks {
         blocks.push(Block::Thinking {
             thinking: tb.thinking.clone(),
@@ -739,6 +743,7 @@ fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> V
     // Preserve reasoning_content alongside tool_calls so providers that
     // require it round-tripped (Kimi/Qwen) get it on the next turn.
     if response.thinking_blocks.is_empty()
+        && response.reasoning_items.is_empty()
         && !response.reasoning_content.trim().is_empty()
         && !response.tool_calls.is_empty()
     {
