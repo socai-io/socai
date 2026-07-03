@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 
 use crate::agent::api_errors::format_http_error;
 use crate::agent::llm::{
-    Backend, Block, LLMResponse, Message, StopReason, ToolCall, ToolResultContent, ToolSchema,
+    Backend, Block, LLMResponse, Message, StopReason, ThinkingBlock, ToolCall, ToolResultContent,
+    ToolSchema,
 };
 use crate::agent::provider::{config_for, load_api_key, Provider};
 
@@ -92,7 +93,7 @@ impl AnthropicBackend {
                 map.insert("cache_control".into(), json!({"type": "ephemeral"}));
             }
         }
-        json!({
+        let mut body = json!({
             "model": self.model,
             "max_tokens": max_tokens,
             "system": system_value,
@@ -101,8 +102,32 @@ impl AnthropicBackend {
                 "content": message.content,
             })).collect::<Vec<_>>(),
             "tools": wire_tools,
-        })
+        });
+        if supports_adaptive_thinking(&self.model) {
+            // display: "summarized" — the default ("omitted") returns thinking
+            // blocks with empty text, so nothing could be surfaced in the UI.
+            body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
+        }
+        body
     }
+}
+
+/// Models that accept `thinking: {type: "adaptive"}`. Older models
+/// (Haiku 4.5, Sonnet 4.5, Claude 3.x, …) reject it with a 400, so the
+/// parameter is only sent where it's supported. Note that Sonnet 5 and
+/// Fable 5 run adaptive thinking even when the parameter is omitted — the
+/// explicit config is still needed there for `display: "summarized"`.
+fn supports_adaptive_thinking(model: &str) -> bool {
+    const PREFIXES: [&str; 7] = [
+        "claude-fable-5",
+        "claude-mythos",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "claude-sonnet-5",
+    ];
+    PREFIXES.iter().any(|p| model.starts_with(p))
 }
 
 fn block_to_wire(block: &Block) -> Option<Value> {
@@ -117,12 +142,18 @@ fn block_to_wire(block: &Block) -> Option<Value> {
             },
         })),
         Block::ReasoningContent { .. } => {
-            // Anthropic's "thinking" block has a different shape (signed
-            // signature etc.) — and we don't currently surface it from the
-            // response. Drop reasoning content when sending to Anthropic so
-            // we don't have to fake a signature.
+            // Kimi/Qwen-style reasoning trace — has no signature, so it can't
+            // be faked as an Anthropic thinking block. Drop it on this wire.
             None
         }
+        Block::Thinking {
+            thinking,
+            signature,
+        } => Some(json!({
+            "type": "thinking",
+            "thinking": thinking,
+            "signature": signature,
+        })),
         Block::ToolUse { id, name, input } => Some(json!({
             "type": "tool_use",
             "id": id,
@@ -208,6 +239,12 @@ enum WireResponseBlock {
         name: String,
         input: Value,
     },
+    Thinking {
+        #[serde(default)]
+        thinking: String,
+        #[serde(default)]
+        signature: String,
+    },
     #[serde(other)]
     Other,
 }
@@ -269,15 +306,31 @@ impl Backend for AnthropicBackend {
 
         let mut text_blocks = Vec::new();
         let mut tool_calls = Vec::new();
+        let mut thinking_blocks: Vec<ThinkingBlock> = Vec::new();
         for block in parsed.content {
             match block {
                 WireResponseBlock::Text { text } => text_blocks.push(text),
                 WireResponseBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCall { id, name, input })
                 }
+                WireResponseBlock::Thinking {
+                    thinking,
+                    signature,
+                } => thinking_blocks.push(ThinkingBlock {
+                    thinking,
+                    signature,
+                }),
                 WireResponseBlock::Other => {}
             }
         }
+        // Surface the thinking summary through the same channel Kimi/Qwen
+        // use, so the UI reasoning stream lights up identically.
+        let reasoning_content = thinking_blocks
+            .iter()
+            .map(|tb| tb.thinking.trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
 
         let input_total = parsed.usage.input_tokens
             + parsed.usage.cache_creation_input_tokens
@@ -289,7 +342,8 @@ impl Backend for AnthropicBackend {
             stop_reason: parse_stop_reason(parsed.stop_reason.as_deref()),
             input_tokens: input_total,
             output_tokens: parsed.usage.output_tokens,
-            reasoning_content: String::new(),
+            reasoning_content,
+            thinking_blocks,
         })
     }
 }

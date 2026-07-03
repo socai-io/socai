@@ -269,7 +269,7 @@ fn build_chat_messages(system: &str, messages: &[Message], preserve_reasoning: b
                                 },
                             }));
                         }
-                        Block::ToolResult { .. } => {}
+                        Block::ToolResult { .. } | Block::Thinking { .. } => {}
                     }
                 }
                 let content_str = text_parts.join("\n").trim().to_string();
@@ -315,7 +315,9 @@ fn build_chat_messages(system: &str, messages: &[Message], preserve_reasoning: b
                                 "content": flatten_tool_result_content(&content),
                             }));
                         }
-                        Block::ReasoningContent { .. } | Block::ToolUse { .. } => {}
+                        Block::ReasoningContent { .. }
+                        | Block::ToolUse { .. }
+                        | Block::Thinking { .. } => {}
                     }
                 }
                 let joined = user_text_parts.join("\n").trim().to_string();
@@ -396,7 +398,10 @@ fn responses_content_parts(blocks: Vec<Block>, output: bool) -> Vec<Value> {
                     "image_url": format!("data:{media_type};base64,{data}"),
                 }));
             }
-            Block::ReasoningContent { .. } | Block::ToolUse { .. } | Block::ToolResult { .. } => {}
+            Block::ReasoningContent { .. }
+            | Block::ToolUse { .. }
+            | Block::ToolResult { .. }
+            | Block::Thinking { .. } => {}
             Block::Image { .. } => {}
         }
     }
@@ -423,7 +428,8 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
                         }
                         Block::Image { .. }
                         | Block::ReasoningContent { .. }
-                        | Block::ToolResult { .. } => {}
+                        | Block::ToolResult { .. }
+                        | Block::Thinking { .. } => {}
                     }
                 }
                 let content = responses_content_parts(text_blocks, true);
@@ -446,7 +452,9 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
                             }));
                         }
                         Block::Text { .. } | Block::Image { .. } => message_blocks.push(block),
-                        Block::ReasoningContent { .. } | Block::ToolUse { .. } => {}
+                        Block::ReasoningContent { .. }
+                        | Block::ToolUse { .. }
+                        | Block::Thinking { .. } => {}
                     }
                 }
                 let content = responses_content_parts(message_blocks, false);
@@ -633,6 +641,7 @@ fn parse_responses_sse(body: &str) -> anyhow::Result<LLMResponse> {
         input_tokens,
         output_tokens,
         reasoning_content: String::new(),
+        thinking_blocks: Vec::new(),
     })
 }
 
@@ -725,6 +734,7 @@ impl Backend for OpenAICompatBackend {
             input_tokens: parsed.usage.prompt_tokens,
             output_tokens: parsed.usage.completion_tokens,
             reasoning_content: choice.message.reasoning_content.unwrap_or_default(),
+            thinking_blocks: Vec::new(),
         })
     }
 }

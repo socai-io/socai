@@ -29,7 +29,7 @@ use tracing::{debug, info, warn};
 
 use crate::agent::compaction::{compress_text_maybe_json, TOOL_RESULT_TEXT_MAX_CHARS};
 use crate::agent::llm::{
-    Backend, Block, LLMResponse, Message, ToolCall, ToolResultContent, ToolSchema,
+    Backend, Block, LLMResponse, Message, StopReason, ToolCall, ToolResultContent, ToolSchema,
 };
 use crate::agent::memory::prepare_messages_for_context;
 use crate::agent::report::report_with_artifacts;
@@ -112,7 +112,7 @@ impl Default for AgentOptions {
     fn default() -> Self {
         Self {
             max_turns: 30,
-            max_tokens: 8192,
+            max_tokens: 16000,
             extra_instructions: String::new(),
             run_dir: None,
             enabled_sites: Vec::new(),
@@ -188,6 +188,7 @@ pub async fn run_agent_with_events(
     let mut tool_call_history: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut completed = false;
     let mut terminal_error: Option<String> = None;
+    let mut truncation_retries = 0u32;
     let mut last_system: String = build_system_prompt(&[], &options.extra_instructions);
 
     while turn < options.max_turns {
@@ -276,6 +277,45 @@ pub async fn run_agent_with_events(
                 },
             );
         }
+
+        // A response cut off by max_tokens with no tool calls must not be
+        // mistaken for completion: with thinking models the entire budget can
+        // go to (possibly empty-text) thinking blocks, leaving no visible
+        // output at all. Discard the truncated turn — a partial turn can't be
+        // replayed reliably — and ask the model to redo it, bounded so a
+        // pathological loop still terminates.
+        if response.stop_reason == StopReason::MaxTokens && response.tool_calls.is_empty() {
+            truncation_retries += 1;
+            warn!(
+                turn,
+                truncation_retries, "response truncated by max_tokens with no tool calls"
+            );
+            if truncation_retries > 2 {
+                let msg = format!(
+                    "model output was truncated by the max_tokens limit ({}) {} times in a row",
+                    options.max_tokens, truncation_retries
+                );
+                emit(
+                    &events,
+                    AgentEvent::ApiError {
+                        turn,
+                        message: msg.clone(),
+                    },
+                );
+                final_text = format!("Error: {msg}");
+                terminal_error = Some(msg);
+                break;
+            }
+            messages.push(Message::user(
+                "[Note: your previous response was cut off by the output token limit and \
+                 has been discarded. Respond again, more concisely. If you were producing \
+                 the final answer, write the complete final answer now — prioritize \
+                 covering the full structure over verbose detail.]"
+                    .to_string(),
+            ));
+            continue;
+        }
+        truncation_retries = 0;
 
         // Build the assistant block list manually instead of using
         // LLMResponse::to_assistant_blocks() so we can:
@@ -687,9 +727,21 @@ fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
 fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> Vec<Block> {
     use crate::agent::compaction::{truncate, ASSISTANT_TEXT_MAX_CHARS};
     let mut blocks: Vec<Block> = Vec::new();
+    // Anthropic thinking blocks go first, verbatim (never truncated) — the
+    // API rejects modified blocks on replay. When present they already carry
+    // the reasoning text, so the ReasoningContent mirror is skipped.
+    for tb in &response.thinking_blocks {
+        blocks.push(Block::Thinking {
+            thinking: tb.thinking.clone(),
+            signature: tb.signature.clone(),
+        });
+    }
     // Preserve reasoning_content alongside tool_calls so providers that
     // require it round-tripped (Kimi/Qwen) get it on the next turn.
-    if !response.reasoning_content.trim().is_empty() && !response.tool_calls.is_empty() {
+    if response.thinking_blocks.is_empty()
+        && !response.reasoning_content.trim().is_empty()
+        && !response.tool_calls.is_empty()
+    {
         blocks.push(Block::ReasoningContent {
             text: response.reasoning_content.clone(),
         });

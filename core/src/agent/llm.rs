@@ -49,6 +49,14 @@ pub enum Block {
     ReasoningContent {
         text: String,
     },
+    /// Anthropic native thinking block (adaptive thinking). Must be echoed
+    /// back verbatim — text and signature untouched — when continuing the
+    /// conversation on the same Anthropic model; the API rejects modified
+    /// blocks. Other backends drop it on the wire.
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -123,6 +131,14 @@ pub enum StopReason {
     Other,
 }
 
+/// One Anthropic thinking block from a response, kept verbatim (text +
+/// signature) so it can be replayed on the next turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingBlock {
+    pub thinking: String,
+    pub signature: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMResponse {
     pub text_blocks: Vec<String>,
@@ -133,15 +149,27 @@ pub struct LLMResponse {
     /// Reasoning trace surfaced by Kimi K2.6 / Qwen. Empty for providers
     /// that don't expose it.
     pub reasoning_content: String,
+    /// Anthropic thinking blocks, in response order, for verbatim replay.
+    /// Empty for non-Anthropic providers.
+    #[serde(default)]
+    pub thinking_blocks: Vec<ThinkingBlock>,
 }
 
 impl LLMResponse {
     /// Reconstruct the assistant content we'll append to history.
-    /// reasoning_content first (if any, only when there are tool calls —
-    /// some providers reject it alone), text, then tool_use blocks.
+    /// Thinking / reasoning first, text, then tool_use blocks.
     pub fn to_assistant_blocks(&self) -> Vec<Block> {
         let mut blocks: Vec<Block> = Vec::new();
-        if !self.reasoning_content.trim().is_empty() && !self.tool_calls.is_empty() {
+        for tb in &self.thinking_blocks {
+            blocks.push(Block::Thinking {
+                thinking: tb.thinking.clone(),
+                signature: tb.signature.clone(),
+            });
+        }
+        if self.thinking_blocks.is_empty()
+            && !self.reasoning_content.trim().is_empty()
+            && !self.tool_calls.is_empty()
+        {
             blocks.push(Block::ReasoningContent {
                 text: self.reasoning_content.clone(),
             });

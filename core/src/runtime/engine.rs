@@ -314,7 +314,10 @@ impl Default for AgentRunConfig {
     fn default() -> Self {
         Self {
             max_turns: 30,
-            max_tokens: 4096,
+            // Thinking tokens count against max_tokens on Anthropic thinking
+            // models (Sonnet 5 thinks by default), so 4096 starves the final
+            // report. 16000 is the recommended non-streaming ceiling.
+            max_tokens: 16000,
             keep_recent_messages: 12,
             memory_max_chars: 6000,
             extra_instructions: String::new(),
