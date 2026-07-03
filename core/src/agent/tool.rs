@@ -319,8 +319,8 @@ impl ToolContext {
         // Deliberately write while holding the lock: it keeps on-disk snapshots
         // in insertion order (clone-then-write lets an older snapshot land after
         // a newer one, dropping notes from disk until the next write). Tool
-        // calls run sequentially within a run and nothing else locks this map,
-        // so there is no contention to relieve.
+        // calls run sequentially within a run and nothing else locks the
+        // archive, so there is no contention to relieve.
         if let Err(err) = crate::agent::note_store::write_notes(&self.run_dir, &guard) {
             // Non-fatal: the in-memory copy still serves this process; only the
             // on-disk archive the desktop app reads is affected.

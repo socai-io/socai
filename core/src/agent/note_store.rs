@@ -25,8 +25,9 @@ pub fn notes_path(run_dir: &Path) -> PathBuf {
 }
 
 /// Persist the note records to `<run_dir>/notes.json` as an array, in the
-/// order given (first-recorded order). Each record carries its own `note_id`;
-/// the entry id is injected if a site-built record ever omits it.
+/// order given (first-recorded order). Each record is expected to carry its
+/// own `note_id`; the entry id is injected into object records that omit it.
+/// A non-object record has nowhere to hold an id and is written verbatim.
 ///
 /// Rewrites the whole file each call; the archive is small (tens of notes per
 /// run) and recording is sequential within a run, so this stays cheap.
@@ -69,7 +70,14 @@ pub fn load_notes(run_dir: &Path) -> Vec<Value> {
         return Vec::new();
     };
     match serde_json::from_str::<Value>(&text) {
-        Ok(Value::Object(map)) => map.into_iter().map(|(_, v)| v).collect(),
+        Ok(Value::Object(map)) => {
+            // Sort explicitly: map iteration is only key-ordered while
+            // serde_json's `preserve_order` feature stays off, and feature
+            // unification anywhere in the dependency graph could flip it.
+            let mut entries: Vec<(String, Value)> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            entries.into_iter().map(|(_, v)| v).collect()
+        }
         Ok(Value::Array(items)) => items,
         Ok(_) => {
             tracing::warn!(
