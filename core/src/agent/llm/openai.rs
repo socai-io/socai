@@ -1,9 +1,11 @@
-//! OpenAI-compatible chat-completions backend.
+//! OpenAI-compatible backend.
 //!
-//! Used for OpenAI, Kimi (Moonshot), and Qwen (DashScope). Each provider
-//! supplies a different `base_url` via `ProviderConfig`. Some providers
-//! expose reasoning tokens via `reasoning_content` or need an
-//! `extra_body`-style toggle — those quirks live here.
+//! OpenAI proper always goes through the Responses API — the official
+//! `/v1/responses` endpoint with an API key, or the ChatGPT Codex endpoint
+//! with Codex OAuth — because chat completions never returns reasoning
+//! content. Kimi (Moonshot) and Qwen (DashScope) use chat completions with
+//! their own `base_url` via `ProviderConfig`; their quirks (the
+//! `reasoning_content` field, thinking toggles) live here too.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -76,8 +78,13 @@ impl OpenAICompatBackend {
         format!("{}/chat/completions", self.base_url)
     }
 
-    fn codex_responses_url(&self) -> String {
-        "https://chatgpt.com/backend-api/codex/responses".to_string()
+    fn responses_url(&self) -> String {
+        match &self.credential {
+            Credential::CodexOAuth { .. } => {
+                "https://chatgpt.com/backend-api/codex/responses".to_string()
+            }
+            Credential::ApiKey(_) => format!("{}/responses", self.base_url),
+        }
     }
 
     /// Provider-specific extra fields merged into the request body.
@@ -92,13 +99,6 @@ impl OpenAICompatBackend {
             }
             Provider::Qwen | Provider::QwenIntl => {
                 extra.insert("enable_thinking".into(), Value::Bool(false));
-            }
-            // Reasoning on by default for OpenAI reasoning models — newer
-            // GPT-5.x releases default reasoning_effort to "none". Chat
-            // completions never returns the reasoning content, but the model
-            // still reasons (tokens count against max_completion_tokens).
-            Provider::OpenAI if is_openai_reasoning_model(&self.model) => {
-                extra.insert("reasoning_effort".into(), json!("medium"));
             }
             _ => {}
         }
@@ -124,17 +124,10 @@ impl OpenAICompatBackend {
     ) -> OutgoingRequest {
         let chat_tools = tools_to_wire(tools);
         let has_tools = !chat_tools.is_empty();
-        let (max_tokens_field, max_completion_tokens_field) =
-            if matches!(self.provider, Provider::OpenAI) {
-                (None, Some(max_tokens))
-            } else {
-                (Some(max_tokens), None)
-            };
         OutgoingRequest {
             model: self.model.clone(),
             messages: build_chat_messages(system, messages, self.preserve_reasoning_content()),
-            max_tokens: max_tokens_field,
-            max_completion_tokens: max_completion_tokens_field,
+            max_tokens,
             tools: chat_tools,
             tool_choice: if has_tools { Some("auto") } else { None },
             extra: self.extra_body(has_tools),
@@ -146,7 +139,19 @@ impl OpenAICompatBackend {
         system: &str,
         messages: &[Message],
         tools: &[ToolSchema],
+        max_tokens: u32,
     ) -> ResponsesRequest {
+        // Reasoning on by default — newer GPT-5.x releases default the
+        // effort to "none". summary: "auto" surfaces the summary text;
+        // encrypted_content is what store:false replay needs. Non-reasoning
+        // models (gpt-4o, the -chat variants) reject the parameter.
+        let reasoning = is_openai_reasoning_model(&self.model)
+            .then(|| json!({"effort": "medium", "summary": "auto"}));
+        let include = if reasoning.is_some() {
+            vec!["reasoning.encrypted_content"]
+        } else {
+            Vec::new()
+        };
         ResponsesRequest {
             model: self.model.clone(),
             instructions: system.to_string(),
@@ -156,17 +161,21 @@ impl OpenAICompatBackend {
             parallel_tool_calls: true,
             stream: true,
             store: false,
-            // All Codex models reason. summary: "auto" surfaces the summary
-            // text; encrypted_content is what store:false replay needs.
-            reasoning: json!({"effort": "medium", "summary": "auto"}),
-            include: vec!["reasoning.encrypted_content"],
+            // The Codex endpoint manages output limits itself; only the
+            // official API gets an explicit cap.
+            max_output_tokens: match self.credential {
+                Credential::CodexOAuth { .. } => None,
+                Credential::ApiKey(_) => Some(max_tokens),
+            },
+            reasoning,
+            include,
         }
     }
 }
 
-/// OpenAI models that accept the `reasoning_effort` chat-completions
-/// parameter. The `-chat` variants (gpt-5-chat-latest, …) are the
-/// non-reasoning conversational builds and reject it.
+/// OpenAI models that accept the Responses API `reasoning` parameter.
+/// The `-chat` variants (gpt-5-chat-latest, …) are the non-reasoning
+/// conversational builds and reject it, as do gpt-4o/gpt-4.x.
 fn is_openai_reasoning_model(model: &str) -> bool {
     if model.contains("-chat") {
         return false;
@@ -558,10 +567,7 @@ fn parse_stop_reason(s: Option<&str>) -> StopReason {
 struct OutgoingRequest {
     model: String,
     messages: Vec<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<u32>,
+    max_tokens: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -582,7 +588,11 @@ struct ResponsesRequest {
     parallel_tool_calls: bool,
     stream: bool,
     store: bool,
-    reasoning: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     include: Vec<&'static str>,
 }
 
@@ -715,8 +725,8 @@ impl Backend for OpenAICompatBackend {
         tools: &[ToolSchema],
         max_tokens: u32,
     ) -> anyhow::Result<Value> {
-        if matches!(self.credential, Credential::CodexOAuth { .. }) {
-            serde_json::to_value(self.build_responses_request(system, messages, tools))
+        if self.provider == Provider::OpenAI {
+            serde_json::to_value(self.build_responses_request(system, messages, tools, max_tokens))
                 .map_err(Into::into)
         } else {
             serde_json::to_value(self.build_chat_request(system, messages, tools, max_tokens))
@@ -731,8 +741,8 @@ impl Backend for OpenAICompatBackend {
         tools: &[ToolSchema],
         max_tokens: u32,
     ) -> anyhow::Result<LLMResponse> {
-        if matches!(self.credential, Credential::CodexOAuth { .. }) {
-            return self.send_codex_responses(system, messages, tools).await;
+        if self.provider == Provider::OpenAI {
+            return self.send_responses(system, messages, tools, max_tokens).await;
         }
 
         let body = self.build_chat_request(system, messages, tools, max_tokens);
@@ -803,56 +813,51 @@ impl OpenAICompatBackend {
         }
     }
 
-    async fn send_codex_responses(
+    async fn send_responses(
         &self,
         system: &str,
         messages: &[Message],
         tools: &[ToolSchema],
+        max_tokens: u32,
     ) -> anyhow::Result<LLMResponse> {
-        let body = self.build_responses_request(system, messages, tools);
+        let body = self.build_responses_request(system, messages, tools, max_tokens);
 
-        let response = self.send_codex_responses_once(&body, None).await?;
-        self.parse_codex_responses_response(response).await
+        let response = self.send_responses_once(&body).await?;
+        self.parse_responses_response(response).await
     }
 
-    async fn send_codex_responses_once(
-        &self,
-        body: &ResponsesRequest,
-        refreshed_credential: Option<Credential>,
-    ) -> anyhow::Result<reqwest::Response> {
-        let credential = refreshed_credential.as_ref().unwrap_or(&self.credential);
-        let Credential::CodexOAuth {
-            access_token,
-            account_id,
-            ..
-        } = credential
-        else {
-            anyhow::bail!("Codex Responses auth requires Codex OAuth credentials");
+    async fn send_responses_once(&self, body: &ResponsesRequest) -> anyhow::Result<reqwest::Response> {
+        let credential = &self.credential;
+        let request = self.client.post(self.responses_url());
+        let request = match credential {
+            Credential::CodexOAuth {
+                access_token,
+                account_id,
+                ..
+            } => request
+                .bearer_auth(access_token)
+                .header("ChatGPT-Account-ID", account_id),
+            Credential::ApiKey(api_key) => request.bearer_auth(api_key),
         };
-        Ok(self
-            .client
-            .post(self.codex_responses_url())
-            .bearer_auth(access_token)
-            .header("ChatGPT-Account-ID", account_id)
-            .json(body)
-            .send()
-            .await?)
+        Ok(request.json(body).send().await?)
     }
 
-    async fn parse_codex_responses_response(
+    async fn parse_responses_response(
         &self,
         response: reqwest::Response,
     ) -> anyhow::Result<LLMResponse> {
+        let is_codex = matches!(self.credential, Credential::CodexOAuth { .. });
+        let label = if is_codex { "openai-codex" } else { "openai" };
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         if !status.is_success() {
-            if status == reqwest::StatusCode::UNAUTHORIZED {
+            if status == reqwest::StatusCode::UNAUTHORIZED && is_codex {
                 anyhow::bail!(
                     "{}\nHint: run `codex login`, then retry socai.",
-                    format_http_error("openai-codex", status.as_u16(), &text)
+                    format_http_error(label, status.as_u16(), &text)
                 );
             }
-            anyhow::bail!(format_http_error("openai-codex", status.as_u16(), &text));
+            anyhow::bail!(format_http_error(label, status.as_u16(), &text));
         }
         parse_responses_sse(&text)
     }
