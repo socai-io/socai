@@ -104,8 +104,10 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
     }${m.dur && !decorative ? `<span class="note-media__dur t-mono">${esc(m.dur)}</span>` : ""}</span></span>`;
   }
   const url = assetUrl(note, m.src);
+  // gallery slides are pre-rendered hidden — lazy would defer them to first
+  // reveal and flash; everything else stays lazy.
   const img = url
-    ? `<img class="note-media__img" src="${esc(url)}" alt="" loading="lazy" />`
+    ? `<img class="note-media__img" src="${esc(url)}" alt=""${variant === "gallery" ? "" : ` loading="lazy"`} />`
     : `<span class="note-media--placeholder" style="position:absolute;inset:0"></span>`;
   const badge = count > 1 && !decorative ? `<span class="note-media__count t-mono">${IC.stack()}${count}</span>` : "";
   return `<span class="note-media" data-kind="image">${img}${badge}</span>`;
@@ -213,15 +215,21 @@ export function renderNoteAnswer(src: string): string {
 }
 
 // ── viewer (lightbox) ───────────────────────────────────────────────
+// All slides render up front; navigation only toggles `hidden`. Keeping the
+// DOM alive preserves decoded images and video state, so switching never
+// flashes the way an innerHTML re-render does.
 function galleryStage(note: NoteData, idx: number): string {
   const media = note.media && note.media.length ? note.media : [coverOf(note)];
   const i = Math.max(0, Math.min(idx, media.length - 1));
   const multi = media.length > 1;
+  const frames = media
+    .map((m, j) => `<div class="note-gallery__frame"${j === i ? "" : " hidden"}>${mediaFrame(note, m, "gallery")}</div>`)
+    .join("");
   const nav = multi
     ? `<button type="button" class="note-gallery__nav note-gallery__nav--prev" data-gallery-nav="-1"${i === 0 ? " disabled" : ""} aria-label="previous">${IC.chevL()}</button>` +
       `<button type="button" class="note-gallery__nav note-gallery__nav--next" data-gallery-nav="1"${i === media.length - 1 ? " disabled" : ""} aria-label="next">${IC.chevR()}</button>`
     : "";
-  return `<div class="note-gallery__frame">${mediaFrame(note, media[i], "gallery")}</div>${nav}`;
+  return frames + nav;
 }
 function galleryThumbs(note: NoteData, idx: number): string {
   const media = note.media || [];
@@ -296,8 +304,14 @@ function galleryGo(gallery: HTMLElement, idx: number): void {
   const n = (note.media || []).length || 1;
   const next = Math.max(0, Math.min(n - 1, idx));
   gallery.setAttribute("data-idx", String(next));
-  const stage = gallery.querySelector(".note-gallery__stage");
-  if (stage) stage.innerHTML = galleryStage(note, next);
+  gallery.querySelectorAll<HTMLElement>(".note-gallery__frame").forEach((frame, i) => {
+    frame.hidden = i !== next;
+    if (i !== next) frame.querySelector("video")?.pause();
+  });
+  gallery.querySelectorAll<HTMLButtonElement>("[data-gallery-nav]").forEach((btn) => {
+    const dir = parseInt(btn.getAttribute("data-gallery-nav") || "0", 10);
+    btn.disabled = dir < 0 ? next === 0 : next === n - 1;
+  });
   gallery.querySelectorAll(".note-gallery__thumb").forEach((th, i) =>
     th.classList.toggle("is-active", i === next),
   );
