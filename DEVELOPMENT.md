@@ -44,10 +44,10 @@ binary, backed by `socai-core`).
 Run everything below from `app/`:
 
 ```bash
-pnpm install                          # one-time
-pnpm exec tauri dev                   # daily dev loop (Vite HMR + Rust hot recompile)
-pnpm run dev:desktop:local            # dev loop, but write records/artifacts under the repo
-pnpm exec tauri build --bundles app   # → target/release/bundle/macos/socai.app
+pnpm install                            # one-time
+pnpm exec tauri dev                     # daily dev loop (Vite HMR + Rust hot recompile)
+pnpm run dev:desktop:local -- --release # dev loop, but write records/artifacts under the repo
+pnpm exec tauri build --bundles app     # → target/release/bundle/macos/socai.app
 ```
 
 `dev:desktop:local` points `SOCAI_HOME` / `SOCAI_RUNS_DIR` at the repo's
