@@ -11,56 +11,39 @@ use tasks::AgentTaskRegistry;
 use tauri::{Emitter, Manager};
 use telemetry::{duration_ms, DesktopTelemetry};
 
-/// macOS traffic-light inset (x, y). With this math the close-button center
-/// lands at `y - 2` px from the window top; the `.is-macos .topbar` header is
-/// 52px tall (centerline 26px), so `y = 28` puts the lights on the same row as
-/// the brand and status capsule. Keep `y` in sync with that header height.
-#[cfg(target_os = "macos")]
-const TRAFFIC_LIGHT_POS: (f64, f64) = (19.0, 28.0);
-
-/// Reposition the native macOS traffic lights onto our header's centerline.
+/// macOS: attach an empty unified toolbar so AppKit itself lays the native
+/// traffic lights out on a tall (~52px) titlebar, vertically centered — the
+/// same centerline as the 52px `.is-macos .topbar` header in styles.css.
 ///
-/// tao applies `trafficLightPosition` inside its content-view `drawRect`, but
-/// wry swaps in its own webview parent view, so that path never fires for us.
-/// We replicate tao's inset math here and call it on window show/resize/focus.
+/// We previously repositioned the buttons by hand (tao's inset math) on every
+/// show/resize/focus event, but AppKit re-lays-out the titlebar on each live-
+/// resize frame *before* our handler runs, so the lights flickered between the
+/// default and custom spots — and the private view-hierarchy math drifted
+/// across macOS 26 point releases. With a unified toolbar the placement is
+/// AppKit's own layout, applied atomically with every frame: nothing to
+/// re-apply, nothing to flicker. The window's `titleBarStyle: Overlay`
+/// (transparent titlebar + full-size content view) means the empty toolbar
+/// draws no chrome of its own; only the lights are visible over our header.
 #[cfg(target_os = "macos")]
-fn reposition_traffic_lights(ns_window_ptr: *mut std::ffi::c_void, x: f64, y: f64) {
-    use objc2_app_kit::{NSWindow, NSWindowButton};
+fn install_unified_titlebar(ns_window_ptr: *mut std::ffi::c_void) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSTitlebarSeparatorStyle, NSToolbar, NSWindow, NSWindowToolbarStyle};
 
     if ns_window_ptr.is_null() {
         return;
     }
-    // Safety: Tauri hands us a valid NSWindow pointer; we only message it on the
-    // main thread (setup + window-event callbacks both run there).
-    let window: &NSWindow = unsafe { &*(ns_window_ptr as *const NSWindow) };
-
-    let (Some(close), Some(mini), Some(zoom)) = (
-        window.standardWindowButton(NSWindowButton::CloseButton),
-        window.standardWindowButton(NSWindowButton::MiniaturizeButton),
-        window.standardWindowButton(NSWindowButton::ZoomButton),
-    ) else {
+    let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
+    // Safety: Tauri hands us a valid NSWindow pointer; setup runs on the main
+    // thread (proven by the marker above).
+    let window: &NSWindow = unsafe { &*(ns_window_ptr as *const NSWindow) };
 
-    let win_h = window.frame().size.height;
-    let close_rect = close.frame();
-
-    // Resize the private title-bar container so clicks register at the new
-    // position, pinned to the window top (tao's approach).
-    if let Some(container) = unsafe { close.superview().and_then(|sv| sv.superview()) } {
-        let mut r = container.frame();
-        r.size.height = close_rect.size.height + y;
-        r.origin.y = win_h - r.size.height;
-        container.setFrame(r);
-    }
-
-    // Evenly space the three buttons from x, keeping their vertical offset.
-    let space = mini.frame().origin.x - close_rect.origin.x;
-    for (i, button) in [&close, &mini, &zoom].into_iter().enumerate() {
-        let mut origin = button.frame().origin;
-        origin.x = x + (i as f64) * space;
-        button.setFrameOrigin(origin);
-    }
+    let toolbar = NSToolbar::new(mtm);
+    window.setToolbar(Some(&toolbar));
+    window.setToolbarStyle(NSWindowToolbarStyle::Unified);
+    // styles.css draws the header's bottom hairline; keep AppKit's out.
+    window.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
 }
 
 pub fn run() {
@@ -147,44 +130,13 @@ pub fn run() {
                 }
             });
 
-            // macOS: drop the native traffic lights onto our header centerline,
-            // and re-apply on show/resize/focus (macOS resets them otherwise).
+            // macOS: native unified-toolbar titlebar — one-shot; AppKit owns
+            // the traffic-light layout from here on (see install_unified_titlebar).
             #[cfg(target_os = "macos")]
             if let Some(win) = app.get_webview_window("main") {
-                let (x, y) = TRAFFIC_LIGHT_POS;
                 if let Ok(ptr) = win.ns_window() {
-                    reposition_traffic_lights(ptr, x, y);
+                    install_unified_titlebar(ptr);
                 }
-                // Cold-launch backstop: on first launch (Gatekeeper scan, busy
-                // system) the setup-time placement can run before AppKit finishes
-                // laying out the title bar, and no focus/resize event is guaranteed
-                // to follow to correct it. Re-apply on the main thread shortly after
-                // the window settles. Idempotent — a no-op when already correct, so
-                // it never flickers. Runs on the shared async runtime (no dedicated
-                // OS threads); the two waits land the retries ~250ms and ~750ms in.
-                let win_retry = win.clone();
-                tauri::async_runtime::spawn(async move {
-                    for gap_ms in [250u64, 500] {
-                        tokio::time::sleep(std::time::Duration::from_millis(gap_ms)).await;
-                        let win_main = win_retry.clone();
-                        let _ = win_retry.run_on_main_thread(move || {
-                            if let Ok(ptr) = win_main.ns_window() {
-                                reposition_traffic_lights(ptr, x, y);
-                            }
-                        });
-                    }
-                });
-                let win_for_events = win.clone();
-                win.on_window_event(move |event| {
-                    if matches!(
-                        event,
-                        tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(true)
-                    ) {
-                        if let Ok(ptr) = win_for_events.ns_window() {
-                            reposition_traffic_lights(ptr, x, y);
-                        }
-                    }
-                });
             }
 
             Ok(())

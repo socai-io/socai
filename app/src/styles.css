@@ -156,11 +156,11 @@ body.has-paper > * { position: relative; z-index: 1; }
   -webkit-user-select: none;
   user-select: none;
 }
-/* macOS overlay titlebar — the OS draws the native traffic lights over the
-   top-left of the window, which is the left edge of .topbar-left. Reserve a
-   fixed gutter INSIDE that 280px zone (not on .topbar) so the zone's right edge
-   still lines up with the sidebar border below it. The 80px clears the three
-   lights; keep it in sync with TRAFFIC_LIGHT_POS in lib.rs. */
+/* macOS overlay titlebar — AppKit draws the native traffic lights over the
+   top-left of the window (unified-toolbar titlebar, centered on the 52px
+   header; see install_unified_titlebar in src-tauri/lib.rs). Reserve a fixed
+   gutter INSIDE that 280px zone (not on .topbar) so the zone's right edge
+   still lines up with the sidebar border below it. */
 .is-macos .topbar-left {
   padding-left: 92px;          /* clears the 3 traffic-light buttons + breathing room before the toggle */
 }
