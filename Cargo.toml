@@ -42,3 +42,8 @@ socai-core = { path = "core" }
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
+# Skip debuginfo for dependencies (workspace crates keep full debuginfo).
+# Roughly halves target/ size per worktree; deps are rarely stepped through.
+[profile.dev.package."*"]
+debug = false
