@@ -885,6 +885,9 @@ jobs:
 
           $installer = Get-ChildItem -Path $bundleDir -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) { throw "no NSIS installer found in $bundleDir" }
+          if ($installer.Name -notlike "*$env:VERSION*") {
+            throw "expected installer name to contain version $env:VERSION, got: $($installer.Name)"
+          }
           $assetRel = Join-Path $dist 'socai-windows-x86_64-setup.exe'
           $assetFull = Join-Path $env:GITHUB_WORKSPACE $assetRel
           Copy-Item $installer.FullName $assetFull
@@ -896,10 +899,11 @@ jobs:
           if ($env:TAURI_SIGNING_PRIVATE_KEY -and $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
             Push-Location app
             try {
-              pnpm exec tauri signer sign `
-                --private-key "$env:TAURI_SIGNING_PRIVATE_KEY" `
-                --password "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" `
-                "$assetFull"
+              # The CLI reads the key and password from the TAURI_SIGNING_* env
+              # vars already set on this step, so the multi-line minisign key
+              # never crosses the pwsh -> pnpm -> node command-line round-trip.
+              pnpm exec tauri signer sign "$assetFull"
+              if ($LASTEXITCODE -ne 0) { throw "tauri signer sign exited with status $LASTEXITCODE" }
             } finally {
               Pop-Location
             }
@@ -1077,10 +1081,10 @@ jobs:
           - [universal mac dmg](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-macos-universal.dmg) — supports Apple Silicon and Intel Macs.
           - [windows app installer (.exe)](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-windows-x86_64-setup.exe) — desktop app for Windows 10/11 (x64).
           - [macOS CLI installer](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install.sh) — one-command macOS CLI install.
-          - [universal mac CLI tarball](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-macos-universal.tar.gz) — standalone `socai` CLI.
+          - [universal mac CLI tarball](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-macos-universal.tar.gz) — standalone \`socai\` CLI.
           - [macOS CLI checksum](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-macos-universal.tar.gz.sha256)
           - [Windows CLI installer](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install.ps1) — one-command Windows CLI install.
-          - [Windows CLI zip](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-windows-x86_64.zip) — standalone `socai.exe` CLI.
+          - [Windows CLI zip](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-windows-x86_64.zip) — standalone \`socai.exe\` CLI.
           - [Windows CLI checksum](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-cli-windows-x86_64.zip.sha256)
 
           The macOS app build is signed and notarized. The Windows app installer is not yet code-signed, so SmartScreen may warn on first run — choose "More info" then "Run anyway".
@@ -1205,6 +1209,64 @@ jobs:
           }
           & $socai --help | Out-Null
           & $socai version --no-check
+
+  verify-windows-desktop-installer:
+    name: verify latest windows desktop installer
+    if: github.ref == 'refs/heads/main'
+    needs:
+      - prepare
+      - release
+    runs-on: windows-latest
+
+    steps:
+      - name: install desktop app from latest release
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setupUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/socai-windows-x86_64-setup.exe"
+          $setup = Join-Path $env:RUNNER_TEMP 'socai-setup.exe'
+          Remove-Item -Force $setup -ErrorAction SilentlyContinue
+
+          $downloaded = $false
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+            Write-Host "download attempt ${attempt}: $setupUrl"
+            try {
+              Invoke-WebRequest -UseBasicParsing -Uri $setupUrl -OutFile $setup
+              $downloaded = $true
+              break
+            } catch {
+              Write-Warning $_
+              Start-Sleep -Seconds 10
+            }
+          }
+          if (-not $downloaded) {
+            throw 'failed to download socai desktop installer from latest release'
+          }
+
+          Unblock-File $setup
+          $install = Start-Process -FilePath $setup -ArgumentList '/S' -PassThru -Wait
+          if ($install.ExitCode -ne 0) {
+            throw "silent install exited with status $($install.ExitCode)"
+          }
+
+          # NSIS installMode currentUser installs under LOCALAPPDATA; check
+          # Program Files too in case the install mode ever changes.
+          $candidates = @(
+            (Join-Path $env:LOCALAPPDATA 'socai\socai.exe'),
+            (Join-Path $env:ProgramFiles 'socai\socai.exe')
+          )
+          $app = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $app) {
+            throw "socai.exe not found after install; checked: $($candidates -join ', ')"
+          }
+
+          $productVersion = (Get-Item $app).VersionInfo.ProductVersion
+          Write-Host "installed ${app} (ProductVersion=$productVersion)"
+          if ($productVersion -notmatch "^$([regex]::Escape($env:VERSION))") {
+            throw "expected installed app version to start with $env:VERSION, got: $productVersion"
+          }
 
   verify-desktop-updater:
     name: verify desktop updater manifest
