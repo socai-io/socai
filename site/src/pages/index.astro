@@ -2,14 +2,11 @@
 import "../styles/global.css";
 import SiteHeader from "../components/SiteHeader.astro";
 import SiteFooter from "../components/SiteFooter.astro";
-import {
-    message as messageFor,
-    formatMessage as formatMessageFor,
-} from "../lib/i18n";
-import { resolveReleaseVersion } from "../lib/release";
+import { message as messageFor } from "../lib/i18n";
 
 const githubUrl = "/github";
 const downloadPath = "/download";
+const downloadWindowsPath = "/download/windows";
 const currentYear = new Date().getFullYear();
 const siteUrl = "https://socai.io";
 const canonicalUrl = `${siteUrl}/`;
@@ -22,7 +19,7 @@ const messages = {
         meta: {
             title: "socai · Web Agent for RedNote research",
             description:
-                "socai is a Web Agent for RedNote research tasks. connect your chrome session, run focused browser tasks, and download the macOS app.",
+                "socai is a Web Agent for RedNote research tasks. connect your chrome session, run focused browser tasks, and download the app for macOS or Windows.",
             socialImageAlt: "socai app preview with a download prompt",
         },
         nav: {
@@ -41,8 +38,8 @@ const messages = {
                 "socai connects to your RedNote account via chrome CDP, and finishes tasks for you by simulating humanlike click and type events",
             actionsAria: "download and source",
             download: "download for macOS",
+            downloadWindows: "download for Windows",
             github: "view on github",
-            releaseMeta: "macOS 13+ · universal build · {version}",
         },
         preview: {
             sectionAria: "socai app preview",
@@ -83,7 +80,7 @@ const messages = {
         meta: {
             title: "socai · 小红书调研 Agent",
             description:
-                "socai 是面向小红书调研任务的 Web Agent。连接你的 chrome 会话，执行聚焦的浏览器任务，并下载 macOS app。",
+                "socai 是面向小红书调研任务的 Web Agent。连接你的 chrome 会话，执行聚焦的浏览器任务，支持 macOS 和 Windows。",
             socialImageAlt: "socai app 下载界面预览",
         },
         nav: {
@@ -102,8 +99,8 @@ const messages = {
                 "socai 通过 chrome CDP 连接你的小红书账号，模拟真实点击输入，替你完成搜索调研任务。",
             actionsAria: "下载和源码",
             download: "下载 macOS 版",
+            downloadWindows: "下载 Windows 版",
             github: "在 github 查看",
-            releaseMeta: "macOS 13+ · {version}",
         },
         preview: {
             sectionAria: "socai app 预览",
@@ -144,18 +141,11 @@ const messages = {
 
 const message = (path: string, language = defaultLanguage) =>
     messageFor(messages, path, language);
-const formatMessage = (
-    path: string,
-    values: Record<string, string | number> = {},
-    language = defaultLanguage,
-) => formatMessageFor(messages, path, values, language);
 
 const initialPrompts = messages[defaultLanguage].prompts;
 const pageTitle = message("meta.title");
 const pageDescription = message("meta.description");
 const socialImageAlt = message("meta.socialImageAlt");
-const releaseVersion = await resolveReleaseVersion();
-const releaseValues = JSON.stringify({ version: releaseVersion });
 ---
 
 <html lang={defaultHtmlLanguage} data-language={defaultLanguage}>
@@ -252,6 +242,17 @@ const releaseValues = JSON.stringify({ version: releaseVersion });
                                 >↓</span
                             >
                         </a>
+                        <a
+                            class="button button--primary"
+                            href={downloadWindowsPath}
+                        >
+                            <span data-i18n="hero.downloadWindows"
+                                >{message("hero.downloadWindows")}</span
+                            >
+                            <span class="button__glyph" aria-hidden="true"
+                                >↓</span
+                            >
+                        </a>
                         <a class="button button--secondary" href={githubUrl}>
                             <svg
                                 viewBox="0 0 16 16"
@@ -272,19 +273,6 @@ const releaseValues = JSON.stringify({ version: releaseVersion });
                             >
                         </a>
                     </div>
-
-                    <p
-                        class="release-meta"
-                        data-release-meta
-                        data-i18n="hero.releaseMeta"
-                        data-i18n-values={releaseValues}
-                    >
-                        {
-                            formatMessage("hero.releaseMeta", {
-                                version: releaseVersion,
-                            })
-                        }
-                    </p>
                 </section>
 
                 <section

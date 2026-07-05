@@ -1251,19 +1251,26 @@ jobs:
             throw "silent install exited with status $($install.ExitCode)"
           }
 
-          # NSIS installMode currentUser installs under LOCALAPPDATA; check
+          # The Tauri main binary keeps its crate name (socai_app.exe). NSIS
+          # installMode currentUser installs under LOCALAPPDATA; search
           # Program Files too in case the install mode ever changes.
-          $candidates = @(
-            (Join-Path $env:LOCALAPPDATA 'socai\socai.exe'),
-            (Join-Path $env:ProgramFiles 'socai\socai.exe')
-          )
-          $app = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          $roots = @($env:LOCALAPPDATA, $env:ProgramFiles) | Where-Object { $_ }
+          $app = $null
+          foreach ($root in $roots) {
+            $dir = Join-Path $root 'socai'
+            if (-not (Test-Path $dir)) { continue }
+            Write-Host "install dir ${dir}:"
+            Get-ChildItem $dir | Out-Host
+            $app = Get-ChildItem -Path $dir -Recurse -File -Include 'socai_app.exe', 'socai.exe' -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($app) { break }
+          }
           if (-not $app) {
-            throw "socai.exe not found after install; checked: $($candidates -join ', ')"
+            throw "app binary not found after install; checked $($roots -join ', ') under socai\"
           }
 
-          $productVersion = (Get-Item $app).VersionInfo.ProductVersion
-          Write-Host "installed ${app} (ProductVersion=$productVersion)"
+          $productVersion = $app.VersionInfo.ProductVersion
+          Write-Host "installed $($app.FullName) (ProductVersion=$productVersion)"
           if ($productVersion -notmatch "^$([regex]::Escape($env:VERSION))") {
             throw "expected installed app version to start with $env:VERSION, got: $productVersion"
           }

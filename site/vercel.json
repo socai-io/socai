@@ -44,6 +44,11 @@
       "permanent": false
     },
     {
+      "source": "/download/windows",
+      "destination": "https://github.com/socai-io/socai/releases/latest/download/socai-windows-x86_64-setup.exe",
+      "permanent": false
+    },
+    {
       "source": "/github",
       "destination": "https://github.com/socai-io/socai",
       "permanent": false

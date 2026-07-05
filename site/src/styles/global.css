@@ -199,7 +199,6 @@ button:focus-visible {
   color: var(--ink-0);
 }
 
-.release-meta,
 .site-footer,
 .window-title,
 .status-pill,
@@ -312,13 +311,6 @@ html[data-language="zh"] .hero h1 {
 
 .button__external {
   color: var(--fg-soft);
-}
-
-.release-meta {
-  margin: 16px 0 0;
-  color: var(--fg-soft);
-  font-size: 11px;
-  letter-spacing: 0.02em;
 }
 
 .app-shot-section {
