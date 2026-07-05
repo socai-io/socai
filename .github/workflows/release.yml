@@ -796,7 +796,7 @@ jobs:
       - name: upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: socai-${{ needs.prepare.outputs.version }}-windows-x86_64
+          name: socai-${{ needs.prepare.outputs.version }}-windows-cli
           path: dist-artifacts/*
           if-no-files-found: error
 
