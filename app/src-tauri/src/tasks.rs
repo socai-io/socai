@@ -193,6 +193,28 @@ impl AgentTaskRegistry {
         Some((snapshot, handle, target_id, changed))
     }
 
+    /// Remove a task from the registry and persisted index. Refuses while the
+    /// task is queued or running — the run loop still owns its run dir, so the
+    /// caller must cancel first. Returns the removed snapshot so the caller
+    /// can delete the on-disk artifacts it points at.
+    pub(crate) async fn delete(&self, task_id: &str) -> Result<AgentTaskSnapshot, String> {
+        let mut guard = self.inner.lock().await;
+        let pos = guard
+            .tasks
+            .iter()
+            .position(|task| task.task_id == task_id)
+            .ok_or_else(|| format!("unknown task: {task_id}"))?;
+        if matches!(guard.tasks[pos].status.as_str(), "queued" | "running") {
+            return Err("task is still active; cancel it before deleting".into());
+        }
+        let snapshot = guard.tasks.remove(pos);
+        guard.abort_handles.remove(task_id);
+        guard.timeline_next_seq.remove(task_id);
+        guard.timeline_locks.remove(task_id);
+        persist_task_index(&guard.tasks);
+        Ok(snapshot)
+    }
+
     pub(crate) async fn interrupt_missing_targets(
         &self,
         active_targets: &HashSet<String>,

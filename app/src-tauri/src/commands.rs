@@ -522,6 +522,35 @@ pub async fn agent_task_cancel(
     Ok(snapshot)
 }
 
+/// Remove a task from history and delete its on-disk artifacts: the run dir
+/// (run.json, report.md, notes.json, media) and the conversation session dir.
+/// Active tasks must be cancelled first; the registry enforces that.
+#[tauri::command]
+pub async fn agent_task_delete(
+    tasks: State<'_, AgentTaskRegistry>,
+    telemetry: State<'_, DesktopTelemetry>,
+    task_id: String,
+) -> Result<(), String> {
+    let snapshot = tasks.delete(&task_id).await?;
+    for dir in [&snapshot.run_dir, &snapshot.session_dir].into_iter().flatten() {
+        if let Err(err) = std::fs::remove_dir_all(dir) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("failed to delete task artifacts at {dir}: {err}");
+            }
+        }
+    }
+    telemetry.capture(
+        "socai_agent_task_delete",
+        json!({
+            "task_id": task_id,
+            "provider": snapshot.provider,
+            "model": snapshot.model,
+            "status": snapshot.status,
+        }),
+    );
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_task_background(
     app: AppHandle,

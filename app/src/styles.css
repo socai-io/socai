@@ -662,7 +662,11 @@ body.has-paper > * { position: relative; z-index: 1; }
 .sidebar-list {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Reserve the scrollbar gutter so a classic (non-overlay) scrollbar never
+     sits on top of the row's × delete affordance at the right edge. */
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
 }
@@ -764,7 +768,7 @@ body.has-paper > * { position: relative; z-index: 1; }
 .task-row {
   appearance: none;
   display: grid;
-  grid-template-columns: 18px 1fr;
+  grid-template-columns: 18px 1fr auto;
   gap: var(--sp-2);
   width: 100%;
   padding: var(--sp-3);
@@ -806,6 +810,86 @@ body.has-paper > * { position: relative; z-index: 1; }
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--fg-soft);
+}
+.task-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+
+/* ── Deleting tasks from history ──────────────────────────────────
+   A quiet × per row, revealed on hover/focus (finished tasks only —
+   running rows keep cancel in the detail head). Every delete routes
+   through the centered confirm dialog below. Monochrome danger:
+   destruction reads through copy + confirmation, never red. */
+.task-row-delete {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  width: 22px;
+  height: 22px;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-2);
+  background: transparent;
+  /* Readable when revealed (--fg-faint at ~2.4:1 was too faint to notice
+     beside a long truncated title). --fg-soft clears AA on both the
+     row-hover and active backgrounds. */
+  color: var(--fg-soft);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease), color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+/* Reveal on row hover/focus, and always on the open (active) row so the
+   current task's × is discoverable without hunting for the hover target. */
+.task-row:hover .task-row-delete,
+.task-row:focus-within .task-row-delete,
+.task-row-active .task-row-delete,
+.task-row-delete:focus-visible { opacity: 1; }
+.task-row-delete:hover { color: var(--ink-0); background: var(--ink-6); }
+.task-row-delete:focus-visible { opacity: 1; outline: 2px solid var(--focus-ring); }
+
+/* the universal confirm dialog — centered alertdialog on a dimmed scrim */
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.32);
+  padding: var(--sp-5);
+}
+.confirm-dialog {
+  width: min(340px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-5);
+  background: var(--surface);
+  border: var(--hairline);
+  border-radius: var(--r-4);
+  box-shadow: var(--shadow-pop);
+}
+.confirm-dialog p { margin: 0; }
+.confirm-dialog-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.confirm-dialog-task {
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.confirm-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
 }
 .task-detail {
   min-width: 0;

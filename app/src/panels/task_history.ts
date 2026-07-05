@@ -39,6 +39,12 @@ export function renderSidebar(props: SidebarProps): string {
   `;
 }
 
+// History rows are click-to-open; a quiet × surfaces on hover/focus for
+// finished tasks (running/queued must be cancelled first — cancel lives in
+// the detail head). Every delete affordance routes through the universal
+// centered confirm dialog — nothing is destroyed until confirmed. The row is
+// a div (a button can't nest the × button); Enter/Space activation is bound
+// in tasks.ts.
 function renderTaskRows(props: SidebarProps): string {
   if (props.tasks.length === 0) {
     return `<p class="t-small placeholder task-list-empty">${esc(t("task.noTasks"))}</p>`;
@@ -47,14 +53,23 @@ function renderTaskRows(props: SidebarProps): string {
     .sort((a, b) => b.created_at - a.created_at)
     .map((task) => {
       const active = !props.composing && task.task_id === props.selectedTaskId ? "task-row-active" : "";
+      const running = task.status === "running" || task.status === "queued";
       return `
-        <button type="button" class="task-row ${active}" data-task-id="${esc(task.task_id)}">
+        <div class="task-row ${active}" role="button" tabindex="0" data-task-id="${esc(task.task_id)}">
           <span class="task-row-glyph task-row-glyph-${esc(task.status)}" aria-hidden="true">${taskStatusGlyph(task.status)}</span>
           <span class="task-row-main">
             <span class="task-row-title">${esc(task.task)}</span>
             <span class="task-row-meta">${esc(taskStatusLabel(task.status))} · ${esc(formatTaskTimestamp(task.created_at))}</span>
           </span>
-        </button>
+          ${running ? "" : `
+          <button
+            type="button"
+            class="task-row-delete"
+            data-delete-task="${esc(task.task_id)}"
+            aria-label="${esc(t("task.deleteAria"))} · ${esc(task.task)}"
+            title="${esc(t("task.deleteAria"))}"
+          >×</button>`}
+        </div>
       `;
     })
     .join("");
@@ -114,10 +129,11 @@ function renderDetailHead(task: AgentTaskView, running: boolean): string {
         <h2 class="t-h3 task-detail-title">${esc(task.task)}</h2>
         <div class="task-detail-meta">${items}</div>
       </div>
-      ${running ? `
-        <div class="task-detail-actions">
-          <button type="button" class="btn-ghost btn-compact" data-cancel-task="${esc(task.task_id)}">${esc(t("task.cancel"))}</button>
-        </div>` : ""}
+      <div class="task-detail-actions">
+        ${running
+          ? `<button type="button" class="btn-ghost btn-compact" data-cancel-task="${esc(task.task_id)}">${esc(t("task.cancel"))}</button>`
+          : `<button type="button" class="btn-ghost btn-compact" data-delete-task="${esc(task.task_id)}">${esc(t("task.delete"))}</button>`}
+      </div>
     </div>
   `;
 }
@@ -148,6 +164,25 @@ function renderResultPanel(task: AgentTaskView): string {
     <div class="agent-outcome detail-panel">
       <p class="t-eyebrow result-label detail-panel-label">${esc(t("task.errorLabel"))}</p>
       <pre class="result-pre result-error">${esc(task.error ?? "")}</pre>
+    </div>
+  `;
+}
+
+// Universal delete confirmation — centered alertdialog on a dimmed scrim.
+// Esc, scrim-click, or keep dismisses; delete commits. Warns that the task
+// and ALL its artifacts are removed permanently. Bound in tasks.ts.
+export function renderConfirmDeleteDialog(task: AgentTaskView): string {
+  return `
+    <div class="modal-scrim" data-delete-dismiss>
+      <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-label="${esc(t("task.deleteAria"))}">
+        <p class="confirm-dialog-title">${esc(t("task.deleteQuestion"))}</p>
+        <p class="t-small confirm-dialog-task">“${esc(task.task)}”</p>
+        <p class="t-small subtle">${esc(t("task.deleteWarn"))}</p>
+        <div class="confirm-dialog-actions">
+          <button id="confirm-delete-keep" type="button" class="btn-ghost btn-compact">${esc(t("task.deleteKeep"))}</button>
+          <button id="confirm-delete-commit" type="button" class="btn-primary btn-compact">${esc(t("task.delete"))}</button>
+        </div>
+      </div>
     </div>
   `;
 }

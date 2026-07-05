@@ -157,6 +157,7 @@ pub fn run() {
             commands::agent_task_events,
             commands::agent_task_notes,
             commands::agent_task_cancel,
+            commands::agent_task_delete,
             commands::config_get,
             commands::config_set,
             commands::config_unset,

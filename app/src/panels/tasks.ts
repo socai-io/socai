@@ -13,7 +13,7 @@ import type {
 } from "../main";
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
-import { noteRefsFromEvent, renderAgentEvent, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
+import { noteRefsFromEvent, renderAgentEvent, renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
 import { bindNoteInteractions, renderTimelineEmbed, setNoteRegistry } from "./notes";
 import { renderComposePane } from "./task_new";
 
@@ -39,6 +39,9 @@ export namespace agentPanel {
   let tasks: AgentTaskView[] = [];
   let pendingEvents = new Map<string, AgentTaskEventPayload[]>();
   let selectedTaskId: string | null = null;
+  // Confirm-first delete: every affordance (row ×, detail-head button) opens
+  // the centered dialog by setting this; the delete only runs on confirm.
+  let deleteRequestTaskId: string | null = null;
   let modelsCache: ModelInfo[] = [];
 
   // Key-entry sub-state — used by the header configuration popover.
@@ -592,21 +595,25 @@ export namespace agentPanel {
     });
   }
 
-  // The main pane: the compose form, or the selected task's detail.
+  // The main pane: the compose form, or the selected task's detail. The
+  // delete-confirm dialog (a fixed overlay) rides along with either view.
   export function renderWorkspace(shell: ShellState): string {
+    const deleteRequest = tasks.find((task) => task.task_id === deleteRequestTaskId);
+    const dialog = deleteRequest ? renderConfirmDeleteDialog(deleteRequest) : "";
     if (view === "compose") {
-      return renderComposePane({
+      return `${renderComposePane({
         shell,
         draft,
         submittingTask,
         submitError,
         selectedModel: selectedModel(),
-      });
+      })}${dialog}`;
     }
     return `
       <section class="task-detail" aria-label="${esc(t("task.selectedAria"))}">
         ${renderTaskDetail(selectedTask())}
       </section>
+      ${dialog}
     `;
   }
 
@@ -622,12 +629,22 @@ export namespace agentPanel {
       updateSubmitButton(shell);
     });
 
-    document.querySelectorAll<HTMLButtonElement>("[data-task-id]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        selectedTaskId = btn.dataset.taskId ?? null;
+    // History rows are div[role=button] (they nest the × delete button), so
+    // Enter/Space activation is bound by hand. Keys aimed at the × fall
+    // through to its own native click.
+    document.querySelectorAll<HTMLElement>("[data-task-id]").forEach((row) => {
+      const pick = (): void => {
+        selectedTaskId = row.dataset.taskId ?? null;
         view = "detail";
         shell.rerender();
         if (selectedTaskId) void loadTaskNotes(selectedTaskId, shell);
+      };
+      row.addEventListener("click", pick);
+      row.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        if ((event.target as HTMLElement).closest("[data-delete-task]")) return;
+        event.preventDefault();
+        pick();
       });
     });
     // Note interactions (viewer, card carousel, citation hover, external links)
@@ -648,6 +665,18 @@ export namespace agentPanel {
         }
       });
     });
+
+    // Every delete affordance (row ×, detail-head button) only requests —
+    // the confirm dialog commits. stopPropagation keeps the row's × from
+    // also opening the task.
+    document.querySelectorAll<HTMLButtonElement>("[data-delete-task]").forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteRequestTaskId = btn.dataset.deleteTask ?? null;
+        shell.rerender();
+      });
+    });
+    bindDeleteDialog(shell);
 
     document.getElementById("task-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -779,6 +808,73 @@ export namespace agentPanel {
     tasks = [...tasks, created];
     if (!selectedTaskId) selectedTaskId = snapshot.task_id;
     return created;
+  }
+
+  // Delete-confirm dialog wiring: keep, a click on the scrim itself, or Esc
+  // dismisses; delete commits. Focus lands on keep (the safe action) — a full
+  // rerender drops focus to <body>, so re-take it whenever it's loose.
+  function bindDeleteDialog(shell: ShellState): void {
+    escShell = shell;
+    bindDeleteDialogEscape();
+    const scrim = document.querySelector<HTMLDivElement>("[data-delete-dismiss]");
+    if (!scrim) return;
+    scrim.addEventListener("click", (event) => {
+      if (event.target !== scrim) return;
+      deleteRequestTaskId = null;
+      shell.rerender();
+    });
+    const keep = document.getElementById("confirm-delete-keep") as HTMLButtonElement | null;
+    keep?.addEventListener("click", () => {
+      deleteRequestTaskId = null;
+      shell.rerender();
+    });
+    const commit = document.getElementById("confirm-delete-commit") as HTMLButtonElement | null;
+    commit?.addEventListener("click", async () => {
+      const taskId = deleteRequestTaskId;
+      if (!taskId) return;
+      commit.disabled = true;
+      deleteRequestTaskId = null;
+      try {
+        await invoke("agent_task_delete", { taskId });
+        removeTask(taskId);
+        loadSelectedTaskNotes(shell);
+      } catch (err) {
+        console.error("agent_task_delete failed:", err);
+      } finally {
+        shell.rerender();
+      }
+    });
+    if (keep && !scrim.contains(document.activeElement)) keep.focus();
+  }
+
+  // Esc must work with focus anywhere, so it lives on document — bound once
+  // (bind() runs per render); escShell tracks the latest shell for rerender.
+  let escBound = false;
+  let escShell: ShellState | null = null;
+
+  function bindDeleteDialogEscape(): void {
+    if (escBound) return;
+    escBound = true;
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !deleteRequestTaskId) return;
+      deleteRequestTaskId = null;
+      escShell?.rerender();
+    });
+  }
+
+  // Hand the pane to the neighbouring row (mail-style): the next row below in
+  // the newest-first list, else the one above; compose when the list empties.
+  function removeTask(taskId: string): void {
+    const sorted = [...tasks].sort((a, b) => b.created_at - a.created_at);
+    const idx = sorted.findIndex((task) => task.task_id === taskId);
+    tasks = tasks.filter((task) => task.task_id !== taskId);
+    pendingEvents.delete(taskId);
+    streamScroll.delete(taskId);
+    if (selectedTaskId === taskId) {
+      const next = sorted[idx + 1] ?? sorted[idx - 1];
+      selectedTaskId = next?.task_id ?? null;
+      if (!selectedTaskId) view = "compose";
+    }
   }
 
   function mergeSnapshot(existing: AgentTaskView, incoming: AgentTaskSnapshot): AgentTaskSnapshot {
