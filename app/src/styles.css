@@ -765,23 +765,35 @@ body.has-paper > * { position: relative; z-index: 1; }
 .new-task-copy h2 { margin: 0; }
 .task-form-centered .task-input { min-height: 172px; }
 .task-list-empty { padding: var(--sp-3); }
+/* The row is a non-interactive container: an open <button> (glyph+title+meta)
+   and a sibling × button. Two siblings, never nested — a focusable control
+   inside a role="button" is invalid ARIA. */
 .task-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  border-bottom: var(--hairline);
+}
+.task-row:last-child { border-bottom: 0; }
+.task-row:hover,
+.task-row-active { background: var(--canvas); }
+/* The open control carries the row's padding and the glyph+main layout so a
+   click anywhere but the × opens the task. */
+.task-row-open {
   appearance: none;
   display: grid;
-  grid-template-columns: 18px 1fr auto;
+  grid-template-columns: 18px 1fr;
   gap: var(--sp-2);
+  min-width: 0;
   width: 100%;
   padding: var(--sp-3);
   border: 0;
-  border-bottom: var(--hairline);
   background: transparent;
   color: var(--fg);
   text-align: left;
   cursor: pointer;
 }
-.task-row:last-child { border-bottom: 0; }
-.task-row:hover,
-.task-row-active { background: var(--canvas); }
+.task-row-open:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .task-row-glyph {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -811,7 +823,6 @@ body.has-paper > * { position: relative; z-index: 1; }
   font-size: 11px;
   color: var(--fg-soft);
 }
-.task-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 
 /* ── Deleting tasks from history ──────────────────────────────────
    A quiet × per row, revealed on hover/focus (finished tasks only —
@@ -821,7 +832,7 @@ body.has-paper > * { position: relative; z-index: 1; }
 .task-row-delete {
   appearance: none;
   border: 0;
-  margin: 0;
+  margin: 0 var(--sp-3) 0 0;
   padding: 0;
   width: 22px;
   height: 22px;

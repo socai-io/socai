@@ -39,12 +39,14 @@ export function renderSidebar(props: SidebarProps): string {
   `;
 }
 
-// History rows are click-to-open; a quiet × surfaces on hover/focus for
-// finished tasks (running/queued must be cancelled first — cancel lives in
-// the detail head). Every delete affordance routes through the universal
-// centered confirm dialog — nothing is destroyed until confirmed. The row is
-// a div (a button can't nest the × button); Enter/Space activation is bound
-// in tasks.ts.
+// A history row is a non-interactive container holding two sibling controls:
+// a real <button> covering the glyph+title+meta (click/Enter/Space opens the
+// task) and, for finished tasks, a quiet × button that surfaces on hover/focus
+// (running/queued must be cancelled first — cancel lives in the detail head).
+// Two siblings, never nested: an interactive control inside a role="button"
+// is invalid ARIA and would fold the ×'s label into the row's name. Every
+// delete affordance routes through the universal centered confirm dialog —
+// nothing is destroyed until confirmed.
 function renderTaskRows(props: SidebarProps): string {
   if (props.tasks.length === 0) {
     return `<p class="t-small placeholder task-list-empty">${esc(t("task.noTasks"))}</p>`;
@@ -55,12 +57,14 @@ function renderTaskRows(props: SidebarProps): string {
       const active = !props.composing && task.task_id === props.selectedTaskId ? "task-row-active" : "";
       const running = task.status === "running" || task.status === "queued";
       return `
-        <div class="task-row ${active}" role="button" tabindex="0" data-task-id="${esc(task.task_id)}">
-          <span class="task-row-glyph task-row-glyph-${esc(task.status)}" aria-hidden="true">${taskStatusGlyph(task.status)}</span>
-          <span class="task-row-main">
-            <span class="task-row-title">${esc(task.task)}</span>
-            <span class="task-row-meta">${esc(taskStatusLabel(task.status))} · ${esc(formatTaskTimestamp(task.created_at))}</span>
-          </span>
+        <div class="task-row ${active}">
+          <button type="button" class="task-row-open" data-task-id="${esc(task.task_id)}">
+            <span class="task-row-glyph task-row-glyph-${esc(task.status)}" aria-hidden="true">${taskStatusGlyph(task.status)}</span>
+            <span class="task-row-main">
+              <span class="task-row-title">${esc(task.task)}</span>
+              <span class="task-row-meta">${esc(taskStatusLabel(task.status))} · ${esc(formatTaskTimestamp(task.created_at))}</span>
+            </span>
+          </button>
           ${running ? "" : `
           <button
             type="button"

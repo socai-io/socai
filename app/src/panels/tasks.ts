@@ -629,22 +629,14 @@ export namespace agentPanel {
       updateSubmitButton(shell);
     });
 
-    // History rows are div[role=button] (they nest the × delete button), so
-    // Enter/Space activation is bound by hand. Keys aimed at the × fall
-    // through to its own native click.
-    document.querySelectorAll<HTMLElement>("[data-task-id]").forEach((row) => {
-      const pick = (): void => {
-        selectedTaskId = row.dataset.taskId ?? null;
+    // The row's open control is a native <button>, so click/Enter/Space are
+    // handled for free — no hand-bound keydown, no role/tabindex.
+    document.querySelectorAll<HTMLButtonElement>("[data-task-id]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        selectedTaskId = btn.dataset.taskId ?? null;
         view = "detail";
         shell.rerender();
         if (selectedTaskId) void loadTaskNotes(selectedTaskId, shell);
-      };
-      row.addEventListener("click", pick);
-      row.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        if ((event.target as HTMLElement).closest("[data-delete-task]")) return;
-        event.preventDefault();
-        pick();
       });
     });
     // Note interactions (viewer, card carousel, citation hover, external links)
@@ -667,8 +659,9 @@ export namespace agentPanel {
     });
 
     // Every delete affordance (row ×, detail-head button) only requests —
-    // the confirm dialog commits. stopPropagation keeps the row's × from
-    // also opening the task.
+    // the confirm dialog commits. The row × is a sibling of the open button,
+    // so it can't trigger it; stopPropagation just keeps the click off the
+    // document-level dismiss handlers.
     document.querySelectorAll<HTMLButtonElement>("[data-delete-task]").forEach((btn) => {
       btn.addEventListener("click", (event) => {
         event.stopPropagation();
