@@ -68,6 +68,29 @@ fn cpu_model() -> String {
     }
     #[cfg(target_os = "windows")]
     {
+        // The marketing name ("AMD Ryzen 7 7840H …") lives in the registry —
+        // the same thing macOS exposes as machdep.cpu.brand_string. The
+        // PROCESSOR_IDENTIFIER env var only carries the CPUID family/model/
+        // stepping tuple ("AMD64 Family 25 Model 116 …"), so it's the fallback.
+        let out = command_output(
+            "reg",
+            &[
+                "query",
+                r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+                "/v",
+                "ProcessorNameString",
+            ],
+        );
+        if let Some(idx) = out.find("REG_SZ") {
+            let s = out[idx + "REG_SZ".len()..]
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !s.is_empty() {
+                return s.to_string();
+            }
+        }
         if let Ok(v) = std::env::var("PROCESSOR_IDENTIFIER") {
             let s = v.trim().to_string();
             if !s.is_empty() {
@@ -155,7 +178,46 @@ fn memory_total_mb() -> Option<u64> {
     None
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn memory_total_mb() -> Option<u64> {
+    // GlobalMemoryStatusEx is the canonical total-RAM query. Hand-declared FFI
+    // (like the macOS sysctl path above) so core doesn't grow a windows-sys
+    // dependency for a single call.
+    #[repr(C)]
+    struct MemoryStatusEx {
+        dw_length: u32,
+        dw_memory_load: u32,
+        ull_total_phys: u64,
+        ull_avail_phys: u64,
+        ull_total_page_file: u64,
+        ull_avail_page_file: u64,
+        ull_total_virtual: u64,
+        ull_avail_virtual: u64,
+        ull_avail_extended_virtual: u64,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MemoryStatusEx {
+        dw_length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        dw_memory_load: 0,
+        ull_total_phys: 0,
+        ull_avail_phys: 0,
+        ull_total_page_file: 0,
+        ull_avail_page_file: 0,
+        ull_total_virtual: 0,
+        ull_avail_virtual: 0,
+        ull_avail_extended_virtual: 0,
+    };
+    if unsafe { GlobalMemoryStatusEx(&mut status) } != 0 {
+        Some(status.ull_total_phys / 1024 / 1024)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn memory_total_mb() -> Option<u64> {
     None
 }
