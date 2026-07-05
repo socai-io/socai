@@ -1253,12 +1253,15 @@ const SocaiXhsPageScripts = (() => {
         return el.scrollHeight > el.clientHeight + 24 && ['auto', 'scroll', 'overlay'].includes(overflow);
       }
       const overlay = $('.note-detail-mask, .note-overlay, .note-detail-modal, .note-detail, #noteContainer');
+      // Scope candidates to the overlay when the note is one: a page-level
+      // match (e.g. a generic .scroll-container on the results feed) must
+      // never win the headroom sort while a note is open.
       const candidates = [
         ...$$([
           '.note-scroller', '.note-content', '.note-detail .content', '.scroll-container',
           '.note-detail', '#noteContainer',
           '.note-detail-mask [class*="scroll"]', '.note-detail-mask [class*="content"]',
-        ].join(', ')),
+        ].join(', '), overlay || document),
         overlay,
       ].filter(Boolean);
       const seen = new Set();
@@ -1282,6 +1285,18 @@ const SocaiXhsPageScripts = (() => {
             error: after !== before ? '' : 'scroll_did_not_move',
           });
         }, 900);
+      } else if ($('section.note-item, .feeds-page .note-item, .ai-feeds-page .note-item')) {
+        // Result-feed cards are mounted below the note (it's a modal): a
+        // window scroll would scroll that feed, and the virtualized grid
+        // then unmounts the cards a scan collected — every later card click
+        // opens the wrong note (stale_note cascade). A short, unscrollable
+        // note simply has nothing more to load; report instead of scrolling.
+        resolve({
+          ok: false,
+          container: 'none',
+          delta: 0,
+          error: 'note_not_scrollable',
+        });
       } else {
         const before = window.scrollY;
         window.scrollBy({ top: pixels, behavior: 'smooth' });
