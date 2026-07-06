@@ -448,6 +448,27 @@ function eventPathHasClass(event: Event, className: string): boolean {
   return event.composedPath().some((item) => item instanceof Element && item.classList.contains(className));
 }
 
+// Tauri's webview neither follows target="_blank" nor hands external links to
+// the OS browser, so clicking a web link (e.g. a note URL in a final answer)
+// does nothing. Delegate every http(s) anchor click to the backend
+// `open_external` command, which opens the system default browser. The raw
+// attribute is checked (not `anchor.href`) so app-internal links — `note:`
+// citations, `#` anchors — which the DOM would resolve against the app origin
+// are left alone.
+function bindExternalLinks(): void {
+  document.addEventListener("click", (event) => {
+    if (event.defaultPrevented) return;
+    const anchor = event
+      .composedPath()
+      .find((item): item is HTMLAnchorElement => item instanceof HTMLAnchorElement);
+    if (!anchor) return;
+    const href = anchor.getAttribute("href") ?? "";
+    if (!/^https?:\/\//i.test(href)) return;
+    event.preventDefault();
+    invoke("open_external", { url: href }).catch((e) => console.error("open_external failed:", e));
+  });
+}
+
 async function main(): Promise<void> {
   applyLanguageToDocument();
   // Overlay titlebar (see tauri.conf.json) floats the native macOS traffic
@@ -517,6 +538,7 @@ async function main(): Promise<void> {
   await settingsMenu.loadConfig();
   render();
   bindGlobalDismiss();
+  bindExternalLinks();
   installUpdatePreviewHook();
   void hydrateTaskEvents(initialTasks);
   void agentPanel.loadSelectedTaskNotes(shell());

@@ -680,18 +680,6 @@ export namespace agentPanel {
       invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
     });
 
-    // Tauri's webview won't hand target="_blank" off to the OS browser, so open
-    // the setup guide via the backend instead of relying on the anchor default.
-    document
-      .getElementById("overlay-remote-debugging-help")
-      ?.addEventListener("click", (e) => {
-        e.preventDefault();
-        const url = (e.currentTarget as HTMLAnchorElement).href;
-        invoke("open_external", { url }).catch((err) =>
-          console.error("open_external failed:", err),
-        );
-      });
-
     // Re-apply the selected task's timeline scroll position after a render:
     // follow the latest row unless the user had scrolled up to read.
     restoreSelectedEventsScroll();
