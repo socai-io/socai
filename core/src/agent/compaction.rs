@@ -9,8 +9,24 @@
 
 use serde_json::{Map, Value};
 
-pub const TOOL_RESULT_TEXT_MAX_CHARS: usize = 10_000;
+/// Sized so a full multi-note scan (10 notes × ~1000-char body + OCR +
+/// comments ≈ 25k chars) passes through uncompacted — "give me N notes with
+/// full text" is the product's core ask, and compaction below can only
+/// degrade it.
+pub const TOOL_RESULT_TEXT_MAX_CHARS: usize = 30_000;
 pub const ASSISTANT_TEXT_MAX_CHARS: usize = 320;
+
+/// Generic cap for string leaves inside a compacted JSON tool result.
+const COMPACT_STRING_MAX_CHARS: usize = 320;
+/// Keys whose string values carry a post's body text. They keep more text
+/// than other strings so the agent can still quote a note's full content
+/// after compaction (XHS bodies max out at 1000 chars).
+const BODY_TEXT_KEYS: &[&str] = &["content"];
+const BODY_TEXT_MAX_CHARS: usize = 2_000;
+/// Arrays inside a compacted JSON result keep this many items; a dropped
+/// tail is replaced with a marker naming the omitted count so the model
+/// reports "list was cut" instead of inventing "there were only 5".
+const COMPACT_ARRAY_MAX_ITEMS: usize = 5;
 
 /// Trim a string to at most `max_chars` characters, suffixing
 /// `... [truncated]` when the original was longer. Char-based, not byte-based,
@@ -39,8 +55,14 @@ pub fn truncate_result(text: &str, max_chars: usize) -> String {
 }
 
 /// Reorder + truncate a JSON value so the most "interesting" keys come
-/// first and total size stays bounded.
+/// first and total size stays bounded. Body-text fields ([`BODY_TEXT_KEYS`])
+/// keep up to [`BODY_TEXT_MAX_CHARS`]; every other string is capped at
+/// [`COMPACT_STRING_MAX_CHARS`].
 pub fn compact_json_value(value: &Value) -> Value {
+    compact_json_value_with_body_cap(value, BODY_TEXT_MAX_CHARS)
+}
+
+fn compact_json_value_with_body_cap(value: &Value, body_cap: usize) -> Value {
     let preferred = [
         "ok",
         "error",
@@ -78,22 +100,41 @@ pub fn compact_json_value(value: &Value) -> Value {
             let mut out = Map::new();
             for key in ordered_keys.iter().take(16) {
                 if let Some(v) = map.get(key) {
-                    out.insert(key.clone(), compact_json_value(v));
+                    let compacted = match v {
+                        Value::String(s) if BODY_TEXT_KEYS.contains(&key.as_str()) => {
+                            Value::String(truncate(s, body_cap))
+                        }
+                        other => compact_json_value_with_body_cap(other, body_cap),
+                    };
+                    out.insert(key.clone(), compacted);
                 }
             }
             Value::Object(out)
         }
         Value::Array(arr) => {
-            let head: Vec<Value> = arr.iter().take(5).map(compact_json_value).collect();
+            let mut head: Vec<Value> = arr
+                .iter()
+                .take(COMPACT_ARRAY_MAX_ITEMS)
+                .map(|v| compact_json_value_with_body_cap(v, body_cap))
+                .collect();
+            if arr.len() > COMPACT_ARRAY_MAX_ITEMS {
+                head.push(Value::String(format!(
+                    "... [{} more items truncated; full list in the run artifact]",
+                    arr.len() - COMPACT_ARRAY_MAX_ITEMS
+                )));
+            }
             Value::Array(head)
         }
-        Value::String(s) => Value::String(truncate(s, 320)),
+        Value::String(s) => Value::String(truncate(s, COMPACT_STRING_MAX_CHARS)),
         other => other.clone(),
     }
 }
 
 /// Bound a tool-result text. If it parses as JSON and is too long, run
-/// [`compact_json_value`] over it. Otherwise truncate the string directly.
+/// [`compact_json_value`] over it — first keeping body text at its larger
+/// cap, then recompacting with the flat string cap when even that exceeds
+/// the budget (so trailing entries aren't lost to a tail chop). Otherwise
+/// truncate the string directly.
 pub fn compress_text_maybe_json(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
@@ -104,6 +145,9 @@ pub fn compress_text_maybe_json(text: &str, max_chars: usize) -> String {
             if rendered.chars().count() <= max_chars {
                 return rendered;
             }
+        }
+        let flat = compact_json_value_with_body_cap(&value, COMPACT_STRING_MAX_CHARS);
+        if let Ok(rendered) = serde_json::to_string_pretty(&flat) {
             return truncate_result(&rendered, max_chars);
         }
     }
