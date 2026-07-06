@@ -173,6 +173,8 @@ export namespace agentPanel {
   // position here and the post-render bind restores it. No entry, or a pinned
   // entry, means auto-follow: keep the stream glued to its newest row.
   const streamScroll = new Map<string, { top: number; pinned: boolean }>();
+  // Pending removal of the answer panel's jump-flash ring (one at a time).
+  let answerFlashTimer: number | undefined;
 
   function isPinnedToBottom(stream: HTMLDivElement): boolean {
     return stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 8;
@@ -642,6 +644,22 @@ export namespace agentPanel {
     // Note interactions (viewer, card carousel, citation hover, external links)
     // are wired once via delegation on document.
     bindNoteInteractions();
+    // The timeline's final-answer card is a pointer, not a copy: activating
+    // it rewinds the answer panel's scroll (so the reader lands at the top of
+    // the answer) and flashes a ring on it so the eye finds the real content.
+    document.querySelectorAll<HTMLButtonElement>("[data-answer-ref]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const outcome = document.querySelector<HTMLElement>(".agent-outcome");
+        if (!outcome) return;
+        const scroller = outcome.querySelector<HTMLElement>(".result-pre");
+        if (scroller) scroller.scrollTop = 0;
+        outcome.classList.remove("answer-flash");
+        void outcome.offsetWidth; // restart the ring on repeat clicks
+        outcome.classList.add("answer-flash");
+        if (answerFlashTimer) window.clearTimeout(answerFlashTimer);
+        answerFlashTimer = window.setTimeout(() => outcome.classList.remove("answer-flash"), 1300);
+      });
+    });
     document.querySelectorAll<HTMLButtonElement>("[data-cancel-task]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const taskId = btn.dataset.cancelTask;

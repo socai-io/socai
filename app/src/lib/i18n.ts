@@ -134,6 +134,9 @@ const messages = {
   },
   "task.deleteKeep": { en: "keep", zh: "保留" },
   "task.finalAnswer": { en: "final answer", zh: "最终答案" },
+  "task.answerInPanel": { en: "shown in the answer panel", zh: "见右侧答案面板" },
+  "task.answerBelow": { en: "see the answer below", zh: "见下方答案" },
+  "task.jumpToAnswerAria": { en: "go to the final answer", zh: "跳转到最终答案" },
   "task.timeline": { en: "timeline", zh: "时间线" },
   "task.errorLabel": { en: "error", zh: "错误" },
   "task.waitingForEvents": { en: "waiting for events…", zh: "等待事件…" },
@@ -248,6 +251,11 @@ export function formatTaskCount(count: number): string {
 export function formatTurns(count: number): string {
   if (currentLanguage === "zh") return `${count} 轮`;
   return `${count} turn${count === 1 ? "" : "s"}`;
+}
+
+export function formatSourceCount(count: number): string {
+  if (currentLanguage === "zh") return `${count} 条来源`;
+  return `${count} source${count === 1 ? "" : "s"}`;
 }
 
 export function formatTokenUsage(inputTokens: number, outputTokens: number): string {

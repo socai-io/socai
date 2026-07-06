@@ -5,12 +5,17 @@
 //! answer yet, or a failed task that produced only an error — it falls back to a
 //! single stacked panel. (Narrow windows fold split into a stack via CSS.)
 //!
+//! The answer lives in one place: once the answer panel has a run's final
+//! text, the timeline drops the assistant row that streamed that same text
+//! and ends with a compact reference card pointing at the panel instead
+//! (FinalAnswerRef in the SocaiV2 handoff).
+//!
 //! Below the body, a full-width filmstrip shows the notes the agent saw.
 
 import type { AgentTaskEventPayload } from "../main";
 import { esc } from "../lib/html";
 import { renderNoteAnswer, renderTimelineEmbed, setNoteRegistry } from "./notes";
-import { formatTaskCount, formatTaskTimestamp, formatTokenUsage, formatTurns, taskStatusLabel, t } from "../lib/i18n";
+import { formatSourceCount, formatTaskCount, formatTaskTimestamp, formatTokenUsage, formatTurns, taskStatusLabel, t } from "../lib/i18n";
 import type { AgentTaskView } from "./tasks";
 
 export interface SidebarProps {
@@ -144,14 +149,74 @@ function renderDetailHead(task: AgentTaskView, running: boolean): string {
 
 function renderTimelinePanel(task: AgentTaskView): string {
   const hasEvents = task.events.length > 0;
+  const duplicateIndex = finalAnswerEventIndex(task);
   const rows = hasEvents
-    ? task.events.map(renderAgentEvent).join("")
+    ? task.events
+        .filter((_, index) => index !== duplicateIndex)
+        .map(renderAgentEvent)
+        .join("")
     : `<p class="t-small placeholder" data-events-placeholder>${esc(t("task.waitingForEvents"))}</p>`;
+  const answerRef = task.final_text ? renderFinalAnswerRef(task) : "";
   return `
     <div class="result-block detail-panel">
       <p class="t-eyebrow result-label detail-panel-label">${esc(t("task.timeline"))}</p>
-      <div class="event-stream" data-agent-events="${esc(task.task_id)}">${rows}</div>
+      <div class="event-stream" data-agent-events="${esc(task.task_id)}">${rows}${answerRef}</div>
     </div>
+  `;
+}
+
+// The shell caps event text at 8k chars and marks the cut with this suffix.
+const EVENT_TRUNCATION_SUFFIX = "\n... [truncated]";
+
+// The timeline's copy of the final answer: the last assistant event, but only
+// when the answer panel is showing the same text. The panel hydrates from
+// report.md — the loop's final text plus an optional artifacts appendix — and
+// the event may be truncated, so "same" means the event text prefixes the
+// panel text, not equality. A failed run's panel holds an error string that
+// matches no assistant text, so commentary before a failure stays readable.
+// While a task runs, final_text is unset and the answer streams here in full.
+function finalAnswerEventIndex(task: AgentTaskView): number {
+  const finalText = task.final_text?.trim();
+  if (!finalText) return -1;
+  for (let index = task.events.length - 1; index >= 0; index -= 1) {
+    const ev = task.events[index];
+    if (ev.kind !== "assistant") continue;
+    let text = ev.text;
+    if (text.endsWith(EVENT_TRUNCATION_SUFFIX)) {
+      text = text.slice(0, -EVENT_TRUNCATION_SUFFIX.length);
+    }
+    text = text.trim();
+    return text && finalText.startsWith(text) ? index : -1;
+  }
+  return -1;
+}
+
+// The timeline's terminal element (FinalAnswerRef in the SocaiV2 handoff):
+// stands in for the answer the stream no longer repeats — names it, gives a
+// light signal (source count), and points at the answer panel. The handoff
+// picks hint + arrow from a layout prop; the shipped app folds split→stacked
+// in CSS, so both variants render and the fold's breakpoint picks one.
+// Clicking rewinds the answer's scroll and flashes the panel; bound in
+// tasks.ts via [data-answer-ref].
+function renderFinalAnswerRef(task: AgentTaskView): string {
+  const sources = task.notes?.length ?? 0;
+  const count = sources > 0
+    ? `<span class="final-answer-ref__count">${esc(formatSourceCount(sources))}</span>`
+    : "";
+  return `
+    <button type="button" class="final-answer-ref" data-answer-ref aria-label="${esc(t("task.jumpToAnswerAria"))}">
+      <span class="final-answer-ref__glyph" aria-hidden="true">✓</span>
+      <span class="final-answer-ref__body">
+        <span class="final-answer-ref__label">${esc(t("task.finalAnswer"))}</span>
+        <span class="final-answer-ref__hint">
+          ${count}
+          <span class="final-answer-ref__cta final-answer-ref__cta--split">${esc(t("task.answerInPanel"))}</span>
+          <span class="final-answer-ref__cta final-answer-ref__cta--stacked">${esc(t("task.answerBelow"))}</span>
+        </span>
+      </span>
+      <span class="final-answer-ref__arrow final-answer-ref__arrow--split" aria-hidden="true">→</span>
+      <span class="final-answer-ref__arrow final-answer-ref__arrow--stacked" aria-hidden="true">↓</span>
+    </button>
   `;
 }
 

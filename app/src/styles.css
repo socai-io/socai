@@ -1128,6 +1128,93 @@ body.has-paper > * { position: relative; z-index: 1; }
 .event-api_error .event-glyph { color: var(--status-error-fg); }
 .event-done .event-glyph { color: var(--ink-0); }
 
+/* ── Final-answer reference (timeline terminal) ────────────────────
+   From the SocaiV2 handoff. The timeline's last item no longer repeats the
+   answer text; it shows a compact card that names the answer and points at
+   the answer panel. Sits inside the mono .event-stream, so it deliberately
+   breaks to sans + a card surface to read as a distinct terminal element. */
+.final-answer-ref {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: var(--hairline);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.final-answer-ref:hover { border-color: var(--line-strong); background: var(--ink-7); }
+.final-answer-ref:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.final-answer-ref__glyph {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  background: var(--ink-0);
+  color: var(--ink-9);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+}
+.final-answer-ref__body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.final-answer-ref__label {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--ink-1);
+}
+.final-answer-ref__hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 1px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  color: var(--fg-soft);
+}
+.final-answer-ref__count { color: var(--fg-faint); }
+.final-answer-ref__cta { min-width: 0; }
+.final-answer-ref__arrow {
+  flex: 0 0 auto;
+  color: var(--fg-soft);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  transition: transform var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.final-answer-ref:hover .final-answer-ref__arrow { color: var(--ink-0); transform: translateX(2px); }
+/* The handoff picks hint + arrow from a layout prop; here both variants
+   render and the .detail-split fold's breakpoint picks one. */
+.final-answer-ref__cta--stacked,
+.final-answer-ref__arrow--stacked { display: none; }
+@media (max-width: 900px) {
+  .final-answer-ref__cta--split,
+  .final-answer-ref__arrow--split { display: none; }
+  .final-answer-ref__cta--stacked { display: inline; }
+  .final-answer-ref__arrow--stacked { display: inline; }
+}
+
+/* Activating the reference flashes a ring on the answer body so the eye lands
+   on the real content (used in split/stacked, where the panel is visible). */
+.agent-outcome.answer-flash .result-pre { animation: answerFlash 1.3s var(--ease); }
+@keyframes answerFlash {
+  0%   { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.30); }
+  28%  { box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.20); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
+}
+
 .agent-outcome {
   flex: 2 1 0;               /* the payoff: 2 shares of the pane vs the logs' 1 */
   min-height: 96px;
