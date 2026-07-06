@@ -27,6 +27,15 @@ const BODY_TEXT_MAX_CHARS: usize = 2_000;
 /// tail is replaced with a marker naming the omitted count so the model
 /// reports "list was cut" instead of inventing "there were only 5".
 const COMPACT_ARRAY_MAX_ITEMS: usize = 5;
+/// Per-note cap applied to `ocr_text` when a result is over budget. OCR text
+/// alone can dwarf every note body in a scan (it grows with image count, so
+/// no overall budget outruns it); capping instead of dropping keeps the gist
+/// of image-heavy posts readable.
+const OCR_TEXT_MAX_CHARS: usize = 1_000;
+/// Enrichment key stripped after the OCR cap when still over budget.
+const STRIPPED_ENRICHMENT_KEY: &str = "top_comments";
+/// What a stripped enrichment value is replaced with.
+const ENRICHMENT_OMITTED_MARKER: &str = "[omitted to fit context; full data in the run artifact]";
 
 /// Trim a string to at most `max_chars` characters, suffixing
 /// `... [truncated]` when the original was longer. Char-based, not byte-based,
@@ -130,16 +139,34 @@ fn compact_json_value_with_body_cap(value: &Value, body_cap: usize) -> Value {
     }
 }
 
-/// Bound a tool-result text. If it parses as JSON and is too long, run
-/// [`compact_json_value`] over it — first keeping body text at its larger
-/// cap, then recompacting with the flat string cap when even that exceeds
-/// the budget (so trailing entries aren't lost to a tail chop). Otherwise
-/// truncate the string directly.
+/// Bound a tool-result text. If it parses as JSON and is too long, degrade
+/// in order of what the agent can best afford to lose:
+/// 1. cap each note's `ocr_text` at [`OCR_TEXT_MAX_CHARS`], then strip
+///    comment threads, so every note's body/link stays intact,
+/// 2. [`compact_json_value`] keeping body text at its larger cap,
+/// 3. recompact with the flat string cap,
+/// 4. tail-chop as the last resort.
+///
+/// Otherwise truncate the string directly.
 pub fn compress_text_maybe_json(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
     }
-    if let Ok(value) = serde_json::from_str::<Value>(text) {
+    if let Ok(mut value) = serde_json::from_str::<Value>(text) {
+        if cap_string_key_deep(&mut value, "ocr_text", OCR_TEXT_MAX_CHARS) {
+            if let Ok(rendered) = serde_json::to_string(&value) {
+                if rendered.chars().count() <= max_chars {
+                    return rendered;
+                }
+            }
+        }
+        if strip_key_deep(&mut value, STRIPPED_ENRICHMENT_KEY) {
+            if let Ok(rendered) = serde_json::to_string(&value) {
+                if rendered.chars().count() <= max_chars {
+                    return rendered;
+                }
+            }
+        }
         let compact = compact_json_value(&value);
         if let Ok(rendered) = serde_json::to_string_pretty(&compact) {
             if rendered.chars().count() <= max_chars {
@@ -152,6 +179,108 @@ pub fn compress_text_maybe_json(text: &str, max_chars: usize) -> String {
         }
     }
     truncate_result(text, max_chars)
+}
+
+/// Cap every occurrence of `key` (at any depth) to `max_chars` total. A
+/// string value is truncated; an array of strings keeps whole items until
+/// the budget runs out, truncating the item that crosses it and dropping the
+/// rest (with a trailing `... [truncated]` marker so the cut is visible).
+/// Returns whether anything was shortened.
+fn cap_string_key_deep(value: &mut Value, key: &str, max_chars: usize) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut capped = false;
+            for (k, v) in map.iter_mut() {
+                if k == key {
+                    capped |= cap_text_value(v, max_chars);
+                } else {
+                    capped |= cap_string_key_deep(v, key, max_chars);
+                }
+            }
+            capped
+        }
+        Value::Array(arr) => {
+            let mut capped = false;
+            for v in arr.iter_mut() {
+                capped |= cap_string_key_deep(v, key, max_chars);
+            }
+            capped
+        }
+        _ => false,
+    }
+}
+
+/// Shorten one string or string-array value to at most `max_chars` characters
+/// in total. Returns whether it was shortened.
+fn cap_text_value(value: &mut Value, max_chars: usize) -> bool {
+    match value {
+        Value::String(s) => {
+            if s.chars().count() <= max_chars {
+                return false;
+            }
+            *value = Value::String(truncate(s, max_chars));
+            true
+        }
+        Value::Array(arr) => {
+            let mut budget = max_chars;
+            let mut kept: Vec<Value> = Vec::new();
+            let mut cut = false;
+            for item in arr.iter() {
+                let Some(s) = item.as_str() else {
+                    kept.push(item.clone());
+                    continue;
+                };
+                if cut {
+                    continue;
+                }
+                let len = s.chars().count();
+                if len <= budget {
+                    budget -= len;
+                    kept.push(item.clone());
+                } else {
+                    cut = true;
+                    if budget > 0 {
+                        // truncate() appends its own "... [truncated]" marker.
+                        kept.push(Value::String(truncate(s, budget)));
+                    } else {
+                        kept.push(Value::String("... [truncated]".to_string()));
+                    }
+                }
+            }
+            if cut {
+                *value = Value::Array(kept);
+            }
+            cut
+        }
+        _ => false,
+    }
+}
+
+/// Replace every occurrence of `key` (at any depth) with
+/// [`ENRICHMENT_OMITTED_MARKER`]. Returns whether anything was replaced.
+fn strip_key_deep(value: &mut Value, key: &str) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut stripped = false;
+            for (k, v) in map.iter_mut() {
+                if k == key {
+                    *v = Value::String(ENRICHMENT_OMITTED_MARKER.to_string());
+                    stripped = true;
+                } else {
+                    stripped |= strip_key_deep(v, key);
+                }
+            }
+            stripped
+        }
+        Value::Array(arr) => {
+            let mut stripped = false;
+            for v in arr.iter_mut() {
+                stripped |= strip_key_deep(v, key);
+            }
+            stripped
+        }
+        _ => false,
+    }
 }
 
 /// Entity-aware deep compaction with depth limit. Used by the
