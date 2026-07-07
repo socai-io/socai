@@ -13,7 +13,7 @@ import type {
 } from "../main";
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
-import { noteRefsFromEvent, renderAgentEvent, renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
+import { noteRefsFromEvent, renderAgentEvent, renderConfirmDeleteDialog, renderRunMessage, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
 import type { ReplyComposerProps } from "./task_history";
 import { bindNoteInteractions, renderTimelineEmbed, setNoteRegistry } from "./notes";
 import { renderComposePane } from "./task_new";
@@ -193,7 +193,8 @@ export namespace agentPanel {
       for (const ref of noteRefsFromEvent(ev)) claimed.add(ref);
     }
     const refs = (task.notes ?? []).map((n) => n.note_id).filter((id) => !claimed.has(id));
-    const key = refs.join(",");
+    // Keyed per task so switching tasks can't suppress another task's strip.
+    const key = `${task.task_id}|${refs.join(",")}`;
     const existing = stream.querySelector("[data-live-strip]");
     if (key === liveStripKey && existing) return;
     liveStripKey = key;
@@ -1043,6 +1044,11 @@ export namespace agentPanel {
     return [...items].sort((a, b) => b.created_at - a.created_at)[0];
   }
 
+  // Streamed rows must land inside the same `.run-group` structure a full
+  // render builds — otherwise a follow-up's rows pile up ungrouped at the
+  // stream's end (after the previous run's answer card) until the next full
+  // render reshuffles them. "queued" opens a run's group; "started" renders
+  // as the group's "you" message (mirroring renderRunGroup), not as a row.
   function appendEventRowIfSelected(payload: AgentTaskEventPayload): void {
     if (payload.task_id !== selectedTaskId) return;
     const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${payload.task_id}"]`);
@@ -1058,7 +1064,25 @@ export namespace agentPanel {
       liveStripKey = "";
     }
     const pinned = isPinnedToBottom(stream);
-    stream.insertAdjacentHTML("beforeend", renderAgentEvent(payload));
+
+    const groups = stream.querySelectorAll<HTMLDivElement>(":scope > .run-group");
+    let group: HTMLDivElement | null = groups[groups.length - 1] ?? null;
+    const groupHasRun = !!group?.querySelector(".run-message, .event-started");
+    if (!group || payload.kind === "queued" || (payload.kind === "started" && groupHasRun)) {
+      stream.insertAdjacentHTML("beforeend", `<div class="run-group"></div>`);
+      const fresh = stream.querySelectorAll<HTMLDivElement>(":scope > .run-group");
+      group = fresh[fresh.length - 1] ?? null;
+    }
+    if (group) {
+      if (payload.kind === "started") {
+        if (payload.task && !group.querySelector(".run-message")) {
+          group.insertAdjacentHTML("afterbegin", renderRunMessage(payload.task));
+        }
+      } else {
+        group.insertAdjacentHTML("beforeend", renderAgentEvent(payload));
+      }
+    }
+
     if (pinned) stream.scrollTop = stream.scrollHeight;
     if (payload.kind === "tool_result") {
       const task = tasks.find((item) => item.task_id === payload.task_id);

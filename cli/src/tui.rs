@@ -735,7 +735,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     };
     state
         .conversation
-        .record_completed_run(task, &recorded, &outcome.run_dir);
+        .record_run(task, &recorded, &outcome.run_dir, "completed");
     Ok(())
 }
 

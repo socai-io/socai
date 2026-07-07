@@ -1156,6 +1156,16 @@ body.has-paper > * { position: relative; z-index: 1; }
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* An earlier run's final answer, rendered rich inside its group (the latest
+   run's answer lives in the answer panel instead). */
+.run-answer {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: var(--hairline);
+  border-radius: var(--r-4);
+  background: var(--surface);
+  font-size: 13px;
+}
 .task-reply-form { flex: none; margin-top: var(--sp-2); }
 .task-reply-row {
   display: flex;

@@ -9,14 +9,15 @@
 //! desktop app (`desktop_agent_tools()`), the same content the agent reads —
 //! Xiaohongshu note/comment text — is untrusted, adversarial input running on
 //! a much wider, less technical install base, so these tools are additionally
-//! confined to the `~/.socai` tree: `read_file` rejects any path that doesn't
-//! lexically resolve under the root, and `bash` rejects any command whose
-//! path-like tokens resolve outside it. This is a real, enforced boundary for
-//! path arguments — not a full OS sandbox. It doesn't stop a shell command
-//! from doing non-path-based damage (network calls, following a symlink
-//! planted inside the root that points back out, etc.); it exists to block
-//! the straightforward "read/write/delete something outside ~/.socai" cases a
-//! prompt-injected note could ask for.
+//! confined to socai's data directories (`~/.socai` plus the configured runs
+//! and sessions roots — see `desktop_tool_roots`): `read_file` rejects any
+//! path that doesn't lexically resolve under one of the roots, and `bash`
+//! rejects any command whose path-like tokens resolve outside them. This is a
+//! real, enforced boundary for path arguments — not a full OS sandbox. It
+//! doesn't stop a shell command from doing non-path-based damage (network
+//! calls, following a symlink planted inside a root that points back out,
+//! etc.); it exists to block the straightforward "read/write/delete something
+//! outside socai's data" cases a prompt-injected note could ask for.
 //!
 //! Paths are resolved against the process working directory when relative; a
 //! leading `~` expands to the home directory. `bash` runs with its working
@@ -71,15 +72,18 @@ fn absolutize(path: &Path, cwd: &Path) -> PathBuf {
     normalize_lexical(&absolute)
 }
 
-fn within_root(path: &Path, root: &Path, cwd: &Path) -> bool {
-    absolutize(path, cwd).starts_with(normalize_lexical(root))
+fn within_roots(path: &Path, roots: &[PathBuf], cwd: &Path) -> bool {
+    let resolved = absolutize(path, cwd);
+    roots
+        .iter()
+        .any(|root| resolved.starts_with(normalize_lexical(root)))
 }
 
 /// Best-effort scan for path-like tokens in a shell command line. Not a
 /// parser — quoting, variable expansion, and encoded payloads can defeat it —
 /// but it catches the straightforward `cat /etc/passwd` / `rm -rf ~/Documents`
 /// style asks a prompt-injected note might make.
-fn command_escapes_root(command: &str, root: &Path, cwd: &Path) -> Option<String> {
+fn command_escapes_roots(command: &str, roots: &[PathBuf], cwd: &Path) -> Option<String> {
     for raw_token in command.split_whitespace() {
         let token = raw_token.trim_matches(|c| c == '"' || c == '\'' || c == ';' || c == ',');
         let looks_like_path =
@@ -96,11 +100,41 @@ fn command_escapes_root(command: &str, root: &Path, cwd: &Path) -> Option<String
         } else {
             PathBuf::from(token)
         };
-        if !within_root(&expanded, root, cwd) {
+        if !within_roots(&expanded, roots, cwd) {
             return Some(token.to_string());
         }
     }
     None
+}
+
+/// The directory trees the desktop's tools are confined to: `~/.socai` (or
+/// `$SOCAI_HOME`) plus the *actual* runs and sessions roots — which the user
+/// can point elsewhere via `runs.dir` / `SOCAI_RUNS_DIR` / `SOCAI_SESSIONS_DIR`.
+/// Without including those, a relocated runs dir would make `bash` refuse its
+/// own cwd and `read_file` reject every run artifact.
+fn desktop_tool_roots() -> Vec<PathBuf> {
+    let candidates = [
+        socai_home_dir(),
+        crate::agent::run_logging::default_runs_root(),
+        crate::agent::conversation::default_sessions_root(),
+    ];
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for candidate in candidates {
+        let normalized = normalize_lexical(&candidate);
+        if !roots.iter().any(|root| normalized.starts_with(root)) {
+            roots.retain(|root| !root.starts_with(&normalized));
+            roots.push(normalized);
+        }
+    }
+    roots
+}
+
+fn roots_display(roots: &[PathBuf]) -> String {
+    roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Skip inlining image bytes larger than this (base64 of big images bloats the
@@ -150,18 +184,18 @@ fn truncate_output(text: &str, limit: usize) -> String {
 }
 
 /// `read_file` — read a text file (optionally a line window) or an image.
-/// `root: Some(dir)` confines it to that directory tree (see module doc).
+/// A non-empty `roots` confines it to those directory trees (see module doc).
 pub struct ReadFileTool {
-    root: Option<PathBuf>,
+    roots: Vec<PathBuf>,
 }
 
 impl ReadFileTool {
     pub fn unrestricted() -> Self {
-        Self { root: None }
+        Self { roots: Vec::new() }
     }
 
-    pub fn scoped_to(root: PathBuf) -> Self {
-        Self { root: Some(root) }
+    pub fn scoped_to(roots: Vec<PathBuf>) -> Self {
+        Self { roots }
     }
 }
 
@@ -172,14 +206,15 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &str {
-        if self.root.is_some() {
-            "Read a local file under ~/.socai (run artifacts, session records — \
-             paths outside ~/.socai are rejected). Text files return their \
-             contents (optionally a line window via `offset`/`limit`); image \
-             files (png/jpg/webp/gif) are returned as an image you can \
-             actually see — use this to inspect screenshot artifacts from \
-             earlier run dirs. For plain text you may also just use `bash` \
-             (cat/sed), but images must go through this tool."
+        if !self.roots.is_empty() {
+            "Read a local file under socai's data directories (run artifacts, \
+             session records — paths outside them are rejected). Text files \
+             return their contents (optionally a line window via \
+             `offset`/`limit`); image files (png/jpg/webp/gif) are returned as \
+             an image you can actually see — use this to inspect screenshot or \
+             note-media artifacts from earlier run dirs. For plain text you may \
+             also just use `bash` (cat/sed), but images must go through this \
+             tool."
         } else {
             "Read a local file. Text files return their contents (optionally a line \
              window via `offset`/`limit`); image files (png/jpg/webp/gif) are \
@@ -210,13 +245,13 @@ impl Tool for ReadFileTool {
             anyhow::bail!("read_file requires a `path`");
         };
         let path = resolve_path(raw);
-        if let Some(root) = &self.root {
+        if !self.roots.is_empty() {
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            if !within_root(&path, root, &cwd) {
+            if !within_roots(&path, &self.roots, &cwd) {
                 anyhow::bail!(
-                    "{} is outside {} — this tool is confined to that directory",
+                    "{} is outside {} — this tool is confined to those directories",
                     path.display(),
-                    root.display()
+                    roots_display(&self.roots)
                 );
             }
         }
@@ -289,19 +324,19 @@ impl Tool for ReadFileTool {
 
 /// `bash` — run a shell command. The flexible escape hatch for writing files,
 /// listing/grepping artifacts, etc. Working directory is the current run dir.
-/// `root: Some(dir)` confines path-like arguments to that directory tree (see
-/// module doc — a best-effort static check, not a sandbox).
+/// A non-empty `roots` confines path-like arguments to those directory trees
+/// (see module doc — a best-effort static check, not a sandbox).
 pub struct BashTool {
-    root: Option<PathBuf>,
+    roots: Vec<PathBuf>,
 }
 
 impl BashTool {
     pub fn unrestricted() -> Self {
-        Self { root: None }
+        Self { roots: Vec::new() }
     }
 
-    pub fn scoped_to(root: PathBuf) -> Self {
-        Self { root: Some(root) }
+    pub fn scoped_to(roots: Vec<PathBuf>) -> Self {
+        Self { roots }
     }
 }
 
@@ -312,13 +347,13 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        if self.root.is_some() {
+        if !self.roots.is_empty() {
             "Run a shell command via `sh -c` and return its stdout/stderr and \
-             exit code. Working directory is the current run dir under \
-             ~/.socai/runs. Confined to ~/.socai — commands referencing paths \
-             outside it (other than by the app's own working directory) are \
-             rejected. Use this to write output files (e.g. printf/tee), list \
-             and grep run artifacts, mkdir, etc. within ~/.socai."
+             exit code. Working directory is the current run dir. Confined to \
+             socai's data directories — commands referencing paths outside \
+             them are rejected. Use this to write output files (e.g. \
+             printf/tee), list and grep run artifacts, mkdir, etc. within \
+             those directories."
         } else {
             "Run a shell command via `sh -c` and return its stdout/stderr and exit \
              code. Working directory is the current run dir under ~/.socai/runs, so \
@@ -365,20 +400,20 @@ impl Tool for BashTool {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         };
 
-        if let Some(root) = &self.root {
-            if !within_root(&cwd, root, &cwd) {
+        if !self.roots.is_empty() {
+            if !within_roots(&cwd, &self.roots, &cwd) {
                 anyhow::bail!(
                     "run dir {} is outside {} — refusing to run bash there",
                     cwd.display(),
-                    root.display()
+                    roots_display(&self.roots)
                 );
             }
-            if let Some(escaped) = command_escapes_root(command, root, &cwd) {
+            if let Some(escaped) = command_escapes_roots(command, &self.roots, &cwd) {
                 anyhow::bail!(
                     "command references `{escaped}`, which is outside {} — this \
-                     tool is confined to that directory. Ask the user to run \
-                     anything outside it themselves.",
-                    root.display()
+                     tool is confined to those directories. Ask the user to run \
+                     anything outside them themselves.",
+                    roots_display(&self.roots)
                 );
             }
         }
@@ -424,13 +459,14 @@ pub fn local_agent_tools() -> Vec<SharedTool> {
 }
 
 /// Local tools for the desktop app: the same `read_file`/`bash` pair, confined
-/// to `~/.socai` (see module doc) since the desktop agent's primary input is
-/// untrusted Xiaohongshu content on a much wider install base than the TUI.
+/// to socai's data directories (see module doc and `desktop_tool_roots`) since
+/// the desktop agent's primary input is untrusted Xiaohongshu content on a
+/// much wider install base than the TUI.
 pub fn desktop_agent_tools() -> Vec<SharedTool> {
-    let root = socai_home_dir();
+    let roots = desktop_tool_roots();
     vec![
-        std::sync::Arc::new(ReadFileTool::scoped_to(root.clone())),
-        std::sync::Arc::new(BashTool::scoped_to(root)),
+        std::sync::Arc::new(ReadFileTool::scoped_to(roots.clone())),
+        std::sync::Arc::new(BashTool::scoped_to(roots)),
     ]
 }
 

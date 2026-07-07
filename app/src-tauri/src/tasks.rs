@@ -304,7 +304,7 @@ impl AgentTaskRegistry {
         };
 
         let _timeline_guard = timeline_lock.lock().await;
-        let sequence = self.next_timeline_sequence(task_id).await;
+        let sequence = self.next_timeline_sequence(task_id, &snapshot).await;
         Some(timeline::live_timeline_event(
             &snapshot,
             payload,
@@ -313,12 +313,28 @@ impl AgentTaskRegistry {
         ))
     }
 
-    async fn next_timeline_sequence(&self, task_id: &str) -> u64 {
+    /// Next live sequence for a task's timeline. The counter is in-memory
+    /// only, while the frontend dedupes/merges events on `task_id:sequence` —
+    /// so after an app restart a fresh counter would reuse the sequences the
+    /// replayed history already occupies, and a follow-up's live rows would
+    /// overwrite earlier turns' rows in place. Seed a missing counter past
+    /// the current replay length instead. The disk read happens at most once
+    /// per task per process, under this task's timeline lock.
+    async fn next_timeline_sequence(&self, task_id: &str, snapshot: &AgentTaskSnapshot) -> u64 {
+        let seeded = {
+            let guard = self.inner.lock().await;
+            guard.timeline_next_seq.contains_key(task_id)
+        };
+        let seed = if seeded {
+            1
+        } else {
+            timeline::load_task_events(snapshot).len() as u64 + 1
+        };
         let mut guard = self.inner.lock().await;
         let next = guard
             .timeline_next_seq
             .entry(task_id.to_string())
-            .or_insert(1);
+            .or_insert(seed);
         let sequence = *next;
         *next = sequence.saturating_add(1);
         sequence
@@ -383,8 +399,10 @@ fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
             if let Ok(run) = serde_json::from_str::<Value>(&text) {
                 snapshot.run_id = run.get("id").and_then(Value::as_str).map(str::to_string);
                 snapshot.error = run.get("error").and_then(Value::as_str).map(str::to_string);
+                // Pre-rename runs (< #190) recorded the step count as "turns".
                 snapshot.steps = run
                     .get("steps")
+                    .or_else(|| run.get("turns"))
                     .and_then(Value::as_u64)
                     .map(|value| value as u32);
                 snapshot.input_tokens = run.pointer("/usage/input_tokens").and_then(Value::as_u64);

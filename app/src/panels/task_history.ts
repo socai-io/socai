@@ -197,33 +197,74 @@ function renderTimelinePanel(task: AgentTaskView): string {
 }
 
 // A task's conversation can span several runs (replies continue it, each a
-// fresh agent run — see socai-core's Conversation). Every run starts with a
-// "started" event; group on that boundary so each reply reads as its own
-// "you asked / agent did" block instead of one undifferentiated stream.
+// fresh agent run — see socai-core's Conversation). A live run's stream opens
+// with "queued"; a replayed run opens directly with "started" — so a new
+// group begins on either boundary (but a "started" that follows its own run's
+// "queued" stays in that group). Each reply then reads as its own "you asked
+// / agent did" block instead of one undifferentiated stream.
 function renderRunGroups(task: AgentTaskView, duplicateIndex: number): string {
   const groups: AgentTaskEventPayload[][] = [];
   task.events.forEach((ev, index) => {
     if (index === duplicateIndex) return;
-    if (ev.kind === "started" || groups.length === 0) {
+    if (startsNewRunGroup(ev, groups[groups.length - 1])) {
       groups.push([]);
     }
     groups[groups.length - 1].push(ev);
   });
-  return groups.map(renderRunGroup).join("");
+  return groups
+    .map((events, index) => renderRunGroup(events, index === groups.length - 1))
+    .join("");
 }
 
-function renderRunGroup(events: AgentTaskEventPayload[]): string {
-  const [head, ...rest] = events;
-  const isStarted = head?.kind === "started";
-  const userText = isStarted ? head.task ?? "" : "";
-  const message = userText
-    ? `<div class="run-message">
-         <span class="run-message__label">${esc(t("task.you"))}</span>
-         <p class="run-message__text">${esc(userText)}</p>
-       </div>`
-    : "";
-  const bodyEvents = isStarted ? rest : events;
-  return `<div class="run-group">${message}${bodyEvents.map(renderAgentEvent).join("")}</div>`;
+function startsNewRunGroup(
+  ev: AgentTaskEventPayload,
+  currentGroup: AgentTaskEventPayload[] | undefined,
+): boolean {
+  if (!currentGroup) return true;
+  if (ev.kind === "queued") return true;
+  return ev.kind === "started" && currentGroup.some((e) => e.kind === "started");
+}
+
+// The "you" message opening a run group. Shared with the live event appender
+// in tasks.ts so a streamed follow-up renders the same block a full render
+// rebuilds from the started event.
+export function renderRunMessage(userText: string): string {
+  return `<div class="run-message">
+       <span class="run-message__label">${esc(t("task.you"))}</span>
+       <p class="run-message__text">${esc(userText)}</p>
+     </div>`;
+}
+
+// A run group: the user's message (from the run's started event), the event
+// rows, and — for completed earlier runs — that run's answer rendered rich
+// (markdown + note citations) instead of an escaped assistant row. The last
+// group's answer lives in the answer panel; its duplicate assistant event was
+// already dropped upstream and the stream ends with the reference card.
+function renderRunGroup(events: AgentTaskEventPayload[], isLast: boolean): string {
+  const startedIndex = events.findIndex((ev) => ev.kind === "started");
+  const userText = startedIndex >= 0 ? events[startedIndex].task ?? "" : "";
+  const message = userText ? renderRunMessage(userText) : "";
+  const body = events.filter((_, index) => index !== startedIndex);
+
+  let answer = "";
+  if (!isLast && body.some((ev) => ev.kind === "done")) {
+    let answerIndex = -1;
+    for (let index = body.length - 1; index >= 0; index -= 1) {
+      if (body[index].kind === "assistant") {
+        answerIndex = index;
+        break;
+      }
+    }
+    if (answerIndex >= 0) {
+      let text = body[answerIndex].text;
+      if (text.endsWith(EVENT_TRUNCATION_SUFFIX)) {
+        text = text.slice(0, -EVENT_TRUNCATION_SUFFIX.length);
+      }
+      answer = `<div class="run-answer result-md note-answer">${renderNoteAnswer(text)}</div>`;
+      body.splice(answerIndex, 1);
+    }
+  }
+  return `<div class="run-group">${message}${body.map(renderAgentEvent).join("")}${answer}</div>`;
 }
 
 // The shell caps event text at 8k chars and marks the cut with this suffix.

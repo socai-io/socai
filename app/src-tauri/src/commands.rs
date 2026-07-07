@@ -25,9 +25,10 @@ use tauri::{AppHandle, Emitter, State};
 const TAURI_AGENT_PREAMBLE: &str =
     "You are running inside the socai desktop app as a conversational, multi-turn agent. \
      Besides the Xiaohongshu site tools you have local environment tools, confined to \
-     ~/.socai: `read_file` (read text, or view image/screenshot artifacts) and `bash` \
-     (run shell commands, scoped to that same directory, to write files, list/grep \
-     artifacts, etc.). Maintain continuity with earlier turns in this chat.";
+     socai's data directories (run artifacts, session records): `read_file` (read text, \
+     or view image/screenshot artifacts) and `bash` (run shell commands, scoped to those \
+     same directories, to write files, list/grep artifacts, etc.). Maintain continuity \
+     with earlier turns in this chat.";
 
 // Appended AFTER the site playbook so it sits at the tail of the system
 // prompt — the position models weight most (prepended into the preamble,
@@ -364,11 +365,14 @@ pub async fn agent_task_start(
     ensure_llm_provider_configured_for(provider.as_deref(), model.as_deref())
         .map_err(|e| format!("{e:#}"))?;
 
+    // One conversation = one folder under the runs root, named after the
+    // first task; each turn's run dir nests inside it (turn-01_…, turn-02_…).
     let site_id = app_site().map(|site| site.id).unwrap_or("agent");
-    let run_dir = make_run_dir(&format!("{site_id} {task_text}"));
-    let _ = std::fs::create_dir_all(&run_dir);
-    let conversation = Conversation::new(model.clone())
+    let conversation_dir = make_run_dir(&format!("{site_id} {task_text}"));
+    let conversation = Conversation::create_at(&conversation_dir, model.clone())
         .map_err(|err| format!("failed to create desktop conversation session for task: {err}"))?;
+    let run_dir = conversation.next_turn_dir(&task_text);
+    let _ = std::fs::create_dir_all(&run_dir);
     let session_dir = conversation.dir.display().to_string();
     let registry = tasks.inner().clone();
     let snapshot = registry
@@ -448,16 +452,21 @@ pub async fn agent_task_reply(
     if matches!(existing.status.as_str(), "queued" | "running") {
         return Err("task is still running — wait for it to finish before replying".into());
     }
-    if existing.session_dir.is_none() {
+    let Some(session_dir) = existing.session_dir.as_deref() else {
         return Err("task has no conversation to continue".into());
-    }
+    };
     let provider = existing.provider.clone();
     let model = existing.model.clone();
     ensure_llm_provider_configured_for(provider.as_deref(), model.as_deref())
         .map_err(|e| format!("{e:#}"))?;
 
-    let site_id = app_site().map(|site| site.id).unwrap_or("agent");
-    let run_dir = make_run_dir(&format!("{site_id} {message_text}"));
+    // This turn's run dir nests inside the conversation dir. Tasks created
+    // before nesting have their session dir under ~/.socai/sessions; their
+    // new turns nest there too, which the timeline and delete paths handle
+    // the same way.
+    let conversation = Conversation::load(session_dir)
+        .map_err(|err| format!("failed to load conversation for task: {err}"))?;
+    let run_dir = conversation.next_turn_dir(&message_text);
     let _ = std::fs::create_dir_all(&run_dir);
 
     let snapshot = registry
@@ -547,10 +556,13 @@ pub async fn agent_task_events(
         .ok_or_else(|| format!("unknown task: {task_id}"))
 }
 
-/// Notes the agent saw during a run — full content + resolved local media,
-/// read from `<run_dir>/notes.json`. Empty when the run recorded none (or has
-/// not scanned yet). Powers the desktop app's embedded rich-note cards; works
-/// live (run_dir is set at task creation) and on history reload.
+/// Notes the agent saw across the task's whole conversation — full content +
+/// resolved local media, aggregated from every run's `notes.json` (oldest
+/// first, re-reads overwrite in place) so earlier turns' citations keep
+/// resolving after a follow-up. Media paths are absolutized against each
+/// note's own run dir, since one registry now spans several run dirs. Powers
+/// the desktop app's embedded rich-note cards; works live (run_dir is set at
+/// task creation) and on history reload.
 #[tauri::command]
 pub async fn agent_task_notes(
     tasks: State<'_, AgentTaskRegistry>,
@@ -560,12 +572,59 @@ pub async fn agent_task_notes(
         .get(&task_id)
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
-    let Some(run_dir) = snapshot.run_dir else {
-        return Ok(Vec::new());
+    let mut order: Vec<String> = Vec::new();
+    let mut by_id: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    for (run_dir, _) in crate::timeline::conversation_run_dirs(&snapshot) {
+        for mut note in socai_core::agent::note_store::load_notes(&run_dir) {
+            absolutize_note_media(&mut note, &run_dir);
+            let Some(id) = note
+                .get("note_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            if !by_id.contains_key(&id) {
+                order.push(id.clone());
+            }
+            by_id.insert(id, note);
+        }
+    }
+    Ok(order
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .collect())
+}
+
+/// Rewrite a note's run-dir-relative media paths (`media[].src`/`poster`,
+/// resolved via `media_dir`) to absolute paths, so notes from different runs
+/// can share one frontend registry.
+fn absolutize_note_media(note: &mut Value, run_dir: &std::path::Path) {
+    let media_dir = note
+        .get("media_dir")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let base = if media_dir.is_empty() {
+        run_dir.to_path_buf()
+    } else {
+        run_dir.join(&media_dir)
     };
-    Ok(socai_core::agent::note_store::load_notes(
-        std::path::Path::new(&run_dir),
-    ))
+    let Some(media) = note.get_mut("media").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in media {
+        for key in ["src", "poster"] {
+            let Some(value) = item.get(key).and_then(Value::as_str) else {
+                continue;
+            };
+            if value.is_empty() || std::path::Path::new(value).is_absolute() {
+                continue;
+            }
+            item[key] = json!(base.join(value).to_string_lossy());
+        }
+    }
 }
 
 #[tauri::command]
@@ -618,9 +677,12 @@ pub async fn agent_task_cancel(
     Ok(snapshot)
 }
 
-/// Remove a task from history and delete its on-disk artifacts: the run dir
-/// (run.json, report.md, notes.json, media) and the conversation session dir.
-/// Active tasks must be cancelled first; the registry enforces that.
+/// Remove a task from history and delete its on-disk artifacts: every run dir
+/// the conversation recorded (run.json, report.md, notes.json, media), the
+/// latest run dir, and the conversation session dir. With the nested layout,
+/// removing the session dir covers the turns inside it; the explicit run-dir
+/// list also cleans up conversations whose turns predate nesting. Active
+/// tasks must be cancelled first; the registry enforces that.
 #[tauri::command]
 pub async fn agent_task_delete(
     tasks: State<'_, AgentTaskRegistry>,
@@ -628,7 +690,19 @@ pub async fn agent_task_delete(
     task_id: String,
 ) -> Result<(), String> {
     let snapshot = tasks.delete(&task_id).await?;
-    for dir in [&snapshot.run_dir, &snapshot.session_dir].into_iter().flatten() {
+    let mut dirs: Vec<String> = Vec::new();
+    if let Some(session_dir) = &snapshot.session_dir {
+        if let Ok(conversation) = Conversation::load(session_dir) {
+            dirs.extend(conversation.runs.iter().map(|run| run.run_dir.clone()));
+        }
+        dirs.push(session_dir.clone());
+    }
+    if let Some(run_dir) = &snapshot.run_dir {
+        dirs.push(run_dir.clone());
+    }
+    dirs.sort();
+    dirs.dedup();
+    for dir in &dirs {
         if let Err(err) = std::fs::remove_dir_all(dir) {
             if err.kind() != std::io::ErrorKind::NotFound {
                 eprintln!("failed to delete task artifacts at {dir}: {err}");

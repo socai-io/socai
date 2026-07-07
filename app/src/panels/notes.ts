@@ -56,7 +56,9 @@ function authorInitial(note: NoteData): string {
 function assetUrl(note: NoteData, path: string | undefined): string {
   if (!path) return "";
   if (/^(asset|https?):/.test(path)) return path;
-  if (path.startsWith("/")) return convertFileSrc(path);
+  // Absolute: unix, or a Windows drive path (the backend absolutizes media
+  // paths when aggregating notes across a conversation's run dirs).
+  if (path.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(path)) return convertFileSrc(path);
   const base = `${RUN_DIR.replace(/\/$/, "")}/${(note.media_dir || "").replace(/\/$/, "")}`;
   return convertFileSrc(`${base.replace(/\/$/, "")}/${path}`);
 }

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use socai_core::agent::{AgentEvent, Conversation};
+use socai_core::agent::{AgentEvent, Conversation, Run};
 
 use crate::tasks::{now_ms, AgentTaskSnapshot};
 
@@ -277,8 +277,39 @@ pub(crate) fn load_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEve
     // "started" event (task/model) is the boundary the frontend renders as a
     // new message in the thread.
     let mut events = Vec::new();
-    for run_dir in run_dirs_for_timeline(snapshot) {
-        events.extend(replay_run_events(snapshot, &run_dir));
+    let runs = conversation_run_dirs(snapshot);
+    let last_index = runs.len().saturating_sub(1);
+    for (index, (run_dir, record)) in runs.iter().enumerate() {
+        let replayed = replay_run_events(snapshot, run_dir);
+        if replayed.is_empty() {
+            // A run cancelled before it wrote run.json still has a recorded
+            // user message; synthesize its boundary so it doesn't vanish.
+            if let Some(record) = record {
+                events.push(replay_event(
+                    snapshot,
+                    AgentTaskEventKind::Started {
+                        run_id: String::new(),
+                        task: record.user.clone(),
+                        model: snapshot
+                            .model
+                            .clone()
+                            .unwrap_or_else(|| "unknown model".into()),
+                        text: started_event_text_fields(&record.user, None, "unknown model"),
+                    },
+                ));
+            }
+        } else {
+            events.extend(replayed);
+        }
+        // Non-final runs get their terminal marker from the conversation
+        // record (the snapshot's status only describes the latest run).
+        if index != last_index {
+            if let Some(record) = record {
+                if let Some(marker) = run_status_marker(&record.status) {
+                    events.push(replay_event(snapshot, marker));
+                }
+            }
+        }
     }
     if !events.is_empty() {
         ensure_started_event(snapshot, &mut events);
@@ -289,15 +320,21 @@ pub(crate) fn load_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEve
     events
 }
 
-/// Every run dir belonging to this task's conversation, oldest first: the
-/// conversation's recorded runs, plus the current run dir when it isn't in
-/// that list yet (still in-flight, or finished just before this read — see
-/// the ordering note on `record_desktop_session`'s callers).
-fn run_dirs_for_timeline(snapshot: &AgentTaskSnapshot) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
+/// Every run dir belonging to this task's conversation, oldest first (with
+/// its conversation record when it has one): the conversation's recorded
+/// runs, plus the current run dir when it isn't in that list yet (still
+/// in-flight, or finished just before this read — see the ordering note on
+/// `record_desktop_session`'s callers). Shared with the notes aggregator.
+pub(crate) fn conversation_run_dirs(snapshot: &AgentTaskSnapshot) -> Vec<(PathBuf, Option<Run>)> {
+    let mut dirs: Vec<(PathBuf, Option<Run>)> = Vec::new();
     if let Some(session_dir) = snapshot.session_dir.as_deref() {
         if let Ok(conversation) = Conversation::load(session_dir) {
-            dirs.extend(conversation.runs.iter().map(|run| PathBuf::from(&run.run_dir)));
+            dirs.extend(
+                conversation
+                    .runs
+                    .iter()
+                    .map(|run| (PathBuf::from(&run.run_dir), Some(run.clone()))),
+            );
         }
     }
     if let Some(run_dir) = snapshot
@@ -306,11 +343,28 @@ fn run_dirs_for_timeline(snapshot: &AgentTaskSnapshot) -> Vec<PathBuf> {
         .filter(|dir| !dir.trim().is_empty())
     {
         let run_dir = PathBuf::from(run_dir);
-        if dirs.last() != Some(&run_dir) {
-            dirs.push(run_dir);
+        if !dirs.iter().any(|(dir, _)| dir == &run_dir) {
+            dirs.push((run_dir, None));
         }
     }
     dirs
+}
+
+/// Terminal timeline marker for a non-final run, from its conversation
+/// record status. Completed runs already replay a `done` event.
+fn run_status_marker(status: &str) -> Option<AgentTaskEventKind> {
+    match status {
+        "failed" => Some(AgentTaskEventKind::Failed {
+            text: "task failed".into(),
+        }),
+        "cancelled" => Some(AgentTaskEventKind::Cancelled {
+            text: "task cancelled".into(),
+        }),
+        "interrupted" => Some(AgentTaskEventKind::Interrupted {
+            text: "task interrupted".into(),
+        }),
+        _ => None,
+    }
 }
 
 pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind {
@@ -484,10 +538,22 @@ fn replay_run_events(snapshot: &AgentTaskSnapshot, run_dir: &Path) -> Vec<AgentT
                 .get("id")
                 .and_then(Value::as_str)
                 .unwrap_or("tool-call");
-            let tool_rel = format!(
-                "tools/step-{step:03}-call-{sequence:02}-{}",
-                safe_component(name, "tool")
-            );
+            // Pre-rename runs (< #190) recorded tool dirs as `turn-…`.
+            let tool_rel = ["step", "turn"]
+                .iter()
+                .map(|prefix| {
+                    format!(
+                        "tools/{prefix}-{step:03}-call-{sequence:02}-{}",
+                        safe_component(name, "tool")
+                    )
+                })
+                .find(|rel| run_dir.join(rel).is_dir())
+                .unwrap_or_else(|| {
+                    format!(
+                        "tools/step-{step:03}-call-{sequence:02}-{}",
+                        safe_component(name, "tool")
+                    )
+                });
             let tool_dir = run_dir.join(&tool_rel);
             let manifest = read_json(&tool_dir.join("tool.json")).unwrap_or(Value::Null);
             let input = manifest
@@ -522,7 +588,12 @@ fn replay_run_events(snapshot: &AgentTaskSnapshot, run_dir: &Path) -> Vec<AgentT
             ));
         }
     }
-    let steps = run.get("steps").and_then(Value::as_u64).unwrap_or_default() as u32;
+    // Pre-rename runs (< #190) recorded the step count as "turns".
+    let steps = run
+        .get("steps")
+        .or_else(|| run.get("turns"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as u32;
     if run.get("status").and_then(Value::as_str) == Some("completed") {
         events.push(replay_event(
             snapshot,
