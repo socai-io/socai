@@ -63,6 +63,17 @@ fn md5_hex_short(bytes: &[u8]) -> String {
     s
 }
 
+/// Full 32-hex md5 of the input — stable id derivation (e.g. a conversation's
+/// shared trace id), not a security boundary.
+pub(crate) fn md5_hex(bytes: &[u8]) -> String {
+    let digest = md5_compute(bytes);
+    let mut s = String::with_capacity(32);
+    for byte in &digest {
+        s.push_str(&format!("{byte:02x}"));
+    }
+    s
+}
+
 // RFC 1321 MD5 — non-crypto purpose. Collisions here would mean we
 // fail to spot a repeat call, not a security boundary.
 fn md5_compute(input: &[u8]) -> [u8; 16] {

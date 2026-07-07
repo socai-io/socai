@@ -22,6 +22,7 @@ use uuid::Uuid;
 use super::query_text_enabled;
 use super::tool_call::{summarize_tool_args, summarize_tool_result};
 use crate::agent::llm::LLMResponse;
+use crate::agent::signature::md5_hex;
 
 /// Safety net for pathological runs; a default run (30 steps) stays far below.
 const MAX_CHILD_SPANS: usize = 400;
@@ -57,8 +58,16 @@ impl RunTraceBuilder {
         session_id: Option<&str>,
         seed_messages: usize,
     ) -> Self {
+        // One conversation = one trace: every run of a conversation derives
+        // the same trace id from its session id, so follow-up turns join the
+        // first turn's trace as additional root-level spans. Runs without a
+        // session get their own single-run trace.
+        let trace_id = match session_id.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(session) => md5_hex(format!("socai-conversation:{session}").as_bytes()),
+            None => Uuid::new_v4().simple().to_string(),
+        };
         Self {
-            trace_id: Uuid::new_v4().simple().to_string(),
+            trace_id,
             root_span_id: new_span_id(),
             run_id: run_id.to_string(),
             task_text: truncate_chars(task, TASK_TEXT_MAX_CHARS),
