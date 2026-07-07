@@ -168,6 +168,7 @@ pub async fn run_agent_with_events(
         task,
         backend.model(),
         options.session_id.as_deref(),
+        options.seed_messages.len(),
     );
 
     let mut ctx = ToolContext::new(&run_id, &run_dir).with_run_state(Arc::clone(&run_state));

@@ -41,13 +41,22 @@ pub struct RunTraceBuilder {
     task_text: String,
     model: String,
     session_id: Option<String>,
+    /// Prior chat messages seeding this run — non-zero marks a conversation
+    /// follow-up rather than a fresh task.
+    seed_messages: usize,
     started_ns: u64,
     spans: Vec<Value>,
     dropped_spans: u64,
 }
 
 impl RunTraceBuilder {
-    pub fn new(run_id: &str, task: &str, model: &str, session_id: Option<&str>) -> Self {
+    pub fn new(
+        run_id: &str,
+        task: &str,
+        model: &str,
+        session_id: Option<&str>,
+        seed_messages: usize,
+    ) -> Self {
         Self {
             trace_id: Uuid::new_v4().simple().to_string(),
             root_span_id: new_span_id(),
@@ -55,6 +64,7 @@ impl RunTraceBuilder {
             task_text: truncate_chars(task, TASK_TEXT_MAX_CHARS),
             model: model.to_string(),
             session_id: session_id.map(ToOwned::to_owned),
+            seed_messages,
             started_ns: now_ns(),
             spans: Vec::new(),
             dropped_spans: 0,
@@ -147,6 +157,8 @@ impl RunTraceBuilder {
         if let Some(session_id) = &self.session_id {
             attrs.push(attr_str("socai.session_id", session_id));
         }
+        attrs.push(attr_bool("socai.follow_up", self.seed_messages > 0));
+        attrs.push(attr_int("socai.seed_messages", self.seed_messages as i64));
         if self.dropped_spans > 0 {
             attrs.push(attr_int("socai.spans_dropped", self.dropped_spans as i64));
         }
