@@ -16,6 +16,7 @@ import type { AgentTaskEventPayload } from "../main";
 import { esc } from "../lib/html";
 import { renderNoteAnswer, renderTimelineEmbed, setNoteRegistry } from "./notes";
 import { formatSourceCount, formatTaskCount, formatTaskTimestamp, formatTokenUsage, taskStatusLabel, t } from "../lib/i18n";
+import { sendShortcutLabel } from "../lib/shortcuts";
 import type { AgentTaskView } from "./tasks";
 
 export interface SidebarProps {
@@ -151,7 +152,7 @@ function renderReplyComposer(task: AgentTaskView, props: ReplyComposerProps): st
           placeholder="${esc(t("task.replyPlaceholder"))}"
           ${props.submitting ? "disabled" : ""}
         >${esc(props.draft)}</textarea>
-        <button id="task-reply-submit" type="submit" class="btn-primary btn-compact task-reply-send" ${runDisabled ? "disabled" : ""}>
+        <button id="task-reply-submit" type="submit" class="btn-primary btn-compact task-reply-send" title="${esc(sendShortcutLabel)}" ${runDisabled ? "disabled" : ""}>
           ${props.submitting ? esc(t("task.replySending")) : esc(t("task.replySend"))}
         </button>
       </div>

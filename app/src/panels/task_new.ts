@@ -5,6 +5,7 @@
 import type { ModelInfo, Status, ShellState } from "../main";
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
+import { sendShortcutLabel } from "../lib/shortcuts";
 
 export interface ComposePaneProps {
   shell: ShellState;
@@ -58,7 +59,7 @@ function renderTaskForm(
 
       <div class="task-controls">
         ${renderAgentSummary(props.selectedModel)}
-        <button id="task-submit" type="submit" class="btn-primary" ${runDisabled ? "disabled" : ""}>
+        <button id="task-submit" type="submit" class="btn-primary" title="${esc(sendShortcutLabel)}" ${runDisabled ? "disabled" : ""}>
           ${running ? esc(t("task.starting")) : esc(t("task.new"))}
         </button>
       </div>

@@ -13,6 +13,7 @@ import type {
 } from "../main";
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
+import { isSendShortcut } from "../lib/shortcuts";
 import { noteRefsFromEvent, renderAgentEvent, renderConfirmDeleteDialog, renderRunMessage, renderSidebar as renderSidebarMarkup, renderTaskDetail, renderTaskMetaItems } from "./task_history";
 import type { ReplyComposerProps } from "./task_history";
 import { bindNoteInteractions, renderTimelineEmbed, setNoteRegistry } from "./notes";
@@ -654,6 +655,13 @@ export namespace agentPanel {
       draft = taskEl.value;
       updateSubmitButton(shell);
     });
+    // cmd/ctrl+enter sends; routed through the button so its disabled state
+    // (empty draft, disconnected, no model key) keeps gating submission.
+    taskEl?.addEventListener("keydown", (e) => {
+      if (!isSendShortcut(e)) return;
+      e.preventDefault();
+      document.getElementById("task-submit")?.click();
+    });
 
     // The row's open control is a native <button>, so click/Enter/Space are
     // handled for free — no hand-bound keydown, no role/tabindex.
@@ -731,6 +739,11 @@ export namespace agentPanel {
       replyDraft = replyEl.value;
       autosizeReplyInput(replyEl);
       updateReplyButton(shell);
+    });
+    replyEl?.addEventListener("keydown", (e) => {
+      if (!isSendShortcut(e)) return;
+      e.preventDefault();
+      document.getElementById("task-reply-submit")?.click();
     });
     replyForm?.addEventListener("submit", async (e) => {
       e.preventDefault();
