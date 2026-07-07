@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -136,7 +136,7 @@ jobs:
 
     steps:
       - name: checkout release base commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.base_sha }}
 
@@ -265,7 +265,7 @@ jobs:
           ls -lah dist-artifacts
 
       - name: upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: socai-${{ needs.prepare.outputs.version }}-macos-cli
           path: dist-artifacts/*
@@ -280,7 +280,7 @@ jobs:
 
     steps:
       - name: checkout release base commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.base_sha }}
 
@@ -301,13 +301,13 @@ jobs:
           echo "versioned build tree ${versioned_sha}"
 
       - name: set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         with:
           version: 10.28.2
           run_install: false
 
       - name: set up node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -648,7 +648,7 @@ jobs:
           ls -lah dist-artifacts
 
       - name: upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: socai-${{ needs.prepare.outputs.version }}-macos-app
           path: dist-artifacts/*
@@ -661,7 +661,7 @@ jobs:
 
     steps:
       - name: checkout release base commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.base_sha }}
 
@@ -794,7 +794,7 @@ jobs:
           Get-ChildItem $dist
 
       - name: upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: socai-${{ needs.prepare.outputs.version }}-windows-cli
           path: dist-artifacts/*
@@ -807,7 +807,7 @@ jobs:
 
     steps:
       - name: checkout release base commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.base_sha }}
 
@@ -827,13 +827,13 @@ jobs:
           "versioned build tree $versionedSha"
 
       - name: set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         with:
           version: 10.28.2
           run_install: false
 
       - name: set up node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -927,7 +927,7 @@ jobs:
           Get-ChildItem $dist
 
       - name: upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: socai-${{ needs.prepare.outputs.version }}-windows-app
           path: dist-artifacts/*
@@ -946,13 +946,13 @@ jobs:
 
     steps:
       - name: checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
 
       - name: download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: socai-${{ needs.prepare.outputs.version }}-*
           merge-multiple: true
