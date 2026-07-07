@@ -20,7 +20,7 @@ pub mod signature;
 pub mod system_prompt;
 pub mod tool;
 
-pub use self::file_bash_tools::{local_agent_tools, BashTool, ReadFileTool};
+pub use self::file_bash_tools::{desktop_agent_tools, local_agent_tools, BashTool, ReadFileTool};
 pub use self::llm::{
     AnthropicBackend, Backend, Block, LLMResponse, Message, MessageContent, MessageRole,
     OpenAICompatBackend, StopReason, ToolCall, ToolResultContent, ToolSchema,

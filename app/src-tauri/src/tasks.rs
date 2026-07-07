@@ -47,6 +47,11 @@ pub struct AgentTaskSnapshot {
     pub(crate) steps: Option<u32>,
     pub(crate) input_tokens: Option<u64>,
     pub(crate) output_tokens: Option<u64>,
+    // The text driving the in-flight/most recent run — distinct from `task`,
+    // which stays the thread's original title across replies. Not persisted
+    // to tasks.json (Option fields default to None on load, which is the
+    // right fallback for a run interrupted across an app restart).
+    pub(crate) current_message: Option<String>,
 }
 
 impl Default for AgentTaskRegistry {
@@ -70,8 +75,9 @@ impl Default for AgentTaskRegistry {
                     (task.session_dir.as_deref(), task.run_dir.as_deref())
                 {
                     if let Ok(mut conversation) = Conversation::load(session_dir) {
+                        let user_text = task.current_message.as_deref().unwrap_or(&task.task);
                         conversation.record_run(
-                            &task.task,
+                            user_text,
                             "[task interrupted: app was closed before this task finished]",
                             &PathBuf::from(run_dir),
                             "interrupted",
@@ -111,6 +117,7 @@ impl AgentTaskRegistry {
         let task_id = format!("task-{}-{}", now_ms(), guard.next_seq);
         let snapshot = AgentTaskSnapshot {
             task_id,
+            current_message: Some(task.clone()),
             task,
             provider,
             model,

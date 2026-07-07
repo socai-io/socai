@@ -4,9 +4,10 @@ use crate::timeline::{agent_event_to_timeline, AgentTaskEventKind, AgentTaskEven
 use anyhow::Result;
 use serde_json::{json, Map, Value};
 use socai_core::agent::{
-    catalog_models_for, configured_default_model_for, configured_default_provider, make_run_dir,
-    mark_agent_run_status, provider_credential_kind, resolve_provider, save_default_model,
-    AgentEvent, Conversation, CredentialKind, ModelCatalogEntry, Provider,
+    catalog_models_for, configured_default_model_for, configured_default_provider,
+    desktop_agent_tools, make_run_dir, mark_agent_run_status, provider_credential_kind,
+    resolve_provider, save_default_model, AgentEvent, Conversation, CredentialKind,
+    ModelCatalogEntry, Provider,
 };
 use socai_core::runtime::{
     create_llm_provider_for, ensure_llm_provider_configured_for,
@@ -19,10 +20,14 @@ use socai_core::telemetry::tool_call::{summarize_tool_args, summarize_tool_resul
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
-const TAURI_AGENT_PREAMBLE: &str = "You are running inside the socai desktop app.";
+const TAURI_AGENT_PREAMBLE: &str =
+    "You are running inside the socai desktop app as a conversational, multi-turn agent. \
+     Besides the Xiaohongshu site tools you have local environment tools, confined to \
+     ~/.socai: `read_file` (read text, or view image/screenshot artifacts) and `bash` \
+     (run shell commands, scoped to that same directory, to write files, list/grep \
+     artifacts, etc.). Maintain continuity with earlier turns in this chat.";
 
 // Appended AFTER the site playbook so it sits at the tail of the system
 // prompt — the position models weight most (prepended into the preamble,
@@ -84,12 +89,6 @@ async fn require_connected(runtime: &SocaiRuntime) -> Result<(), String> {
     match runtime.browser_status().await {
         BrowserStatus::Connected { .. } => Ok(()),
         _ => Err("chrome not connected — click connect first".into()),
-    }
-}
-
-async fn close_page(page: Arc<RuntimePageSession>) {
-    if let Ok(page) = Arc::try_unwrap(page) {
-        let _ = page.close().await;
     }
 }
 
@@ -422,6 +421,103 @@ pub async fn agent_task_start(
     Ok(snapshot)
 }
 
+/// Continue an existing task's conversation with a follow-up message. The
+/// task must be terminal (not queued/running) — replies are serialized, same
+/// as new tasks, via `MAX_CONCURRENT_AGENT_TASKS`. Keeps the same `task_id`
+/// and `session_dir` (so the whole thread's history stays attached to one
+/// sidebar entry) but starts a fresh run dir for this turn.
+#[tauri::command]
+pub async fn agent_task_reply(
+    app: AppHandle,
+    runtime: State<'_, SocaiRuntime>,
+    tasks: State<'_, AgentTaskRegistry>,
+    telemetry: State<'_, DesktopTelemetry>,
+    task_id: String,
+    message: String,
+) -> Result<AgentTaskSnapshot, String> {
+    require_connected(&runtime).await?;
+    let message_text = message.trim().to_string();
+    if message_text.is_empty() {
+        return Err("message is empty".into());
+    }
+    let registry = tasks.inner().clone();
+    let existing = registry
+        .get(&task_id)
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    if matches!(existing.status.as_str(), "queued" | "running") {
+        return Err("task is still running — wait for it to finish before replying".into());
+    }
+    if existing.session_dir.is_none() {
+        return Err("task has no conversation to continue".into());
+    }
+    let provider = existing.provider.clone();
+    let model = existing.model.clone();
+    ensure_llm_provider_configured_for(provider.as_deref(), model.as_deref())
+        .map_err(|e| format!("{e:#}"))?;
+
+    let site_id = app_site().map(|site| site.id).unwrap_or("agent");
+    let run_dir = make_run_dir(&format!("{site_id} {message_text}"));
+    let _ = std::fs::create_dir_all(&run_dir);
+
+    let snapshot = registry
+        .update(&task_id, |snapshot| {
+            snapshot.status = "queued".into();
+            snapshot.started_at = None;
+            snapshot.finished_at = None;
+            snapshot.run_id = None;
+            snapshot.run_dir = Some(run_dir.display().to_string());
+            snapshot.target_id = None;
+            snapshot.final_text = None;
+            snapshot.error = None;
+            snapshot.steps = None;
+            snapshot.input_tokens = None;
+            snapshot.output_tokens = None;
+            snapshot.current_message = Some(message_text.clone());
+        })
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+
+    let runtime = runtime.inner().clone();
+    let telemetry = telemetry.inner().clone();
+    let task_id_for_spawn = task_id.clone();
+    let app_for_task = app.clone();
+    let registry_for_task = registry.clone();
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
+    let join = tokio::spawn(async move {
+        if start_rx.await.is_err() {
+            return;
+        }
+        run_agent_task_background(
+            app_for_task,
+            registry_for_task,
+            runtime,
+            task_id_for_spawn,
+            message_text,
+            provider,
+            model,
+            run_dir,
+            telemetry,
+        )
+        .await;
+    });
+    if let Some(handle) = tasks.set_abort_handle(&task_id, join.abort_handle()).await {
+        handle.abort();
+    } else {
+        emit_task_event(
+            &app,
+            tasks.inner(),
+            &task_id,
+            "queued",
+            "reply queued".into(),
+            Some(snapshot.clone()),
+        )
+        .await;
+        let _ = start_tx.send(());
+    }
+    Ok(snapshot)
+}
+
 #[tauri::command]
 pub async fn agent_task_list(
     tasks: State<'_, AgentTaskRegistry>,
@@ -619,7 +715,7 @@ async fn run_agent_task_background(
         }),
     );
 
-    let result = run_agent_task_on_fresh_page(
+    let result = run_agent_task_on_shared_page(
         app.clone(),
         task_id.clone(),
         runtime,
@@ -730,11 +826,12 @@ fn record_desktop_session(snapshot: &AgentTaskSnapshot, assistant: &str, status:
     let Ok(mut conversation) = Conversation::load(session_dir) else {
         return;
     };
-    conversation.record_run(&snapshot.task, assistant, &PathBuf::from(run_dir), status);
+    let user_text = snapshot.current_message.as_deref().unwrap_or(&snapshot.task);
+    conversation.record_run(user_text, assistant, &PathBuf::from(run_dir), status);
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_agent_task_on_fresh_page(
+async fn run_agent_task_on_shared_page(
     app: AppHandle,
     task_id: String,
     runtime: SocaiRuntime,
@@ -750,25 +847,35 @@ async fn run_agent_task_on_fresh_page(
     if task.is_empty() {
         anyhow::bail!("task is empty");
     }
-    let session_id = if let Some(registry) = &registry {
+    let session_dir = if let Some(registry) = &registry {
         registry
             .get(&task_id)
             .await
             .and_then(|snapshot| snapshot.session_dir)
-            .and_then(|dir| {
-                PathBuf::from(dir)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(str::to_string)
-            })
     } else {
         None
     };
+    // Prior runs in this conversation, so a reply can continue it — empty for
+    // a brand-new conversation's first run.
+    let conversation = session_dir.as_deref().and_then(|dir| Conversation::load(dir).ok());
+    let seed_messages = conversation
+        .as_ref()
+        .map(|c| c.chat_messages())
+        .unwrap_or_default();
+    let session_id = conversation.as_ref().map(|c| c.id.clone());
+    let context_note = conversation
+        .as_ref()
+        .map(|c| c.context_note())
+        .unwrap_or_default();
 
     ensure_llm_provider_configured_for(provider, model)?;
     let llm_provider = create_llm_provider_for(provider, model)?;
     let site = app_site()?;
-    let page = Arc::new(runtime.create_page(site.home_url).await?);
+    // Reused across every task/reply for the life of the browser connection —
+    // matches the TUI's ensure_site_page, so a follow-up continues on the
+    // same tab instead of navigating a fresh one from scratch. The runtime
+    // detects and replaces it if the user closed the tab externally.
+    let page = runtime.ensure_site_page(site.id, site.home_url).await?;
     let target_id = page.target_id().to_string();
     label_controlled_page(&page, &title_label).await;
     if let Some(registry) = &registry {
@@ -791,20 +898,23 @@ async fn run_agent_task_on_fresh_page(
     }
     let outcome = async {
         let agent_tools = site.default_agent_tools.unwrap_or(site.agent_tools);
-        let tools = agent_tools(page.clone(), llm_provider.clone()).await?;
+        let mut tools = agent_tools(page.clone(), llm_provider.clone()).await?;
+        tools.extend(desktop_agent_tools());
         let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
         let pump = pump_agent_task_events(app, registry.clone(), task_id.clone(), telemetry, rx);
 
         let agent_instructions = site
             .default_agent_instructions
             .unwrap_or(site.agent_instructions);
+        let preamble = format!("{TAURI_AGENT_PREAMBLE}\n\n{context_note}");
         let config = AgentRunConfig {
             extra_instructions: format!(
                 "{}{}",
-                agent_instructions(TAURI_AGENT_PREAMBLE),
+                agent_instructions(&preamble),
                 TAURI_CITATION_RULES
             ),
             enabled_sites: vec![site.id.to_string()],
+            seed_messages,
             run_dir,
             session_id,
             ..AgentRunConfig::default()
@@ -830,7 +940,6 @@ async fn run_agent_task_on_fresh_page(
             })
             .await;
     }
-    close_page(page).await;
     outcome
 }
 

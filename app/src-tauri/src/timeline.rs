@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use socai_core::agent::AgentEvent;
+use socai_core::agent::{AgentEvent, Conversation};
 
 use crate::tasks::{now_ms, AgentTaskSnapshot};
 
@@ -271,7 +271,15 @@ pub(crate) fn load_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEve
     // Replays the run.json/llm/tools layout only. Runs recorded before that
     // layout (#160, pre-2026-07) replay as just their terminal state —
     // legacy timeline.jsonl support was deliberately dropped.
-    let mut events = replay_task_events(snapshot);
+    //
+    // A task's conversation can span multiple runs (replies continue it), so
+    // this concatenates every run's replay in order — each run's own
+    // "started" event (task/model) is the boundary the frontend renders as a
+    // new message in the thread.
+    let mut events = Vec::new();
+    for run_dir in run_dirs_for_timeline(snapshot) {
+        events.extend(replay_run_events(snapshot, &run_dir));
+    }
     if !events.is_empty() {
         ensure_started_event(snapshot, &mut events);
         reindex_replay_events(snapshot, &mut events);
@@ -279,6 +287,30 @@ pub(crate) fn load_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEve
     append_terminal_snapshot_events(snapshot, &mut events);
     events.sort_by(compare_events);
     events
+}
+
+/// Every run dir belonging to this task's conversation, oldest first: the
+/// conversation's recorded runs, plus the current run dir when it isn't in
+/// that list yet (still in-flight, or finished just before this read — see
+/// the ordering note on `record_desktop_session`'s callers).
+fn run_dirs_for_timeline(snapshot: &AgentTaskSnapshot) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(session_dir) = snapshot.session_dir.as_deref() {
+        if let Ok(conversation) = Conversation::load(session_dir) {
+            dirs.extend(conversation.runs.iter().map(|run| PathBuf::from(&run.run_dir)));
+        }
+    }
+    if let Some(run_dir) = snapshot
+        .run_dir
+        .as_deref()
+        .filter(|dir| !dir.trim().is_empty())
+    {
+        let run_dir = PathBuf::from(run_dir);
+        if dirs.last() != Some(&run_dir) {
+            dirs.push(run_dir);
+        }
+    }
+    dirs
 }
 
 pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind {
@@ -371,15 +403,7 @@ pub(crate) fn user_label(name: &str) -> String {
     .into()
 }
 
-fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload> {
-    let Some(run_dir) = snapshot
-        .run_dir
-        .as_ref()
-        .filter(|dir| !dir.trim().is_empty())
-    else {
-        return Vec::new();
-    };
-    let run_dir = PathBuf::from(run_dir);
+fn replay_run_events(snapshot: &AgentTaskSnapshot, run_dir: &Path) -> Vec<AgentTaskEventPayload> {
     let Some(run) = read_json(&run_dir.join("run.json")) else {
         return Vec::new();
     };
@@ -409,7 +433,7 @@ fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload
     ));
 
     let mut last_step = None;
-    for (step, response) in llm_responses(&run_dir) {
+    for (step, response) in llm_responses(run_dir) {
         push_step_event(snapshot, &mut events, &mut last_step, step);
         if let Some(error) = response.get("error").and_then(Value::as_str) {
             events.push(replay_event(

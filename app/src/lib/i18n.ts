@@ -142,6 +142,10 @@ const messages = {
   "task.waitingForEvents": { en: "waiting for events…", zh: "等待事件…" },
   "task.noTimeline": { en: "no event timeline available.", zh: "暂无事件时间线。" },
   "task.emptyDetail": { en: "start a task or choose one from history.", zh: "启动一个任务或从历史中选择。" },
+  "task.you": { en: "you", zh: "你" },
+  "task.replyPlaceholder": { en: "ask a follow-up…", zh: "继续追问…" },
+  "task.replySend": { en: "send", zh: "发送" },
+  "task.replySending": { en: "sending…", zh: "发送中…" },
 
   "task.hero": { en: "what should socai research?", zh: "想让 socai 研究什么？" },
   "task.lede": {

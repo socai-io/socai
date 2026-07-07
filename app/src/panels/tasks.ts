@@ -14,6 +14,7 @@ import type {
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
 import { noteRefsFromEvent, renderAgentEvent, renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
+import type { ReplyComposerProps } from "./task_history";
 import { bindNoteInteractions, renderTimelineEmbed, setNoteRegistry } from "./notes";
 import { renderComposePane } from "./task_new";
 
@@ -36,6 +37,9 @@ export namespace agentPanel {
   let modelByProvider = new Map<string, string>();
   let submittingTask = false;
   let submitError = "";
+  let replyDraft = "";
+  let submittingReply = false;
+  let replyError = "";
   let tasks: AgentTaskView[] = [];
   let pendingEvents = new Map<string, AgentTaskEventPayload[]>();
   let selectedTaskId: string | null = null;
@@ -611,9 +615,15 @@ export namespace agentPanel {
         selectedModel: selectedModel(),
       })}${dialog}`;
     }
+    const replyProps: ReplyComposerProps = {
+      draft: replyDraft,
+      submitting: submittingReply,
+      error: replyError,
+      connected: shell.status.state === "connected",
+    };
     return `
       <section class="task-detail" aria-label="${esc(t("task.selectedAria"))}">
-        ${renderTaskDetail(selectedTask())}
+        ${renderTaskDetail(selectedTask(), replyProps)}
       </section>
       ${dialog}
     `;
@@ -637,6 +647,10 @@ export namespace agentPanel {
       btn.addEventListener("click", () => {
         selectedTaskId = btn.dataset.taskId ?? null;
         view = "detail";
+        // A stale draft/error from whatever task was open before shouldn't
+        // leak into this one's reply box.
+        replyDraft = "";
+        replyError = "";
         shell.rerender();
         if (selectedTaskId) void loadTaskNotes(selectedTaskId, shell);
       });
@@ -692,6 +706,21 @@ export namespace agentPanel {
     document.getElementById("task-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       await startAgentTask(shell);
+    });
+
+    const replyForm = document.getElementById("task-reply-form") as HTMLFormElement | null;
+    const replyTaskId = replyForm?.dataset.replyTask;
+    const replyEl = document.getElementById("task-reply-input") as HTMLTextAreaElement | null;
+    if (replyEl) autosizeReplyInput(replyEl);
+    updateReplyButton(shell);
+    replyEl?.addEventListener("input", () => {
+      replyDraft = replyEl.value;
+      autosizeReplyInput(replyEl);
+      updateReplyButton(shell);
+    });
+    replyForm?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (replyTaskId) await submitReply(shell, replyTaskId);
     });
 
     document.getElementById("overlay-chrome-connect")?.addEventListener("click", () => {
@@ -769,6 +798,24 @@ export namespace agentPanel {
     button.disabled = submittingTask || !draft.trim() || !connected || !modelReady;
   }
 
+  // Mirrors updateSubmitButton: toggling `disabled` on every keystroke via a
+  // full shell.rerender() would rebuild the whole detail pane (losing focus
+  // and cursor position mid-type), so this pokes the button directly instead.
+  function updateReplyButton(shell: ShellState): void {
+    const button = document.getElementById("task-reply-submit") as HTMLButtonElement | null;
+    if (!button) return;
+    const connected = shell.status.state === "connected";
+    button.disabled = submittingReply || !replyDraft.trim() || !connected;
+  }
+
+  // Grows the reply textarea with its content instead of leaving multi-line
+  // replies scrollable in a one-row box; capped by the CSS max-height (the
+  // browser clips `height` to it, so no separate JS cap is needed).
+  function autosizeReplyInput(el: HTMLTextAreaElement): void {
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }
+
   async function startAgentTask(shell: ShellState): Promise<void> {
     const value = draft.trim();
     if (!value || submittingTask) return;
@@ -790,6 +837,29 @@ export namespace agentPanel {
       submitError = `${err}`;
     } finally {
       submittingTask = false;
+      shell.rerender();
+    }
+  }
+
+  // Continues an existing task's conversation: same task_id/session, a fresh
+  // run dir for this turn. Mirrors startAgentTask but hits agent_task_reply.
+  async function submitReply(shell: ShellState, taskId: string): Promise<void> {
+    const value = replyDraft.trim();
+    if (!value || submittingReply) return;
+    submittingReply = true;
+    replyError = "";
+    shell.rerender();
+    try {
+      const snapshot = await invoke<AgentTaskSnapshot>("agent_task_reply", {
+        taskId,
+        message: value,
+      });
+      upsertTask(snapshot);
+      replyDraft = "";
+    } catch (err) {
+      replyError = `${err}`;
+    } finally {
+      submittingReply = false;
       shell.rerender();
     }
   }
@@ -877,6 +947,15 @@ export namespace agentPanel {
   }
 
   function mergeSnapshot(existing: AgentTaskView, incoming: AgentTaskSnapshot): AgentTaskSnapshot {
+    // A reply starts a new run_dir on the same task_id. Its first snapshot
+    // legitimately regresses status (completed → queued) and nulls out the
+    // previous run's final_text/steps/tokens — that's not stale/out-of-order
+    // data to guard against, it's a fresh run, so trust it outright instead
+    // of falling back to the old run's now-irrelevant values.
+    const sameRun = incoming.run_dir === existing.run_dir;
+    if (!sameRun) {
+      return { ...incoming };
+    }
     const status = statusRank(existing.status) > statusRank(incoming.status) ? existing.status : incoming.status;
     const terminalIncoming = statusRank(incoming.status) >= 2;
     return {

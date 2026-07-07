@@ -25,6 +25,13 @@ export interface SidebarProps {
   composing: boolean;
 }
 
+export interface ReplyComposerProps {
+  draft: string;
+  submitting: boolean;
+  error: string;
+  connected: boolean;
+}
+
 export function renderSidebar(props: SidebarProps): string {
   return `
     <aside class="sidebar" aria-label="${esc(t("task.historyAria"))}">
@@ -84,7 +91,7 @@ function renderTaskRows(props: SidebarProps): string {
     .join("");
 }
 
-export function renderTaskDetail(task: AgentTaskView | undefined): string {
+export function renderTaskDetail(task: AgentTaskView | undefined, replyProps: ReplyComposerProps): string {
   if (!task) return renderEmptyDetail();
 
   // Point the note UI at this task's archive; the timeline embeds and answer
@@ -96,11 +103,17 @@ export function renderTaskDetail(task: AgentTaskView | undefined): string {
   const hasResult = !!task.final_text || !!task.error;
   const bothPanels = hasTimeline && hasResult;
 
+  // A running/queued task can't take a reply yet — it already owns the one
+  // agent slot (MAX_CONCURRENT_AGENT_TASKS). Once it lands, the composer lets
+  // the thread continue instead of starting a fresh, context-less task. It
+  // sits under the timeline (the conversation itself), not under the answer.
+  const reply = running ? "" : renderReplyComposer(task, replyProps);
+
   let body: string;
   if (bothPanels) {
     body = `
       <div class="detail-split">
-        <div class="detail-col">${renderTimelinePanel(task)}</div>
+        <div class="detail-col">${renderTimelinePanel(task)}${reply}</div>
         <div class="detail-col">${renderResultPanel(task)}</div>
       </div>
     `;
@@ -108,6 +121,7 @@ export function renderTaskDetail(task: AgentTaskView | undefined): string {
     body = `
       <div class="detail-body detail-body--stacked">
         ${hasTimeline ? renderTimelinePanel(task) : ""}
+        ${reply}
         ${hasResult ? renderResultPanel(task) : ""}
         ${!hasTimeline && !hasResult ? `<p class="t-small placeholder">${esc(t("task.noTimeline"))}</p>` : ""}
       </div>
@@ -115,6 +129,27 @@ export function renderTaskDetail(task: AgentTaskView | undefined): string {
   }
 
   return `${renderDetailHead(task, running)}${body}`;
+}
+
+function renderReplyComposer(task: AgentTaskView, props: ReplyComposerProps): string {
+  const runDisabled = props.submitting || !props.draft.trim() || !props.connected;
+  return `
+    <form id="task-reply-form" class="task-reply-form" data-reply-task="${esc(task.task_id)}">
+      <div class="task-reply-row">
+        <textarea
+          id="task-reply-input"
+          class="task-reply-input"
+          rows="1"
+          placeholder="${esc(t("task.replyPlaceholder"))}"
+          ${props.submitting ? "disabled" : ""}
+        >${esc(props.draft)}</textarea>
+        <button id="task-reply-submit" type="submit" class="btn-primary btn-compact task-reply-send" ${runDisabled ? "disabled" : ""}>
+          ${props.submitting ? esc(t("task.replySending")) : esc(t("task.replySend"))}
+        </button>
+      </div>
+      ${props.error ? `<p class="t-small result-error task-reply-error">${esc(props.error)}</p>` : ""}
+    </form>
+  `;
 }
 
 function renderDetailHead(task: AgentTaskView, running: boolean): string {
@@ -150,10 +185,7 @@ function renderTimelinePanel(task: AgentTaskView): string {
   const hasEvents = task.events.length > 0;
   const duplicateIndex = finalAnswerEventIndex(task);
   const rows = hasEvents
-    ? task.events
-        .filter((_, index) => index !== duplicateIndex)
-        .map(renderAgentEvent)
-        .join("")
+    ? renderRunGroups(task, duplicateIndex)
     : `<p class="t-small placeholder" data-events-placeholder>${esc(t("task.waitingForEvents"))}</p>`;
   const answerRef = task.final_text ? renderFinalAnswerRef(task) : "";
   return `
@@ -162,6 +194,36 @@ function renderTimelinePanel(task: AgentTaskView): string {
       <div class="event-stream" data-agent-events="${esc(task.task_id)}">${rows}${answerRef}</div>
     </div>
   `;
+}
+
+// A task's conversation can span several runs (replies continue it, each a
+// fresh agent run — see socai-core's Conversation). Every run starts with a
+// "started" event; group on that boundary so each reply reads as its own
+// "you asked / agent did" block instead of one undifferentiated stream.
+function renderRunGroups(task: AgentTaskView, duplicateIndex: number): string {
+  const groups: AgentTaskEventPayload[][] = [];
+  task.events.forEach((ev, index) => {
+    if (index === duplicateIndex) return;
+    if (ev.kind === "started" || groups.length === 0) {
+      groups.push([]);
+    }
+    groups[groups.length - 1].push(ev);
+  });
+  return groups.map(renderRunGroup).join("");
+}
+
+function renderRunGroup(events: AgentTaskEventPayload[]): string {
+  const [head, ...rest] = events;
+  const isStarted = head?.kind === "started";
+  const userText = isStarted ? head.task ?? "" : "";
+  const message = userText
+    ? `<div class="run-message">
+         <span class="run-message__label">${esc(t("task.you"))}</span>
+         <p class="run-message__text">${esc(userText)}</p>
+       </div>`
+    : "";
+  const bodyEvents = isStarted ? rest : events;
+  return `<div class="run-group">${message}${bodyEvents.map(renderAgentEvent).join("")}</div>`;
 }
 
 // The shell caps event text at 8k chars and marks the cut with this suffix.

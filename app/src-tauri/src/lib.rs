@@ -152,6 +152,7 @@ pub fn run() {
             commands::agent_open_codex_login,
             commands::agent_save_api_key,
             commands::agent_task_start,
+            commands::agent_task_reply,
             commands::agent_task_list,
             commands::agent_task_get,
             commands::agent_task_events,
