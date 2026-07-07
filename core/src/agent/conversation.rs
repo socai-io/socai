@@ -66,9 +66,12 @@ impl Conversation {
 
     pub fn load(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
+        // Conversations recorded before the conversation-run-step naming
+        // unification persisted as session.json; the next persist migrates.
+        let text = std::fs::read_to_string(dir.join("conversation.json"))
+            .or_else(|_| std::fs::read_to_string(dir.join("session.json")))?;
         let mut conversation: Self =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("session.json"))?)
-                .map_err(std::io::Error::other)?;
+            serde_json::from_str(&text).map_err(std::io::Error::other)?;
         conversation.id = dir_id(&dir);
         conversation.dir = dir;
         Ok(conversation)
@@ -163,8 +166,15 @@ impl Conversation {
 
     fn persist(&self) {
         if let Ok(text) = serde_json::to_string_pretty(self) {
-            if let Err(error) = std::fs::write(self.dir.join("session.json"), text) {
-                tracing::warn!(%error, dir = %self.dir.display(), "failed to persist session.json");
+            match std::fs::write(self.dir.join("conversation.json"), text) {
+                // Drop a pre-unification session.json so the dir keeps a
+                // single source of truth once the new file exists.
+                Ok(()) => {
+                    let _ = std::fs::remove_file(self.dir.join("session.json"));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, dir = %self.dir.display(), "failed to persist conversation.json");
+                }
             }
         }
     }
@@ -177,10 +187,10 @@ fn dir_id(dir: &Path) -> String {
         .to_string()
 }
 
-// Directory root, env var, and the per-conversation `session.json` filename
-// keep their historical "session" naming — renaming them would orphan every
-// conversation already saved under `~/.socai/sessions` on users' machines.
-// Only the in-code vocabulary (Conversation/Run) changed.
+// The directory root and env var keep their historical "session" naming —
+// renaming them would orphan every conversation already saved under
+// `~/.socai/sessions` on users' machines. The per-conversation file is
+// `conversation.json` (with a `session.json` read fallback for old dirs).
 pub fn default_sessions_root() -> PathBuf {
     if let Ok(path) = std::env::var("SOCAI_SESSIONS_DIR") {
         return PathBuf::from(path);
