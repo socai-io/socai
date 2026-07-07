@@ -27,14 +27,14 @@ pub fn prepare_messages_for_context(
         let block = state.context_block(memory_max_chars.max(1200) / 2);
         if !block.trim().is_empty() {
             sections.push(format!(
-                "Structured run state from earlier turns:\n\n{block}"
+                "Structured run state from earlier steps:\n\n{block}"
             ));
         }
     }
     let memory = compact_memory_entries(memory_entries, memory_max_chars);
     if !memory.is_empty() {
         sections.push(format!(
-            "Condensed event memory from earlier turns:\n\n{memory}"
+            "Condensed event memory from earlier steps:\n\n{memory}"
         ));
     }
     if sections.is_empty() {
@@ -55,7 +55,7 @@ pub fn prepare_messages_for_context(
 
 /// Detect whether a message looks like a tool-result wrapper. The windowing
 /// routine uses this to avoid stripping the user-side half of a
-/// tool_call/tool_result pair (the assistant turn would then refer to a
+/// tool_call/tool_result pair (the assistant step would then refer to a
 /// tool_call_id the model has lost context for).
 pub fn is_tool_result_message(message: &Message) -> bool {
     if !matches!(message.role, MessageRole::User) {

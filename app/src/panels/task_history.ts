@@ -15,7 +15,7 @@
 import type { AgentTaskEventPayload } from "../main";
 import { esc } from "../lib/html";
 import { renderNoteAnswer, renderTimelineEmbed, setNoteRegistry } from "./notes";
-import { formatSourceCount, formatTaskCount, formatTaskTimestamp, formatTokenUsage, formatTurns, taskStatusLabel, t } from "../lib/i18n";
+import { formatSourceCount, formatTaskCount, formatTaskTimestamp, formatTokenUsage, taskStatusLabel, t } from "../lib/i18n";
 import type { AgentTaskView } from "./tasks";
 
 export interface SidebarProps {
@@ -129,7 +129,6 @@ function renderDetailHead(task: AgentTaskView, running: boolean): string {
     time ? `<span class="task-meta-item">${esc(time)}</span>` : "",
     duration ? `<span class="task-meta-item">${esc(duration)}</span>` : "",
     task.model ? `<span class="task-meta-item t-mono">${esc(task.model)}</span>` : "",
-    task.turns !== null && task.turns !== undefined ? `<span class="task-meta-item">${esc(formatTurns(task.turns))}</span>` : "",
     tokens ? `<span class="task-meta-item">${esc(tokens)}</span>` : "",
   ].join("");
   return `
@@ -325,7 +324,7 @@ function eventGlyph(kind: AgentTaskEventPayload["kind"]): string {
     case "running": return "●";
     case "started": return "▸";
     case "tab": return "□";
-    case "turn": return "──";
+    case "step": return "──";
     case "assistant": return " ";
     case "reasoning": return "·";
     case "tool_call": return "→";

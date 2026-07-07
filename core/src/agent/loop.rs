@@ -1,7 +1,7 @@
 //! Agent loop — the heart of the agent runtime.
 //!
 //! ```text
-//!   while turn < max_turns:
+//!   while step < max_steps:
 //!     response = backend.send(system, messages, tool_schemas)
 //!     append assistant
 //!     if no tool calls: break
@@ -47,20 +47,20 @@ pub enum AgentEvent {
         task: String,
         model: String,
     },
-    Turn {
-        turn: u32,
+    Step {
+        step: u32,
     },
     AssistantText {
-        turn: u32,
+        step: u32,
         text: String,
     },
     Reasoning {
-        turn: u32,
+        step: u32,
         text: String,
     },
     ToolCall {
         id: String,
-        turn: u32,
+        step: u32,
         sequence: u32,
         name: String,
         input: Value,
@@ -68,7 +68,7 @@ pub enum AgentEvent {
     },
     ToolResult {
         id: String,
-        turn: u32,
+        step: u32,
         sequence: u32,
         name: String,
         input: Value,
@@ -78,19 +78,19 @@ pub enum AgentEvent {
         error: Option<String>,
     },
     ApiError {
-        turn: u32,
+        step: u32,
         message: String,
     },
     Done {
         run_id: String,
-        turns: u32,
+        steps: u32,
         final_text: String,
     },
 }
 
 #[derive(Debug, Clone)]
 pub struct AgentOptions {
-    pub max_turns: u32,
+    pub max_steps: u32,
     pub max_tokens: u32,
     pub extra_instructions: String,
     pub run_dir: Option<PathBuf>,
@@ -100,8 +100,8 @@ pub struct AgentOptions {
     pub keep_recent_messages: usize,
     /// Memory budget for the condensed context_block.
     pub memory_max_chars: usize,
-    /// Prior chat-level messages to seed the conversation with, so a turn can
-    /// continue an ongoing multi-turn session. The current task is appended as
+    /// Prior chat-level messages to seed the conversation with, so a reply can
+    /// continue an ongoing conversation. The current task is appended as
     /// the final user message. Empty = a fresh, single-shot run.
     pub seed_messages: Vec<Message>,
     /// Optional parent conversation identifier.
@@ -111,7 +111,7 @@ pub struct AgentOptions {
 impl Default for AgentOptions {
     fn default() -> Self {
         Self {
-            max_turns: 30,
+            max_steps: 30,
             max_tokens: 16000,
             extra_instructions: String::new(),
             run_dir: None,
@@ -128,7 +128,7 @@ impl Default for AgentOptions {
 pub struct AgentOutcome {
     pub run_id: String,
     pub run_dir: PathBuf,
-    pub turns: u32,
+    pub steps: u32,
     pub final_text: String,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
@@ -180,7 +180,7 @@ pub async fn run_agent_with_events(
         },
     );
 
-    let mut turn = 0u32;
+    let mut step = 0u32;
     let mut final_text = String::new();
     let mut total_input_tokens = 0u64;
     let mut total_output_tokens = 0u64;
@@ -191,11 +191,11 @@ pub async fn run_agent_with_events(
     let mut truncation_retries = 0u32;
     let mut last_system: String = build_system_prompt(&[], &options.extra_instructions);
 
-    while turn < options.max_turns {
-        turn += 1;
-        ctx.turn = turn;
-        emit(&events, AgentEvent::Turn { turn });
-        debug!(turn, "agent turn start");
+    while step < options.max_steps {
+        step += 1;
+        ctx.step = step;
+        emit(&events, AgentEvent::Step { step });
+        debug!(step, "agent step start");
 
         let schemas = tool_schemas(&tools, &ctx);
         let tool_names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
@@ -210,7 +210,7 @@ pub async fn run_agent_with_events(
         );
         let request_payload =
             backend.request_payload(&system, &request_messages, &schemas, options.max_tokens)?;
-        run_recorder.record_llm_request(turn, &request_payload)?;
+        run_recorder.record_llm_request(step, &request_payload)?;
 
         let llm_started = Instant::now();
         let response: LLMResponse = match backend
@@ -219,7 +219,7 @@ pub async fn run_agent_with_events(
         {
             Ok(response) => {
                 run_recorder.record_llm_response(
-                    turn,
+                    step,
                     &response,
                     llm_started.elapsed().as_millis() as u64,
                 )?;
@@ -228,15 +228,15 @@ pub async fn run_agent_with_events(
             Err(e) => {
                 let msg = format!("{e:#}");
                 run_recorder.record_llm_error(
-                    turn,
+                    step,
                     &msg,
                     llm_started.elapsed().as_millis() as u64,
                 )?;
-                warn!(turn, error = %msg, "backend error");
+                warn!(step, error = %msg, "backend error");
                 emit(
                     &events,
                     AgentEvent::ApiError {
-                        turn,
+                        step,
                         message: msg.clone(),
                     },
                 );
@@ -262,7 +262,7 @@ pub async fn run_agent_with_events(
             emit(
                 &events,
                 AgentEvent::Reasoning {
-                    turn,
+                    step,
                     text: response.reasoning_content.clone(),
                 },
             );
@@ -272,7 +272,7 @@ pub async fn run_agent_with_events(
             emit(
                 &events,
                 AgentEvent::Reasoning {
-                    turn,
+                    step,
                     text: thinking_text.clone(),
                 },
             );
@@ -281,13 +281,13 @@ pub async fn run_agent_with_events(
         // A response cut off by max_tokens with no tool calls must not be
         // mistaken for completion: with thinking models the entire budget can
         // go to (possibly empty-text) thinking blocks, leaving no visible
-        // output at all. Discard the truncated turn — a partial turn can't be
+        // output at all. Discard the truncated step — a partial step can't be
         // replayed reliably — and ask the model to redo it, bounded so a
         // pathological loop still terminates.
         if response.stop_reason == StopReason::MaxTokens && response.tool_calls.is_empty() {
             truncation_retries += 1;
             warn!(
-                turn,
+                step,
                 truncation_retries, "response truncated by max_tokens with no tool calls"
             );
             if truncation_retries > 2 {
@@ -298,7 +298,7 @@ pub async fn run_agent_with_events(
                 emit(
                     &events,
                     AgentEvent::ApiError {
-                        turn,
+                        step,
                         message: msg.clone(),
                     },
                 );
@@ -329,7 +329,7 @@ pub async fn run_agent_with_events(
             emit(
                 &events,
                 AgentEvent::AssistantText {
-                    turn,
+                    step,
                     text: text.clone(),
                 },
             );
@@ -341,7 +341,7 @@ pub async fn run_agent_with_events(
             .iter()
             .map(|tc| json!({"name": tc.name, "input": tc.input}))
             .collect();
-        run_state.note_assistant_turn(turn, &visible_texts.join("\n"), &tool_call_summary);
+        run_state.note_assistant_step(step, &visible_texts.join("\n"), &tool_call_summary);
         if response.tool_calls.is_empty() {
             completed = true;
             break;
@@ -354,7 +354,7 @@ pub async fn run_agent_with_events(
 
             let sig = tool_call_signature(name, input);
             let history = tool_call_history.entry(sig).or_default();
-            history.push(turn);
+            history.push(step);
             let repeat_count = history.len() as u32;
 
             let sequence = (idx + 1) as u32;
@@ -362,20 +362,20 @@ pub async fn run_agent_with_events(
                 .map(|tool| tool.effective_input(input))
                 .unwrap_or_else(|| input.clone());
             let tool_recorder =
-                run_recorder.start_tool_call(turn, sequence, name, &effective_input)?;
+                run_recorder.start_tool_call(step, sequence, name, &effective_input)?;
             let tool_ctx = ctx.clone().with_tool_dir(tool_recorder.dir());
             emit(
                 &events,
                 AgentEvent::ToolCall {
                     id: id.clone(),
-                    turn,
+                    step,
                     sequence,
                     name: name.clone(),
                     input: effective_input.clone(),
                     repeat_count,
                 },
             );
-            run_state.note_tool_call(turn, name, &effective_input);
+            run_state.note_tool_call(step, name, &effective_input);
             let started = Instant::now();
             let (result, error) = dispatch_tool(&tools, name, &effective_input, &tool_ctx).await;
             let duration_ms = started.elapsed().as_millis() as u64;
@@ -390,7 +390,7 @@ pub async fn run_agent_with_events(
                 &events,
                 AgentEvent::ToolResult {
                     id: id.clone(),
-                    turn,
+                    step,
                     sequence,
                     name: name.clone(),
                     input: effective_input.clone(),
@@ -400,7 +400,7 @@ pub async fn run_agent_with_events(
                     error: error.clone(),
                 },
             );
-            run_state.note_tool_result(turn, name, &effective_input, &summary, duration_s);
+            run_state.note_tool_result(step, name, &effective_input, &summary, duration_s);
             let mut history_content = bound_content_for_history(&result_content);
             // Break tight loops: when the model fires the *same* call with the
             // same args repeatedly, the bare result won't change its mind. Tell
@@ -425,7 +425,7 @@ pub async fn run_agent_with_events(
             });
 
             context_memory.push(format!(
-                "- turn {turn} {name}({}): {summary}",
+                "- step {step} {name}({}): {summary}",
                 truncate_summary(
                     &serde_json::to_string(&effective_input).unwrap_or_default(),
                     160,
@@ -440,15 +440,15 @@ pub async fn run_agent_with_events(
         messages.push(Message::user_blocks(tool_result_blocks));
     }
 
-    if !completed && turn >= options.max_turns {
-        info!(turn, "reached max_turns, forcing final summary");
+    if !completed && step >= options.max_steps {
+        info!(step, "reached max_steps, forcing final summary");
         messages.push(Message::user(format!(
-            "You have reached the maximum of {} tool-using turns. Do not call any \
+            "You have reached the maximum of {} tool-using steps. Do not call any \
              more tools. Based on the evidence already gathered, produce the best \
              possible final answer for the user now in the same language as the \
              original task. If information is incomplete, state what is known, \
              what is missing, and give your best-effort conclusion.",
-            options.max_turns
+            options.max_steps
         )));
         let request_messages = prepare_messages_for_context(
             &messages,
@@ -459,7 +459,7 @@ pub async fn run_agent_with_events(
         );
         let request_payload =
             backend.request_payload(&last_system, &request_messages, &[], options.max_tokens)?;
-        run_recorder.record_llm_request(turn + 1, &request_payload)?;
+        run_recorder.record_llm_request(step + 1, &request_payload)?;
         let llm_started = Instant::now();
         match backend
             .send(&last_system, &request_messages, &[], options.max_tokens)
@@ -467,7 +467,7 @@ pub async fn run_agent_with_events(
         {
             Ok(response) => {
                 run_recorder.record_llm_response(
-                    turn + 1,
+                    step + 1,
                     &response,
                     llm_started.elapsed().as_millis() as u64,
                 )?;
@@ -478,7 +478,7 @@ pub async fn run_agent_with_events(
                     emit(
                         &events,
                         AgentEvent::AssistantText {
-                            turn: turn + 1,
+                            step: step + 1,
                             text: text.clone(),
                         },
                     );
@@ -488,15 +488,15 @@ pub async fn run_agent_with_events(
             Err(e) => {
                 let msg = format!("{e:#}");
                 run_recorder.record_llm_error(
-                    turn + 1,
+                    step + 1,
                     &msg,
                     llm_started.elapsed().as_millis() as u64,
                 )?;
-                warn!(turn = turn + 1, error = %msg, "forced summary error");
+                warn!(step = step + 1, error = %msg, "forced summary error");
                 emit(
                     &events,
                     AgentEvent::ApiError {
-                        turn: turn + 1,
+                        step: step + 1,
                         message: msg.clone(),
                     },
                 );
@@ -509,7 +509,7 @@ pub async fn run_agent_with_events(
         &events,
         AgentEvent::Done {
             run_id: run_id.clone(),
-            turns: turn,
+            steps: step,
             final_text: final_text.clone(),
         },
     );
@@ -523,7 +523,7 @@ pub async fn run_agent_with_events(
         } else {
             "completed"
         },
-        turn,
+        step,
         total_input_tokens,
         total_output_tokens,
         terminal_error.as_deref(),
@@ -532,7 +532,7 @@ pub async fn run_agent_with_events(
     Ok(AgentOutcome {
         run_id,
         run_dir,
-        turns: turn,
+        steps: step,
         final_text,
         total_input_tokens,
         total_output_tokens,
@@ -721,7 +721,7 @@ fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
 }
 
 /// Build the assistant message blocks for history. Truncates visible text to
-/// `ASSISTANT_TEXT_MAX_CHARS` to keep history bounded over many turns. Drops
+/// `ASSISTANT_TEXT_MAX_CHARS` to keep history bounded over many steps. Drops
 /// `[Thinking]`-prefixed text since that's already surfaced as a Reasoning
 /// event.
 fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> Vec<Block> {
@@ -741,7 +741,7 @@ fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> V
         });
     }
     // Preserve reasoning_content alongside tool_calls so providers that
-    // require it round-tripped (Kimi/Qwen) get it on the next turn.
+    // require it round-tripped (Kimi/Qwen) get it on the next step.
     if response.thinking_blocks.is_empty()
         && response.reasoning_items.is_empty()
         && !response.reasoning_content.trim().is_empty()

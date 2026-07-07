@@ -6,7 +6,7 @@ use serde_json::{json, Map, Value};
 use socai_core::agent::{
     catalog_models_for, configured_default_model_for, configured_default_provider, make_run_dir,
     mark_agent_run_status, provider_credential_kind, resolve_provider, save_default_model,
-    AgentEvent, CredentialKind, ModelCatalogEntry, Provider, Session,
+    AgentEvent, Conversation, CredentialKind, ModelCatalogEntry, Provider,
 };
 use socai_core::runtime::{
     create_llm_provider_for, ensure_llm_provider_configured_for,
@@ -138,7 +138,7 @@ fn title_safe(value: &str) -> String {
 pub struct AgentRunOutcome {
     run_id: String,
     run_dir: String,
-    turns: u32,
+    steps: u32,
     final_text: String,
     input_tokens: u64,
     output_tokens: u64,
@@ -368,9 +368,9 @@ pub async fn agent_task_start(
     let site_id = app_site().map(|site| site.id).unwrap_or("agent");
     let run_dir = make_run_dir(&format!("{site_id} {task_text}"));
     let _ = std::fs::create_dir_all(&run_dir);
-    let session = Session::new(model.clone())
+    let conversation = Conversation::new(model.clone())
         .map_err(|err| format!("failed to create desktop conversation session for task: {err}"))?;
-    let session_dir = session.dir.display().to_string();
+    let session_dir = conversation.dir.display().to_string();
     let registry = tasks.inner().clone();
     let snapshot = registry
         .create(
@@ -503,7 +503,7 @@ pub async fn agent_task_cancel(
                 "run_id": snapshot.run_id.clone(),
                 "model": snapshot.model.clone(),
                 "outcome": "cancelled",
-                "turns": snapshot.turns,
+                "steps": snapshot.steps,
                 "input_tokens": snapshot.input_tokens,
                 "output_tokens": snapshot.output_tokens,
                 "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
@@ -646,7 +646,7 @@ async fn run_agent_task_background(
                     // Final answer is hydrated from run_dir/report.md; tasks.json stays an index.
                     snapshot.final_text = None;
                     snapshot.error = None;
-                    snapshot.turns = Some(outcome.turns);
+                    snapshot.steps = Some(outcome.steps);
                     snapshot.input_tokens = Some(outcome.input_tokens);
                     snapshot.output_tokens = Some(outcome.output_tokens);
                 })
@@ -661,7 +661,7 @@ async fn run_agent_task_background(
                         "provider": provider.clone(),
                         "model": model.clone(),
                         "outcome": "completed",
-                        "turns": outcome.turns,
+                        "steps": outcome.steps,
                         "input_tokens": outcome.input_tokens,
                         "output_tokens": outcome.output_tokens,
                         "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
@@ -727,10 +727,10 @@ fn record_desktop_session(snapshot: &AgentTaskSnapshot, assistant: &str, status:
     let Some(run_dir) = snapshot.run_dir.as_deref() else {
         return;
     };
-    let Ok(mut session) = Session::load(session_dir) else {
+    let Ok(mut conversation) = Conversation::load(session_dir) else {
         return;
     };
-    session.record_run(&snapshot.task, assistant, &PathBuf::from(run_dir), status);
+    conversation.record_run(&snapshot.task, assistant, &PathBuf::from(run_dir), status);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -816,7 +816,7 @@ async fn run_agent_task_on_fresh_page(
         Ok::<AgentRunOutcome, anyhow::Error>(AgentRunOutcome {
             run_id: outcome.run_id,
             run_dir: outcome.run_dir.display().to_string(),
-            turns: outcome.turns,
+            steps: outcome.steps,
             final_text: outcome.final_text,
             input_tokens: outcome.total_input_tokens,
             output_tokens: outcome.total_output_tokens,
@@ -862,7 +862,7 @@ fn pump_agent_task_events(
                 }
                 AgentEvent::ToolResult {
                     name,
-                    turn,
+                    step,
                     sequence,
                     input,
                     content,
@@ -874,7 +874,7 @@ fn pump_agent_task_events(
                     props.insert("task_id".into(), json!(task_id.clone()));
                     props.insert("run_id".into(), json!(run_id.clone()));
                     props.insert("tool_name".into(), json!(name));
-                    props.insert("turn".into(), json!(turn));
+                    props.insert("step".into(), json!(step));
                     props.insert("sequence".into(), json!(sequence));
                     props.insert("duration_ms".into(), json!(tool_duration_ms));
                     props.insert("ok".into(), json!(error.is_none()));

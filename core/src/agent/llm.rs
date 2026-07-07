@@ -44,7 +44,7 @@ pub enum Block {
         media_type: String,
     },
     /// Reasoning trace surfaced by Kimi K2.6 / Qwen / o1-style models.
-    /// Echoed back to those providers on subsequent turns when tool_calls
+    /// Echoed back to those providers on subsequent steps when tool_calls
     /// are present (some providers reject the request otherwise).
     ReasoningContent {
         text: String,
@@ -140,7 +140,7 @@ pub enum StopReason {
 }
 
 /// One Anthropic thinking block from a response, kept verbatim (text +
-/// signature) so it can be replayed on the next turn.
+/// signature) so it can be replayed on the next step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingBlock {
     pub thinking: String,

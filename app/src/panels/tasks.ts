@@ -889,7 +889,7 @@ export namespace agentPanel {
       target_id: terminalIncoming ? incoming.target_id : incoming.target_id ?? existing.target_id,
       final_text: incoming.final_text ?? existing.final_text,
       error: incoming.error ?? existing.error,
-      turns: incoming.turns ?? existing.turns,
+      steps: incoming.steps ?? existing.steps,
       input_tokens: incoming.input_tokens ?? existing.input_tokens,
       output_tokens: incoming.output_tokens ?? existing.output_tokens,
     };

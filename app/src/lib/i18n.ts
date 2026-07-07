@@ -248,11 +248,6 @@ export function formatTaskCount(count: number): string {
   return `${count} task${count === 1 ? "" : "s"}`;
 }
 
-export function formatTurns(count: number): string {
-  if (currentLanguage === "zh") return `${count} 轮`;
-  return `${count} turn${count === 1 ? "" : "s"}`;
-}
-
 export function formatSourceCount(count: number): string {
   if (currentLanguage === "zh") return `${count} 条来源`;
   return `${count} source${count === 1 ? "" : "s"}`;

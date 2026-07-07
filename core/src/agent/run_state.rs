@@ -21,7 +21,7 @@ pub struct ArtifactRecord {
     pub label: String,
     pub kind: String,
     pub source_tool: String,
-    pub turn: Option<u32>,
+    pub step: Option<u32>,
     pub summary: String,
     pub metadata: Value,
 }
@@ -60,19 +60,19 @@ impl RunState {
         guard.recent_events.drain(0..overflow);
     }
 
-    pub fn note_assistant_turn(&self, turn: u32, text: &str, tool_calls: &[Value]) {
+    pub fn note_assistant_step(&self, step: u32, text: &str, tool_calls: &[Value]) {
         self.append_event(json!({
-            "type": "assistant_turn",
-            "turn": turn,
+            "type": "assistant_step",
+            "step": step,
             "text": truncate(text, 800),
             "tool_calls": tool_calls,
         }));
     }
 
-    pub fn note_tool_call(&self, turn: u32, tool_name: &str, tool_input: &Value) {
+    pub fn note_tool_call(&self, step: u32, tool_name: &str, tool_input: &Value) {
         self.append_event(json!({
             "type": "tool_call",
-            "turn": turn,
+            "step": step,
             "tool": tool_name,
             "input": compact_value(tool_input),
         }));
@@ -80,7 +80,7 @@ impl RunState {
 
     pub fn note_tool_result(
         &self,
-        turn: u32,
+        step: u32,
         tool_name: &str,
         tool_input: &Value,
         result_summary: &str,
@@ -88,7 +88,7 @@ impl RunState {
     ) {
         self.append_event(json!({
             "type": "tool_result",
-            "turn": turn,
+            "step": step,
             "tool": tool_name,
             "input": compact_value(tool_input),
             "result_summary": truncate(result_summary, 800),
@@ -102,7 +102,7 @@ impl RunState {
         label: &str,
         kind: &str,
         source_tool: &str,
-        turn: Option<u32>,
+        step: Option<u32>,
         summary: &str,
         metadata: Value,
         payload: Option<&Value>,
@@ -118,23 +118,23 @@ impl RunState {
                     label: label.to_string(),
                     kind: kind.to_string(),
                     source_tool: source_tool.to_string(),
-                    turn,
+                    step,
                     summary: summary.to_string(),
                     metadata,
                 },
             );
         }
         if let Some(payload) = payload {
-            self.ingest_evidence(payload, relative_path, turn);
+            self.ingest_evidence(payload, relative_path, step);
         }
         self.append_event(json!({
             "type": "artifact_recorded",
-            "turn": turn,
+            "step": step,
             "path": relative_path,
         }));
     }
 
-    fn ingest_evidence(&self, payload: &Value, artifact_path: &str, turn: Option<u32>) {
+    fn ingest_evidence(&self, payload: &Value, artifact_path: &str, step: Option<u32>) {
         let Value::Object(map) = payload else { return };
         let signal_keys = [
             "id",
@@ -166,8 +166,8 @@ impl RunState {
         };
         compact.insert("key".into(), json!(key));
         compact.insert("artifact_path".into(), json!(artifact_path));
-        if let Some(turn) = turn {
-            compact.insert("turn".into(), json!(turn));
+        if let Some(step) = step {
+            compact.insert("step".into(), json!(step));
         }
         self.inner
             .lock()
@@ -209,18 +209,18 @@ impl RunState {
             .rev()
         {
             let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
-            let turn = event.get("turn").and_then(Value::as_u64).unwrap_or(0);
+            let step = event.get("step").and_then(Value::as_u64).unwrap_or(0);
             match kind {
-                "assistant_turn" => out.push_str(&format!(
-                    "- turn {turn} assistant: {}\n",
+                "assistant_step" => out.push_str(&format!(
+                    "- step {step} assistant: {}\n",
                     truncate(event.get("text").and_then(Value::as_str).unwrap_or(""), 160)
                 )),
                 "tool_call" => out.push_str(&format!(
-                    "- turn {turn} tool_call {}\n",
+                    "- step {step} tool_call {}\n",
                     event.get("tool").and_then(Value::as_str).unwrap_or("")
                 )),
                 "tool_result" => out.push_str(&format!(
-                    "- turn {turn} tool_result {}: {}\n",
+                    "- step {step} tool_result {}: {}\n",
                     event.get("tool").and_then(Value::as_str).unwrap_or(""),
                     truncate(
                         event
@@ -231,7 +231,7 @@ impl RunState {
                     )
                 )),
                 "artifact_recorded" => out.push_str(&format!(
-                    "- turn {turn} saved {}\n",
+                    "- step {step} saved {}\n",
                     event.get("path").and_then(Value::as_str).unwrap_or("")
                 )),
                 _ => {}

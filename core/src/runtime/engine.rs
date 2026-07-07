@@ -298,14 +298,14 @@ pub fn ensure_llm_provider_configured_for(
 
 #[derive(Debug, Clone)]
 pub struct AgentRunConfig {
-    pub max_turns: u32,
+    pub max_steps: u32,
     pub max_tokens: u32,
     pub keep_recent_messages: usize,
     pub memory_max_chars: usize,
     pub extra_instructions: String,
     pub enabled_sites: Vec<String>,
     pub run_dir: Option<PathBuf>,
-    /// Prior chat-level messages to continue a multi-turn session from.
+    /// Prior chat-level messages to continue an ongoing conversation from.
     pub seed_messages: Vec<Message>,
     pub session_id: Option<String>,
 }
@@ -313,7 +313,7 @@ pub struct AgentRunConfig {
 impl Default for AgentRunConfig {
     fn default() -> Self {
         Self {
-            max_turns: 30,
+            max_steps: 30,
             // Thinking tokens count against max_tokens on Anthropic thinking
             // models (Sonnet 5 thinks by default), so 4096 starves the final
             // report. 16000 is the recommended non-streaming ceiling.
@@ -341,7 +341,7 @@ pub async fn run_agent_task(
         anyhow::bail!("task is empty");
     }
     let options = AgentOptions {
-        max_turns: config.max_turns,
+        max_steps: config.max_steps,
         max_tokens: config.max_tokens,
         extra_instructions: config.extra_instructions,
         run_dir: config.run_dir,

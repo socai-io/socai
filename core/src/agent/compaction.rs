@@ -3,7 +3,7 @@
 //!
 //! These are used in two places:
 //! - Agent loop history (keep tool_result bodies bounded so context doesn't
-//!   blow up over many turns).
+//!   blow up over many steps).
 //! - RunState (compact entity-like payloads when summarizing
 //!   evidence for working_memory.md).
 

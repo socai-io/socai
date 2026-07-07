@@ -106,7 +106,7 @@ pub fn run() {
                                         "run_id": snapshot.run_id.clone(),
                                         "model": snapshot.model.clone(),
                                         "outcome": "interrupted",
-                                        "turns": snapshot.turns,
+                                        "steps": snapshot.steps,
                                         "input_tokens": snapshot.input_tokens,
                                         "output_tokens": snapshot.output_tokens,
                                         "duration_ms": duration_ms(

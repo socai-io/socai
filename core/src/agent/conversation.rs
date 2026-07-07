@@ -1,8 +1,8 @@
-//! Persistent multi-turn conversation index.
+//! Persistent conversation index of agent runs.
 //!
-//! A session owns user-message order and references to L2 agent runs. Assistant
-//! output is read from each run's `report.md`; an inline fallback is stored
-//! only when a run did not produce a report.
+//! A conversation owns user-message order and references to L2 agent runs.
+//! Assistant output is read from each run's `report.md`; an inline fallback
+//! is stored only when a run did not produce a report.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::agent::llm::{Block, Message};
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct Turn {
+pub struct Run {
     pub user: String,
     pub run_dir: String,
     pub status: String,
@@ -23,7 +23,7 @@ pub struct Turn {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct Session {
+pub struct Conversation {
     #[serde(skip)]
     pub id: String,
     #[serde(skip)]
@@ -31,10 +31,10 @@ pub struct Session {
     pub model: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
-    pub turns: Vec<Turn>,
+    pub runs: Vec<Run>,
 }
 
-impl Session {
+impl Conversation {
     pub fn new(model: Option<String>) -> std::io::Result<Self> {
         let now = now_ms();
         let id = format!(
@@ -43,33 +43,33 @@ impl Session {
         );
         let dir = default_sessions_root().join(&id);
         std::fs::create_dir_all(&dir)?;
-        let session = Self {
+        let conversation = Self {
             id,
             dir,
             model,
             created_at_ms: now,
             updated_at_ms: now,
-            turns: Vec::new(),
+            runs: Vec::new(),
         };
-        session.persist();
-        Ok(session)
+        conversation.persist();
+        Ok(conversation)
     }
 
     pub fn load(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
-        let mut session: Self =
+        let mut conversation: Self =
             serde_json::from_str(&std::fs::read_to_string(dir.join("session.json"))?)
                 .map_err(std::io::Error::other)?;
-        session.id = dir
+        conversation.id = dir
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("session")
             .to_string();
-        session.dir = dir;
-        Ok(session)
+        conversation.dir = dir;
+        Ok(conversation)
     }
 
-    pub fn record_turn(&mut self, user: &str, assistant: &str, run_dir: &Path) {
+    pub fn record_completed_run(&mut self, user: &str, assistant: &str, run_dir: &Path) {
         self.record_run(user, assistant, run_dir, "completed");
     }
 
@@ -77,7 +77,7 @@ impl Session {
         let assistant_fallback = (!run_dir.join("report.md").is_file())
             .then(|| assistant.to_string())
             .filter(|value| !value.is_empty());
-        self.turns.push(Turn {
+        self.runs.push(Run {
             user: user.to_string(),
             run_dir: run_dir.to_string_lossy().to_string(),
             status: status.to_string(),
@@ -89,12 +89,12 @@ impl Session {
     }
 
     pub fn chat_messages(&self) -> Vec<Message> {
-        let mut messages = Vec::with_capacity(self.turns.len() * 2);
-        for turn in &self.turns {
-            messages.push(Message::user(turn.user.clone()));
-            let report = std::fs::read_to_string(Path::new(&turn.run_dir).join("report.md"))
+        let mut messages = Vec::with_capacity(self.runs.len() * 2);
+        for run in &self.runs {
+            messages.push(Message::user(run.user.clone()));
+            let report = std::fs::read_to_string(Path::new(&run.run_dir).join("report.md"))
                 .ok()
-                .or_else(|| turn.assistant_fallback.clone())
+                .or_else(|| run.assistant_fallback.clone())
                 .unwrap_or_default();
             messages.push(Message::assistant_blocks(vec![Block::Text {
                 text: report,
@@ -105,16 +105,16 @@ impl Session {
 
     pub fn context_note(&self) -> String {
         let mut lines = vec![format!(
-            "This is an ongoing chat session (session dir: {}). Earlier turns have \
-             their full records in these run dirs:",
+            "This is an ongoing chat conversation (conversation dir: {}). Earlier runs \
+             have their full records in these run dirs:",
             self.dir.display()
         )];
-        for (index, turn) in self.turns.iter().enumerate() {
+        for (index, run) in self.runs.iter().enumerate() {
             lines.push(format!(
                 "  {}. {} — {}",
                 index + 1,
-                turn.run_dir,
-                preview(&turn.user)
+                run.run_dir,
+                preview(&run.user)
             ));
         }
         lines.join("\n")
@@ -127,6 +127,10 @@ impl Session {
     }
 }
 
+// Directory root, env var, and the per-conversation `session.json` filename
+// keep their historical "session" naming — renaming them would orphan every
+// conversation already saved under `~/.socai/sessions` on users' machines.
+// Only the in-code vocabulary (Conversation/Run) changed.
 pub fn default_sessions_root() -> PathBuf {
     if let Ok(path) = std::env::var("SOCAI_SESSIONS_DIR") {
         return PathBuf::from(path);

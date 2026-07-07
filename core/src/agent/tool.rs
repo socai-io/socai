@@ -142,7 +142,7 @@ impl From<&str> for ToolResult {
 pub struct ToolContext {
     pub run_id: String,
     pub run_dir: PathBuf,
-    pub turn: u32,
+    pub step: u32,
     pub active_tool_name: String,
     pub run_state: Option<Arc<RunState>>,
     tool_dir: Option<PathBuf>,
@@ -183,7 +183,7 @@ impl std::fmt::Debug for ToolContext {
         f.debug_struct("ToolContext")
             .field("run_id", &self.run_id)
             .field("run_dir", &self.run_dir)
-            .field("turn", &self.turn)
+            .field("step", &self.step)
             .field("active_tool_name", &self.active_tool_name)
             .field("has_run_state", &self.run_state.is_some())
             .finish()
@@ -195,7 +195,7 @@ impl ToolContext {
         Self {
             run_id: run_id.into(),
             run_dir: run_dir.as_ref().to_path_buf(),
-            turn: 0,
+            step: 0,
             active_tool_name: String::new(),
             run_state: None,
             tool_dir: None,
@@ -410,7 +410,7 @@ impl ToolContext {
                 label,
                 kind,
                 source,
-                Some(self.turn),
+                Some(self.step),
                 summary,
                 metadata,
                 payload,

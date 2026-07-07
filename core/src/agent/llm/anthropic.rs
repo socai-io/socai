@@ -27,7 +27,7 @@ pub struct AnthropicBackend {
     client: reqwest::Client,
     /// When true, add `cache_control: ephemeral` to (a) the system prompt
     /// and (b) the last tool definition. Lets Anthropic cache them across
-    /// turns and cuts input-token cost.
+    /// steps and cuts input-token cost.
     enable_prompt_caching: bool,
 }
 

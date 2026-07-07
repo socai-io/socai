@@ -20,7 +20,7 @@ use socai_core::agent::{
     resolve_provider, save_api_key, save_default_model, AgentEvent, Backend, CredentialKind,
     ModelCatalogEntry, Provider, PROVIDERS,
 };
-use socai_core::agent::{local_agent_tools, make_run_dir, Session};
+use socai_core::agent::{local_agent_tools, make_run_dir, Conversation};
 use socai_core::runtime::{
     create_llm_provider_for, run_agent_task as run_agent_with_tools, AgentRunConfig, SocaiRuntime,
 };
@@ -68,13 +68,13 @@ struct AppState {
     // selection is honored verbatim — model-prefix inference can't tell
     // apart providers that share model ids (mainland vs international Qwen).
     provider: Option<Provider>,
-    session: Session,
+    conversation: Conversation,
 }
 
 /// Live snapshot of an in-flight run, updated off the event stream so an
-/// interrupted turn can still be recorded with its run_id + partial answer.
+/// interrupted run can still be recorded with its run_id + partial answer.
 #[derive(Default)]
-struct LiveTurn {
+struct LiveRun {
     run_id: String,
     assistant: String,
 }
@@ -163,11 +163,11 @@ pub async fn run() -> Result<()> {
     ensure_any_llm_key().await?;
 
     let runtime = SocaiRuntime::new();
-    let session = Session::new(None).context("failed to create chat session")?;
+    let conversation = Conversation::new(None).context("failed to create chat session")?;
     let mut state = AppState {
         model: None,
         provider: None,
-        session,
+        conversation,
     };
 
     let mut editor = build_editor()?;
@@ -316,8 +316,9 @@ async fn slash_menu() -> Result<Option<String>> {
 // ---------- /clear (and its /new alias) ------------------------------------
 
 fn handle_clear_command(state: &mut AppState) -> Result<()> {
-    state.session = Session::new(state.model.clone()).context("failed to start a new session")?;
-    println!("[socai] chat cleared — new session {}", state.session.id);
+    state.conversation =
+        Conversation::new(state.model.clone()).context("failed to start a new session")?;
+    println!("[socai] chat cleared — new session {}", state.conversation.id);
     Ok(())
 }
 
@@ -615,21 +616,21 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     println!("[socai] using {}", llm_provider.label());
 
     // Pin the run dir up front (instead of letting the loop allocate it) so an
-    // interrupted or failed turn still knows where partial artifacts live and
+    // interrupted or failed run still knows where partial artifacts live and
     // can record itself for follow-ups.
     let site = tui_site()?;
     let run_dir = make_run_dir(&format!("{} {task}", site.id));
     let _ = std::fs::create_dir_all(&run_dir);
 
     // Browser/network setup can fail (e.g. DNS ERR_NAME_NOT_RESOLVED). Record
-    // the turn even then, so a follow-up still knows what the user asked.
+    // the run even then, so a follow-up still knows what the user asked.
     println!("[socai] connecting browser...");
     let page = match runtime.ensure_site_page(site.id, site.home_url).await {
         Ok(page) => page,
         Err(err) => {
-            state.session.record_run(
+            state.conversation.record_run(
                 task,
-                &format!("[turn did not run — browser/network error: {err:#}]"),
+                &format!("[run did not start — browser/network error: {err:#}]"),
                 &run_dir,
                 "failed",
             );
@@ -641,8 +642,8 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     tools.extend(local_agent_tools());
 
     // Track run_id + latest assistant text live off the event stream so we can
-    // record a meaningful turn even if the run is interrupted mid-flight.
-    let live = Arc::new(Mutex::new(LiveTurn::default()));
+    // record a meaningful run even if it's interrupted mid-flight.
+    let live = Arc::new(Mutex::new(LiveRun::default()));
     let live_for_printer = live.clone();
     let (tx, mut rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
     let printer = tokio::spawn(async move {
@@ -658,17 +659,20 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
         }
     });
 
-    // Seed the conversation with prior turns and tell the agent which run dirs
-    // belong to this session so it can read back earlier artifacts.
-    let preamble = format!("{TUI_AGENT_PREAMBLE}\n\n{}", state.session.context_note());
+    // Seed the conversation with prior runs and tell the agent which run dirs
+    // belong to this conversation so it can read back earlier artifacts.
+    let preamble = format!(
+        "{TUI_AGENT_PREAMBLE}\n\n{}",
+        state.conversation.context_note()
+    );
     let agent_instructions = site
         .default_agent_instructions
         .unwrap_or(site.agent_instructions);
     let config = AgentRunConfig {
         extra_instructions: agent_instructions(&preamble),
         enabled_sites: vec![site.id.to_string()],
-        seed_messages: state.session.chat_messages(),
-        session_id: Some(state.session.id.clone()),
+        seed_messages: state.conversation.chat_messages(),
+        session_id: Some(state.conversation.id.clone()),
         run_dir: Some(run_dir.clone()),
         ..AgentRunConfig::default()
     };
@@ -690,8 +694,8 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
             } else {
                 format!("{}\n\n[interrupted by user]", partial.trim())
             };
-            // Record the interrupted turn so a follow-up keeps its context.
-            state.session.record_run(task, &assistant, &run_dir, "interrupted");
+            // Record the interrupted run so a follow-up keeps its context.
+            state.conversation.record_run(task, &assistant, &run_dir, "interrupted");
             println!("\n[socai] interrupted — recorded; ask a follow-up, or press Ctrl+C at the prompt to exit.");
             return Ok(());
         }
@@ -700,10 +704,13 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     let outcome = match outcome.context("agent loop failed") {
         Ok(outcome) => outcome,
         Err(err) => {
-            // Record the failed turn too, so its topic survives for follow-ups.
-            state
-                .session
-                .record_run(task, &format!("[turn failed: {err:#}]"), &run_dir, "failed");
+            // Record the failed run too, so its topic survives for follow-ups.
+            state.conversation.record_run(
+                task,
+                &format!("[run failed: {err:#}]"),
+                &run_dir,
+                "failed",
+            );
             return Err(err);
         }
     };
@@ -712,8 +719,8 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     println!("{}", outcome.final_text.trim());
     println!();
     println!(
-        "[socai] run_id={} turns={} input_tokens={} output_tokens={}",
-        outcome.run_id, outcome.turns, outcome.total_input_tokens, outcome.total_output_tokens
+        "[socai] run_id={} steps={} input_tokens={} output_tokens={}",
+        outcome.run_id, outcome.steps, outcome.total_input_tokens, outcome.total_output_tokens
     );
     println!("[socai] run_dir={}", outcome.run_dir.display());
     println!();
@@ -722,11 +729,13 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     // Record a short marker instead of dumping the whole provider message into
     // the conversation seed.
     let recorded = if outcome.final_text.starts_with("API error:") {
-        "[turn failed: LLM API error]".to_string()
+        "[run failed: LLM API error]".to_string()
     } else {
         outcome.final_text.clone()
     };
-    state.session.record_turn(task, &recorded, &outcome.run_dir);
+    state
+        .conversation
+        .record_completed_run(task, &recorded, &outcome.run_dir);
     Ok(())
 }
 
@@ -765,7 +774,7 @@ fn print_agent_event(event: &AgentEvent) {
             println!("\n▸ task: {task}");
             println!("  run {run_id} · model {model}");
         }
-        AgentEvent::Turn { turn } => println!("\n── turn {turn} ──"),
+        AgentEvent::Step { .. } => println!("\n──"),
         AgentEvent::AssistantText { text, .. } => {
             for line in text.lines() {
                 println!("  {line}");
@@ -809,9 +818,9 @@ fn print_agent_event(event: &AgentEvent) {
                 println!("  ← {name} ({duration_ms}ms): {first}");
             }
         }
-        AgentEvent::ApiError { turn, message } => {
-            println!("  ✗ API error on turn {turn}: {message}");
+        AgentEvent::ApiError { step, message } => {
+            println!("  ✗ API error on step {step}: {message}");
         }
-        AgentEvent::Done { turns, .. } => println!("\n✓ done in {turns} turns"),
+        AgentEvent::Done { steps, .. } => println!("\n✓ done in {steps} steps"),
     }
 }

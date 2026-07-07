@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use socai_core::agent::{mark_agent_run_status, Session};
+use socai_core::agent::{mark_agent_run_status, Conversation};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::AbortHandle;
 
@@ -44,7 +44,7 @@ pub struct AgentTaskSnapshot {
     // Hydrated from `<run_dir>/report.md` for API responses; not persisted in tasks.json.
     pub(crate) final_text: Option<String>,
     pub(crate) error: Option<String>,
-    pub(crate) turns: Option<u32>,
+    pub(crate) steps: Option<u32>,
     pub(crate) input_tokens: Option<u64>,
     pub(crate) output_tokens: Option<u64>,
 }
@@ -69,8 +69,8 @@ impl Default for AgentTaskRegistry {
                 if let (Some(session_dir), Some(run_dir)) =
                     (task.session_dir.as_deref(), task.run_dir.as_deref())
                 {
-                    if let Ok(mut session) = Session::load(session_dir) {
-                        session.record_run(
+                    if let Ok(mut conversation) = Conversation::load(session_dir) {
+                        conversation.record_run(
                             &task.task,
                             "[task interrupted: app was closed before this task finished]",
                             &PathBuf::from(run_dir),
@@ -124,7 +124,7 @@ impl AgentTaskRegistry {
             target_id: None,
             final_text: None,
             error: None,
-            turns: None,
+            steps: None,
             input_tokens: None,
             output_tokens: None,
         };
@@ -376,8 +376,8 @@ fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
             if let Ok(run) = serde_json::from_str::<Value>(&text) {
                 snapshot.run_id = run.get("id").and_then(Value::as_str).map(str::to_string);
                 snapshot.error = run.get("error").and_then(Value::as_str).map(str::to_string);
-                snapshot.turns = run
-                    .get("turns")
+                snapshot.steps = run
+                    .get("steps")
                     .and_then(Value::as_u64)
                     .map(|value| value as u32);
                 snapshot.input_tokens = run.pointer("/usage/input_tokens").and_then(Value::as_u64);

@@ -55,7 +55,7 @@ export interface AgentTaskSnapshot {
   target_id: string | null;
   final_text: string | null;
   error: string | null;
-  turns: number | null;
+  steps: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
 }
@@ -99,7 +99,7 @@ export interface AgentTaskEventPayload {
     | "running"
     | "started"
     | "tab"
-    | "turn"
+    | "step"
     | "assistant"
     | "reasoning"
     | "tool_call"
@@ -115,9 +115,9 @@ export interface AgentTaskEventPayload {
   snapshot?: AgentTaskSnapshot | null;
   sequence: number;
   created_at: number;
-  turn?: number;
+  step?: number;
   id?: string;
-  sequence_in_turn?: number;
+  sequence_in_step?: number;
   name?: string;
   label?: string;
   args?: unknown;

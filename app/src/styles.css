@@ -1121,7 +1121,7 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .event-glyph { color: var(--fg-soft); }
 .event-text { white-space: pre-wrap; word-break: break-word; }
-.event-turn { color: var(--fg-soft); margin-top: var(--sp-1); }
+.event-step { color: var(--fg-soft); margin-top: var(--sp-1); }
 .event-reasoning .event-text { color: var(--fg-soft); }
 .event-tool_call .event-text { color: var(--fg-muted); }
 .event-tool_error .event-glyph,

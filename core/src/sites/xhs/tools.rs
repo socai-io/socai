@@ -757,7 +757,7 @@ fn recorded_skip_entry(
         // builder ignores anything that isn't `ok: true`).
         let readable = json!({ "ok": true, "entity": entity });
         if let Some((note_id, record)) =
-            note_data_record(&readable, ctx.output_dir(), &ctx.run_dir, ctx.turn, level)
+            note_data_record(&readable, ctx.output_dir(), &ctx.run_dir, ctx.step, level)
         {
             ctx.record_note(&note_id, record);
         }
@@ -1248,7 +1248,7 @@ async fn join_note_ocr(
 /// ms), numeric `stats` (a key is omitted when XHS hid the count; `shares`
 /// has no source at all), and a `media` array of locally-downloaded assets —
 /// cover first, a video before its carousel — with run-relative paths, plus
-/// run provenance (`site`, `first_seen_turn`, `level`). Media entries come
+/// run provenance (`site`, `first_seen_step`, `level`). Media entries come
 /// from the on-disk-validated media manifest, so only files that actually
 /// downloaded are listed. Returns `(note_id, record)`, or `None` when the
 /// entity carries no usable note id.
@@ -1256,7 +1256,7 @@ pub fn note_data_record(
     entry: &Value,
     media_base: &Path,
     run_dir: &Path,
-    turn: u32,
+    step: u32,
     level: &str,
 ) -> Option<(String, Value)> {
     let entity = entry.get("entity").filter(|v| v.is_object())?;
@@ -1314,13 +1314,13 @@ pub fn note_data_record(
     record.insert("media_dir".into(), Value::String(String::new()));
     record.insert("saved".into(), Value::Bool(!media.is_empty()));
     record.insert("site".into(), Value::String("xhs".into()));
-    record.insert("first_seen_turn".into(), Value::from(turn));
+    record.insert("first_seen_step".into(), Value::from(step));
     record.insert("level".into(), Value::String(level.to_string()));
     Some((note_id, Value::Object(record)))
 }
 
 fn build_note_record(entry: &Value, ctx: &ToolContext, level: &str) -> Option<(String, Value)> {
-    note_data_record(entry, ctx.output_dir(), &ctx.run_dir, ctx.turn, level)
+    note_data_record(entry, ctx.output_dir(), &ctx.run_dir, ctx.step, level)
 }
 
 /// Map validated manifest rows to the app's `NoteMedia` entries: only assets

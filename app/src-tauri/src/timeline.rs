@@ -41,22 +41,22 @@ pub(crate) enum AgentTaskEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_id: Option<String>,
     },
-    Turn {
-        turn: u32,
+    Step {
+        step: u32,
         text: String,
     },
     Assistant {
-        turn: u32,
+        step: u32,
         text: String,
     },
     Reasoning {
-        turn: u32,
+        step: u32,
         text: String,
     },
     ToolCall {
         id: String,
-        turn: u32,
-        sequence_in_turn: u32,
+        step: u32,
+        sequence_in_step: u32,
         name: String,
         label: String,
         args: Value,
@@ -65,8 +65,8 @@ pub(crate) enum AgentTaskEventKind {
     },
     ToolResult {
         id: String,
-        turn: u32,
-        sequence_in_turn: u32,
+        step: u32,
+        sequence_in_step: u32,
         name: String,
         label: String,
         args: Value,
@@ -83,8 +83,8 @@ pub(crate) enum AgentTaskEventKind {
     },
     ToolError {
         id: String,
-        turn: u32,
-        sequence_in_turn: u32,
+        step: u32,
+        sequence_in_step: u32,
         name: String,
         label: String,
         args: Value,
@@ -99,14 +99,14 @@ pub(crate) enum AgentTaskEventKind {
         text: String,
     },
     ApiError {
-        turn: u32,
+        step: u32,
         message: String,
         text: String,
     },
     Done {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_id: Option<String>,
-        turns: u32,
+        steps: u32,
         text: String,
     },
     Completed {
@@ -157,7 +157,7 @@ impl AgentTaskEventKind {
             Self::Running { .. } => "running",
             Self::Started { .. } => "started",
             Self::Tab { .. } => "tab",
-            Self::Turn { .. } => "turn",
+            Self::Step { .. } => "step",
             Self::Assistant { .. } => "assistant",
             Self::Reasoning { .. } => "reasoning",
             Self::ToolCall { .. } => "tool_call",
@@ -181,16 +181,16 @@ impl AgentTaskEventKind {
                 text,
                 target_id: None,
             },
-            "turn" => Self::Turn {
-                turn: first_number(&text).unwrap_or_default(),
+            "step" => Self::Step {
+                step: first_number(&text).unwrap_or_default(),
                 text,
             },
-            "assistant" => Self::Assistant { turn: 0, text },
-            "reasoning" => Self::Reasoning { turn: 0, text },
+            "assistant" => Self::Assistant { step: 0, text },
+            "reasoning" => Self::Reasoning { step: 0, text },
             "tool_call" => Self::ToolCall {
                 id: String::new(),
-                turn: 0,
-                sequence_in_turn: 0,
+                step: 0,
+                sequence_in_step: 0,
                 name: "tool".into(),
                 label: "tool".into(),
                 args: Value::Null,
@@ -199,8 +199,8 @@ impl AgentTaskEventKind {
             },
             "tool_result" => Self::ToolResult {
                 id: String::new(),
-                turn: 0,
-                sequence_in_turn: 0,
+                step: 0,
+                sequence_in_step: 0,
                 name: "tool".into(),
                 label: "tool".into(),
                 args: Value::Null,
@@ -214,8 +214,8 @@ impl AgentTaskEventKind {
             },
             "tool_error" => Self::ToolError {
                 id: String::new(),
-                turn: 0,
-                sequence_in_turn: 0,
+                step: 0,
+                sequence_in_step: 0,
                 name: "tool".into(),
                 label: "tool".into(),
                 args: Value::Null,
@@ -228,13 +228,13 @@ impl AgentTaskEventKind {
                 text,
             },
             "api_error" => Self::ApiError {
-                turn: 0,
+                step: 0,
                 message: text.clone(),
                 text,
             },
             "done" => Self::Done {
                 run_id: None,
-                turns: first_number(&text).unwrap_or_default(),
+                steps: first_number(&text).unwrap_or_default(),
                 text,
             },
             "completed" => Self::Completed { text },
@@ -247,7 +247,7 @@ impl AgentTaskEventKind {
                 model: String::new(),
                 text,
             },
-            _ => Self::Assistant { turn: 0, text },
+            _ => Self::Assistant { step: 0, text },
         }
     }
 }
@@ -293,29 +293,29 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
             model: model.clone(),
             text: started_event_text_fields(task, Some(run_id), model),
         },
-        AgentEvent::Turn { turn } => AgentTaskEventKind::Turn {
-            turn: *turn,
-            text: format!("turn {turn}"),
+        AgentEvent::Step { step } => AgentTaskEventKind::Step {
+            step: *step,
+            text: String::new(),
         },
-        AgentEvent::AssistantText { turn, text } => AgentTaskEventKind::Assistant {
-            turn: *turn,
+        AgentEvent::AssistantText { step, text } => AgentTaskEventKind::Assistant {
+            step: *step,
             text: truncate_event_text(text),
         },
-        AgentEvent::Reasoning { turn, text } => AgentTaskEventKind::Reasoning {
-            turn: *turn,
+        AgentEvent::Reasoning { step, text } => AgentTaskEventKind::Reasoning {
+            step: *step,
             text: truncate_event_text(text),
         },
         AgentEvent::ToolCall {
             id,
-            turn,
+            step,
             sequence,
             name,
             input,
             repeat_count,
-        } => tool_call_event(id, *turn, *sequence, name, input, *repeat_count),
+        } => tool_call_event(id, *step, *sequence, name, input, *repeat_count),
         AgentEvent::ToolResult {
             id,
-            turn,
+            step,
             sequence,
             name,
             input,
@@ -325,7 +325,7 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
             error,
         } => tool_result_event(
             id,
-            *turn,
+            *step,
             *sequence,
             name,
             input,
@@ -335,15 +335,15 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
             content,
             None,
         ),
-        AgentEvent::ApiError { turn, message } => AgentTaskEventKind::ApiError {
-            turn: *turn,
+        AgentEvent::ApiError { step, message } => AgentTaskEventKind::ApiError {
+            step: *step,
             message: message.clone(),
-            text: format!("turn {turn}: {message}"),
+            text: message.clone(),
         },
-        AgentEvent::Done { run_id, turns, .. } => AgentTaskEventKind::Done {
+        AgentEvent::Done { run_id, steps, .. } => AgentTaskEventKind::Done {
             run_id: Some(run_id.clone()),
-            turns: *turns,
-            text: format!("done in {turns} turns"),
+            steps: *steps,
+            text: "done".to_string(),
         },
     }
 }
@@ -408,16 +408,16 @@ fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload
         },
     ));
 
-    let mut last_turn = None;
-    for (turn, response) in llm_responses(&run_dir) {
-        push_turn_event(snapshot, &mut events, &mut last_turn, turn);
+    let mut last_step = None;
+    for (step, response) in llm_responses(&run_dir) {
+        push_step_event(snapshot, &mut events, &mut last_step, step);
         if let Some(error) = response.get("error").and_then(Value::as_str) {
             events.push(replay_event(
                 snapshot,
                 AgentTaskEventKind::ApiError {
-                    turn,
+                    step,
                     message: error.to_string(),
-                    text: format!("turn {turn}: {error}"),
+                    text: error.to_string(),
                 },
             ));
             continue;
@@ -430,7 +430,7 @@ fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload
             events.push(replay_event(
                 snapshot,
                 AgentTaskEventKind::Reasoning {
-                    turn,
+                    step,
                     text: truncate_event_text(reasoning),
                 },
             ));
@@ -441,7 +441,7 @@ fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload
                     events.push(replay_event(
                         snapshot,
                         AgentTaskEventKind::Assistant {
-                            turn,
+                            step,
                             text: truncate_event_text(text),
                         },
                     ));
@@ -461,7 +461,7 @@ fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload
                 .and_then(Value::as_str)
                 .unwrap_or("tool-call");
             let tool_rel = format!(
-                "tools/turn-{turn:03}-call-{sequence:02}-{}",
+                "tools/step-{step:03}-call-{sequence:02}-{}",
                 safe_component(name, "tool")
             );
             let tool_dir = run_dir.join(&tool_rel);
@@ -472,7 +472,7 @@ fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload
                 .unwrap_or(&Value::Null);
             events.push(replay_event(
                 snapshot,
-                tool_call_event(id, turn, sequence, name, input, 0),
+                tool_call_event(id, step, sequence, name, input, 0),
             ));
             let output = read_json(&tool_dir.join("output.json")).unwrap_or(Value::Null);
             let error = manifest.get("error").and_then(Value::as_str);
@@ -485,7 +485,7 @@ fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload
                 snapshot,
                 tool_result_event(
                     id,
-                    turn,
+                    step,
                     sequence,
                     name,
                     input,
@@ -498,14 +498,14 @@ fn replay_task_events(snapshot: &AgentTaskSnapshot) -> Vec<AgentTaskEventPayload
             ));
         }
     }
-    let turns = run.get("turns").and_then(Value::as_u64).unwrap_or_default() as u32;
+    let steps = run.get("steps").and_then(Value::as_u64).unwrap_or_default() as u32;
     if run.get("status").and_then(Value::as_str) == Some("completed") {
         events.push(replay_event(
             snapshot,
             AgentTaskEventKind::Done {
                 run_id: Some(run_id.to_string()),
-                turns,
-                text: format!("done in {turns} turns"),
+                steps,
+                text: "done".to_string(),
             },
         ));
     }
@@ -519,17 +519,13 @@ fn append_terminal_snapshot_events(
     match snapshot.status.as_str() {
         "completed" => {
             if !events.iter().any(|event| event.kind() == "done") {
-                let text = snapshot
-                    .turns
-                    .map(|turns| format!("done in {turns} turns"))
-                    .unwrap_or_else(|| "done".into());
                 push_snapshot_event(
                     snapshot,
                     events,
                     AgentTaskEventKind::Done {
                         run_id: snapshot.run_id.clone(),
-                        turns: snapshot.turns.unwrap_or_default(),
-                        text,
+                        steps: snapshot.steps.unwrap_or_default(),
+                        text: "done".into(),
                     },
                 );
             }
@@ -637,21 +633,21 @@ fn replay_event(
     }
 }
 
-fn push_turn_event(
+fn push_step_event(
     snapshot: &AgentTaskSnapshot,
     events: &mut Vec<AgentTaskEventPayload>,
-    last_turn: &mut Option<u32>,
-    turn: u32,
+    last_step: &mut Option<u32>,
+    step: u32,
 ) {
-    if turn == 0 || *last_turn == Some(turn) {
+    if step == 0 || *last_step == Some(step) {
         return;
     }
-    *last_turn = Some(turn);
+    *last_step = Some(step);
     events.push(replay_event(
         snapshot,
-        AgentTaskEventKind::Turn {
-            turn,
-            text: format!("turn {turn}"),
+        AgentTaskEventKind::Step {
+            step,
+            text: String::new(),
         },
     ));
 }
@@ -678,7 +674,7 @@ fn started_event_text_fields(task: &str, run_id: Option<&str>, model: &str) -> S
 
 fn tool_call_event(
     id: &str,
-    turn: u32,
+    step: u32,
     sequence: u32,
     name: &str,
     input: &Value,
@@ -686,8 +682,8 @@ fn tool_call_event(
 ) -> AgentTaskEventKind {
     AgentTaskEventKind::ToolCall {
         id: id.to_string(),
-        turn,
-        sequence_in_turn: sequence,
+        step,
+        sequence_in_step: sequence,
         name: name.to_string(),
         label: user_label(name),
         args: input.clone(),
@@ -698,7 +694,7 @@ fn tool_call_event(
 
 fn tool_result_event(
     id: &str,
-    turn: u32,
+    step: u32,
     sequence: u32,
     name: &str,
     input: &Value,
@@ -724,8 +720,8 @@ fn tool_result_event(
     if let Some(error) = error {
         AgentTaskEventKind::ToolError {
             id: id.to_string(),
-            turn,
-            sequence_in_turn: sequence,
+            step,
+            sequence_in_step: sequence,
             name: name.to_string(),
             label: user_label(name),
             args: input.clone(),
@@ -740,8 +736,8 @@ fn tool_result_event(
     } else {
         AgentTaskEventKind::ToolResult {
             id: id.to_string(),
-            turn,
-            sequence_in_turn: sequence,
+            step,
+            sequence_in_step: sequence,
             name: name.to_string(),
             label: user_label(name),
             args: input.clone(),
