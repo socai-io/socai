@@ -975,7 +975,8 @@ async fn run_agent_task_on_shared_page(
         let mut tools = agent_tools(page.clone(), llm_provider.clone()).await?;
         tools.extend(desktop_agent_tools());
         let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
-        let pump = pump_agent_task_events(app, registry.clone(), task_id.clone(), telemetry, rx);
+        let pump =
+            pump_agent_task_events(app, registry.clone(), task_id.clone(), telemetry.clone(), rx);
 
         let agent_instructions = site
             .default_agent_instructions
@@ -996,6 +997,7 @@ async fn run_agent_task_on_shared_page(
         let outcome = run_agent_with_tools(task, llm_provider, tools, config, tx).await;
         let _ = pump.await;
         let outcome = outcome?;
+        telemetry.upload_run_trace(&outcome.run_dir);
 
         Ok::<AgentRunOutcome, anyhow::Error>(AgentRunOutcome {
             run_id: outcome.run_id,

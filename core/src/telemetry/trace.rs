@@ -1,0 +1,294 @@
+//! OTLP-JSON trace assembly for one agent run.
+//!
+//! The agent loop records each LLM call and tool call as it completes;
+//! `finish` closes the root span and returns an OTLP/HTTP
+//! `ExportTraceServiceRequest` JSON value. The loop writes it to
+//! `run_dir/trace.json`; entrypoints upload it fire-and-forget via
+//! [`super::Telemetry::upload_run_trace`], which appends identity resource
+//! attributes (source, install id) so the on-disk file stays shareable.
+//!
+//! Span attributes follow the OpenTelemetry GenAI semantic conventions
+//! (`gen_ai.*`) — Axiom promotes those to first-class trace columns — with
+//! socai-specific context under `socai.*`. Payload policy matches the
+//! `socai_tool_call` event: tool args go through `summarize_tool_args` (query
+//! text gated by `SOCAI_TELEMETRY_QUERY_TEXT`), tool output through the
+//! count-only `summarize_tool_result`, and LLM text/reasoning never leaves the
+//! machine — only token counts, stop reasons, and timings.
+
+use serde_json::{json, Map, Value};
+use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
+
+use super::query_text_enabled;
+use super::tool_call::{summarize_tool_args, summarize_tool_result};
+use crate::agent::llm::LLMResponse;
+
+/// Safety net for pathological runs; a default run (30 steps) stays far below.
+const MAX_CHILD_SPANS: usize = 400;
+/// Matches the proxy's `task_text` cap on the events route.
+const TASK_TEXT_MAX_CHARS: usize = 8000;
+const ERROR_MAX_CHARS: usize = 240;
+const VALUE_JSON_MAX_CHARS: usize = 500;
+
+const SPAN_KIND_INTERNAL: u32 = 1;
+const SPAN_KIND_CLIENT: u32 = 3;
+const STATUS_CODE_ERROR: u32 = 2;
+
+pub struct RunTraceBuilder {
+    trace_id: String,
+    root_span_id: String,
+    run_id: String,
+    task_text: String,
+    model: String,
+    session_id: Option<String>,
+    started_ns: u64,
+    spans: Vec<Value>,
+    dropped_spans: u64,
+}
+
+impl RunTraceBuilder {
+    pub fn new(run_id: &str, task: &str, model: &str, session_id: Option<&str>) -> Self {
+        Self {
+            trace_id: Uuid::new_v4().simple().to_string(),
+            root_span_id: new_span_id(),
+            run_id: run_id.to_string(),
+            task_text: truncate_chars(task, TASK_TEXT_MAX_CHARS),
+            model: model.to_string(),
+            session_id: session_id.map(ToOwned::to_owned),
+            started_ns: now_ns(),
+            spans: Vec::new(),
+            dropped_spans: 0,
+        }
+    }
+
+    pub fn record_llm(&mut self, step: u32, duration_ms: u64, response: &LLMResponse) {
+        let attrs = vec![
+            attr_str("gen_ai.operation.name", "chat"),
+            attr_str("gen_ai.request.model", &self.model),
+            attr_int("socai.step", step as i64),
+            attr_str("socai.stop_reason", stop_reason_str(response)),
+            attr_int("socai.tool_calls", response.tool_calls.len() as i64),
+            attr_int("gen_ai.usage.input_tokens", response.input_tokens as i64),
+            attr_int("gen_ai.usage.output_tokens", response.output_tokens as i64),
+        ];
+        self.push_span(
+            format!("chat {}", self.model),
+            SPAN_KIND_CLIENT,
+            duration_ms,
+            attrs,
+            None,
+        );
+    }
+
+    pub fn record_llm_error(&mut self, step: u32, duration_ms: u64, error: &str) {
+        let attrs = vec![
+            attr_str("gen_ai.operation.name", "chat"),
+            attr_str("gen_ai.request.model", &self.model),
+            attr_int("socai.step", step as i64),
+        ];
+        self.push_span(
+            format!("chat {}", self.model),
+            SPAN_KIND_CLIENT,
+            duration_ms,
+            attrs,
+            Some(error),
+        );
+    }
+
+    pub fn record_tool(
+        &mut self,
+        step: u32,
+        sequence: u32,
+        name: &str,
+        duration_ms: u64,
+        input: &Value,
+        output: &Value,
+        error: Option<&str>,
+    ) {
+        let mut attrs = vec![
+            attr_str("gen_ai.operation.name", "execute_tool"),
+            attr_str("gen_ai.tool.name", name),
+            attr_int("socai.step", step as i64),
+            attr_int("socai.sequence", sequence as i64),
+            attr_bool("socai.ok", error.is_none()),
+        ];
+        extend_prefixed(&mut attrs, summarize_tool_args(input, query_text_enabled()));
+        extend_prefixed(&mut attrs, summarize_tool_result(output));
+        self.push_span(
+            format!("execute_tool {name}"),
+            SPAN_KIND_INTERNAL,
+            duration_ms,
+            attrs,
+            error,
+        );
+    }
+
+    /// Close the root span and return the OTLP `ExportTraceServiceRequest`.
+    pub fn finish(
+        self,
+        status: &str,
+        steps: u32,
+        input_tokens: u64,
+        output_tokens: u64,
+        error: Option<&str>,
+    ) -> Value {
+        let end_ns = now_ns();
+        let mut attrs = vec![
+            attr_str("gen_ai.operation.name", "invoke_agent"),
+            attr_str("gen_ai.agent.name", "socai"),
+            attr_str("gen_ai.request.model", &self.model),
+            attr_str("socai.run_id", &self.run_id),
+            attr_str("socai.task_text", &self.task_text),
+            attr_str("socai.status", status),
+            attr_int("socai.steps", steps as i64),
+            attr_int("gen_ai.usage.input_tokens", input_tokens as i64),
+            attr_int("gen_ai.usage.output_tokens", output_tokens as i64),
+        ];
+        if let Some(session_id) = &self.session_id {
+            attrs.push(attr_str("socai.session_id", session_id));
+        }
+        if self.dropped_spans > 0 {
+            attrs.push(attr_int("socai.spans_dropped", self.dropped_spans as i64));
+        }
+
+        let mut root = json!({
+            "traceId": self.trace_id,
+            "spanId": self.root_span_id,
+            "name": "invoke_agent socai",
+            "kind": SPAN_KIND_INTERNAL,
+            "startTimeUnixNano": self.started_ns.to_string(),
+            "endTimeUnixNano": end_ns.to_string(),
+            "attributes": attrs,
+        });
+        if let Some(error) = error {
+            root["status"] = json!({
+                "code": STATUS_CODE_ERROR,
+                "message": truncate_chars(error, ERROR_MAX_CHARS),
+            });
+        }
+
+        let mut spans = self.spans;
+        spans.insert(0, root);
+
+        json!({
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [
+                        attr_str("service.name", "socai"),
+                        attr_str("service.version", env!("CARGO_PKG_VERSION")),
+                        attr_str("os.type", std::env::consts::OS),
+                    ],
+                },
+                "scopeSpans": [{
+                    "scope": {
+                        "name": "socai-core",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                    "spans": spans,
+                }],
+            }],
+        })
+    }
+
+    /// Append a completed child span. Start time is derived from the duration
+    /// so call sites only need the `Instant`-measured `duration_ms` they
+    /// already have for the run recorder.
+    fn push_span(
+        &mut self,
+        name: String,
+        kind: u32,
+        duration_ms: u64,
+        attributes: Vec<Value>,
+        error: Option<&str>,
+    ) {
+        if self.spans.len() >= MAX_CHILD_SPANS {
+            self.dropped_spans += 1;
+            return;
+        }
+        let end_ns = now_ns();
+        let start_ns = end_ns.saturating_sub(duration_ms.saturating_mul(1_000_000));
+        let mut span = json!({
+            "traceId": self.trace_id,
+            "spanId": new_span_id(),
+            "parentSpanId": self.root_span_id,
+            "name": name,
+            "kind": kind,
+            "startTimeUnixNano": start_ns.to_string(),
+            "endTimeUnixNano": end_ns.to_string(),
+            "attributes": attributes,
+        });
+        if let Some(error) = error {
+            span["status"] = json!({
+                "code": STATUS_CODE_ERROR,
+                "message": truncate_chars(error, ERROR_MAX_CHARS),
+            });
+        }
+        self.spans.push(span);
+    }
+}
+
+/// Flatten a summarizer map (`summarize_tool_args` / `summarize_tool_result`)
+/// into `socai.`-prefixed OTLP attributes. Nested objects (the args `metadata`)
+/// are carried as a capped JSON string.
+fn extend_prefixed(attrs: &mut Vec<Value>, props: Map<String, Value>) {
+    for (key, value) in props {
+        if let Some(attr) = otlp_attr(&format!("socai.{key}"), &value) {
+            attrs.push(attr);
+        }
+    }
+}
+
+fn otlp_attr(key: &str, value: &Value) -> Option<Value> {
+    let encoded = match value {
+        Value::Null => return None,
+        Value::Bool(flag) => json!({ "boolValue": flag }),
+        Value::Number(number) if number.is_i64() || number.is_u64() => {
+            json!({ "intValue": number.to_string() })
+        }
+        Value::Number(number) => json!({ "doubleValue": number.as_f64() }),
+        Value::String(text) => json!({ "stringValue": text }),
+        other => json!({ "stringValue": truncate_chars(&other.to_string(), VALUE_JSON_MAX_CHARS) }),
+    };
+    Some(json!({ "key": key, "value": encoded }))
+}
+
+fn attr_str(key: &str, value: &str) -> Value {
+    json!({ "key": key, "value": { "stringValue": value } })
+}
+
+fn attr_int(key: &str, value: i64) -> Value {
+    json!({ "key": key, "value": { "intValue": value.to_string() } })
+}
+
+fn attr_bool(key: &str, value: bool) -> Value {
+    json!({ "key": key, "value": { "boolValue": value } })
+}
+
+fn stop_reason_str(response: &LLMResponse) -> &'static str {
+    use crate::agent::llm::StopReason;
+    match response.stop_reason {
+        StopReason::EndTurn => "end_turn",
+        StopReason::ToolUse => "tool_use",
+        StopReason::MaxTokens => "max_tokens",
+        StopReason::Other => "other",
+    }
+}
+
+fn new_span_id() -> String {
+    Uuid::new_v4().simple().to_string()[..16].to_string()
+}
+
+fn now_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_default()
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_chars).collect();
+    format!("{truncated}…")
+}

@@ -2,12 +2,19 @@
   "functions": {
     "api/telemetry.js": {
       "maxDuration": 10
+    },
+    "api/traces.js": {
+      "maxDuration": 10
     }
   },
   "rewrites": [
     {
       "source": "/v1/events",
       "destination": "/api/telemetry"
+    },
+    {
+      "source": "/v1/traces",
+      "destination": "/api/traces"
     }
   ],
   "redirects": [

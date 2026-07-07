@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde_json::Value;
 use socai_core::telemetry::{telemetry_enabled, Telemetry, TelemetrySource};
 
@@ -28,6 +30,14 @@ impl DesktopTelemetry {
     pub(crate) fn capture(&self, name: &str, properties: Value) {
         if let Some(telemetry) = &self.0 {
             telemetry.capture(name, properties);
+        }
+    }
+
+    /// Upload a completed run's `trace.json` to the traces proxy. No-op when
+    /// telemetry is off or the file is missing (e.g. cancelled runs).
+    pub(crate) fn upload_run_trace(&self, run_dir: impl AsRef<Path>) {
+        if let Some(telemetry) = &self.0 {
+            telemetry.upload_run_trace(run_dir.as_ref());
         }
     }
 }

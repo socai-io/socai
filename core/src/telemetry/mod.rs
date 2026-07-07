@@ -10,9 +10,11 @@ use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 pub mod tool_call;
+pub mod trace;
 
 const EVENT_SCHEMA_VERSION: u32 = 1;
 const TELEMETRY_ENDPOINT: &str = "https://socai.io/v1/events";
+const TRACES_ENDPOINT: &str = "https://socai.io/v1/traces";
 const CHANNEL_CAPACITY: usize = 512;
 const REMOTE_BATCH_SIZE: usize = 25;
 const REMOTE_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
@@ -43,7 +45,14 @@ impl TelemetrySource {
 
 #[derive(Clone)]
 pub struct Telemetry {
-    sender: mpsc::Sender<QueuedEvent>,
+    sender: mpsc::Sender<QueuedItem>,
+}
+
+#[derive(Debug)]
+enum QueuedItem {
+    Event(QueuedEvent),
+    /// Path to a run's `trace.json`; the worker reads, enriches, and uploads it.
+    TraceFile(PathBuf),
 }
 
 #[derive(Debug)]
@@ -95,10 +104,18 @@ impl Telemetry {
     }
 
     pub fn capture(&self, name: impl Into<String>, properties: Value) {
-        let _ = self.sender.try_send(QueuedEvent {
+        let _ = self.sender.try_send(QueuedItem::Event(QueuedEvent {
             name: name.into(),
             properties,
-        });
+        }));
+    }
+
+    /// Fire-and-forget upload of a completed run's `trace.json` (written by the
+    /// agent loop). Missing file — e.g. a cancelled run — is a silent no-op.
+    pub fn upload_run_trace(&self, run_dir: &Path) {
+        let _ = self
+            .sender
+            .try_send(QueuedItem::TraceFile(run_dir.join("trace.json")));
     }
 }
 
@@ -107,7 +124,7 @@ impl Telemetry {
 /// `Telemetry` from a plain synchronous `fn run()` with no ambient runtime — it
 /// owns a dedicated current-thread runtime so `capture()` stays fire-and-forget
 /// regardless of the caller's context.
-fn spawn_worker(receiver: mpsc::Receiver<QueuedEvent>, config: WorkerConfig) {
+fn spawn_worker(receiver: mpsc::Receiver<QueuedItem>, config: WorkerConfig) {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => {
             handle.spawn(worker_loop(receiver, config));
@@ -128,7 +145,7 @@ fn spawn_worker(receiver: mpsc::Receiver<QueuedEvent>, config: WorkerConfig) {
     }
 }
 
-async fn worker_loop(mut receiver: mpsc::Receiver<QueuedEvent>, config: WorkerConfig) {
+async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerConfig) {
     let client = reqwest::Client::new();
     let mut remote_batch: Vec<Value> = Vec::new();
     let mut flush_tick = tokio::time::interval(REMOTE_FLUSH_INTERVAL);
@@ -136,18 +153,25 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedEvent>, config: WorkerCo
 
     loop {
         tokio::select! {
-            maybe_event = receiver.recv() => {
-                let Some(event) = maybe_event else {
+            maybe_item = receiver.recv() => {
+                let Some(item) = maybe_item else {
                     break;
                 };
-                let timestamp_ms = now_ms();
-                let properties = enrich_properties(event.properties, &config, timestamp_ms);
-                let row = local_row(&event.name, &config.install_id, timestamp_ms, &properties);
-                let _ = append_jsonl(&config.local_path, &row).await;
+                match item {
+                    QueuedItem::Event(event) => {
+                        let timestamp_ms = now_ms();
+                        let properties = enrich_properties(event.properties, &config, timestamp_ms);
+                        let row = local_row(&event.name, &config.install_id, timestamp_ms, &properties);
+                        let _ = append_jsonl(&config.local_path, &row).await;
 
-                remote_batch.push(remote_event(&event.name, &config.install_id, &properties));
-                if remote_batch.len() >= REMOTE_BATCH_SIZE {
-                    flush_remote(&client, &mut remote_batch).await;
+                        remote_batch.push(remote_event(&event.name, &config.install_id, &properties));
+                        if remote_batch.len() >= REMOTE_BATCH_SIZE {
+                            flush_remote(&client, &mut remote_batch).await;
+                        }
+                    }
+                    QueuedItem::TraceFile(path) => {
+                        upload_trace_file(&client, &config, &path).await;
+                    }
                 }
             }
             _ = flush_tick.tick() => {
@@ -157,6 +181,52 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedEvent>, config: WorkerCo
     }
 
     flush_remote(&client, &mut remote_batch).await;
+}
+
+/// Read a run's `trace.json`, append identity resource attributes, and POST it
+/// to the traces proxy. Best-effort at every step: a missing/invalid file or a
+/// failed upload is dropped silently, matching the events contract.
+async fn upload_trace_file(client: &reqwest::Client, config: &WorkerConfig, path: &Path) {
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return;
+    };
+    let Ok(mut payload) = serde_json::from_slice::<Value>(&bytes) else {
+        return;
+    };
+    enrich_trace_resource(&mut payload, config);
+    let _ = client.post(traces_endpoint()).json(&payload).send().await;
+}
+
+/// The on-disk trace stays identity-free so run dirs can be shared; the
+/// uploaded copy carries the same source/install identity as events.
+fn enrich_trace_resource(payload: &mut Value, config: &WorkerConfig) {
+    let Some(attributes) = payload
+        .get_mut("resourceSpans")
+        .and_then(Value::as_array_mut)
+        .and_then(|spans| spans.first_mut())
+        .and_then(|resource_spans| resource_spans.get_mut("resource"))
+        .and_then(|resource| resource.get_mut("attributes"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for (key, value) in [
+        ("socai.source", config.source.as_str()),
+        ("socai.install_id", config.install_id.as_str()),
+        ("socai.app_session_id", config.session_id.as_str()),
+    ] {
+        attributes.push(json!({ "key": key, "value": { "stringValue": value } }));
+    }
+}
+
+/// `SOCAI_TRACES_ENDPOINT` overrides the production proxy for local testing
+/// (e.g. a `vercel dev` instance of the site).
+fn traces_endpoint() -> String {
+    std::env::var("SOCAI_TRACES_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| TRACES_ENDPOINT.to_string())
 }
 
 fn enrich_properties(properties: Value, config: &WorkerConfig, timestamp_ms: u64) -> Value {

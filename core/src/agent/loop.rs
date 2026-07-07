@@ -38,6 +38,7 @@ use crate::agent::run_state::RunState;
 use crate::agent::signature::tool_call_signature;
 use crate::agent::system_prompt::build_system_prompt;
 use crate::agent::tool::{SharedTool, ToolContext, ToolResult, ToolResultBlock};
+use crate::telemetry::trace::RunTraceBuilder;
 
 /// Events streamed to subscribers while the agent is running.
 #[derive(Debug, Clone)]
@@ -162,6 +163,12 @@ pub async fn run_agent_with_events(
         task,
         backend.model(),
     )?;
+    let mut run_trace = RunTraceBuilder::new(
+        &run_id,
+        task,
+        backend.model(),
+        options.session_id.as_deref(),
+    );
 
     let mut ctx = ToolContext::new(&run_id, &run_dir).with_run_state(Arc::clone(&run_state));
     for site in &options.enabled_sites {
@@ -218,20 +225,16 @@ pub async fn run_agent_with_events(
             .await
         {
             Ok(response) => {
-                run_recorder.record_llm_response(
-                    step,
-                    &response,
-                    llm_started.elapsed().as_millis() as u64,
-                )?;
+                let duration_ms = llm_started.elapsed().as_millis() as u64;
+                run_recorder.record_llm_response(step, &response, duration_ms)?;
+                run_trace.record_llm(step, duration_ms, &response);
                 response
             }
             Err(e) => {
                 let msg = format!("{e:#}");
-                run_recorder.record_llm_error(
-                    step,
-                    &msg,
-                    llm_started.elapsed().as_millis() as u64,
-                )?;
+                let duration_ms = llm_started.elapsed().as_millis() as u64;
+                run_recorder.record_llm_error(step, &msg, duration_ms)?;
+                run_trace.record_llm_error(step, duration_ms, &msg);
                 warn!(step, error = %msg, "backend error");
                 emit(
                     &events,
@@ -384,6 +387,15 @@ pub async fn run_agent_with_events(
 
             let result_content = tool_result_to_content(&result);
             let content = content_for_log(&result_content);
+            run_trace.record_tool(
+                step,
+                sequence,
+                name,
+                duration_ms,
+                &effective_input,
+                &content,
+                error.as_deref(),
+            );
             let flat = result.flat_text();
             let summary = truncate_summary(&flat, 240);
             emit(
@@ -466,11 +478,9 @@ pub async fn run_agent_with_events(
             .await
         {
             Ok(response) => {
-                run_recorder.record_llm_response(
-                    step + 1,
-                    &response,
-                    llm_started.elapsed().as_millis() as u64,
-                )?;
+                let duration_ms = llm_started.elapsed().as_millis() as u64;
+                run_recorder.record_llm_response(step + 1, &response, duration_ms)?;
+                run_trace.record_llm(step + 1, duration_ms, &response);
                 total_input_tokens += response.input_tokens;
                 total_output_tokens += response.output_tokens;
                 let (visible_texts, _) = split_thinking(&response.text_blocks);
@@ -487,11 +497,9 @@ pub async fn run_agent_with_events(
             }
             Err(e) => {
                 let msg = format!("{e:#}");
-                run_recorder.record_llm_error(
-                    step + 1,
-                    &msg,
-                    llm_started.elapsed().as_millis() as u64,
-                )?;
+                let duration_ms = llm_started.elapsed().as_millis() as u64;
+                run_recorder.record_llm_error(step + 1, &msg, duration_ms)?;
+                run_trace.record_llm_error(step + 1, duration_ms, &msg);
                 warn!(step = step + 1, error = %msg, "forced summary error");
                 emit(
                     &events,
@@ -517,17 +525,28 @@ pub async fn run_agent_with_events(
     let enriched_report = report_with_artifacts(&final_text, Some(&run_state));
     let _ = std::fs::write(run_dir.join("report.md"), &enriched_report);
 
+    let status = if terminal_error.is_some() {
+        "failed"
+    } else {
+        "completed"
+    };
     run_recorder.finish(
-        if terminal_error.is_some() {
-            "failed"
-        } else {
-            "completed"
-        },
+        status,
         step,
         total_input_tokens,
         total_output_tokens,
         terminal_error.as_deref(),
     )?;
+    let trace_payload = run_trace.finish(
+        status,
+        step,
+        total_input_tokens,
+        total_output_tokens,
+        terminal_error.as_deref(),
+    );
+    if let Ok(bytes) = serde_json::to_vec(&trace_payload) {
+        let _ = std::fs::write(run_dir.join("trace.json"), bytes);
+    }
 
     Ok(AgentOutcome {
         run_id,
