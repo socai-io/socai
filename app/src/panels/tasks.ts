@@ -13,7 +13,7 @@ import type {
 } from "../main";
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
-import { noteRefsFromEvent, renderAgentEvent, renderConfirmDeleteDialog, renderRunMessage, renderSidebar as renderSidebarMarkup, renderTaskDetail } from "./task_history";
+import { noteRefsFromEvent, renderAgentEvent, renderConfirmDeleteDialog, renderRunMessage, renderSidebar as renderSidebarMarkup, renderTaskDetail, renderTaskMetaItems } from "./task_history";
 import type { ReplyComposerProps } from "./task_history";
 import { bindNoteInteractions, renderTimelineEmbed, setNoteRegistry } from "./notes";
 import { renderComposePane } from "./task_new";
@@ -157,6 +157,19 @@ export namespace agentPanel {
     if (!task || (task.status !== "running" && task.status !== "queued")) {
       syncNotesPolling(shell);
       return;
+    }
+    // Refresh the snapshot too: tokens/steps accumulate into run.json after
+    // every LLM step, and the duration ticks — but no agent event carries
+    // them mid-run, so without this poll the meta line only updates on the
+    // rare snapshot-bearing events (queued/running/tab/terminal). Updates the
+    // meta DOM in place; a full rerender would drop scroll and focus.
+    try {
+      const snapshot = await invoke<AgentTaskSnapshot>("agent_task_get", { taskId: task.task_id });
+      const merged = upsertTask(snapshot);
+      const meta = document.querySelector<HTMLDivElement>(".task-detail-meta");
+      if (meta && merged.task_id === selectedTaskId) meta.innerHTML = renderTaskMetaItems(merged);
+    } catch (e) {
+      console.error("agent_task_get poll failed:", e);
     }
     try {
       const notes = await invoke<NoteData[]>("agent_task_notes", { taskId: task.task_id });
@@ -725,6 +738,10 @@ export namespace agentPanel {
     });
 
     document.getElementById("overlay-chrome-connect")?.addEventListener("click", () => {
+      invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
+    });
+    // Reply-composer counterpart of the compose view's connect overlay.
+    document.getElementById("reply-chrome-connect")?.addEventListener("click", () => {
       invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
     });
 

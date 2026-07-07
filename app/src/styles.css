@@ -1137,7 +1137,14 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .run-group:first-child { padding-top: 0; margin-top: 0; }
 .run-group + .run-group { border-top: var(--hairline); }
-.run-message { margin-bottom: var(--sp-2); }
+/* The user's message renders as a right-aligned filled bubble so it reads as
+   "you said this" at a glance instead of blending into the agent's event
+   rows. Filled vs hollow is the design system's emphasis axis — the one
+   non-hairline signal available in monochrome. */
+.run-message {
+  margin-bottom: var(--sp-3);
+  text-align: right;
+}
 .run-message__label {
   display: block;
   font-family: var(--font-mono);
@@ -1145,16 +1152,22 @@ body.has-paper > * { position: relative; z-index: 1; }
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--fg-faint);
-  margin-bottom: 2px;
+  margin-bottom: 3px;
 }
 .run-message__text {
+  display: inline-block;
   margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  max-width: 88%;
+  background: var(--ink-0);
+  color: var(--canvas);
+  border-radius: var(--r-4);
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.5;
-  color: var(--ink-0);
   white-space: pre-wrap;
   word-break: break-word;
+  text-align: left;
 }
 /* An earlier run's final answer, rendered rich inside its group (the latest
    run's answer lives in the answer panel instead). */
@@ -1167,6 +1180,12 @@ body.has-paper > * { position: relative; z-index: 1; }
   font-size: 13px;
 }
 .task-reply-form { flex: none; margin-top: var(--sp-2); }
+.task-reply-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0 0;
+}
 .task-reply-row {
   display: flex;
   align-items: flex-end;

@@ -133,6 +133,14 @@ export function renderTaskDetail(task: AgentTaskView | undefined, replyProps: Re
 
 function renderReplyComposer(task: AgentTaskView, props: ReplyComposerProps): string {
   const runDisabled = props.submitting || !props.draft.trim() || !props.connected;
+  // Sending a follow-up needs the browser, same as starting a task — but the
+  // detail view has no compose-style connect overlay, so without this hint a
+  // dropped connection just reads as a mysteriously gray send button.
+  const connectHint = props.connected ? "" : `
+      <p class="t-small subtle task-reply-hint">
+        ${esc(t("task.replyConnectHint"))}
+        <button id="reply-chrome-connect" type="button" class="btn-ghost btn-compact">${esc(t("chrome.connectCta"))}</button>
+      </p>`;
   return `
     <form id="task-reply-form" class="task-reply-form" data-reply-task="${esc(task.task_id)}">
       <div class="task-reply-row">
@@ -147,25 +155,34 @@ function renderReplyComposer(task: AgentTaskView, props: ReplyComposerProps): st
           ${props.submitting ? esc(t("task.replySending")) : esc(t("task.replySend"))}
         </button>
       </div>
+      ${connectHint}
       ${props.error ? `<p class="t-small result-error task-reply-error">${esc(props.error)}</p>` : ""}
     </form>
   `;
 }
 
-function renderDetailHead(task: AgentTaskView, running: boolean): string {
+// The detail head's meta line. Exported so the live poll in tasks.ts can
+// refresh it in place while a run is active (tokens/steps stream into
+// run.json mid-run; duration ticks) without a full re-render.
+export function renderTaskMetaItems(task: AgentTaskView): string {
+  const running = task.status === "running" || task.status === "queued";
   const time = formatTaskTimestamp(task.started_at ?? task.created_at);
   const duration = formatDuration(task);
   const tokens = task.input_tokens !== null && task.output_tokens !== null
     ? formatTokenUsage(task.input_tokens, task.output_tokens)
     : "";
   const dotClass = running ? "badge-dot-ink badge-dot-pulse" : "badge-dot-hollow";
-  const items = [
+  return [
     `<span class="task-meta-item task-meta-status"><i class="badge-dot ${dotClass}" aria-hidden="true"></i>${esc(taskStatusLabel(task.status))}</span>`,
     time ? `<span class="task-meta-item">${esc(time)}</span>` : "",
     duration ? `<span class="task-meta-item">${esc(duration)}</span>` : "",
     task.model ? `<span class="task-meta-item t-mono">${esc(task.model)}</span>` : "",
     tokens ? `<span class="task-meta-item">${esc(tokens)}</span>` : "",
   ].join("");
+}
+
+function renderDetailHead(task: AgentTaskView, running: boolean): string {
+  const items = renderTaskMetaItems(task);
   return `
     <div class="task-detail-head">
       <div class="task-detail-headinfo">

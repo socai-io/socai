@@ -811,7 +811,20 @@ fn tool_result_event(
         .map(|value| normalize_entities(name, value))
         .unwrap_or_default();
     let error = error.map(str::trim).filter(|err| !err.is_empty());
-    let (_kind, text) = format_tool_result_text(name, content, duration_ms, error.unwrap_or(""));
+    // A tool that ran but reported failure (`ok: false`, e.g. a search that
+    // never reached a result page) carries no dispatcher error — surface its
+    // `reason` as the row's error so the timeline doesn't render it like a
+    // quiet success.
+    let error = error.map(str::to_string).or_else(|| {
+        (!ok).then(|| {
+            raw.as_ref()
+                .and_then(|value| value.get("reason"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool reported failure")
+                .to_string()
+        })
+    });
+    let (_kind, text) = format_tool_result_text(name, content, duration_ms, error.as_deref().unwrap_or(""));
     if let Some(error) = error {
         AgentTaskEventKind::ToolError {
             id: id.to_string(),

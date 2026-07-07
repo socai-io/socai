@@ -184,7 +184,29 @@ impl AgentRunRecorder {
         write_json_atomic(
             &self.run_dir.join(format!("llm/{step:03}.response.json")),
             &value,
-        )
+        )?;
+        // Keep running usage/step totals in run.json so the desktop app can
+        // show them live mid-run; `finish` overwrites with the final figures.
+        {
+            let mut manifest = self.manifest.lock().expect("poisoned");
+            let input = manifest
+                .pointer("/usage/input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                + response.input_tokens;
+            let output = manifest
+                .pointer("/usage/output_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                + response.output_tokens;
+            manifest["usage"] = json!({
+                "input_tokens": input,
+                "output_tokens": output,
+            });
+            manifest["steps"] = json!(step);
+            write_json_atomic(&self.manifest_path, &manifest)?;
+        }
+        Ok(())
     }
 
     pub fn record_llm_error(
