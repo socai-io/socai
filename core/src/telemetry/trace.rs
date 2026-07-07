@@ -163,10 +163,14 @@ impl RunTraceBuilder {
             attrs.push(attr_int("socai.spans_dropped", self.dropped_spans as i64));
         }
 
+        // Task snippet in the name so a trace list reads like a task list —
+        // two turns of one conversation are otherwise indistinguishable
+        // without opening attributes. Aggregations key on
+        // gen_ai.operation.name, not the span name, so cardinality is fine.
         let mut root = json!({
             "traceId": self.trace_id,
             "spanId": self.root_span_id,
-            "name": "invoke_agent socai",
+            "name": format!("invoke_agent socai · {}", task_snippet(&self.task_text)),
             "kind": SPAN_KIND_INTERNAL,
             "startTimeUnixNano": self.started_ns.to_string(),
             "endTimeUnixNano": end_ns.to_string(),
@@ -284,6 +288,12 @@ fn stop_reason_str(response: &LLMResponse) -> &'static str {
         StopReason::MaxTokens => "max_tokens",
         StopReason::Other => "other",
     }
+}
+
+/// Single-line, whitespace-compacted task excerpt for the root span name.
+fn task_snippet(task: &str) -> String {
+    let compact = task.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&compact, 40)
 }
 
 fn new_span_id() -> String {
