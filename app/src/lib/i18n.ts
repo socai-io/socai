@@ -52,6 +52,7 @@ const messages = {
 
   "update.restartToUpdate": { en: "restart to update", zh: "重启更新" },
   "update.chip": { en: "update", zh: "更新" },
+  "update.downloading": { en: "downloading update…", zh: "更新下载中…" },
   "update.taskRunningWarn": {
     en: "a task is running — restarting will interrupt it.",
     zh: "有任务正在运行 — 重启会中断它。",

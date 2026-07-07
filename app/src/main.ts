@@ -285,13 +285,14 @@ function bindConnectionStatusBar(): void {
 }
 
 // ---------------------------------------------------------------------------
-// In-app updater (macOS). Updates download + install silently in the background;
-// the only thing the user ever sees or clicks is a `restart to finish` chip once
-// an update is staged. Checks fire on launch, when the window returns to the
-// foreground, and when a task finishes — throttled, and skipped while an update
-// is already downloading or staged. The updater plugin is configured in
-// tauri.conf.json; check() is gated off in dev because it only installs in
-// bundled builds.
+// In-app updater (macOS). Updates download + install in the background; while
+// the download runs the chip shows a passive `downloading update…` state (so
+// the user knows a new version exists), and once staged it becomes the
+// clickable `restart to finish` chip. Checks fire on launch, when the window
+// returns to the foreground, and when a task finishes — throttled, and
+// skipped while an update is already downloading or staged. The updater
+// plugin is configured in tauri.conf.json; check() is gated off in dev
+// because it only installs in bundled builds.
 // ---------------------------------------------------------------------------
 
 type UpdatePhase = "idle" | "downloading" | "ready";
@@ -312,8 +313,20 @@ const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 // Inline warning shown when restart is clicked while a task is still running.
 let restartWarn = false;
 
-// Only the `ready` state renders — downloading is silent, errors retry quietly.
+// `downloading` renders a passive announcement, `ready` the restart action;
+// errors reset to idle and retry quietly on the next check.
 function renderUpdateChip(): string {
+  if (updateState.phase === "downloading") {
+    return `
+    <div class="update-chip-wrap">
+      <button type="button" class="update-chip" disabled role="status" aria-live="polite">
+        <span class="update-chip-glyph" aria-hidden="true">↓</span>
+        <span class="update-chip-label">${htmlEsc(t("update.downloading"))}</span>
+      </button>
+      ${updateTooltip()}
+    </div>
+  `;
+  }
   if (updateState.phase !== "ready") return "";
   return `
     <div class="update-chip-wrap">
@@ -375,19 +388,21 @@ function doRelaunch(): void {
   relaunch().catch((e) => console.error("relaunch failed:", e));
 }
 
-// Download + install the staged update silently. Surfaces the restart chip only
-// once it's installed; a failure resets to idle so the next trigger retries.
+// Download + install the update in the background. The chip announces the
+// download as soon as it starts, then flips to the restart action once the
+// update is staged; a failure resets to idle so the next trigger retries.
 async function startBackgroundUpgrade(): Promise<void> {
   if (!updateHandle) return;
   updateState = { ...updateState, phase: "downloading" };
+  render();
   try {
     await updateHandle.downloadAndInstall();
     updateState = { ...updateState, phase: "ready" };
-    render();
   } catch (e) {
     console.error("update download/install failed:", e);
     updateState = { phase: "idle" };
   }
+  render();
 }
 
 // Check for an update and, if found, kick off the silent background download.
@@ -572,14 +587,19 @@ function isTaskFinishedEvent(payload: AgentTaskEventPayload): boolean {
   return status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted";
 }
 
-// Dev-only: force the `restart to finish` chip so its appearance and the
-// running-task warning can be exercised without a bundled build + real feed.
-// `__previewUpdate()` in the webview console shows the chip; reload to clear.
+// Dev-only: simulate the update flow (downloading chip for 3s, then the
+// restart chip) so both states and the running-task warning can be exercised
+// without a bundled build + real feed. `__previewUpdate()` in the webview
+// console starts it; reload to clear.
 function installUpdatePreviewHook(): void {
   if (!import.meta.env.DEV) return;
   (window as Window & { __previewUpdate?: () => void }).__previewUpdate = () => {
-    updateState = { phase: "ready", version: "0.5.0" };
+    updateState = { phase: "downloading", version: "0.5.0" };
     render();
+    window.setTimeout(() => {
+      updateState = { phase: "ready", version: "0.5.0" };
+      render();
+    }, 3000);
   };
 }
 
