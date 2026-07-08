@@ -207,8 +207,11 @@ fn normalized_url_value(value: &str) -> Result<String> {
     if trimmed.is_empty() {
         anyhow::bail!("cloud.base_url cannot be empty");
     }
-    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
-        anyhow::bail!("cloud.base_url must start with http:// or https://");
+    let host = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"));
+    if !host.is_some_and(|rest| !rest.is_empty()) {
+        anyhow::bail!("cloud.base_url must start with http:// or https:// and name a host");
     }
     Ok(trimmed.to_string())
 }

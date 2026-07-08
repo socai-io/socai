@@ -1,5 +1,6 @@
 export type Language = "en" | "zh";
-export type TaskStatusKey = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type TaskStatusKey =
+  "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
 const DEFAULT_LANGUAGE: Language = "zh";
 const STORAGE_KEY = "socai-language";
@@ -22,8 +23,14 @@ const messages = {
 
   "chrome.label": { en: "chrome", zh: "chrome" },
   "chrome.connectAria": { en: "connect chrome", zh: "连接 chrome" },
-  "chrome.statusToggleAria": { en: "show chrome connection status", zh: "显示 chrome 连接状态" },
-  "chrome.dialogAria": { en: "chrome connection status", zh: "chrome 连接状态" },
+  "chrome.statusToggleAria": {
+    en: "show chrome connection status",
+    zh: "显示 chrome 连接状态",
+  },
+  "chrome.dialogAria": {
+    en: "chrome connection status",
+    zh: "chrome 连接状态",
+  },
   "chrome.requiredAria": { en: "chrome required", zh: "需要 chrome" },
   "chrome.disconnected": { en: "disconnected", zh: "未连接" },
   "chrome.connecting": { en: "connecting", zh: "连接中" },
@@ -36,8 +43,14 @@ const messages = {
   "chrome.sourceExisting": { en: "existing browser", zh: "现有浏览器" },
   "chrome.profile": { en: "profile", zh: "资料目录" },
   "chrome.disconnect": { en: "disconnect", zh: "断开连接" },
-  "chrome.lookingForChrome": { en: "looking for chrome…", zh: "正在寻找 chrome…" },
-  "chrome.connectToStart": { en: "connect chrome to start", zh: "连接 chrome 后开始" },
+  "chrome.lookingForChrome": {
+    en: "looking for chrome…",
+    zh: "正在寻找 chrome…",
+  },
+  "chrome.connectToStart": {
+    en: "connect chrome to start",
+    zh: "连接 chrome 后开始",
+  },
   "chrome.connectCta": { en: "connect chrome →", zh: "连接 chrome →" },
   "chrome.connectingCta": { en: "connecting…", zh: "连接中…" },
   "chrome.remoteDebuggingHelp": {
@@ -45,7 +58,10 @@ const messages = {
     zh: "如何启用远程调试？↗",
   },
 
-  "status.capsuleAria": { en: "chrome and agent status", zh: "chrome 与智能体状态" },
+  "status.capsuleAria": {
+    en: "chrome and agent status",
+    zh: "chrome 与智能体状态",
+  },
 
   "sidebar.collapseAria": { en: "collapse sidebar", zh: "收起侧边栏" },
   "sidebar.expandAria": { en: "expand sidebar", zh: "展开侧边栏" },
@@ -79,7 +95,7 @@ const messages = {
   "settings.proNotActivated": { en: "not activated", zh: "未激活" },
   "settings.proHint": {
     en: "required for video transcripts and future pro features.",
-    zh: "用于视频笔记云端转录。",
+    zh: "视频帖子提取音频，等其他 pro 功能。",
   },
   "settings.browse": { en: "browse…", zh: "浏览…" },
   "settings.chrome": { en: "chrome", zh: "chrome" },
@@ -98,18 +114,36 @@ const messages = {
   },
   "settings.endpointDisconnected": { en: "not connected", zh: "未连接" },
   "settings.saved": { en: "saved", zh: "已保存" },
-  "settings.saveFailed": { en: "could not save settings.", zh: "无法保存设置。" },
-  "settings.loadFailed": { en: "could not load settings.", zh: "无法加载设置。" },
-  "settings.autosaveHint": { en: "changes are saved automatically.", zh: "更改会自动保存。" },
+  "settings.saveFailed": {
+    en: "could not save settings.",
+    zh: "无法保存设置。",
+  },
+  "settings.loadFailed": {
+    en: "could not load settings.",
+    zh: "无法加载设置。",
+  },
+  "settings.autosaveHint": {
+    en: "changes are saved automatically.",
+    zh: "更改会自动保存。",
+  },
 
   "agent.label": { en: "model", zh: "模型" },
   "agent.configurationAria": { en: "agent configuration", zh: "智能体设置" },
   "agent.selectModelAria": { en: "select agent model", zh: "选择智能体模型" },
-  "agent.selectProviderAria": { en: "select agent provider", zh: "选择智能体服务商" },
+  "agent.selectProviderAria": {
+    en: "select agent provider",
+    zh: "选择智能体服务商",
+  },
   "agent.provider": { en: "provider", zh: "服务商" },
   "agent.apiKey": { en: "api key", zh: "api key" },
-  "agent.credentialConfigured": { en: "{provider} api key configured.", zh: "{provider} api key 已配置。" },
-  "agent.chatgptConnected": { en: "chatgpt subscription connected.", zh: "chatgpt 订阅已连接。" },
+  "agent.credentialConfigured": {
+    en: "{provider} api key configured.",
+    zh: "{provider} api key 已配置。",
+  },
+  "agent.chatgptConnected": {
+    en: "chatgpt subscription connected.",
+    zh: "chatgpt 订阅已连接。",
+  },
   "agent.updateCredential": { en: "update api key", zh: "更新 api key" },
   "agent.replaceCredential": {
     en: "saving replaces your current {provider} api key.",
@@ -119,8 +153,14 @@ const messages = {
   "agent.loading": { en: "loading", zh: "加载中" },
   "agent.keyNeeded": { en: "api key needed", zh: "需要 api key" },
   "agent.defaultModel": { en: "default", zh: "默认" },
-  "agent.needsCredential": { en: "{model} needs an api key.", zh: "{model} 需要 api key。" },
-  "agent.connectChatgpt": { en: "connect chatgpt subscription", zh: "连接 chatgpt 订阅" },
+  "agent.needsCredential": {
+    en: "{model} needs an api key.",
+    zh: "{model} 需要 api key。",
+  },
+  "agent.connectChatgpt": {
+    en: "connect chatgpt subscription",
+    zh: "连接 chatgpt 订阅",
+  },
   "agent.opening": { en: "opening…", zh: "打开中…" },
   "agent.pasteApiKey": { en: "paste api key", zh: "粘贴 api key" },
   "agent.codexLoginMissing": {
@@ -144,28 +184,52 @@ const messages = {
   },
   "task.deleteKeep": { en: "keep", zh: "保留" },
   "task.finalAnswer": { en: "final answer", zh: "最终回答" },
-  "task.answerInPanel": { en: "shown in the answer panel", zh: "见右侧回答面板" },
+  "task.answerInPanel": {
+    en: "shown in the answer panel",
+    zh: "见右侧回答面板",
+  },
   "task.answerBelow": { en: "see the answer below", zh: "见下方回答" },
-  "task.jumpToAnswerAria": { en: "go to the final answer", zh: "跳转到最终回答" },
+  "task.jumpToAnswerAria": {
+    en: "go to the final answer",
+    zh: "跳转到最终回答",
+  },
   "task.timeline": { en: "timeline", zh: "时间线" },
   "task.errorLabel": { en: "error", zh: "错误" },
   "task.waitingForEvents": { en: "waiting for events…", zh: "等待事件…" },
-  "task.noTimeline": { en: "no event timeline available.", zh: "暂无事件时间线。" },
-  "task.emptyDetail": { en: "start a task or choose one from history.", zh: "启动一个任务或从历史中选择。" },
+  "task.noTimeline": {
+    en: "no event timeline available.",
+    zh: "暂无事件时间线。",
+  },
+  "task.emptyDetail": {
+    en: "start a task or choose one from history.",
+    zh: "启动一个任务或从历史中选择。",
+  },
   "task.you": { en: "you", zh: "你" },
   "task.replyPlaceholder": { en: "ask a follow-up…", zh: "继续追问…" },
-  "task.replyConnectHint": { en: "connect chrome to send a follow-up", zh: "连接 chrome 后可继续追问" },
+  "task.replyConnectHint": {
+    en: "connect chrome to send a follow-up",
+    zh: "连接 chrome 后可继续追问",
+  },
   "task.replySend": { en: "send", zh: "发送" },
   "task.replySending": { en: "sending…", zh: "发送中…" },
 
-  "task.hero": { en: "what should socai research?", zh: "想让 socai 研究什么？" },
+  "task.hero": {
+    en: "what should socai research?",
+    zh: "想让 socai 研究什么？",
+  },
   "task.lede": {
     en: "start a one-shot browser task. socai opens a temporary chrome tab, runs the agent, saves the result, then closes the tab.",
     zh: "启动一次性浏览器任务。socai 会打开临时 chrome 标签页、运行智能体、保存结果，然后关闭标签页。",
   },
   "task.starting": { en: "starting…", zh: "启动中…" },
-  "task.loadingModels": { en: "loading agent models…", zh: "正在加载智能体模型…" },
-  "task.addKeyHint": { en: "add an api key in the model menu (top right) to run.", zh: "在右上角模型菜单中添加 api key 后即可运行。" },
+  "task.loadingModels": {
+    en: "loading agent models…",
+    zh: "正在加载智能体模型…",
+  },
+  "task.addKeyHint": {
+    en: "add an api key in the model menu (top right) to run.",
+    zh: "在右上角模型菜单中添加 api key 后即可运行。",
+  },
   "task.agentPlaceholder": {
     en: "tell socai what you want researched…\neach task opens its own temporary chrome tab.",
     zh: "告诉 socai 你想研究什么…\n每个任务都会打开自己的临时 chrome 标签页。",
@@ -199,7 +263,9 @@ export function getLanguage(): Language {
   return currentLanguage;
 }
 
-export function isSupportedLanguage(language: string | null | undefined): language is Language {
+export function isSupportedLanguage(
+  language: string | null | undefined,
+): language is Language {
   return !!language && supportedLanguages.includes(language as Language);
 }
 
@@ -218,7 +284,10 @@ export function applyLanguageToDocument(): void {
   document.documentElement.dataset.language = currentLanguage;
 }
 
-export function t(key: MessageKey, params: Record<string, string | number> = {}): string {
+export function t(
+  key: MessageKey,
+  params: Record<string, string | number> = {},
+): string {
   let message: string = messages[key][currentLanguage];
   for (const [name, value] of Object.entries(params)) {
     message = message.replaceAll(`{${name}}`, `${value}`);
@@ -268,8 +337,12 @@ export function formatSourceCount(count: number): string {
   return `${count} source${count === 1 ? "" : "s"}`;
 }
 
-export function formatTokenUsage(inputTokens: number, outputTokens: number): string {
-  if (currentLanguage === "zh") return `输入 ${inputTokens} / 输出 ${outputTokens} tokens`;
+export function formatTokenUsage(
+  inputTokens: number,
+  outputTokens: number,
+): string {
+  if (currentLanguage === "zh")
+    return `输入 ${inputTokens} / 输出 ${outputTokens} tokens`;
   return `in ${inputTokens} / out ${outputTokens} tokens`;
 }
 
@@ -293,8 +366,16 @@ export function formatTaskTimestamp(ms: number): string {
 // is an acceptable tradeoff for a display-only preference.
 function relativeDayLabel(date: Date): string {
   const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const startOfToday = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  ).getTime();
+  const startOfDate = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+  ).getTime();
   const dayDiff = Math.round((startOfToday - startOfDate) / 86_400_000);
   if (dayDiff === 0) return t("task.today");
   if (dayDiff === 1) return t("task.yesterday");

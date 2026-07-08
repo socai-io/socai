@@ -10,6 +10,8 @@ use crate::config;
 const AUTH_KEY: &str = "socai_pro";
 const LEGACY_AUTH_KEY: &str = "socai_cloud";
 const ASR_TASK_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Consecutive poll failures tolerated before giving up on a submitted task.
+const ASR_MAX_POLL_FAILURES: u32 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CloudStatus {
@@ -76,10 +78,9 @@ pub async fn activate_with_base_url(
     label: &str,
 ) -> Result<CloudStatus> {
     let base_url = normalize_base_url(base_url)?;
-    config::set_config_key("cloud.base_url", &base_url)?;
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not resolve $HOME"))?;
     let install_id = crate::identity::load_or_create_install_id(&home.join(".socai"));
-    let client = reqwest::Client::new();
+    let client = http_client()?;
     let response = client
         .post(format!("{base_url}/v1/beta/activate"))
         .json(&json!({
@@ -97,6 +98,9 @@ pub async fn activate_with_base_url(
         anyhow::bail!("socai pro activation failed ({status}): {body}");
     }
     let body: ActivateResponse = response.json().await?;
+    // Persist the URL only after the server accepted the activation, so a
+    // failed attempt doesn't leave the config pointing at a bad server.
+    config::set_config_key("cloud.base_url", &base_url)?;
     save_credentials(&CloudCredentials {
         device_id: body.device_id.clone(),
         device_token: body.device_token,
@@ -125,7 +129,7 @@ pub async fn transcribe_audio_file(
     let bytes = tokio::fs::read(path)
         .await
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let client = reqwest::Client::new();
+    let client = http_client()?;
     let started = Instant::now();
     let upload: UploadUrlResponse = bearer(
         client
@@ -159,37 +163,68 @@ pub async fn transcribe_audio_file(
     .error_for_status()?;
 
     let deadline = Instant::now() + timeout;
+    let mut poll_failures: u32 = 0;
     loop {
-        let task: TaskResponse = bearer(
-            client.get(format!("{base_url}/v1/asr/tasks/{}", upload.task_id)),
-            &creds.device_token,
-        )
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-        match task.status.as_str() {
-            "succeeded" => {
-                return Ok(CloudAsrResult {
-                    transcript: task.transcript.unwrap_or_default(),
-                    provider_latency_ms: task.provider_latency_ms,
-                    total_latency_ms: started.elapsed().as_millis(),
-                });
+        // The upload is already done at this point; tolerate a few transient
+        // poll errors (5xx, network blips) instead of abandoning the task.
+        match poll_task(&client, &base_url, &upload.task_id, &creds.device_token).await {
+            Ok(task) => {
+                poll_failures = 0;
+                match task.status.as_str() {
+                    "succeeded" => {
+                        return Ok(CloudAsrResult {
+                            transcript: task.transcript.unwrap_or_default(),
+                            provider_latency_ms: task.provider_latency_ms,
+                            total_latency_ms: started.elapsed().as_millis(),
+                        });
+                    }
+                    "failed" => {
+                        anyhow::bail!(
+                            "socai pro ASR failed: {}",
+                            task.error.unwrap_or_else(|| "unknown error".into())
+                        );
+                    }
+                    _ => {}
+                }
             }
-            "failed" => {
-                anyhow::bail!(
-                    "socai pro ASR failed: {}",
-                    task.error.unwrap_or_else(|| "unknown error".into())
-                );
+            Err(err) => {
+                poll_failures += 1;
+                if poll_failures >= ASR_MAX_POLL_FAILURES {
+                    return Err(err.context("socai pro ASR status polling failed"));
+                }
             }
-            _ => {}
         }
         if Instant::now() >= deadline {
             anyhow::bail!("socai pro ASR timed out after {}s", timeout.as_secs());
         }
         tokio::time::sleep(ASR_TASK_POLL_INTERVAL).await;
     }
+}
+
+async fn poll_task(
+    client: &reqwest::Client,
+    base_url: &str,
+    task_id: &str,
+    token: &str,
+) -> Result<TaskResponse> {
+    Ok(bearer(
+        client.get(format!("{base_url}/v1/asr/tasks/{task_id}")),
+        token,
+    )
+    .send()
+    .await?
+    .error_for_status()?
+    .json()
+    .await?)
+}
+
+fn http_client() -> Result<reqwest::Client> {
+    // Cap every request so a hung server can't stall an agent run (the poll
+    // deadline is only checked between requests).
+    Ok(reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .build()?)
 }
 
 fn bearer(request: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
@@ -230,8 +265,11 @@ fn normalize_base_url(value: &str) -> Result<String> {
     if trimmed.is_empty() {
         anyhow::bail!("socai pro server URL is required");
     }
-    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
-        anyhow::bail!("socai pro server URL must start with http:// or https://");
+    let host = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"));
+    if !host.is_some_and(|rest| !rest.is_empty()) {
+        anyhow::bail!("socai pro server URL must start with http:// or https:// and name a host");
     }
     Ok(trimmed.to_string())
 }

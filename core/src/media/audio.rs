@@ -31,9 +31,16 @@ impl MediaProcessor {
         let source_path = self.local_audio_source(source, referer).await?;
         if self.config.use_cloud_asr {
             let wav = self.extract_audio_wav(&source_path).await?;
+            // Real clip duration (the wav is already capped at
+            // max_audio_seconds by ffmpeg); the server uses it for usage
+            // accounting. 0 when ffprobe is unavailable.
+            let duration_s = probe_duration_seconds(&wav)
+                .await
+                .map(|secs| secs.ceil() as i64)
+                .unwrap_or(0);
             let result = crate::cloud::transcribe_audio_file(
                 &wav,
-                self.config.max_audio_seconds as i64,
+                duration_s,
                 Duration::from_secs(self.config.whisper_timeout_s.max(60)),
             )
             .await?;
@@ -173,4 +180,28 @@ impl MediaProcessor {
         let dir = ensure_dir(&dir)?;
         Ok(dir.join("audio.wav"))
     }
+}
+
+async fn probe_duration_seconds(path: &Path) -> Option<f64> {
+    let ffprobe = find_in_path("ffprobe")?;
+    let output = Command::new(ffprobe)
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("csv=p=0")
+        .arg(path)
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()?
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|secs| secs.is_finite() && *secs >= 0.0)
 }

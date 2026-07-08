@@ -159,7 +159,7 @@ export namespace settingsMenu {
               spellcheck="false"
               value="${esc(d.invite_code)}"
             />
-            <button type="button" class="btn-ghost btn-compact" data-settings-activate-pro>${esc(t("settings.activate"))}</button>
+            <button type="button" class="btn-ghost btn-compact" data-settings-activate-pro ${status === "saving" ? "disabled" : ""}>${esc(t("settings.activate"))}</button>
           </div>
           <p class="t-small subtle settings-field-hint">${esc(t("settings.proHint"))}</p>
         </div>
@@ -412,7 +412,9 @@ export namespace settingsMenu {
   }
 
   async function activatePro(shell: ShellState): Promise<void> {
-    if (!draft) return;
+    // An in-flight activation must not be doubled — each success consumes an
+    // invite use and registers a new device.
+    if (!draft || status === "saving") return;
     const inviteCode = draft.invite_code.trim();
     if (!inviteCode) {
       setError(shell);
