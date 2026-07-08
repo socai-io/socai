@@ -82,12 +82,16 @@ fn within_roots(path: &Path, roots: &[PathBuf], cwd: &Path) -> bool {
 /// Best-effort scan for path-like tokens in a shell command line. Not a
 /// parser — quoting, variable expansion, and encoded payloads can defeat it —
 /// but it catches the straightforward `cat /etc/passwd` / `rm -rf ~/Documents`
-/// style asks a prompt-injected note might make.
+/// style asks a prompt-injected note might make. Tokens that are nothing but
+/// slashes (`/`, `//`) are skipped: in practice they are division operators in
+/// an inline python/awk snippet, not references to the filesystem root.
 fn command_escapes_roots(command: &str, roots: &[PathBuf], cwd: &Path) -> Option<String> {
     for raw_token in command.split_whitespace() {
         let token = raw_token.trim_matches(|c| c == '"' || c == '\'' || c == ';' || c == ',');
-        let looks_like_path =
-            token.starts_with('/') || token.starts_with('~') || token.starts_with("./") || token.starts_with("../");
+        let looks_like_path = (token.starts_with('/') && token.chars().any(|c| c != '/'))
+            || token.starts_with('~')
+            || token.starts_with("./")
+            || token.starts_with("../");
         if !looks_like_path {
             continue;
         }
