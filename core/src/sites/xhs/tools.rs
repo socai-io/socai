@@ -62,6 +62,7 @@ pub fn xhs_tools_with_llm_provider(
     llm_provider: Option<Arc<dyn LlmProvider>>,
 ) -> Vec<Arc<dyn Tool>> {
     let history = Arc::new(XhsHistoryStore::open_default());
+    let pro = crate::cloud::pro_activated();
     vec![
         Arc::new(ExtractSearchCardsTool {
             page: page.clone(),
@@ -75,11 +76,13 @@ pub fn xhs_tools_with_llm_provider(
             page: page.clone(),
             llm_provider: llm_provider.clone(),
             history: history.clone(),
+            pro,
         }),
         Arc::new(ExtractNoteTool {
             page: page.clone(),
             llm_provider: llm_provider.clone(),
             history: history.clone(),
+            pro,
         }),
         Arc::new(ExtractCommentsTool { page: page.clone() }),
         Arc::new(ScrollInNoteTool { page: page.clone() }),
@@ -91,12 +94,14 @@ pub fn xhs_tools_with_llm_provider(
             history: history.clone(),
             always_download_media: false,
             always_ocr: false,
+            pro,
         }),
         Arc::new(AuthorScanTool {
             page: page.clone(),
             history,
             always_download_media: false,
             always_ocr: false,
+            pro,
         }),
         Arc::new(WaitForLoginTool { page: page.clone() }),
         Arc::new(PageStateTool { page }),
@@ -108,6 +113,7 @@ pub fn xhs_macro_tools_with_llm_provider(
     llm_provider: Option<Arc<dyn LlmProvider>>,
 ) -> Vec<Arc<dyn Tool>> {
     let history = Arc::new(XhsHistoryStore::open_default());
+    let pro = crate::cloud::pro_activated();
     // The app/TUI agent interface always downloads note media so the offline
     // files are on hand for deeper analysis, and always OCRs every image; the
     // CLI keeps its --download-media / --ocr opt-ins via the full tool set above.
@@ -118,12 +124,14 @@ pub fn xhs_macro_tools_with_llm_provider(
             history: history.clone(),
             always_download_media: true,
             always_ocr: true,
+            pro,
         }) as Arc<dyn Tool>,
         Arc::new(AuthorScanTool {
             page: page.clone(),
             history,
             always_download_media: true,
             always_ocr: true,
+            pro,
         }),
         Arc::new(WaitForLoginTool { page }),
     ]
@@ -233,9 +241,9 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     kind: ArgKind::Flag,
                 },
                 CommandArg {
-                    key: "video_transcript",
-                    long: Some("video-transcript"),
-                    value_name: "VIDEO_TRANSCRIPT",
+                    key: "transcribe_audio",
+                    long: Some("transcribe-audio"),
+                    value_name: "TRANSCRIBE_AUDIO",
                     help: "For opened video notes, download the video file and transcribe audio \
                            through socai pro. Ignored with --preview.",
                     required: false,
@@ -309,9 +317,9 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     kind: ArgKind::Flag,
                 },
                 CommandArg {
-                    key: "video_transcript",
-                    long: Some("video-transcript"),
-                    value_name: "VIDEO_TRANSCRIPT",
+                    key: "transcribe_audio",
+                    long: Some("transcribe-audio"),
+                    value_name: "TRANSCRIBE_AUDIO",
                     help: "For opened video notes, download the video file and transcribe audio \
                            through socai pro. Ignored with --preview.",
                     required: false,
@@ -372,7 +380,7 @@ fn run_search(
                 .unwrap_or(false);
         let transcribe_audio = !preview
             && args
-                .get("video_transcript")
+                .get("transcribe_audio")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
         search_command(
@@ -426,7 +434,7 @@ fn run_author_scan(
                 .unwrap_or(false);
         let transcribe_audio = !preview
             && args
-                .get("video_transcript")
+                .get("transcribe_audio")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
         author_scan_command(
@@ -582,7 +590,7 @@ fn search_input(
         input["ocr"] = json!(true);
     }
     if transcribe_audio {
-        input["video_transcript"] = json!(true);
+        input["transcribe_audio"] = json!(true);
     }
     if preview {
         input["preview"] = json!(true);
@@ -618,7 +626,7 @@ fn author_scan_input(
         input["ocr"] = json!(true);
     }
     if transcribe_audio {
-        input["video_transcript"] = json!(true);
+        input["transcribe_audio"] = json!(true);
     }
     Ok(input)
 }
@@ -701,8 +709,7 @@ pub async fn close_open_note(page: &PageSession) {
 }
 
 fn read_note_options(input: &Value) -> ReadNoteOptions {
-    let transcribe_audio =
-        get_bool(input, "video_transcript", false) || get_bool(input, "transcribe_audio", false);
+    let transcribe_audio = get_bool(input, "transcribe_audio", false);
     let ocr = get_bool(input, "ocr", false);
     let download_media = get_bool(input, "download_media", false) || transcribe_audio || ocr;
     ReadNoteOptions {
@@ -721,6 +728,52 @@ fn read_note_options(input: &Value) -> ReadNoteOptions {
             .unwrap_or("")
             .to_string(),
         note_id_fallback: get_str(input, "note_id_fallback").unwrap_or("").to_string(),
+    }
+}
+
+/// Tool args that require an activated socai pro device. Today that's cloud
+/// ASR (`transcribe_audio`); future pro-only args just get added here.
+const PRO_ARG_KEYS: &[&str] = &["transcribe_audio"];
+
+/// Attached to a result when a non-pro call asked for a pro-only arg, so the
+/// agent can relay why instead of the whole call failing.
+const PRO_SKIP_NOTE: &str = "transcribe_audio requires socai pro; the call ran without \
+     transcription. Activate with `socai pro activate <invite_code>`.";
+
+/// Remove pro-only properties from a tool input schema so a non-pro session
+/// never shows the agent args it cannot use.
+fn strip_pro_schema(schema: &mut Value) {
+    if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        for key in PRO_ARG_KEYS {
+            props.remove(*key);
+        }
+    }
+}
+
+/// Drop pro-only args from a non-pro call's input (the schema hides them, but
+/// a stale conversation or hallucinated arg can still carry one). Returns
+/// whether any was actually requested, so the caller can attach
+/// [`PRO_SKIP_NOTE`] to its result.
+fn strip_pro_input(input: &mut Value) -> bool {
+    let Some(obj) = input.as_object_mut() else {
+        return false;
+    };
+    let mut requested = false;
+    for key in PRO_ARG_KEYS {
+        requested |= obj
+            .remove(*key)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+    }
+    requested
+}
+
+fn attach_pro_skip_note(payload: &mut Value, skipped: bool) {
+    if !skipped {
+        return;
+    }
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("transcribe_audio_skipped".into(), json!(PRO_SKIP_NOTE));
     }
 }
 
@@ -2252,6 +2305,9 @@ pub struct ReadNoteTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
     history: Arc<XhsHistoryStore>,
+    /// socai pro activated on this device; when false, pro-only args
+    /// ([`PRO_ARG_KEYS`]) are hidden from the schema and skipped at runtime.
+    pro: bool,
 }
 
 #[async_trait]
@@ -2268,7 +2324,7 @@ impl Tool for ReadNoteTool {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
+        let mut schema = json!({
             "type": "object",
             "properties": {
                 "note_id": { "type": "string" },
@@ -2276,14 +2332,19 @@ impl Tool for ReadNoteTool {
                 "wait_seconds": { "type": "number", "default": 6.0 },
                 "include_media": { "type": "boolean", "default": false },
                 "download_media": { "type": "boolean", "default": false },
-                "video_transcript": { "type": "boolean", "default": false },
+                "transcribe_audio": { "type": "boolean", "default": false },
                 "max_images": { "type": "integer", "default": 12, "minimum": 1 },
                 "max_video_frames": { "type": "integer", "default": 4, "minimum": 1 }
             }
-        })
+        });
+        if !self.pro {
+            strip_pro_schema(&mut schema);
+        }
+        schema
     }
 
-    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+    async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let pro_skipped = !self.pro && strip_pro_input(&mut input);
         let note_id = get_str(&input, "note_id").map(str::to_string);
         let index = input
             .get("index")
@@ -2362,6 +2423,7 @@ impl Tool for ReadNoteTool {
         if let Some(perf) = value.as_object_mut().and_then(|map| map.remove("perf")) {
             write_run_perf_file(ctx, "read.json", &json!({ "read": perf }));
         }
+        attach_pro_skip_note(&mut value, pro_skipped);
         Ok(json_result(&value))
     }
 }
@@ -2371,6 +2433,8 @@ pub struct ExtractNoteTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
     history: Arc<XhsHistoryStore>,
+    /// See [`ReadNoteTool::pro`].
+    pro: bool,
 }
 
 #[async_trait]
@@ -2386,20 +2450,25 @@ impl Tool for ExtractNoteTool {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
+        let mut schema = json!({
             "type": "object",
             "properties": {
                 "wait_seconds": { "type": "number", "default": 8.0 },
                 "include_media": { "type": "boolean", "default": false },
                 "download_media": { "type": "boolean", "default": false },
-                "video_transcript": { "type": "boolean", "default": false },
+                "transcribe_audio": { "type": "boolean", "default": false },
                 "max_images": { "type": "integer", "default": 12, "minimum": 1 },
                 "max_video_frames": { "type": "integer", "default": 4, "minimum": 1 }
             }
-        })
+        });
+        if !self.pro {
+            strip_pro_schema(&mut schema);
+        }
+        schema
     }
 
-    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+    async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let pro_skipped = !self.pro && strip_pro_input(&mut input);
         let wait_seconds = get_f64(&input, "wait_seconds", 8.0);
         let options = read_note_options(&input);
         let xhs = XhsPageRuntime::new_with_media(
@@ -2420,6 +2489,7 @@ impl Tool for ExtractNoteTool {
         attach_top_comments(&xhs, &mut value).await;
         self.history
             .record(&value, &options.level, options.include_media);
+        attach_pro_skip_note(&mut value, pro_skipped);
         Ok(json_result(&value))
     }
 }
@@ -2791,6 +2861,8 @@ pub struct SearchTool {
     /// `ocr` input. Set by the app/TUI macro factory so the desktop agent always
     /// gets OCR; the CLI/full set leaves it to the `--ocr` flag.
     always_ocr: bool,
+    /// See [`ReadNoteTool::pro`].
+    pro: bool,
 }
 
 fn effective_macro_input(
@@ -2813,12 +2885,10 @@ fn effective_macro_input(
     if preview {
         if let Some(object) = effective.as_object_mut() {
             object.remove("download_media");
-            object.remove("video_transcript");
             object.remove("transcribe_audio");
         }
     } else if always_download_media
         || get_bool(&effective, "download_media", false)
-        || get_bool(&effective, "video_transcript", false)
         || get_bool(&effective, "transcribe_audio", false)
     {
         // Explicit downloads only — OCR alone downloads just what it reads
@@ -2845,8 +2915,7 @@ impl Tool for SearchTool {
          `ocr=true` to OCR each opened note locally (PP-OCRv6 small) — every \
          carousel image, or a video note's cover — and attach a per-note \
          ocr_text; it downloads what it reads, but video files still require \
-         download_media. Pass `video_transcript=true` to transcribe opened \
-         video notes through socai pro. Pass \
+         download_media. Pass \
          `preview=true` for a fast cards-only pass that returns result cards \
          (titles/likes/covers) without opening any note. Defaults to 10 notes; \
          pass a larger `num_notes` to scan more (each note is opened, so latency \
@@ -2855,7 +2924,7 @@ impl Tool for SearchTool {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
+        let mut schema = json!({
             "type": "object",
             "properties": {
                 "query": { "type": "string" },
@@ -2882,7 +2951,7 @@ impl Tool for SearchTool {
                     "description": "Run local OCR (PP-OCRv6 small). Full scan: OCR each opened note — every carousel image, or a video note's cover — downloading what it reads (video files still require download_media); each returned note gets ocr_text as an array of per-image strings (image order, cover first). Preview: OCR each card's cover image and attach its ocr_text. Per-image ocr_text/ocr_ms and OCR diagnostics are kept in the artifact.",
                     "default": false
                 },
-                "video_transcript": {
+                "transcribe_audio": {
                     "type": "boolean",
                     "description": "For opened video notes, download the video file and transcribe audio through socai pro. Ignored in preview mode.",
                     "default": false
@@ -2894,7 +2963,11 @@ impl Tool for SearchTool {
                 }
             },
             "required": ["query"]
-        })
+        });
+        if !self.pro {
+            strip_pro_schema(&mut schema);
+        }
+        schema
     }
 
     fn effective_input(&self, input: &Value) -> Value {
@@ -2906,7 +2979,8 @@ impl Tool for SearchTool {
         )
     }
 
-    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+    async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let pro_skipped = !self.pro && strip_pro_input(&mut input);
         let query = get_str(&input, "query")
             .ok_or_else(|| anyhow::anyhow!("missing query"))?
             .to_string();
@@ -3032,8 +3106,7 @@ impl Tool for SearchTool {
         // genuinely expensive enrichment and not needed for topic research).
         let include_media = false;
         let ocr = self.always_ocr || get_bool(&input, "ocr", false);
-        let transcribe_audio = get_bool(&input, "video_transcript", false)
-            || get_bool(&input, "transcribe_audio", false);
+        let transcribe_audio = get_bool(&input, "transcribe_audio", false);
         // Explicit request: download everything, video files included.
         let download_media_requested = self.always_download_media
             || get_bool(&input, "download_media", false)
@@ -3294,7 +3367,7 @@ impl Tool for SearchTool {
                 "include_media": include_media,
                 "download_media": download_media,
                 "ocr": ocr,
-                "video_transcript": transcribe_audio,
+                "transcribe_audio": transcribe_audio,
             },
             "timing": {
                 "media": media_timing,
@@ -3352,6 +3425,7 @@ impl Tool for SearchTool {
         // agent/CLI output stays small, then point at the artifact for the rest.
         lean_scan_payload(&mut payload);
         attach_artifact_pointer(&mut payload, artifact_path, ARTIFACT_EXTRA_NOTE_PROPERTIES);
+        attach_pro_skip_note(&mut payload, pro_skipped);
         Ok(json_result(&payload))
     }
 }
@@ -3375,6 +3449,8 @@ pub struct AuthorScanTool {
     /// `ocr` input. Set by the app/TUI macro factory; the CLI/full set leaves it
     /// to the `--ocr` flag.
     always_ocr: bool,
+    /// See [`ReadNoteTool::pro`].
+    pro: bool,
 }
 
 #[async_trait]
@@ -3401,7 +3477,7 @@ impl Tool for AuthorScanTool {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
+        let mut schema = json!({
             "type": "object",
             "properties": {
                 "author_id": {
@@ -3434,21 +3510,26 @@ impl Tool for AuthorScanTool {
                     "description": "Run local OCR (PP-OCRv6 small) on each opened note — every carousel image, or a video note's cover — attaching per-image ocr_text in the artifact and a joined per-note ocr_text in the returned notes. Downloads what it reads on its own; video files still require download_media. In preview mode, OCRs each note card's cover instead.",
                     "default": false
                 },
-                "video_transcript": {
+                "transcribe_audio": {
                     "type": "boolean",
                     "description": "For opened video notes, download the video file and transcribe audio through socai pro. Ignored in preview mode.",
                     "default": false
                 }
             },
             "required": ["author_id"]
-        })
+        });
+        if !self.pro {
+            strip_pro_schema(&mut schema);
+        }
+        schema
     }
 
     fn effective_input(&self, input: &Value) -> Value {
         effective_macro_input(input, None, self.always_download_media, self.always_ocr)
     }
 
-    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+    async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let pro_skipped = !self.pro && strip_pro_input(&mut input);
         let author_id = get_str(&input, "author_id")
             .map(str::trim)
             .filter(|id| !id.is_empty())
@@ -3462,8 +3543,7 @@ impl Tool for AuthorScanTool {
         // pipeline and emit media metadata even though no note is opened.
         let ocr = self.always_ocr || get_bool(&input, "ocr", false);
         let transcribe_audio = !preview
-            && (get_bool(&input, "video_transcript", false)
-                || get_bool(&input, "transcribe_audio", false));
+            && get_bool(&input, "transcribe_audio", false);
         // Explicit request: download everything, video files included. OCR
         // still implies downloading what it reads (carousel images, video
         // posters) — but only an explicit request fetches video files.
@@ -3706,7 +3786,7 @@ impl Tool for AuthorScanTool {
                 "comments_per_note": if preview { 0 } else { comment_count },
                 "download_media": download_media,
                 "ocr": ocr,
-                "video_transcript": transcribe_audio,
+                "transcribe_audio": transcribe_audio,
             },
             "timing": { "media": media_timing },
         });
@@ -3748,6 +3828,7 @@ impl Tool for AuthorScanTool {
         // agent/CLI output stays small, then point at the artifact for the rest.
         lean_scan_payload(&mut payload);
         attach_artifact_pointer(&mut payload, artifact_path, ARTIFACT_EXTRA_NOTE_PROPERTIES);
+        attach_pro_skip_note(&mut payload, pro_skipped);
         Ok(json_result(&payload))
     }
 }
@@ -3841,5 +3922,33 @@ mod tests {
     fn search_command_includes_run_metadata() {
         assert!(SEARCH_COMMAND.include_run_metadata);
         assert!(!AUTHOR_SCAN_COMMAND.include_run_metadata);
+    }
+
+    #[test]
+    fn strip_pro_schema_hides_pro_args() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "transcribe_audio": { "type": "boolean" }
+            }
+        });
+        strip_pro_schema(&mut schema);
+        assert!(schema["properties"].get("transcribe_audio").is_none());
+        assert!(schema["properties"].get("query").is_some());
+    }
+
+    #[test]
+    fn strip_pro_input_drops_args_and_reports_requests() {
+        let mut input = json!({ "query": "咖啡", "transcribe_audio": true });
+        assert!(strip_pro_input(&mut input));
+        assert!(input.get("transcribe_audio").is_none());
+        assert_eq!(input["query"], json!("咖啡"));
+
+        // Not requested (absent or false) → no skip note owed.
+        let mut plain = json!({ "query": "咖啡" });
+        assert!(!strip_pro_input(&mut plain));
+        let mut off = json!({ "query": "咖啡", "transcribe_audio": false });
+        assert!(!strip_pro_input(&mut off));
     }
 }

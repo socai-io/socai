@@ -54,6 +54,13 @@ pub struct CloudAsrResult {
     pub total_latency_ms: u128,
 }
 
+/// Whether socai pro is activated on this device. Local check only (reads
+/// ~/.socai/auth.json, no network) — gates which pro-only tool args are
+/// exposed to the agent; the server still authorizes every actual call.
+pub fn pro_activated() -> bool {
+    load_credentials().is_some_and(|creds| !creds.device_token.trim().is_empty())
+}
+
 pub fn status() -> Result<CloudStatus> {
     let base_url = configured_base_url().unwrap_or_default();
     let creds = load_credentials();
