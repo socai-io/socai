@@ -6,6 +6,7 @@ mod version;
 use anyhow::Result;
 use clap::{Arg, ArgAction, ArgMatches};
 use serde_json::{Map, Value};
+use socai_core::cloud as socai_pro;
 use socai_core::config as socai_config;
 use socai_core::sites::{all_sites, find_site, ArgKind, CommandArg, SiteCommand, SiteSpec};
 
@@ -61,6 +62,33 @@ fn build_cli() -> clap::Command {
                             Arg::new("key")
                                 .required(true)
                                 .help("Key to remove, e.g. runs.dir or chrome.profile."),
+                        ),
+                ),
+        )
+        .subcommand(
+            clap::Command::new("pro")
+                .about("Activate and inspect socai pro access.")
+                .subcommand(clap::Command::new("status").about("Print socai pro status."))
+                .subcommand(
+                    clap::Command::new("activate")
+                        .about("Activate this install with an invite code.")
+                        .arg(
+                            Arg::new("invite_code")
+                                .required(true)
+                                .help("Invite code from the server operator."),
+                        )
+                        .arg(
+                            Arg::new("server")
+                                .long("server")
+                                .hide(true)
+                                .value_name("URL")
+                                .help("Developer override for socai-server base URL."),
+                        )
+                        .arg(
+                            Arg::new("label")
+                                .long("label")
+                                .value_name("TEXT")
+                                .help("Optional device label shown in server records."),
                         ),
                 ),
         )
@@ -200,7 +228,7 @@ async fn run_site_command(
 fn should_warn_for_update(subcommand: &str) -> bool {
     !matches!(
         subcommand,
-        "__daemon" | "update" | "version" | "config"
+        "__daemon" | "update" | "version" | "config" | "pro"
     )
 }
 
@@ -208,10 +236,9 @@ fn should_warn_for_update(subcommand: &str) -> bool {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    "info,async_tungstenite=off,tungstenite=off,hyper=off,reqwest=off".into()
-                }),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "info,async_tungstenite=off,tungstenite=off,hyper=off,reqwest=off".into()
+            }),
         )
         .init();
 
@@ -234,6 +261,7 @@ async fn main() -> Result<()> {
         }
         "update" => version::run_update_command().await?,
         "config" => run_config_command(sub_matches)?,
+        "pro" => run_pro_command(sub_matches).await?,
         "stop" => {
             // Graceful shutdown reaches whoever owns the IPC endpoint; the
             // sweep then kills any orphan daemon from any binary or SOCAI_HOME,
@@ -252,8 +280,7 @@ async fn main() -> Result<()> {
         }
         "__daemon" => daemon::run_daemon().await?,
         _ => {
-            let site =
-                find_site(name).ok_or_else(|| anyhow::anyhow!("unknown command: {name}"))?;
+            let site = find_site(name).ok_or_else(|| anyhow::anyhow!("unknown command: {name}"))?;
             let (command_name, command_matches) = sub_matches
                 .subcommand()
                 .ok_or_else(|| anyhow::anyhow!("missing {name} subcommand"))?;
@@ -264,6 +291,30 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn run_pro_command(matches: &ArgMatches) -> Result<()> {
+    match matches.subcommand() {
+        Some(("activate", sub)) => {
+            let invite_code = sub
+                .get_one::<String>("invite_code")
+                .expect("invite_code is required");
+            let label = sub
+                .get_one::<String>("label")
+                .map(String::as_str)
+                .unwrap_or("cli");
+            let status = if let Some(server) = sub.get_one::<String>("server") {
+                socai_pro::activate_with_base_url(server, invite_code, label).await?
+            } else {
+                socai_pro::activate(invite_code, label).await?
+            };
+            println!("{}", serde_json::to_string_pretty(&status)?);
+        }
+        _ => {
+            println!("{}", serde_json::to_string_pretty(&socai_pro::status()?)?);
+        }
+    }
     Ok(())
 }
 

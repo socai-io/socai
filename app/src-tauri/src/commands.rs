@@ -900,7 +900,10 @@ fn record_desktop_session(snapshot: &AgentTaskSnapshot, assistant: &str, status:
     let Ok(mut conversation) = Conversation::load(session_dir) else {
         return;
     };
-    let user_text = snapshot.current_message.as_deref().unwrap_or(&snapshot.task);
+    let user_text = snapshot
+        .current_message
+        .as_deref()
+        .unwrap_or(&snapshot.task);
     conversation.record_run(user_text, assistant, &PathBuf::from(run_dir), status);
 }
 
@@ -931,7 +934,9 @@ async fn run_agent_task_on_shared_page(
     };
     // Prior runs in this conversation, so a reply can continue it — empty for
     // a brand-new conversation's first run.
-    let conversation = session_dir.as_deref().and_then(|dir| Conversation::load(dir).ok());
+    let conversation = session_dir
+        .as_deref()
+        .and_then(|dir| Conversation::load(dir).ok());
     let seed_messages = conversation
         .as_ref()
         .map(|c| c.chat_messages())
@@ -975,8 +980,13 @@ async fn run_agent_task_on_shared_page(
         let mut tools = agent_tools(page.clone(), llm_provider.clone()).await?;
         tools.extend(desktop_agent_tools());
         let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
-        let pump =
-            pump_agent_task_events(app, registry.clone(), task_id.clone(), telemetry.clone(), rx);
+        let pump = pump_agent_task_events(
+            app,
+            registry.clone(),
+            task_id.clone(),
+            telemetry.clone(),
+            rx,
+        );
 
         let agent_instructions = site
             .default_agent_instructions
@@ -1131,11 +1141,16 @@ pub struct DesktopConfig {
     output_dir: String,
     /// Resolved default run-artifact root (shown as the input placeholder).
     output_dir_default: String,
+    /// Whether this install has a saved pro device token.
+    pro_activated: bool,
+    /// Saved pro device id, or "" when not activated.
+    pro_device_id: String,
 }
 
 #[tauri::command]
 pub fn config_get() -> Result<DesktopConfig, String> {
     let config = socai_core::config::load_config().map_err(|err| format!("{err:#}"))?;
+    let pro = socai_core::cloud::status().map_err(|err| format!("{err:#}"))?;
     Ok(DesktopConfig {
         chrome_source: config
             .chrome
@@ -1147,7 +1162,17 @@ pub fn config_get() -> Result<DesktopConfig, String> {
         chrome_profile_dir_default: default_managed_profile_dir(),
         output_dir: config.runs.dir.unwrap_or_default(),
         output_dir_default: default_runs_root_display(),
+        pro_activated: pro.activated,
+        pro_device_id: pro.device_id,
     })
+}
+
+#[tauri::command]
+pub async fn pro_activate(invite_code: String, label: String) -> Result<Value, String> {
+    socai_core::cloud::activate(&invite_code, &label)
+        .await
+        .map(|status| serde_json::to_value(status).unwrap_or_else(|_| json!({})))
+        .map_err(|err| format!("{err:#}"))
 }
 
 #[tauri::command]

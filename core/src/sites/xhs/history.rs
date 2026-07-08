@@ -43,6 +43,9 @@ pub struct HistoryEntry {
     /// True once any past read ran OCR (the entity carries `ocr_text`).
     #[serde(default)]
     pub ocr: bool,
+    /// True once any past read attached a non-empty video audio transcript.
+    #[serde(default)]
+    pub transcribed: bool,
     /// Most comments (primary + replies) ever cached for this note. Lets a later
     /// scan asking for more comments than we have re-read instead of short-
     /// circuiting on the stale, smaller set.
@@ -142,6 +145,7 @@ impl XhsHistoryStore {
         include_media: bool,
         download_media: bool,
         ocr: bool,
+        transcribe_audio: bool,
         min_comments: i64,
     ) -> bool {
         let Some(prev) = self.get(note_id) else {
@@ -157,6 +161,9 @@ impl XhsHistoryStore {
             return false;
         }
         if ocr && !prev.ocr {
+            return false;
+        }
+        if transcribe_audio && !prev.transcribed {
             return false;
         }
         // A request for more comments than we cached forces a re-read — unless we
@@ -246,6 +253,9 @@ impl XhsHistoryStore {
             }
             if entity_has_ocr(entity) {
                 entry.ocr = true;
+            }
+            if entity_has_transcript(entity) {
+                entry.transcribed = true;
             }
             // Track comment coverage (primary + replies) so a later, larger
             // request re-reads instead of reusing a smaller cached set.
@@ -353,7 +363,10 @@ fn entity_comment_total(entity: &Value) -> u32 {
     if raw.is_empty() {
         return 0;
     }
-    let cleaned: String = raw.chars().filter(|c| !matches!(c, ',' | '+' | ' ')).collect();
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !matches!(c, ',' | '+' | ' '))
+        .collect();
     let digits: String = cleaned
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
@@ -418,6 +431,14 @@ fn entity_has_downloaded(entity: &Value) -> bool {
         .and_then(Value::as_array)
         .is_some_and(|imgs| imgs.iter().any(has_local));
     image_local || entity.get("video").is_some_and(has_local)
+}
+
+fn entity_has_transcript(entity: &Value) -> bool {
+    entity
+        .get("video")
+        .and_then(|video| video.get("transcript"))
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
 }
 
 fn load_file(path: &Path) -> Option<HistoryFile> {
@@ -486,14 +507,15 @@ mod tests {
         let store = XhsHistoryStore::open(dir.path().join("h.json"));
         store.record(&json!({"note_id": "n1"}), "lite", false);
 
-        assert!(store.is_satisfied_by("n1", "card", false, false, false, 0));
-        assert!(store.is_satisfied_by("n1", "lite", false, false, false, 0));
-        assert!(!store.is_satisfied_by("n1", "deep", false, false, false, 0));
-        assert!(!store.is_satisfied_by("n1", "lite", true, false, false, 0));
-        assert!(!store.is_satisfied_by("unknown", "card", false, false, false, 0));
+        assert!(store.is_satisfied_by("n1", "card", false, false, false, false, 0));
+        assert!(store.is_satisfied_by("n1", "lite", false, false, false, false, 0));
+        assert!(!store.is_satisfied_by("n1", "deep", false, false, false, false, 0));
+        assert!(!store.is_satisfied_by("n1", "lite", true, false, false, false, 0));
+        assert!(!store.is_satisfied_by("unknown", "card", false, false, false, false, 0));
         // download / ocr dimensions: a plain read doesn't satisfy them.
-        assert!(!store.is_satisfied_by("n1", "lite", false, true, false, 0));
-        assert!(!store.is_satisfied_by("n1", "lite", false, false, true, 0));
+        assert!(!store.is_satisfied_by("n1", "lite", false, true, false, false, 0));
+        assert!(!store.is_satisfied_by("n1", "lite", false, false, true, false, 0));
+        assert!(!store.is_satisfied_by("n1", "lite", false, false, false, true, 0));
     }
 
     #[test]
@@ -510,7 +532,7 @@ mod tests {
             false,
         );
 
-        assert!(store.is_satisfied_by("n2", "deep", false, true, true, 0));
+        assert!(store.is_satisfied_by("n2", "deep", false, true, true, false, 0));
         let entry = store.get("n2").unwrap();
         assert!(entry.downloaded);
         assert!(entry.ocr);

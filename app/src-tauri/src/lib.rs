@@ -162,6 +162,7 @@ pub fn run() {
             commands::config_get,
             commands::config_set,
             commands::config_unset,
+            commands::pro_activate,
         ])
         .run(tauri::generate_context!())
         .expect("error while running socai");

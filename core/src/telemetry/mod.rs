@@ -2,12 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
-use uuid::Uuid;
 
 pub mod tool_call;
 pub mod trace;
@@ -80,14 +78,9 @@ struct DeviceInfo {
     parent_process: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct IdentityFile {
-    install_id: String,
-}
-
 impl Telemetry {
     pub fn new(home: &Path, source: TelemetrySource) -> Self {
-        let install_id = load_or_create_install_id(home);
+        let install_id = crate::identity::load_or_create_install_id(home);
         let session_id = new_session_id();
         let local_path = home.join("telemetry/events.jsonl");
 
@@ -315,37 +308,8 @@ async fn append_jsonl(path: &Path, row: &Value) -> std::io::Result<()> {
     file.write_all(b"\n").await
 }
 
-fn load_or_create_install_id(home: &Path) -> String {
-    let path = home.join("telemetry/identity.json");
-    if let Ok(bytes) = std::fs::read(&path) {
-        if let Ok(identity) = serde_json::from_slice::<IdentityFile>(&bytes) {
-            let id = identity.install_id.trim();
-            if Uuid::parse_str(id).is_ok() {
-                return id.to_string();
-            }
-        }
-    }
-
-    let install_id = new_install_id();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_vec_pretty(&IdentityFile {
-            install_id: install_id.clone(),
-        })
-        .unwrap_or_else(|_| b"{}".to_vec()),
-    );
-    install_id
-}
-
-fn new_install_id() -> String {
-    Uuid::new_v4().to_string()
-}
-
 fn new_session_id() -> String {
-    Uuid::new_v4().to_string()
+    uuid::Uuid::new_v4().to_string()
 }
 
 fn now_ms() -> u64 {

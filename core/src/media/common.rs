@@ -23,6 +23,7 @@ pub struct MediaConfig {
     pub use_ocr: bool,
     pub use_vision: bool,
     pub use_whisper: bool,
+    pub use_cloud_asr: bool,
     pub use_ffmpeg: bool,
     pub vision_concurrency: usize,
 }
@@ -34,12 +35,13 @@ impl MediaConfig {
             request_timeout_s: 25,
             ffmpeg_timeout_s: 180,
             whisper_timeout_s: 300,
-            max_audio_seconds: 90,
+            max_audio_seconds: 120,
             max_frame_seconds: 60,
             default_language: "zh".into(),
             use_ocr: true,
             use_vision: true,
             use_whisper: true,
+            use_cloud_asr: false,
             use_ffmpeg: true,
             vision_concurrency: 3,
         }

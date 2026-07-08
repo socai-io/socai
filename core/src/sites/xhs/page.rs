@@ -94,6 +94,9 @@ pub struct ReadNoteOptions {
     /// Implies `download_media` (the caller forces it on), since OCR reads the
     /// saved files.
     pub ocr: bool,
+    /// Transcribe downloaded video notes through the configured cloud ASR
+    /// server. Implies `download_media` and `download_video_file` at the caller.
+    pub transcribe_audio: bool,
     pub max_images: usize,
     pub max_video_frames: usize,
     pub poster_url_fallback: String,
@@ -108,6 +111,7 @@ impl Default for ReadNoteOptions {
             download_media: false,
             download_video_file: true,
             ocr: false,
+            transcribe_audio: false,
             max_images: 12,
             max_video_frames: 4,
             poster_url_fallback: String::new(),
@@ -666,10 +670,7 @@ impl<'a> XhsPageRuntime<'a> {
         if !note_id.is_empty() || index.is_some() {
             let t_open = Instant::now();
             let opened = self.open_note(note_id, index, wait_seconds).await?;
-            perf.insert(
-                "open_ms".into(),
-                json!(t_open.elapsed().as_millis() as u64),
-            );
+            perf.insert("open_ms".into(), json!(t_open.elapsed().as_millis() as u64));
             if let Some(strategy) = opened
                 .get("strategy")
                 .and_then(Value::as_str)
@@ -776,12 +777,18 @@ impl<'a> XhsPageRuntime<'a> {
                 .expect_object("commentAreaState", None)
                 .await
                 .unwrap_or_else(|_| json!({}));
-            let loaded_total = state.get("loaded_total").and_then(Value::as_i64).unwrap_or(0);
+            let loaded_total = state
+                .get("loaded_total")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
             let pending = state
                 .get("pending_show_more")
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
-            let has_end = state.get("has_end").and_then(Value::as_bool).unwrap_or(false);
+            let has_end = state
+                .get("has_end")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
 
             // Budget reached — no need to load more.
             if max_total > 0 && loaded_total >= max_total {
@@ -829,13 +836,21 @@ impl<'a> XhsPageRuntime<'a> {
         let loaded_total: i64 = loaded_primary
             + all
                 .iter()
-                .map(|c| c.get("sub_comments").and_then(Value::as_array).map_or(0, Vec::len) as i64)
+                .map(|c| {
+                    c.get("sub_comments")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len) as i64
+                })
                 .sum::<i64>();
         let comments = trim_comments_to_budget(all, max_total);
         let returned_total: i64 = comments.len() as i64
             + comments
                 .iter()
-                .map(|c| c.get("sub_comments").and_then(Value::as_array).map_or(0, Vec::len) as i64)
+                .map(|c| {
+                    c.get("sub_comments")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len) as i64
+                })
                 .sum::<i64>();
 
         Ok(json!({
@@ -1372,6 +1387,22 @@ impl<'a> XhsPageRuntime<'a> {
                     );
                 }
             }
+            if options.transcribe_audio && note.r#type == "video" {
+                if let Some(media) = &self.media {
+                    let t_asr = Instant::now();
+                    media.transcribe_downloaded_video(&mut note.video).await;
+                    perf.insert(
+                        "transcribe_audio_ms".into(),
+                        json!(t_asr.elapsed().as_millis() as u64),
+                    );
+                } else {
+                    insert_value_string(
+                        &mut note.video,
+                        "transcript_error",
+                        "media processor unavailable",
+                    );
+                }
+            }
         }
 
         Ok(note)
@@ -1903,7 +1934,10 @@ fn trim_comments_to_budget(comments: Vec<Value>, max_total: i64) -> Vec<Value> {
         }
         count += 1; // the parent comment itself
         let remaining = max_total - count;
-        if let Some(subs) = comment.get_mut("sub_comments").and_then(Value::as_array_mut) {
+        if let Some(subs) = comment
+            .get_mut("sub_comments")
+            .and_then(Value::as_array_mut)
+        {
             if remaining <= 0 {
                 subs.clear();
             } else if subs.len() as i64 > remaining {

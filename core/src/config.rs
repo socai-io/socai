@@ -13,6 +13,8 @@ pub struct SocaiConfig {
     pub chrome: ChromeConfig,
     #[serde(default)]
     pub runs: RunsConfig,
+    #[serde(default)]
+    pub cloud: CloudConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -34,6 +36,14 @@ pub struct RunsConfig {
     /// environment override is set).
     #[serde(default)]
     pub dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CloudConfig {
+    /// Base URL of the user's socai-server deployment, e.g.
+    /// `https://api.example.com` or `http://127.0.0.1:8000`.
+    #[serde(default)]
+    pub base_url: Option<String>,
 }
 
 impl SocaiConfig {
@@ -70,6 +80,7 @@ enum ConfigKey {
     ChromeProfile,
     ChromeProfileDir,
     RunsDir,
+    CloudBaseUrl,
 }
 
 impl ConfigKey {
@@ -79,8 +90,11 @@ impl ConfigKey {
             "chrome.profile_dir" | "chrome.profile-dir" => Ok(Self::ChromeProfileDir),
             "runs.dir" | "runs_dir" | "runs-dir" | "output.dir" | "output_dir"
             | "output-dir" => Ok(Self::RunsDir),
+            "cloud.base_url" | "cloud.base-url" | "cloud.url" | "server.url" => {
+                Ok(Self::CloudBaseUrl)
+            }
             other => anyhow::bail!(
-                "unknown config key {other:?}; supported keys: chrome.profile, chrome.profile_dir, runs.dir"
+                "unknown config key {other:?}; supported keys: chrome.profile, chrome.profile_dir, runs.dir, cloud.base_url"
             ),
         }
     }
@@ -90,6 +104,7 @@ impl ConfigKey {
             Self::ChromeProfile => &["chrome", "profile"],
             Self::ChromeProfileDir => &["chrome", "profile_dir"],
             Self::RunsDir => &["runs", "dir"],
+            Self::CloudBaseUrl => &["cloud", "base_url"],
         }
     }
 
@@ -98,6 +113,7 @@ impl ConfigKey {
             Self::ChromeProfile => "chrome.profile",
             Self::ChromeProfileDir => "chrome.profile_dir",
             Self::RunsDir => "runs.dir",
+            Self::CloudBaseUrl => "cloud.base_url",
         }
     }
 }
@@ -182,7 +198,19 @@ fn parse_key_value(key: ConfigKey, raw_value: &str) -> Result<Value> {
         ConfigKey::ChromeProfile => Ok(Value::String(ChromeProfile::parse(value)?.as_str().into())),
         ConfigKey::ChromeProfileDir => Ok(Value::String(value.to_string())),
         ConfigKey::RunsDir => Ok(Value::String(normalized_path_value(value)?)),
+        ConfigKey::CloudBaseUrl => Ok(Value::String(normalized_url_value(value)?)),
     }
+}
+
+fn normalized_url_value(value: &str) -> Result<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        anyhow::bail!("cloud.base_url cannot be empty");
+    }
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        anyhow::bail!("cloud.base_url must start with http:// or https://");
+    }
+    Ok(trimmed.to_string())
 }
 
 fn get_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {

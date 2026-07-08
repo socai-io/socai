@@ -48,6 +48,10 @@ impl MediaProcessor {
         self.timing.clone()
     }
 
+    pub fn set_cloud_asr(&mut self, enabled: bool) {
+        self.config.use_cloud_asr = enabled;
+    }
+
     pub fn timing_summary(&self) -> Value {
         self.timing.summary()
     }

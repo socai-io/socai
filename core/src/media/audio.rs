@@ -28,10 +28,31 @@ impl MediaProcessor {
         referer: &str,
         language: &str,
     ) -> Result<String> {
+        let source_path = self.local_audio_source(source, referer).await?;
+        if self.config.use_cloud_asr {
+            let wav = self.extract_audio_wav(&source_path).await?;
+            let result = crate::cloud::transcribe_audio_file(
+                &wav,
+                self.config.max_audio_seconds as i64,
+                Duration::from_secs(self.config.whisper_timeout_s.max(60)),
+            )
+            .await?;
+            self.timing.record(
+                "cloud_asr_total",
+                Duration::from_millis(result.total_latency_ms as u64),
+            );
+            if result.provider_latency_ms > 0 {
+                self.timing.record(
+                    "cloud_asr_provider",
+                    Duration::from_millis(result.provider_latency_ms as u64),
+                );
+            }
+            return Ok(result.transcript.trim().to_string());
+        }
+
         if !self.config.use_whisper {
             anyhow::bail!(MediaUnavailable("Whisper transcription is disabled".into()));
         }
-        let source_path = self.local_audio_source(source, referer).await?;
         if let Some(whisper_cli) = find_in_path("whisper") {
             let out_dir = ensure_dir(&self.config.base_dir.join("transcripts"))?;
             run_command(
@@ -118,14 +139,7 @@ impl MediaProcessor {
                 "ffmpeg is required for whisper.cpp audio extraction".into()
             ));
         }
-        let out_dir = ensure_dir(&self.config.base_dir.join("audio"))?;
-        let out = out_dir.join(format!(
-            "{}.wav",
-            source_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("audio")
-        ));
+        let out = self.audio_output_path(source_path)?;
         run_command(
             Command::new("ffmpeg")
                 .arg("-hide_banner")
@@ -145,5 +159,18 @@ impl MediaProcessor {
         )
         .await?;
         Ok(out)
+    }
+
+    fn audio_output_path(&self, source_path: &Path) -> Result<PathBuf> {
+        let dir = if source_path.starts_with(&self.config.base_dir) {
+            source_path
+                .parent()
+                .unwrap_or_else(|| self.config.base_dir.as_path())
+                .to_path_buf()
+        } else {
+            self.config.base_dir.join("audio")
+        };
+        let dir = ensure_dir(&dir)?;
+        Ok(dir.join("audio.wav"))
     }
 }

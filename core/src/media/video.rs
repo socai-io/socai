@@ -162,6 +162,41 @@ impl MediaProcessor {
         result
     }
 
+    /// Transcribe an already-downloaded video file in place. The caller must
+    /// have downloaded the video first and stored `local_path` on the object.
+    pub async fn transcribe_downloaded_video(&self, video: &mut Value) {
+        if video
+            .get("transcript")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+        {
+            return;
+        }
+        let Some(path) = video
+            .get("local_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+            .map(str::to_string)
+        else {
+            insert_string(video, "transcript_error", "video local_path is missing");
+            return;
+        };
+        let t0 = Instant::now();
+        match self.transcribe_audio(&path, "", "").await {
+            Ok(transcript) if !transcript.trim().is_empty() => {
+                insert_string(video, "transcript", transcript);
+            }
+            Ok(_) => {}
+            Err(err) => insert_string(video, "transcript_error", format!("{err:#}")),
+        }
+        if let Some(map) = video.as_object_mut() {
+            map.insert(
+                "transcript_ms".into(),
+                serde_json::json!(t0.elapsed().as_millis() as u64),
+            );
+        }
+    }
+
     pub async fn enrich_video(
         &self,
         video: &Value,
@@ -203,8 +238,7 @@ impl MediaProcessor {
         if !source.is_empty() {
             match self.transcribe_audio(&source, referer, "").await {
                 Ok(transcript) if !transcript.trim().is_empty() => {
-                    insert_string(&mut result, "transcript", transcript.clone());
-                    insert_string(&mut result, "transcript_summary", short(&transcript, 1200));
+                    insert_string(&mut result, "transcript", transcript);
                 }
                 Ok(_) => {}
                 Err(err) => insert_string(&mut result, "transcript_error", format!("{err:#}")),

@@ -29,6 +29,8 @@ interface DesktopConfig {
   chrome_profile_dir_default: string;
   output_dir: string;
   output_dir_default: string;
+  pro_activated: boolean;
+  pro_device_id: string;
 }
 
 interface SettingsDraft {
@@ -36,6 +38,7 @@ interface SettingsDraft {
   output_dir: string;
   chrome_source: string;
   chrome_profile_dir: string;
+  invite_code: string;
 }
 
 type SaveStatus = "" | "saving" | "saved" | "error";
@@ -128,9 +131,39 @@ export namespace settingsMenu {
       <div class="topbar-popover settings-popover" role="dialog" aria-label="${esc(t("settings.title"))}">
         ${renderGeneralGroup(draft)}
         ${renderOutputGroup(config, draft)}
+        ${renderProGroup(config, draft)}
         ${renderChromeGroup(shell, config, draft)}
         ${renderStatus()}
       </div>
+    `;
+  }
+
+  function renderProGroup(c: DesktopConfig, d: SettingsDraft): string {
+    const activation = c.pro_activated
+      ? t("settings.proActivated")
+      : t("settings.proNotActivated");
+    const device = c.pro_device_id ? ` · ${c.pro_device_id.slice(0, 8)}` : "";
+    return `
+      <section class="settings-group">
+        <div class="settings-field">
+          <span class="settings-group-label">${esc(t("settings.pro"))}</span>
+          <p class="t-small subtle settings-field-hint">${esc(activation)}${esc(device)}</p>
+        </div>
+        <div class="settings-field">
+          <label class="t-small settings-field-label" for="settings-invite-code">${esc(t("settings.inviteCode"))}</label>
+          <div class="settings-path-row">
+            <input
+              id="settings-invite-code"
+              class="input-field settings-input-mono"
+              type="text"
+              spellcheck="false"
+              value="${esc(d.invite_code)}"
+            />
+            <button type="button" class="btn-ghost btn-compact" data-settings-activate-pro>${esc(t("settings.activate"))}</button>
+          </div>
+          <p class="t-small subtle settings-field-hint">${esc(t("settings.proHint"))}</p>
+        </div>
+      </section>
     `;
   }
 
@@ -291,6 +324,14 @@ export namespace settingsMenu {
     bindPathField("settings-output-dir", "runs.dir", shell);
     bindPathField("settings-profile-dir", "chrome.profile_dir", shell);
 
+    const invite = document.getElementById("settings-invite-code") as HTMLInputElement | null;
+    invite?.addEventListener("input", () => {
+      if (draft) draft.invite_code = invite.value;
+    });
+    document.querySelector<HTMLButtonElement>("[data-settings-activate-pro]")?.addEventListener("click", () => {
+      void activatePro(shell);
+    });
+
     document.querySelectorAll<HTMLButtonElement>("[data-settings-browse]").forEach((button) => {
       // No native directory picker is wired (no dialog plugin); focus the field
       // so the path stays directly editable.
@@ -321,6 +362,7 @@ export namespace settingsMenu {
       output_dir: config?.output_dir ?? "",
       chrome_source: config?.chrome_source || "existing",
       chrome_profile_dir: config?.chrome_profile_dir ?? "",
+      invite_code: "",
     };
   }
 
@@ -363,6 +405,28 @@ export namespace settingsMenu {
       flashSaved(shell);
     } catch (err) {
       console.error(`config write ${key} failed:`, err);
+      await loadConfig();
+      seedDraft();
+      setError(shell);
+    }
+  }
+
+  async function activatePro(shell: ShellState): Promise<void> {
+    if (!draft) return;
+    const inviteCode = draft.invite_code.trim();
+    if (!inviteCode) {
+      setError(shell);
+      return;
+    }
+    status = "saving";
+    shell.rerender();
+    try {
+      await invoke("pro_activate", { inviteCode, label: "desktop" });
+      await loadConfig();
+      seedDraft();
+      flashSaved(shell);
+    } catch (err) {
+      console.error("pro_activate failed:", err);
       await loadConfig();
       seedDraft();
       setError(shell);

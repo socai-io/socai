@@ -1,6 +1,8 @@
 pub mod agent;
 pub mod cdp;
+pub mod cloud;
 pub mod config;
+pub mod identity;
 pub mod media;
 pub mod runtime;
 pub mod sites;
