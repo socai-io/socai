@@ -1008,7 +1008,12 @@ async fn scan_card_note(
                 include_media,
                 download_media,
                 download_video_file: download_media_requested,
-                transcribe_audio,
+                // Scans never transcribe inline: the caller runs cloud ASR in a
+                // background task (spawn_note_transcribe) so it overlaps the
+                // next note's read + download. The dedup check above still uses
+                // the real `transcribe_audio` flag, so a cache hit returns the
+                // already-transcribed entity.
+                transcribe_audio: false,
                 // Inline OCR only when not deferred; otherwise just download and
                 // let the caller OCR in the background.
                 ocr: ocr && !defer_ocr,
@@ -1308,6 +1313,124 @@ async fn join_note_ocr(
     timings
 }
 
+/// Max cloud ASR tasks in flight at once. Transcription is network-bound
+/// (upload + provider poll), so this bounds concurrent load on socai-server
+/// while still letting note N's transcription overlap the read + download of
+/// note N+1.
+const ASR_PIPELINE_CONCURRENCY: usize = 2;
+
+/// Spawn a background task that transcribes a freshly-read video note's
+/// already-downloaded video file through cloud ASR. `None` when there's
+/// nothing to transcribe (not a fresh successful read, no media processor, no
+/// downloaded video, or the cached entity already carries a transcript).
+fn spawn_note_transcribe(
+    media: &Option<MediaProcessor>,
+    sem: &Arc<tokio::sync::Semaphore>,
+    entry: &Value,
+    epoch: std::time::Instant,
+) -> Option<tokio::task::JoinHandle<NoteTranscribeResult>> {
+    // Only fresh successful reads (they carry `ok`); cache hits carry `skipped`
+    // and already have their transcript.
+    if entry.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let video = entry.get("entity")?.get("video")?;
+    let has_local = video
+        .get("local_path")
+        .and_then(Value::as_str)
+        .is_some_and(|path| !path.trim().is_empty());
+    let has_transcript = video
+        .get("transcript")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty());
+    if !has_local || has_transcript {
+        return None;
+    }
+    let media = media.clone()?;
+    let sem = sem.clone();
+    let mut video = video.clone();
+    Some(tokio::spawn(async move {
+        let _permit = sem.acquire_owned().await;
+        let started_ms = epoch.elapsed().as_millis() as u64;
+        media.transcribe_downloaded_video(&mut video).await;
+        let finished_ms = epoch.elapsed().as_millis() as u64;
+        NoteTranscribeResult {
+            video,
+            started_ms,
+            finished_ms,
+        }
+    }))
+}
+
+/// A note's background transcription result plus its wall span (ms since the
+/// scan epoch). The video object carries `transcript` / `transcript_error` /
+/// `transcript_ms` as attached by [`MediaProcessor::transcribe_downloaded_video`].
+struct NoteTranscribeResult {
+    video: Value,
+    started_ms: u64,
+    finished_ms: u64,
+}
+
+/// Await the background transcription tasks and merge each result back into
+/// its note. Only the transcript fields are copied over (the OCR pipeline may
+/// have merged `poster_ocr` into the live video object in the meantime, so
+/// replacing the whole object would clobber it). Re-records history (marking
+/// the note transcribed) and refreshes the app note archive record so the
+/// desktop card carries the transcript. Timings land in the matching
+/// `note_perfs` records for the scan perf file.
+#[allow(clippy::too_many_arguments)]
+async fn join_note_transcribe(
+    notes: &mut [Value],
+    pending: Vec<(usize, tokio::task::JoinHandle<NoteTranscribeResult>)>,
+    note_perfs: &mut [Value],
+    history: &XhsHistoryStore,
+    ctx: &ToolContext,
+    level: &str,
+    include_media: bool,
+) {
+    for (idx, handle) in pending {
+        let Ok(result) = handle.await else {
+            continue;
+        };
+        let Some(note) = notes.get_mut(idx) else {
+            continue;
+        };
+        if let Some(video) = note
+            .get_mut("entity")
+            .and_then(|entity| entity.get_mut("video"))
+            .and_then(Value::as_object_mut)
+        {
+            for key in ["transcript", "transcript_error", "transcript_ms"] {
+                if let Some(value) = result.video.get(key) {
+                    video.insert(key.into(), value.clone());
+                }
+            }
+        }
+        if note.get("ok").and_then(Value::as_bool) == Some(true) {
+            if let Some(entity) = note.get("entity") {
+                history.record(entity, level, include_media);
+            }
+            // Refresh the archived record (built before the transcript existed)
+            // so the desktop app's note card shows the transcript.
+            if let Some((note_id, record)) = build_note_record(note, ctx, level) {
+                ctx.record_note(&note_id, record);
+            }
+        }
+        if let Some(record) = note_perfs
+            .iter_mut()
+            .find(|perf| perf.get("idx").and_then(Value::as_u64) == Some(idx as u64))
+            .and_then(Value::as_object_mut)
+        {
+            record.insert(
+                "transcribe_audio_ms".into(),
+                json!(result.finished_ms.saturating_sub(result.started_ms)),
+            );
+            record.insert("transcribe_started_ms".into(), json!(result.started_ms));
+            record.insert("transcribe_finished_ms".into(), json!(result.finished_ms));
+        }
+    }
+}
+
 /// Build the archived note record from a freshly-read scan entry
 /// (`{ ok, entity }`) in the desktop app's `NoteData` shape (see
 /// app/src/main.ts): identity + title/excerpt, author, `posted_at` (epoch
@@ -1376,6 +1499,17 @@ pub fn note_data_record(
         }
     }
     record.insert("stats".into(), Value::Object(stats));
+    // Video audio transcript (cloud ASR), so the app's note viewer can show
+    // the spoken content alongside the media.
+    if let Some(transcript) = entity
+        .get("video")
+        .and_then(|video| video.get("transcript"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        record.insert("transcript".into(), Value::String(transcript.to_string()));
+    }
     record.insert("media".into(), Value::Array(media.clone()));
     record.insert("media_dir".into(), Value::String(String::new()));
     record.insert("saved".into(), Value::Bool(!media.is_empty()));
@@ -1865,7 +1999,14 @@ fn write_scan_perf(
         _ => 0,
     };
     let last_finish = ocr_timings.iter().map(|t| t.finished_ms).max().unwrap_or(0);
-    let scan_total_ms = browse_loop_ms.max(last_finish);
+    // Background transcription may outlive both the browse loop and OCR; its
+    // per-note spans were merged into `note_perfs` by join_note_transcribe.
+    let transcribe_last_finish = note_perfs
+        .iter()
+        .filter_map(|perf| perf.get("transcribe_finished_ms").and_then(Value::as_u64))
+        .max()
+        .unwrap_or(0);
+    let scan_total_ms = browse_loop_ms.max(last_finish).max(transcribe_last_finish);
     let ocr_overhang_ms = last_finish.saturating_sub(browse_loop_ms);
 
     let mut summary = serde_json::Map::new();
@@ -1884,6 +2025,12 @@ fn write_scan_perf(
         summary.insert("ocr_predict_total_ms".into(), json!(predict_total_ms));
         summary.insert("ocr_wall_ms".into(), json!(ocr_wall_ms));
         summary.insert("ocr_overhang_ms".into(), json!(ocr_overhang_ms));
+    }
+    if transcribe_last_finish > 0 {
+        summary.insert(
+            "transcribe_overhang_ms".into(),
+            json!(transcribe_last_finish.saturating_sub(browse_loop_ms)),
+        );
     }
 
     let mut perf = serde_json::Map::new();
@@ -2978,10 +3125,13 @@ impl Tool for SearchTool {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut cursor = 0usize;
         let mut stalls = 0usize;
-        // OCR runs in the background so it overlaps the next note's read +
-        // download; tasks are joined after the browse loop.
+        // OCR and cloud ASR run in the background so they overlap the next
+        // note's read + download; tasks are joined after the browse loop.
         let ocr_sem = Arc::new(tokio::sync::Semaphore::new(OCR_PIPELINE_CONCURRENCY));
         let mut pending_ocr: Vec<(usize, tokio::task::JoinHandle<NoteOcrResult>)> = Vec::new();
+        let asr_sem = Arc::new(tokio::sync::Semaphore::new(ASR_PIPELINE_CONCURRENCY));
+        let mut pending_transcribe: Vec<(usize, tokio::task::JoinHandle<NoteTranscribeResult>)> =
+            Vec::new();
         let mut note_perfs: Vec<Value> = Vec::new();
         let scan_progress = ScanProgress::new(ctx, want);
         // Wall-clock markers so the perf file can show how much OCR overlapped
@@ -3054,6 +3204,13 @@ impl Tool for SearchTool {
                     scan_progress.ocr_completed(item_index, title.clone());
                 }
             }
+            if transcribe_audio {
+                if let Some(handle) =
+                    spawn_note_transcribe(&media, &asr_sem, &notes[idx], browse_t0)
+                {
+                    pending_transcribe.push((idx, handle));
+                }
+            }
             let t_close = std::time::Instant::now();
             let _ = xhs.close_note(0.6).await;
             let close_ms = t_close.elapsed().as_millis() as u64;
@@ -3074,6 +3231,18 @@ impl Tool for SearchTool {
         // browse_ms) and merge results back into the notes in place.
         let ocr_timings =
             join_note_ocr(&mut notes, pending_ocr, &self.history, level, include_media).await;
+        // Join background ASR after OCR: both pipelines write into the video
+        // object, and the transcribe join copies only its own fields.
+        join_note_transcribe(
+            &mut notes,
+            pending_transcribe,
+            &mut note_perfs,
+            &self.history,
+            ctx,
+            level,
+            include_media,
+        )
+        .await;
         // Write the scan perf record (per-note phase timing + OCR pipeline) to a
         // separate debug file; the JSON artifact stays LLM-facing.
         write_scan_perf(ctx, &notes, browse_ms, &ocr_timings, &note_perfs);
@@ -3380,10 +3549,15 @@ impl Tool for AuthorScanTool {
         // `preview` returns the cards only and skips this.
         let mut notes: Vec<Value> = Vec::new();
         if !preview {
-            // OCR runs in the background so it overlaps the next note's read +
-            // download; tasks are joined after the loop.
+            // OCR and cloud ASR run in the background so they overlap the next
+            // note's read + download; tasks are joined after the loop.
             let ocr_sem = Arc::new(tokio::sync::Semaphore::new(OCR_PIPELINE_CONCURRENCY));
             let mut pending_ocr: Vec<(usize, tokio::task::JoinHandle<NoteOcrResult>)> = Vec::new();
+            let asr_sem = Arc::new(tokio::sync::Semaphore::new(ASR_PIPELINE_CONCURRENCY));
+            let mut pending_transcribe: Vec<(
+                usize,
+                tokio::task::JoinHandle<NoteTranscribeResult>,
+            )> = Vec::new();
             let mut note_perfs: Vec<Value> = Vec::new();
             let scan_progress = ScanProgress::new(ctx, cards.len());
             let browse_t0 = std::time::Instant::now();
@@ -3427,6 +3601,13 @@ impl Tool for AuthorScanTool {
                         scan_progress.ocr_completed(item_index, title.clone());
                     }
                 }
+                if transcribe_audio {
+                    if let Some(handle) =
+                        spawn_note_transcribe(&media, &asr_sem, &notes[idx], browse_t0)
+                    {
+                        pending_transcribe.push((idx, handle));
+                    }
+                }
                 let t_close = std::time::Instant::now();
                 let _ = xhs.close_note(0.6).await;
                 let close_ms = t_close.elapsed().as_millis() as u64;
@@ -3445,6 +3626,16 @@ impl Tool for AuthorScanTool {
             let browse_ms = browse_t0.elapsed().as_millis() as u64;
             let ocr_timings =
                 join_note_ocr(&mut notes, pending_ocr, &self.history, "deep", false).await;
+            join_note_transcribe(
+                &mut notes,
+                pending_transcribe,
+                &mut note_perfs,
+                &self.history,
+                ctx,
+                "deep",
+                false,
+            )
+            .await;
             write_scan_perf(ctx, &notes, browse_ms, &ocr_timings, &note_perfs);
             if ocr {
                 scan_progress.finish_ocr(notes.len());

@@ -87,6 +87,7 @@ export interface NoteData {
   stats?: { likes?: number; collects?: number; comments?: number; shares?: number };
   media?: NoteMedia[]; // media[0] === cover
   media_dir?: string; // run-relative folder, when src paths are relative
+  transcript?: string; // video audio transcript (cloud ASR)
   saved?: boolean;
   // Tolerate extra fields the archive may carry.
   [key: string]: unknown;

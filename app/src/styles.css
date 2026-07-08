@@ -1576,6 +1576,9 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
 .note-meta { display: flex; flex-direction: column; gap: 14px; padding: 16px; overflow: auto; min-height: 0; border-left: var(--hairline); }
 .note-meta__title { margin: 0; font-family: var(--font-sans); font-weight: 500; font-size: 16px; line-height: 1.32; letter-spacing: -0.01em; color: var(--ink-0); }
 .note-meta__excerpt { margin: 0; font-size: 13px; line-height: 1.6; color: var(--fg-muted); }
+.note-meta__transcript { display: flex; flex-direction: column; gap: 6px; border-top: var(--hairline); padding-top: 10px; }
+.note-meta__transcript-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-soft); }
+.note-meta__transcript-text { margin: 0; font-size: 12px; line-height: 1.6; color: var(--fg-muted); max-height: 180px; overflow-y: auto; white-space: pre-wrap; }
 .note-meta__statgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; border: var(--hairline); border-radius: var(--r-3); overflow: hidden; background: var(--line); }
 .note-meta__stat { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; background: var(--canvas); }
 .note-meta__stat-k { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-soft); }

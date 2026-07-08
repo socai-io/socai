@@ -262,6 +262,7 @@ function galleryThumbs(note: NoteData, idx: number): string {
 }
 function metaPanel(note: NoteData): string {
   const s = note.stats || {};
+  const transcript = typeof note.transcript === "string" ? note.transcript.trim() : "";
   const stats: Array<[string, string, number | undefined]> = [
     ["likes", IC.heart(), s.likes],
     ["collects", IC.bookmark(), s.collects],
@@ -278,6 +279,11 @@ function metaPanel(note: NoteData): string {
     <div class="note-meta">
       <h3 class="note-meta__title">${esc(note.title || "")}</h3>
       ${note.excerpt ? `<p class="note-meta__excerpt">${esc(note.excerpt)}</p>` : ""}
+      ${
+        transcript
+          ? `<div class="note-meta__transcript"><span class="note-meta__transcript-label">transcript</span><p class="note-meta__transcript-text">${esc(transcript)}</p></div>`
+          : ""
+      }
       <div class="note-meta__statgrid">${statGrid}</div>
       <div class="note-meta__rows">
         <div class="note-meta__row"><span class="note-meta__row-k">posted</span><span class="note-meta__row-v">${esc(fmtDate(note.posted_at))}</span></div>

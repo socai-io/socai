@@ -35,7 +35,7 @@ impl MediaConfig {
             request_timeout_s: 25,
             ffmpeg_timeout_s: 180,
             whisper_timeout_s: 300,
-            max_audio_seconds: 120,
+            max_audio_seconds: 300,
             max_frame_seconds: 60,
             default_language: "zh".into(),
             use_ocr: true,
