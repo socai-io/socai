@@ -1,9 +1,14 @@
 //! OTLP-JSON trace assembly for one agent run.
 //!
 //! The agent loop records each LLM call and tool call as it completes;
-//! `finish` closes the root span and returns an OTLP/HTTP
-//! `ExportTraceServiceRequest` JSON value. The loop writes it to
-//! `run_dir/trace.json`; entrypoints upload it fire-and-forget via
+//! `finish` closes the root span and writes an OTLP/HTTP
+//! `ExportTraceServiceRequest` JSON value to `run_dir/trace.json`. If the run
+//! future is dropped before `finish` — an entrypoint aborted the task, e.g.
+//! desktop cancel — a drop guard writes the same file with
+//! `socai.status=interrupted` and the spans recorded so far; the aborting
+//! entrypoint then patches the precise status via [`mark_run_trace_status`]
+//! (the trace analog of `mark_agent_run_status` for `run.json`). Entrypoints
+//! upload the file fire-and-forget via
 //! [`super::Telemetry::upload_run_trace`], which appends identity resource
 //! attributes (source, install id) so the on-disk file stays shareable.
 //!
@@ -16,6 +21,7 @@
 //! machine — only token counts, stop reasons, and timings.
 
 use serde_json::{json, Map, Value};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -36,6 +42,7 @@ const SPAN_KIND_CLIENT: u32 = 3;
 const STATUS_CODE_ERROR: u32 = 2;
 
 pub struct RunTraceBuilder {
+    run_dir: PathBuf,
     trace_id: String,
     root_span_id: String,
     run_id: String,
@@ -48,10 +55,17 @@ pub struct RunTraceBuilder {
     started_ns: u64,
     spans: Vec<Value>,
     dropped_spans: u64,
+    /// Running figures for the drop guard; `finish` overwrites them with the
+    /// loop's authoritative totals.
+    steps_seen: u32,
+    input_tokens: u64,
+    output_tokens: u64,
+    finalized: bool,
 }
 
 impl RunTraceBuilder {
     pub fn new(
+        run_dir: &Path,
         run_id: &str,
         task: &str,
         model: &str,
@@ -67,6 +81,7 @@ impl RunTraceBuilder {
             None => Uuid::new_v4().simple().to_string(),
         };
         Self {
+            run_dir: run_dir.to_path_buf(),
             trace_id,
             root_span_id: new_span_id(),
             run_id: run_id.to_string(),
@@ -77,10 +92,17 @@ impl RunTraceBuilder {
             started_ns: now_ns(),
             spans: Vec::new(),
             dropped_spans: 0,
+            steps_seen: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            finalized: false,
         }
     }
 
     pub fn record_llm(&mut self, step: u32, duration_ms: u64, response: &LLMResponse) {
+        self.steps_seen = self.steps_seen.max(step);
+        self.input_tokens += response.input_tokens;
+        self.output_tokens += response.output_tokens;
         let attrs = vec![
             attr_str("gen_ai.operation.name", "chat"),
             attr_str("gen_ai.request.model", &self.model),
@@ -100,6 +122,7 @@ impl RunTraceBuilder {
     }
 
     pub fn record_llm_error(&mut self, step: u32, duration_ms: u64, error: &str) {
+        self.steps_seen = self.steps_seen.max(step);
         let attrs = vec![
             attr_str("gen_ai.operation.name", "chat"),
             attr_str("gen_ai.request.model", &self.model),
@@ -124,6 +147,7 @@ impl RunTraceBuilder {
         output: &Value,
         error: Option<&str>,
     ) {
+        self.steps_seen = self.steps_seen.max(step);
         let mut attrs = vec![
             attr_str("gen_ai.operation.name", "execute_tool"),
             attr_str("gen_ai.tool.name", name),
@@ -142,9 +166,23 @@ impl RunTraceBuilder {
         );
     }
 
-    /// Close the root span and return the OTLP `ExportTraceServiceRequest`.
+    /// Close the root span and write the OTLP `ExportTraceServiceRequest` to
+    /// `run_dir/trace.json` (best-effort, like every other telemetry write).
     pub fn finish(
-        self,
+        &mut self,
+        status: &str,
+        steps: u32,
+        input_tokens: u64,
+        output_tokens: u64,
+        error: Option<&str>,
+    ) {
+        self.finalized = true;
+        let payload = self.build_payload(status, steps, input_tokens, output_tokens, error);
+        self.write_trace_file(&payload);
+    }
+
+    fn build_payload(
+        &mut self,
         status: &str,
         steps: u32,
         input_tokens: u64,
@@ -193,7 +231,7 @@ impl RunTraceBuilder {
             });
         }
 
-        let mut spans = self.spans;
+        let mut spans = std::mem::take(&mut self.spans);
         spans.insert(0, root);
 
         json!({
@@ -251,6 +289,65 @@ impl RunTraceBuilder {
         }
         self.spans.push(span);
     }
+
+    fn write_trace_file(&self, payload: &Value) {
+        if let Ok(bytes) = serde_json::to_vec(payload) {
+            let _ = std::fs::write(self.run_dir.join("trace.json"), bytes);
+        }
+    }
+}
+
+/// Abort safety net, mirroring `AgentRunRecorder`'s drop guard for `run.json`:
+/// when the run future is dropped before `finish` (an entrypoint aborted the
+/// task), persist the spans recorded so far under `socai.status=interrupted`.
+/// The guard can't know why it was dropped, so the aborting entrypoint patches
+/// the precise status afterwards via [`mark_run_trace_status`].
+impl Drop for RunTraceBuilder {
+    fn drop(&mut self) {
+        if self.finalized {
+            return;
+        }
+        let payload = self.build_payload(
+            "interrupted",
+            self.steps_seen,
+            self.input_tokens,
+            self.output_tokens,
+            None,
+        );
+        self.write_trace_file(&payload);
+    }
+}
+
+/// Best-effort terminal patch when an entrypoint cancels the agent future:
+/// rewrite the root span's `socai.status` (left as "interrupted" by the drop
+/// guard) to the precise terminal status. The trace analog of
+/// `mark_agent_run_status`.
+pub fn mark_run_trace_status(run_dir: impl AsRef<Path>, status: &str) -> std::io::Result<()> {
+    let path = run_dir.as_ref().join("trace.json");
+    let mut payload: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path)?).map_err(std::io::Error::other)?;
+    let spans = payload
+        .pointer_mut("/resourceSpans/0/scopeSpans/0/spans")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| std::io::Error::other("trace.json has no spans"))?;
+    // The root span is the only one without a parent.
+    let root = spans
+        .iter_mut()
+        .find(|span| span.get("parentSpanId").is_none())
+        .ok_or_else(|| std::io::Error::other("trace.json has no root span"))?;
+    let attributes = root
+        .get_mut("attributes")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| std::io::Error::other("root span has no attributes"))?;
+    for attribute in attributes {
+        if attribute.get("key").and_then(Value::as_str) == Some("socai.status") {
+            attribute["value"] = json!({ "stringValue": status });
+        }
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&payload).map_err(std::io::Error::other)?,
+    )
 }
 
 /// Flatten a summarizer map (`summarize_tool_args` / `summarize_tool_result`)

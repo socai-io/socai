@@ -103,8 +103,9 @@ impl Telemetry {
         }));
     }
 
-    /// Fire-and-forget upload of a completed run's `trace.json` (written by the
-    /// agent loop). Missing file — e.g. a cancelled run — is a silent no-op.
+    /// Fire-and-forget upload of a run's `trace.json` (written by the run's
+    /// trace builder on finish or abort). Missing file — e.g. a run that
+    /// failed before the loop started — is a silent no-op.
     pub fn upload_run_trace(&self, run_dir: &Path) {
         let _ = self
             .sender

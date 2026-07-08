@@ -164,6 +164,7 @@ pub async fn run_agent_with_events(
         backend.model(),
     )?;
     let mut run_trace = RunTraceBuilder::new(
+        &run_dir,
         &run_id,
         task,
         backend.model(),
@@ -538,16 +539,13 @@ pub async fn run_agent_with_events(
         total_output_tokens,
         terminal_error.as_deref(),
     )?;
-    let trace_payload = run_trace.finish(
+    run_trace.finish(
         status,
         step,
         total_input_tokens,
         total_output_tokens,
         terminal_error.as_deref(),
     );
-    if let Ok(bytes) = serde_json::to_vec(&trace_payload) {
-        let _ = std::fs::write(run_dir.join("trace.json"), bytes);
-    }
 
     Ok(AgentOutcome {
         run_id,

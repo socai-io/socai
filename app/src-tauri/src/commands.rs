@@ -17,6 +17,7 @@ use socai_core::runtime::{
 use socai_core::sites::{find_site, SiteSpec};
 use socai_core::telemetry::query_text_enabled;
 use socai_core::telemetry::tool_call::{summarize_tool_args, summarize_tool_result};
+use socai_core::telemetry::trace::mark_run_trace_status;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -648,6 +649,13 @@ pub async fn agent_task_cancel(
     if changed {
         if let Some(run_dir) = snapshot.run_dir.as_deref() {
             let _ = mark_agent_run_status(run_dir, "cancelled", None);
+            // The aborted run future's drop guard wrote trace.json with
+            // status "interrupted" (usually before we get here — the
+            // close_target await above yields to the runtime); rewrite it to
+            // "cancelled" and ship it. Cancelled runs are the ones users gave
+            // up on, so their spans matter most.
+            let _ = mark_run_trace_status(run_dir, "cancelled");
+            telemetry.upload_run_trace(run_dir);
         }
         record_desktop_session(&snapshot, "[cancelled by user]", "cancelled");
         telemetry.capture(
