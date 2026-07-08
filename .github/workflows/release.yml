@@ -178,6 +178,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          SOCAI_PRO_BASE_URL: ${{ secrets.SOCAI_PRO_BASE_URL }}
         run: |
           set -euo pipefail
 
@@ -451,6 +452,8 @@ jobs:
 
       - name: build app bundle and dmg
         working-directory: app
+        env:
+          SOCAI_PRO_BASE_URL: ${{ secrets.SOCAI_PRO_BASE_URL }}
         run: |
           pnpm exec tauri build \
             --ci \
@@ -694,6 +697,7 @@ jobs:
         shell: pwsh
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          SOCAI_PRO_BASE_URL: ${{ secrets.SOCAI_PRO_BASE_URL }}
         run: |
           $ErrorActionPreference = 'Stop'
           cargo build -p socai-cli --release
@@ -862,6 +866,8 @@ jobs:
       - name: build app installer
         working-directory: app
         shell: pwsh
+        env:
+          SOCAI_PRO_BASE_URL: ${{ secrets.SOCAI_PRO_BASE_URL }}
         run: |
           $ErrorActionPreference = 'Stop'
           # NSIS only (the user-selected installer). Authenticode code signing is
