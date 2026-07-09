@@ -112,9 +112,18 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
         : `${posterImg}<span class="note-media__play">${IC.play()}</span>`;
       return `<span class="note-media" data-kind="video">${inner}</span>`;
     }
-    return `<span class="note-media note-media--pillarbox" data-kind="video"><span class="note-media__inner">${posterImg}${
-      decorative ? "" : `<span class="note-media__play">${IC.play()}</span>`
-    }${m.dur && !decorative ? `<span class="note-media__dur">${esc(m.dur)}</span>` : ""}</span></span>`;
+    // With the file on disk the glyph is a real button and marks the whole
+    // frame as a play surface (the click handler treats any click on the
+    // frame as play; the button itself is the keyboard-focusable control).
+    // Without a file the glyph stays decorative and the click bubbles to the
+    // card (viewer opens).
+    const videoUrl = decorative ? "" : assetUrl(note, m.src);
+    const play = decorative
+      ? ""
+      : videoUrl
+        ? `<button type="button" class="note-media__play" data-note-play="${esc(videoUrl)}" aria-label="play video">${IC.play()}</button>`
+        : `<span class="note-media__play">${IC.play()}</span>`;
+    return `<span class="note-media note-media--pillarbox" data-kind="video"><span class="note-media__inner">${posterImg}${play}${m.dur && !decorative ? `<span class="note-media__dur">${esc(m.dur)}</span>` : ""}</span></span>`;
   }
   const url = assetUrl(note, m.src);
   // gallery slides are pre-rendered hidden — lazy would defer them to first
@@ -124,6 +133,99 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
     : `<span class="note-media--placeholder" style="position:absolute;inset:0"></span>`;
   const badge = count > 1 && !decorative ? `<span class="note-media__count">${IC.stack()}${count}</span>` : "";
   return `<span class="note-media" data-kind="image">${img}${badge}</span>`;
+}
+
+function fmtClock(s: number): string {
+  if (!isFinite(s) || s < 0) return "0:00";
+  const total = Math.floor(s);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+// Start inline playback in a card cover: overlay a <video> on the poster
+// (the play button's data-note-play carries the resolved asset url). The
+// poster stays in-flow underneath — it is what sizes the pillarbox, so
+// removing it would reflow the card mid-click — and it backs the letterbox
+// bars contain-fit leaves around whatever ratio the file really is.
+// The controls are ours, not the native ones: at card width WebKit's adaptive
+// controls drop the scrubber and time readout, so the card gets a slim
+// track + clock bar, click-on-video toggles play/pause, and a centered glyph
+// marks the paused state. The viewer gallery keeps native controls.
+function playInline(btn: HTMLElement): void {
+  const frame = btn.closest<HTMLElement>(".note-media__inner") ?? btn.closest<HTMLElement>(".note-media");
+  const src = btn.getAttribute("data-note-play");
+  if (!frame || !src) return;
+  // video + glyph live in the pillarbox inner; the bar spans the whole cover
+  const barHost = btn.closest<HTMLElement>(".note-media") ?? frame;
+  const poster = frame.querySelector<HTMLImageElement>("img.note-media__img")?.getAttribute("src") || "";
+  const durText = frame.querySelector(".note-media__dur")?.textContent || "0:00";
+
+  const video = document.createElement("video");
+  video.className = "note-media__video";
+  video.playsInline = true;
+  if (poster) video.poster = poster;
+  video.src = src;
+
+  // paused indicator — same glyph as the poster state, but inert (clicks fall
+  // through to the video's toggle); visible until playback actually starts,
+  // so a refused play() keeps a play affordance on screen.
+  const glyph = document.createElement("span");
+  glyph.className = "note-media__play note-media__play--hud";
+  glyph.innerHTML = IC.play();
+
+  const bar = document.createElement("span");
+  bar.className = "note-media__vbar";
+  bar.innerHTML =
+    `<span class="note-media__vtrack"><span class="note-media__vfill"></span></span>` +
+    `<span class="note-media__vtime">0:00 / ${esc(durText)}</span>`;
+  const track = bar.querySelector<HTMLElement>(".note-media__vtrack")!;
+  const fill = bar.querySelector<HTMLElement>(".note-media__vfill")!;
+  const clock = bar.querySelector<HTMLElement>(".note-media__vtime")!;
+
+  const sync = () => {
+    const d = video.duration;
+    if (isFinite(d) && d > 0) fill.style.width = `${(video.currentTime / d) * 100}%`;
+    clock.textContent = `${fmtClock(video.currentTime)} / ${isFinite(d) && d > 0 ? fmtClock(d) : durText}`;
+  };
+  video.addEventListener("timeupdate", sync);
+  video.addEventListener("loadedmetadata", sync);
+  video.addEventListener("play", () => (glyph.hidden = true));
+  video.addEventListener("pause", () => (glyph.hidden = false));
+  video.addEventListener("click", () => {
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+  });
+  // bar clicks are seeks, never card opens (the delegated open handler sits
+  // on document, so stopping propagation here is enough)
+  bar.addEventListener("click", (e) => e.stopPropagation());
+  const scrub = (e: PointerEvent) => {
+    const r = track.getBoundingClientRect();
+    const d = video.duration;
+    if (!isFinite(d) || d <= 0 || r.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    video.currentTime = ratio * d;
+    sync(); // timeupdate is throttled; reflect the seek immediately
+  };
+  track.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    scrub(e);
+    // capture only extends the drag; a failed capture must not void the seek
+    try {
+      track.setPointerCapture(e.pointerId);
+    } catch {
+      /* inactive pointer (lifted mid-gesture) — click-seek already landed */
+    }
+  });
+  track.addEventListener("pointermove", (e) => {
+    if (track.hasPointerCapture(e.pointerId)) scrub(e);
+  });
+
+  btn.remove();
+  frame.querySelector(".note-media__dur")?.remove(); // the bar shows the clock
+  frame.append(video, glyph);
+  barHost.appendChild(bar);
+  // Called inside the click gesture, so WKWebView allows playback with sound;
+  // if it still refuses, the poster, glyph and toggle remain usable.
+  video.play().catch(() => {});
 }
 
 // No shares entry: XHS exposes no share count anywhere we read, so the column
@@ -369,6 +471,10 @@ function openViewer(id: string): void {
   const note = resolveNote(id);
   if (!note) return;
   closeViewer();
+  // An inline card video would keep its audio running under the backdrop —
+  // the lightbox owns playback while open. (Runs before the viewer is
+  // appended, so only card/popover videos match.)
+  document.querySelectorAll<HTMLVideoElement>(".note-media video").forEach((v) => v.pause());
   const host = document.createElement("div");
   host.className = "note-viewer note-viewer--lightbox";
   host.innerHTML = viewerHTML(note);
@@ -386,6 +492,33 @@ export function bindNoteInteractions(): void {
   document.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
 
+    // A click inside a <video> is a native-controls interaction (play/pause,
+    // scrub, volume — WebKit retargets shadow-DOM control clicks to the video
+    // element) — never a note action like opening the viewer.
+    if (target.closest("video")) return;
+    // inline play — the whole cover is the play surface: any click on a
+    // playable video frame starts it, and during playback the pillarbox
+    // margins toggle pause. Only the card body below opens the note viewer.
+    // Frames with no play button (images, missing file, gallery, thumbs/dots)
+    // fall through to their existing handling.
+    const media = target.closest<HTMLElement>(".note-media");
+    if (media) {
+      const play = media.querySelector<HTMLElement>("[data-note-play]");
+      if (play) {
+        e.preventDefault();
+        e.stopPropagation();
+        playInline(play);
+        return;
+      }
+      const vid = media.querySelector<HTMLVideoElement>("video.note-media__video");
+      if (vid) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (vid.paused) vid.play().catch(() => {});
+        else vid.pause();
+        return;
+      }
+    }
     // external link (Tauri webview won't honour target=_blank)
     const ext = target.closest<HTMLElement>("[data-note-external]");
     if (ext) {
@@ -451,14 +584,28 @@ export function bindNoteInteractions(): void {
     // synthesize a click so the delegated click handler above does the rest.
     if (e.key !== "Enter" && e.key !== " ") return;
     const target = e.target as HTMLElement;
-    if (target.closest("input, textarea, select, [contenteditable]")) return;
+    if (target.closest("input, textarea, select, [contenteditable], video")) return;
     const actionable = target.closest<HTMLElement>(
-      "[data-note-open], [data-note-external], [data-note-nav], [data-gallery-nav], [data-gallery-thumb], [data-note-close], .note-viewer-corner",
+      "[data-note-open], [data-note-external], [data-note-nav], [data-note-play], [data-gallery-nav], [data-gallery-thumb], [data-note-close], .note-viewer-corner",
     );
     if (!actionable) return;
     e.preventDefault();
     actionable.click();
   });
+
+  // One playing note video at a time — starting any (card-inline or viewer
+  // gallery) pauses the rest. Media events don't bubble, so capture.
+  document.addEventListener(
+    "play",
+    (e) => {
+      const el = e.target;
+      if (!(el instanceof HTMLVideoElement) || !el.closest(".note-media")) return;
+      document.querySelectorAll<HTMLVideoElement>(".note-media video").forEach((v) => {
+        if (v !== el) v.pause();
+      });
+    },
+    true,
+  );
 
   // citation hover preview — the same rich card the search strips render
   // (position:fixed popover so it escapes overflow)
