@@ -679,91 +679,10 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex-direction: column;
   overflow: hidden;
 }
-/* The detail pane is now the main content area: drop the card chrome and let
-   it fill, with generous padding. The inner panels keep their own boxes. */
-.workspace-main > .task-detail {
-  flex: 1;
-  min-height: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: var(--sp-5);
-}
-/* Compose view: hero + form, centered in the main pane on a comfortable measure. */
-.compose-pane {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  justify-content: safe center;
-  align-items: center;
-  overflow-y: auto;
-  padding: var(--sp-6) var(--sp-5);
-}
-.compose-pane .new-task-compose { width: min(100%, 760px); padding: 0; }
-
 @media (max-width: 760px) {
   .sidebar, .topbar-left { flex-basis: 220px; width: 220px; }
-  .workspace-main > .task-detail { padding: var(--sp-4); }
 }
 
-/* ── Compose form ──────────────────────────────────────────────── */
-.task-form {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border: var(--hairline);
-  border-radius: var(--r-4);
-  background: var(--surface);
-}
-.task-input {
-  width: 100%;
-  min-height: 132px;
-  padding: var(--sp-4);
-  border: 0;
-  resize: vertical;
-  background: transparent;
-  color: var(--fg);
-  font-family: var(--font-sans);
-  font-size: 16px;
-  line-height: 1.55;
-}
-.task-input::placeholder { color: var(--fg-faint); }
-.task-input:focus { outline: none; }
-.task-input:disabled {
-  background: var(--surface-2);
-  color: var(--fg-soft);
-  cursor: not-allowed;
-}
-.task-controls {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2);
-  border-top: var(--hairline);
-  background: var(--canvas);
-}
-.task-context { flex: 1; }
-
-.new-task-compose {
-  width: min(100%, 840px);
-  align-self: center;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-5) 0 var(--sp-3);
-}
-.new-task-copy {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--sp-2);
-  text-align: center;
-}
-.new-task-copy p,
-.new-task-copy h2 { margin: 0; }
-.task-form-centered .task-input { min-height: 172px; }
 .task-list-empty { padding: var(--sp-3); }
 /* The row is a non-interactive container: an open <button> (glyph+title+meta)
    and a sibling × button. Two siblings, never nested — a focusable control
@@ -902,145 +821,14 @@ body.has-paper > * { position: relative; z-index: 1; }
   gap: var(--sp-2);
   margin-top: var(--sp-3);
 }
-.task-detail {
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-3);
-  /* The detail's height is owned by its flex children (logs + answer each
-     scroll). With the split layout the inner panels own scrolling, so the pane
-     itself never scrolls; overflow:hidden keeps any odd overflow (e.g. a failed
-     task with a very long error block) inside the pane instead of clipping. */
-  overflow: hidden;
-}
-.task-detail-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-3);
-}
-.task-detail-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex: 0 0 auto;
-}
-.task-detail-head .result-label,
-.task-detail-title { margin: 0; }
-.task-detail-headinfo {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-}
-.task-detail-meta {
-  margin: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  row-gap: 4px;
-  font-family: var(--font-sans);
-  font-size: 13px;
-  color: var(--fg-soft);
-}
-.task-meta-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.task-meta-item:not(:last-child)::after {
-  content: "·";
-  color: var(--fg-faint);
-  margin: 0 8px;
-}
-.task-meta-status { color: var(--fg-muted); }
-.task-empty-detail {
-  flex: 1;
-  display: flex;
-  min-height: 220px;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: var(--sp-2);
-  text-align: center;
-}
-.task-empty-detail .result-label { margin: 0; }
-
-/* ── Task detail: timeline + result alignment ─────────────────────
-   Two arrangements share one detail pane (see TaskDetail):
-   · split   — timeline ‖ result, each gets the FULL pane height (default)
-   · stacked — a vertical stack, used when only one panel is present
-               (a running task with no answer yet, or an error-only failure)
-               and as the narrow-window fold of split.
-   The detail head stays pinned; .detail-body / .detail-split fill below it. */
-.detail-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-/* stacked: panels share the column; the answer is weighted slightly larger */
-.detail-body--stacked .result-block { flex: 1 1 0; min-height: 96px; }
-.detail-body--stacked .agent-outcome { flex: 1.35 1 0; min-height: 120px; margin-top: 0; }
-
-/* split: two equal columns, each a self-scrolling panel */
-.detail-split {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  gap: var(--sp-4);
-}
-.detail-col {
-  flex: 1 1 0;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.detail-col > .detail-panel { flex: 1 1 0; min-height: 0; margin-top: 0; }
-.detail-panel-label { margin: 0; }
-
-/* narrow windows: fold the split back into a stack so neither panel is starved */
-@media (max-width: 900px) {
-  .detail-split { flex-direction: column; }
-  .detail-col { flex: 1 1 auto; min-height: 160px; }
-}
-
-/* ── Result + event stream ─────────────────────────────────────── */
-/* Run logs in the detail pane: take 1 share of the pane height (the final
-   answer below takes 2 — "answer-first"), and never collapse below a usable
-   floor. When a task is still running this is the only flex region, so it
-   fills the pane on its own. */
-.result-block {
-  flex: 1 1 0;
-  min-height: 72px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-}
+/* ── Result markdown + status text ─────────────────────────────── */
 .result-label {
   margin: var(--sp-2) 0 0 0;
 }
-.result-pre {
-  margin: 0;
-  padding: var(--sp-3);
-  background: var(--canvas);
-  border: var(--hairline);
-  border-radius: var(--r-3);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.55;
-  color: var(--ink-1);
-  max-height: 480px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
 .result-error { color: var(--status-error-fg); }
 
-/* Rendered markdown for the final answer. Reuses the .result-pre container
-   (border/padding/scroll) but switches to prose typography. Targets the plain
-   tags emitted by `marked`. */
+/* Rendered markdown for answers (the conversation's .conv-answer carries this
+   class too). Targets the plain tags emitted by `marked`. */
 .result-md {
   font-family: var(--font-sans);
   font-size: 13px;
@@ -1097,96 +885,310 @@ body.has-paper > * { position: relative; z-index: 1; }
 .result-md th { font-weight: 600; background: var(--surface-2); }
 .placeholder { color: var(--fg-faint); margin: 0; }
 .subtle { margin: 0; color: var(--fg-soft); }
-.event-stream {
+
+/* ── Inline conversation (SocaiV2 "Socai Today" handoff) ──────────────
+   Replaces the old timeline ‖ final-answer split. One continuous, scrolling
+   thread of turns (the user's prompt as a right-aligned bubble, the agent's
+   work always-visible but quiet, then the answer inline as rich markdown with
+   note-citation pills), with a composer pinned to the bottom of the pane. */
+
+.conversation {
   flex: 1;
-  min-height: 0;             /* fill .result-block and scroll internally (was max-height:320px);
-                                preserves the auto-follow in tasks.ts (scrollTop = scrollHeight) */
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: var(--sp-2) var(--sp-3);
-  background: var(--canvas);
-  border: var(--hairline);
-  border-radius: var(--r-3);
-  overflow: auto;
+  background: var(--surface);
 }
-.event {
-  display: grid;
-  grid-template-columns: 20px 1fr;
-  gap: var(--sp-2);
-  padding: 1px 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--ink-1);
-}
-.event-glyph { color: var(--fg-soft); }
-.event-text { white-space: pre-wrap; word-break: break-word; }
-.event-step { color: var(--fg-soft); margin-top: var(--sp-1); }
-.event-reasoning .event-text { color: var(--fg-soft); }
-.event-tool_call .event-text { color: var(--fg-muted); }
-.event-tool_error .event-glyph,
-.event-api_error .event-glyph { color: var(--status-error-fg); }
-.event-done .event-glyph { color: var(--ink-0); }
 
-/* ── Run groups (one per reply) + reply composer ──────────────────
-   A task's timeline can span several runs once replies land — each run's
-   "started" event becomes a message boundary instead of a generic row. */
-.run-group {
-  padding-top: var(--sp-2);
-  margin-top: var(--sp-2);
+/* ── slim head: persistent subject + status + row-level actions ───── */
+.conversation-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-5);
+  min-height: 46px;
+  border-bottom: var(--hairline);
+  background: var(--surface);
 }
-.run-group:first-child { padding-top: 0; margin-top: 0; }
-.run-group + .run-group { border-top: var(--hairline); }
-/* The user's message renders as a right-aligned filled bubble so it reads as
-   "you said this" at a glance instead of blending into the agent's event
-   rows. Filled vs hollow is the design system's emphasis axis — the one
-   non-hairline signal available in monochrome. */
-.run-message {
-  margin-bottom: var(--sp-3);
-  text-align: right;
-}
-.run-message__label {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--fg-faint);
-  margin-bottom: 3px;
-}
-.run-message__text {
-  display: inline-block;
-  margin: 0;
-  padding: var(--sp-2) var(--sp-3);
-  max-width: 88%;
-  background: var(--ink-0);
-  color: var(--canvas);
-  border-radius: var(--r-4);
+.conversation-head__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-sans);
   font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--fg-muted);
+}
+.conversation-head__actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.conv-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* ── the scrolling thread ─────────────────────────────────────────── */
+.thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+/* Fluid canvas: the thread spans the pane so media strips can use the full
+   width; prose-shaped pieces (bubble, activity fold, answer, meta) pin
+   themselves back onto the centered 760px column shared with the composer. */
+.thread-inner {
+  width: 100%;
+  padding: var(--sp-6) var(--sp-6) var(--sp-5);
+  display: flex;
+  flex-direction: column;
+}
+.conv-user,
+.activity-wrap,
+.conv-answer,
+.conv-error,
+.conv-meta {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+}
+/* ── one turn (a run: prompt → work → answer) ─────────────────────── */
+.turn { display: flex; flex-direction: column; }
+.turn + .turn { margin-top: var(--sp-6); }
+
+/* user prompt — right-aligned filled ink bubble (the one emphasis axis
+   monochrome affords). */
+.conv-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-bottom: var(--sp-4);
+}
+.conv-user__label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin-bottom: 4px;
+}
+.conv-user__bubble {
+  margin: 0;
+  max-width: 82%;
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--ink-0);
+  color: var(--ink-9);
+  border-radius: var(--r-5);
+  border-bottom-right-radius: var(--r-2);
+  font-family: var(--font-sans);
+  font-size: 14px;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
   text-align: left;
 }
-/* An earlier run's final answer, rendered rich inside its group (the latest
-   run's answer lives in the answer panel instead). */
-.run-answer {
-  margin-top: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border: var(--hairline);
-  border-radius: var(--r-4);
-  background: var(--surface);
-  font-size: 13px;
-}
-.task-reply-form { flex: none; margin-top: var(--sp-2); }
-.task-reply-hint {
+
+/* ── agent activity ─────────────────────────────────────────────────
+   The run detail auto-compacts to a quiet summary toggle; click to expand
+   into the transcript treatment below. */
+.activity-wrap {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: var(--sp-2);
-  margin: var(--sp-2) 0 0;
 }
-.task-reply-row {
+.activity-toggle {
+  appearance: none;
+  align-self: flex-start;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: -4px;
+  padding: 3px 7px 3px 4px;
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--fg-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.activity-toggle:hover { color: var(--ink-0); background: var(--ink-7); }
+.activity-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.activity-toggle__chev {
+  display: inline-flex;
+  justify-content: center;
+  width: 9px;
+  color: var(--fg-faint);
+}
+.activity-toggle__dot { display: inline-flex; align-items: center; }
+.activity-toggle__label {
+  text-transform: uppercase;
+  letter-spacing: var(--ls-eyebrow);
+  white-space: nowrap;
+}
+.activity-toggle__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-faint);
+}
+
+/* ── agent activity detail — a quiet log threaded off a left rule ─── */
+.activity {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.activity--transcript {
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--line);
+}
+.act-row {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: var(--sp-2);
+  padding: 1px 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-soft);
+}
+.act-row__glyph { color: var(--fg-faint); }
+.act-row__text { white-space: pre-wrap; word-break: break-word; }
+.act-row--reasoning .act-row__text { color: var(--fg-soft); }
+.act-row--tool_call .act-row__text { color: var(--fg-muted); }
+.act-row--tool_result .act-row__text { color: var(--fg-soft); }
+.act-row--assistant .act-row__text { color: var(--fg-muted); }
+.act-row--step .act-row__text { color: var(--fg-faint); }
+.act-row--tool_error .act-row__glyph,
+.act-row--api_error .act-row__glyph,
+.act-row--failed .act-row__glyph { color: var(--status-error-fg); }
+.act-row--done .act-row__glyph,
+.act-row--completed .act-row__glyph { color: var(--ink-0); }
+.act-row--done .act-row__text,
+.act-row--completed .act-row__text { color: var(--fg-muted); }
+/* live "working…" terminal row */
+.act-row--working { align-items: center; margin-top: 2px; }
+.act-row--working .act-row__glyph { display: inline-flex; align-items: center; }
+.act-row--working .act-row__text { color: var(--fg-muted); }
+
+/* ── per-search note previews (small cards), always visible ─────────
+   Full pane width — a sibling of the centered activity fold, so many
+   results get the room the prose column doesn't need. */
+.activity-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+}
+.search-group { display: flex; flex-direction: column; gap: 6px; }
+.search-group__label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--fg-soft);
+}
+.search-group__tool { flex: 0 0 auto; text-transform: uppercase; letter-spacing: var(--ls-eyebrow); color: var(--fg-muted); }
+.search-group__q { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-1); }
+.search-group__q::before { content: "· "; color: var(--fg-faint); }
+.search-group__row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--sp-2);
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  padding-bottom: 3px;
+}
+.search-group__row .note-card { flex: 0 0 auto; }
+
+/* ── the answer — flat prose in the flow (no container) ────────────── */
+.conv-answer {
+  margin-top: var(--sp-4);
+  font-size: 14px;
+  color: var(--ink-1);
+}
+.conv-answer.result-md p { margin: 0 0 var(--sp-3) 0; }
+/* citation pills need to sit comfortably in the larger prose */
+.conv-answer .note-cite { font-size: 0.82em; }
+
+.conv-error {
+  margin: var(--sp-4) auto 0;
+  padding: var(--sp-3);
+  background: var(--canvas);
+  border: var(--hairline);
+  border-radius: var(--r-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--status-error-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* quiet per-task meta under the latest answer */
+.conv-meta {
+  margin-top: var(--sp-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  color: var(--fg-faint);
+}
+.conv-meta__sep { color: var(--line-strong); }
+
+/* ── composer, pinned to the bottom of the pane ───────────────────── */
+.composer-dock {
+  flex: 0 0 auto;
+  background: transparent;
+  padding: var(--sp-3) var(--sp-5) var(--sp-4);
+}
+.composer {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.composer__context {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  color: var(--fg-soft);
+  padding: 0 var(--sp-1);
+}
+.composer__form { margin: 0; }
+/* the input is a self-contained rounded box floating in the pane — no outer
+   dock divider boxing it off from the conversation above. */
+.composer__row {
   display: flex;
   align-items: flex-end;
   gap: var(--sp-2);
@@ -1194,129 +1196,188 @@ body.has-paper > * { position: relative; z-index: 1; }
   border-radius: var(--r-4);
   background: var(--surface);
   padding: var(--sp-2);
+  transition: border-color var(--t-fast) var(--ease);
 }
-.task-reply-input {
+.composer__row:focus-within { border-color: var(--ink-0); }
+.composer__row.is-disabled { background: var(--surface-2); }
+.composer__input {
   flex: 1;
   min-width: 0;
-  min-height: 20px;
-  max-height: 120px;
+  min-height: 22px;
+  max-height: 200px;
   resize: none;
   border: 0;
   background: transparent;
   padding: var(--sp-1) var(--sp-2);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
 }
-.task-reply-input::placeholder { color: var(--fg-faint); }
-.task-reply-input:focus { outline: none; }
-.task-reply-input:disabled { color: var(--fg-soft); cursor: not-allowed; }
-.task-reply-send { flex: none; }
-.task-reply-error { padding: var(--sp-1) var(--sp-1) 0; }
-
-/* ── Final-answer reference (timeline terminal) ────────────────────
-   From the SocaiV2 handoff. The timeline's last item no longer repeats the
-   answer text; it shows a compact card that names the answer and points at
-   the answer panel. Sits inside the mono .event-stream, so it deliberately
-   breaks to sans + a card surface to read as a distinct terminal element. */
-.final-answer-ref {
-  appearance: none;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  width: 100%;
-  margin-top: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: var(--hairline);
-  border-radius: var(--r-3);
-  background: var(--surface);
-  color: var(--fg);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
-}
-.final-answer-ref:hover { border-color: var(--line-strong); background: var(--ink-7); }
-.final-answer-ref:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.final-answer-ref__glyph {
+.composer__input::placeholder { color: var(--fg-faint); }
+.composer__input:focus { outline: none; }
+.composer__input:disabled { color: var(--fg-soft); cursor: not-allowed; }
+/* quiet icon button — the input's focus ring carries the emphasis */
+.composer__send {
   flex: 0 0 auto;
+  appearance: none;
+  width: 30px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--r-pill);
-  background: var(--ink-0);
-  color: var(--ink-9);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--fg-soft);
+  font-size: 15px;
   line-height: 1;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
-.final-answer-ref__body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.final-answer-ref__label {
-  font-family: var(--font-sans);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.005em;
-  color: var(--ink-1);
+.composer__send:hover:not(:disabled) { color: var(--ink-0); background: var(--ink-7); }
+.composer__send:disabled { color: var(--fg-faint); cursor: not-allowed; }
+.composer__send-glyph { display: block; }
+.composer__send-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--fg-soft);
+  animation: pulse 1.4s ease-in-out infinite;
 }
-.final-answer-ref__hint {
+.composer__hint {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  column-gap: 8px;
-  row-gap: 1px;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.01em;
-  color: var(--fg-soft);
-}
-.final-answer-ref__count { color: var(--fg-faint); }
-.final-answer-ref__cta { min-width: 0; }
-.final-answer-ref__arrow {
-  flex: 0 0 auto;
-  color: var(--fg-soft);
-  font-family: var(--font-mono);
-  font-size: 14px;
-  transition: transform var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
-}
-.final-answer-ref:hover .final-answer-ref__arrow { color: var(--ink-0); transform: translateX(2px); }
-/* The handoff picks hint + arrow from a layout prop; here both variants
-   render and the .detail-split fold's breakpoint picks one. */
-.final-answer-ref__cta--stacked,
-.final-answer-ref__arrow--stacked { display: none; }
-@media (max-width: 900px) {
-  .final-answer-ref__cta--split,
-  .final-answer-ref__arrow--split { display: none; }
-  .final-answer-ref__cta--stacked { display: inline; }
-  .final-answer-ref__arrow--stacked { display: inline; }
-}
-
-/* Activating the reference flashes a ring on the answer body so the eye lands
-   on the real content (used in split/stacked, where the panel is visible). */
-.agent-outcome.answer-flash .result-pre { animation: answerFlash 1.3s var(--ease); }
-@keyframes answerFlash {
-  0%   { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.30); }
-  28%  { box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.20); }
-  100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
-}
-
-.agent-outcome {
-  flex: 2 1 0;               /* the payoff: 2 shares of the pane vs the logs' 1 */
-  min-height: 96px;
-  display: flex;
-  flex-direction: column;
   gap: var(--sp-2);
-  margin-top: var(--sp-2);
+  margin: 0;
+  padding: 0 var(--sp-1);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--fg-soft);
 }
-/* The rendered answer scrolls inside the agent-outcome share; the eyebrow label
-   and run metadata stay pinned around it. Override the base .result-pre cap. */
-.agent-outcome .result-pre {
+.composer__error {
+  margin: 0;
+  padding: 0 var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--status-error-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 760px) {
+  .conversation-head { padding: var(--sp-2) var(--sp-4); }
+  .thread-inner { padding: var(--sp-5) var(--sp-4) var(--sp-4); }
+  .composer-dock { padding: var(--sp-3) var(--sp-4); }
+}
+
+/* ── new-task compose: centered hero + the same chat composer ───────
+   When chrome isn't connected the form is masked behind the connect
+   overlay. */
+.compose-pane {
   flex: 1;
   min-height: 0;
-  max-height: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  justify-content: safe center;
+  align-items: center;
+  overflow-y: auto;
+  padding: var(--sp-6) var(--sp-5);
 }
+.new-task-compose {
+  width: min(100%, 760px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.new-task-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  text-align: center;
+}
+.new-task-copy p,
+.new-task-copy h2 { margin: 0; }
+.compose-form-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.compose-form-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  transition: filter var(--t-base) var(--ease), opacity var(--t-base) var(--ease);
+}
+.compose-form-stack.is-masked .compose-form-inner {
+  pointer-events: none;
+  filter: saturate(0) blur(1.5px);
+  opacity: 0.55;
+  user-select: none;
+}
+.connect-overlay {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  width: min(360px, calc(100% - var(--sp-6)));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  background: var(--surface);
+  border: var(--hairline);
+  border-radius: var(--r-4);
+  box-shadow: var(--shadow-pop);
+}
+.connect-overlay-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: var(--hairline);
+  background: var(--canvas);
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-1);
+  white-space: nowrap;
+}
+.connect-overlay-head {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 18px;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  color: var(--ink-0);
+}
+.connect-overlay-cta {
+  align-self: stretch;
+  margin-top: var(--sp-1);
+  padding: 9px var(--sp-4);
+  font-size: 13px;
+  text-align: center;
+}
+.connect-overlay-link {
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--fg-soft);
+  text-decoration: none;
+  transition: color var(--t-fast) var(--ease);
+}
+.connect-overlay-link:hover { color: var(--ink-0); }
 
 /* ── Embedded rich notes (SocaiV2 design) ─────────────────────────────
    Xiaohongshu notes the agent saw/cited, rendered in the timeline and answer.
@@ -1470,26 +1531,6 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
 .note-card[data-density="compact"] .note-stats { flex-wrap: nowrap; gap: 9px; font-size: 10px; }
 .note-card[data-density="compact"] .note-author__avatar { width: 17px; height: 17px; font-size: 8px; }
 .note-card[data-density="compact"] .note-author__name { font-size: 11px; }
-
-/* ── timeline embed (under a tool_result row) ──────────────────────── */
-/* One row, scrolling inside its own box: the 28px gutter is margin (not
-   padding) so cards clip at the strip's edge instead of sliding through the
-   glyph column, and overscroll stays contained so trackpad momentum never
-   bleeds into the timeline panel. `flex: none` is load-bearing — overflow-x
-   makes this a scroll container whose auto min-height is zero, so as a flex
-   child of the overflowing .event-stream it would otherwise be squashed flat. */
-.event-embed {
-  flex: none;
-  margin: 3px 0 9px 28px;
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 8px;
-  min-width: 0;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: thin;
-}
-.event-embed .note-card { flex: 0 0 auto; }
 
 /* ── answer citations (inline pill + hover preview) ────────────────── */
 .note-cite {
@@ -1743,82 +1784,3 @@ code {
   cursor: not-allowed;
 }
 
-/* ── Connect overlay (shown on disconnected/connecting compose) ──── */
-.compose-form-stack {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-.compose-form-inner {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  transition: filter var(--t-base) var(--ease), opacity var(--t-base) var(--ease);
-}
-.compose-form-stack.is-masked .compose-form-inner {
-  pointer-events: none;
-  filter: saturate(0) blur(1.5px);
-  opacity: 0.55;
-  user-select: none;
-}
-.connect-overlay {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 5;
-  width: min(360px, calc(100% - var(--sp-6)));
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--sp-3);
-  padding: var(--sp-5);
-  background: var(--surface);
-  border: var(--hairline);
-  border-radius: var(--r-4);
-  box-shadow: var(--shadow-pop);
-}
-.connect-overlay-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: var(--hairline);
-  background: var(--canvas);
-  padding: 4px 10px;
-  border-radius: var(--r-pill);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  color: var(--ink-1);
-  white-space: nowrap;
-}
-.connect-overlay-head {
-  margin: 0;
-  font-family: var(--font-sans);
-  font-weight: 500;
-  font-size: 18px;
-  line-height: 1.2;
-  letter-spacing: -0.015em;
-  color: var(--ink-0);
-}
-.connect-overlay-cta {
-  align-self: stretch;
-  margin-top: var(--sp-1);
-  padding: 9px var(--sp-4);
-  font-size: 13px;
-  text-align: center;
-}
-.connect-overlay-link {
-  margin: 0;
-  padding: 0;
-  appearance: none;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  text-align: left;
-  color: var(--fg-soft);
-  text-decoration: none;
-  transition: color var(--t-fast) var(--ease);
-}
-.connect-overlay-link:hover { color: var(--ink-0); }

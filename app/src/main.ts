@@ -510,9 +510,9 @@ async function main(): Promise<void> {
     render();
   });
 
-  // Stream task-scoped agent events incrementally. Snapshot/status events ask
-  // for a full render so the task list and final answer update; normal stream
-  // rows append in place to preserve scroll.
+  // Stream task-scoped agent events incrementally. Snapshot/status events and
+  // run boundaries ask for a full render so the task list and conversation
+  // turns update; normal stream rows append in place to preserve scroll.
   await listen<AgentTaskEventPayload>("agent_task:event", (event) => {
     if (agentPanel.appendTaskEvent(event.payload)) render();
     if (event.payload.kind === "tool_result") {

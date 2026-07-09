@@ -1,6 +1,6 @@
 //! Task workspace coordinator: shared state, agent configuration popover,
-//! task event intake, and bindings. The sidebar (history list) + detail pane
-//! live in `task_history.ts`; the compose view lives in `task_new.ts`.
+//! task event intake, and bindings. The sidebar (history list) + delete dialog
+//! live in `task_history.ts`; the conversation view lives in `conversation.ts`.
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -14,13 +14,22 @@ import type {
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
 import { isSendShortcut } from "../lib/shortcuts";
-import { noteRefsFromEvent, renderAgentEvent, renderConfirmDeleteDialog, renderRunMessage, renderSidebar as renderSidebarMarkup, renderTaskDetail, renderTaskMetaItems } from "./task_history";
-import type { ReplyComposerProps } from "./task_history";
-import { bindNoteInteractions, renderTimelineEmbed, setNoteRegistry } from "./notes";
-import { renderComposePane } from "./task_new";
+import { renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup } from "./task_history";
+import {
+  noteRefsFromEvent,
+  pendingSearchQuery,
+  renderComposePane,
+  renderConversation,
+  renderEventRow,
+  renderLiveNotesGroup,
+  renderSearchGroupForEvent,
+} from "./conversation";
+import type { ComposerProps } from "./conversation";
+import { bindNoteInteractions, setNoteRegistry } from "./notes";
 
-// The workspace shows one of two views: the compose form (default / "new task")
-// or the selected task's detail. The sidebar history list is always present.
+// The workspace is one conversation pane: the compose view (default / "new
+// task") is the empty thread + composer; picking a task shows its thread with
+// the same composer in reply mode. The sidebar history list is always present.
 type WorkspaceView = "compose" | "detail";
 export type AgentTaskView = AgentTaskSnapshot & {
   events: AgentTaskEventPayload[];
@@ -44,10 +53,20 @@ export namespace agentPanel {
   let tasks: AgentTaskView[] = [];
   let pendingEvents = new Map<string, AgentTaskEventPayload[]>();
   let selectedTaskId: string | null = null;
-  // Confirm-first delete: every affordance (row ×, detail-head button) opens
-  // the centered dialog by setting this; the delete only runs on confirm.
+  // Confirm-first delete: every affordance (row ×, conversation-head button)
+  // opens the centered dialog by setting this; the delete only runs on confirm.
   let deleteRequestTaskId: string | null = null;
   let modelsCache: ModelInfo[] = [];
+
+  // Explicit activity-fold choices, keyed `${taskId}#${turnIndex}`. Absent =
+  // the default (open while that turn's run streams, folded otherwise). The
+  // terminal transition clears a task's entries so the fold lands with the
+  // answer even if the user toggled mid-run.
+  const activityOpen = new Map<string, boolean>();
+
+  function isActivityOpen(taskId: string, turnIndex: number, defaultOpen: boolean): boolean {
+    return activityOpen.get(`${taskId}#${turnIndex}`) ?? defaultOpen;
+  }
 
   // Key-entry sub-state — used by the header configuration popover.
   let pendingKey = "";
@@ -160,15 +179,12 @@ export namespace agentPanel {
       return;
     }
     // Refresh the snapshot too: tokens/steps accumulate into run.json after
-    // every LLM step, and the duration ticks — but no agent event carries
-    // them mid-run, so without this poll the meta line only updates on the
-    // rare snapshot-bearing events (queued/running/tab/terminal). Updates the
-    // meta DOM in place; a full rerender would drop scroll and focus.
+    // every LLM step, but no agent event carries them mid-run — this keeps the
+    // state fresh so the answer meta / activity summary are right the moment
+    // the terminal render lands. Nothing displays them mid-run, so no DOM
+    // update happens here.
     try {
-      const snapshot = await invoke<AgentTaskSnapshot>("agent_task_get", { taskId: task.task_id });
-      const merged = upsertTask(snapshot);
-      const meta = document.querySelector<HTMLDivElement>(".task-detail-meta");
-      if (meta && merged.task_id === selectedTaskId) meta.innerHTML = renderTaskMetaItems(merged);
+      upsertTask(await invoke<AgentTaskSnapshot>("agent_task_get", { taskId: task.task_id }));
     } catch (e) {
       console.error("agent_task_get poll failed:", e);
     }
@@ -186,16 +202,31 @@ export namespace agentPanel {
 
   let liveStripKey = "";
 
-  // Per-task scroll memory for the event stream. A full render rebuilds the
-  // stream DOM (dropping its scroll offset), so a scroll listener records the
-  // position here and the post-render bind restores it. No entry, or a pinned
-  // entry, means auto-follow: keep the stream glued to its newest row.
+  // Per-task scroll memory for the conversation thread. A full render rebuilds
+  // the thread DOM (dropping its scroll offset), so a scroll listener records
+  // the position here and the post-render bind restores it. No entry, or a
+  // pinned entry, means auto-follow: keep the thread glued to its newest row.
   const streamScroll = new Map<string, { top: number; pinned: boolean }>();
-  // Pending removal of the answer panel's jump-flash ring (one at a time).
-  let answerFlashTimer: number | undefined;
 
   function isPinnedToBottom(stream: HTMLDivElement): boolean {
     return stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 8;
+  }
+
+  // The last turn's activity-notes container — where streamed note groups and
+  // the live strip land. A sibling of the activity fold (so the strips span
+  // the pane while the fold keeps the prose column), created on demand: a
+  // turn renders without one until its first search result arrives.
+  function lastTurnNotesContainer(stream: HTMLDivElement): HTMLDivElement | null {
+    const turn = stream.querySelector<HTMLDivElement>(".thread-inner > .turn:last-child");
+    if (!turn) return null;
+    let notes = turn.querySelector<HTMLDivElement>(":scope > .activity-notes");
+    if (!notes) {
+      const wrap = turn.querySelector<HTMLDivElement>(":scope > .activity-wrap");
+      if (!wrap) return null;
+      wrap.insertAdjacentHTML("afterend", `<div class="activity-notes"></div>`);
+      notes = turn.querySelector<HTMLDivElement>(":scope > .activity-notes");
+    }
+    return notes;
   }
 
   function updateLiveStrip(task: AgentTaskView): void {
@@ -207,18 +238,25 @@ export namespace agentPanel {
       for (const ref of noteRefsFromEvent(ev)) claimed.add(ref);
     }
     const refs = (task.notes ?? []).map((n) => n.note_id).filter((id) => !claimed.has(id));
+    // The in-flight search's query heads the strip (the finished result's
+    // group will carry the same header once it lands).
+    const query = pendingSearchQuery(task);
     // Keyed per task so switching tasks can't suppress another task's strip.
-    const key = `${task.task_id}|${refs.join(",")}`;
+    const key = `${task.task_id}|${query ?? "∅"}|${refs.join(",")}`;
     const existing = stream.querySelector("[data-live-strip]");
     if (key === liveStripKey && existing) return;
     liveStripKey = key;
+    // Capture auto-follow BEFORE touching the DOM — removing the old strip or
+    // creating the notes container already shifts scrollHeight, which would
+    // read as "the user scrolled away" and strand the thread mid-scroll.
+    const pinned = isPinnedToBottom(stream);
     existing?.remove();
     if (refs.length === 0) return;
-    const html = renderTimelineEmbed(refs, "rich");
+    const html = renderLiveNotesGroup(refs, query);
     if (!html) return;
-    const pinned = isPinnedToBottom(stream);
-    stream.insertAdjacentHTML("beforeend", html);
-    stream.lastElementChild?.setAttribute("data-live-strip", "1");
+    const notes = lastTurnNotesContainer(stream);
+    if (!notes) return;
+    notes.insertAdjacentHTML("beforeend", html);
     if (pinned) stream.scrollTop = stream.scrollHeight;
   }
 
@@ -588,9 +626,12 @@ export namespace agentPanel {
   }
 
   // Append a streamed event and update state. Returns true when the shell
-  // should re-render because a task snapshot/status changed.
+  // should re-render: a snapshot/status changed, or the event opens a run
+  // boundary ("queued"/"started" start a new conversation turn — rebuilt by a
+  // full render rather than patched in place).
   export function appendTaskEvent(payload: AgentTaskEventPayload): boolean {
     if (payload.snapshot) upsertTask(payload.snapshot);
+    const boundary = payload.kind === "queued" || payload.kind === "started";
 
     const task = tasks.find((item) => item.task_id === payload.task_id);
     if (!task) {
@@ -600,10 +641,10 @@ export namespace agentPanel {
 
     if (payload.text.trim()) {
       const added = appendUniqueEvent(task, payload);
-      if (added) appendEventRowIfSelected(payload);
+      if (added && !boundary) appendEventRowIfSelected(payload);
     }
 
-    return !!payload.snapshot;
+    return !!payload.snapshot || boundary;
   }
 
   // The persistent left rail: "new task" + the history list. Always rendered
@@ -616,32 +657,54 @@ export namespace agentPanel {
     });
   }
 
-  // The main pane: the compose form, or the selected task's detail. The
-  // delete-confirm dialog (a fixed overlay) rides along with either view.
+  // The main pane: the centered new-task compose (hero + chat composer,
+  // masked by the connect overlay while chrome is down), or the selected
+  // task's conversation with the same composer in "reply" mode. The
+  // delete-confirm dialog (a fixed overlay) rides along with either.
   export function renderWorkspace(shell: ShellState): string {
     const deleteRequest = tasks.find((task) => task.task_id === deleteRequestTaskId);
     const dialog = deleteRequest ? renderConfirmDeleteDialog(deleteRequest) : "";
-    if (view === "compose") {
-      return `${renderComposePane({
-        shell,
-        draft,
-        submittingTask,
-        submitError,
-        selectedModel: selectedModel(),
-      })}${dialog}`;
-    }
-    const replyProps: ReplyComposerProps = {
-      draft: replyDraft,
+    const task = view === "compose" ? null : selectedTask() ?? null;
+    if (!task) return `${renderComposePane(newComposer(shell))}${dialog}`;
+    // Point the note UI at this task's archive; the thread's card groups and
+    // answer citations resolve refs against it, and so does the viewer.
+    setNoteRegistry(task.notes, task.run_dir);
+    const running = task.status === "running" || task.status === "queued";
+    return `${renderConversation({
+      task,
+      running,
+      isActivityOpen: (turnIndex, defaultOpen) => isActivityOpen(task.task_id, turnIndex, defaultOpen),
+      composer: replyComposer(shell, task, running),
+    })}${dialog}`;
+  }
+
+  function newComposer(shell: ShellState): ComposerProps {
+    const selected = selectedModel();
+    return {
+      mode: "new",
+      value: draft,
+      submitting: submittingTask,
+      error: submitError,
+      status: shell.status,
+      modelReady: !!selected && selected.has_key,
+      running: false,
+      contextLabel: selected
+        ? `${t("agent.label")} · ${providerDisplayLabel(selected)} · ${modelId(selected)}`
+        : `${t("agent.label")} · ${t("agent.loading")}`,
+    };
+  }
+
+  function replyComposer(shell: ShellState, task: AgentTaskView, running: boolean): ComposerProps {
+    return {
+      mode: "reply",
+      value: replyDraft,
       submitting: submittingReply,
       error: replyError,
-      connected: shell.status.state === "connected",
+      status: shell.status,
+      modelReady: true,
+      running,
+      contextLabel: task.model ? `${t("agent.label")} · ${task.model}` : "",
     };
-    return `
-      <section class="task-detail" aria-label="${esc(t("task.selectedAria"))}">
-        ${renderTaskDetail(selectedTask(), replyProps)}
-      </section>
-      ${dialog}
-    `;
   }
 
   export function bind(shell: ShellState): void {
@@ -650,17 +713,18 @@ export namespace agentPanel {
       shell.rerender();
     });
 
-    const taskEl = document.getElementById("task-input") as HTMLTextAreaElement | null;
-    taskEl?.addEventListener("input", () => {
-      draft = taskEl.value;
-      updateSubmitButton(shell);
-    });
-    // cmd/ctrl+enter sends; routed through the button so its disabled state
-    // (empty draft, disconnected, no model key) keeps gating submission.
-    taskEl?.addEventListener("keydown", (e) => {
-      if (!isSendShortcut(e)) return;
-      e.preventDefault();
-      document.getElementById("task-submit")?.click();
+    bindComposer(shell);
+
+    // Fold/unfold a turn's activity detail. The explicit choice is remembered
+    // per task+turn until the run's terminal transition clears it.
+    document.querySelectorAll<HTMLButtonElement>("[data-activity-turn]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const taskId = selectedTaskId;
+        const turn = btn.dataset.activityTurn;
+        if (!taskId || turn === undefined) return;
+        activityOpen.set(`${taskId}#${turn}`, !btn.classList.contains("is-open"));
+        shell.rerender();
+      });
     });
 
     // The row's open control is a native <button>, so click/Enter/Space are
@@ -680,22 +744,6 @@ export namespace agentPanel {
     // Note interactions (viewer, card carousel, citation hover, external links)
     // are wired once via delegation on document.
     bindNoteInteractions();
-    // The timeline's final-answer card is a pointer, not a copy: activating
-    // it rewinds the answer panel's scroll (so the reader lands at the top of
-    // the answer) and flashes a ring on it so the eye finds the real content.
-    document.querySelectorAll<HTMLButtonElement>("[data-answer-ref]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const outcome = document.querySelector<HTMLElement>(".agent-outcome");
-        if (!outcome) return;
-        const scroller = outcome.querySelector<HTMLElement>(".result-pre");
-        if (scroller) scroller.scrollTop = 0;
-        outcome.classList.remove("answer-flash");
-        void outcome.offsetWidth; // restart the ring on repeat clicks
-        outcome.classList.add("answer-flash");
-        if (answerFlashTimer) window.clearTimeout(answerFlashTimer);
-        answerFlashTimer = window.setTimeout(() => outcome.classList.remove("answer-flash"), 1300);
-      });
-    });
     document.querySelectorAll<HTMLButtonElement>("[data-cancel-task]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const taskId = btn.dataset.cancelTask;
@@ -725,40 +773,7 @@ export namespace agentPanel {
     });
     bindDeleteDialog(shell);
 
-    document.getElementById("task-form")?.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      await startAgentTask(shell);
-    });
-
-    const replyForm = document.getElementById("task-reply-form") as HTMLFormElement | null;
-    const replyTaskId = replyForm?.dataset.replyTask;
-    const replyEl = document.getElementById("task-reply-input") as HTMLTextAreaElement | null;
-    if (replyEl) autosizeReplyInput(replyEl);
-    updateReplyButton(shell);
-    replyEl?.addEventListener("input", () => {
-      replyDraft = replyEl.value;
-      autosizeReplyInput(replyEl);
-      updateReplyButton(shell);
-    });
-    replyEl?.addEventListener("keydown", (e) => {
-      if (!isSendShortcut(e)) return;
-      e.preventDefault();
-      document.getElementById("task-reply-submit")?.click();
-    });
-    replyForm?.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      if (replyTaskId) await submitReply(shell, replyTaskId);
-    });
-
-    document.getElementById("overlay-chrome-connect")?.addEventListener("click", () => {
-      invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
-    });
-    // Reply-composer counterpart of the compose view's connect overlay.
-    document.getElementById("reply-chrome-connect")?.addEventListener("click", () => {
-      invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
-    });
-
-    // Re-apply the selected task's timeline scroll position after a render:
+    // Re-apply the selected task's thread scroll position after a render:
     // follow the latest row unless the user had scrolled up to read.
     restoreSelectedEventsScroll();
     // Poll the note archive while the selected task runs (bind runs after
@@ -820,29 +835,60 @@ export namespace agentPanel {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
-  function updateSubmitButton(shell: ShellState): void {
-    const button = document.getElementById("task-submit") as HTMLButtonElement | null;
+  // The pinned composer: one input, two modes. Compose mode (no task shown)
+  // starts a fresh task; a shown task takes a follow-up reply instead.
+  function bindComposer(shell: ShellState): void {
+    const composerTask = view === "compose" ? undefined : selectedTask();
+    const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+    if (input) autosizeComposerInput(input);
+    updateComposerButton(shell);
+    input?.addEventListener("input", () => {
+      if (composerTask) replyDraft = input.value;
+      else draft = input.value;
+      autosizeComposerInput(input);
+      updateComposerButton(shell);
+    });
+    // Enter sends; routed through the button so its disabled state (empty
+    // draft, disconnected, no model key, task running) keeps gating submission.
+    input?.addEventListener("keydown", (e) => {
+      if (!isSendShortcut(e)) return;
+      e.preventDefault();
+      document.getElementById("composer-send")?.click();
+    });
+    document.getElementById("composer-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (composerTask) await submitReply(shell, composerTask.task_id);
+      else await startAgentTask(shell);
+    });
+    document.getElementById("composer-connect")?.addEventListener("click", () => {
+      invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
+    });
+    // The compose pane's connect-overlay CTA.
+    document.getElementById("overlay-chrome-connect")?.addEventListener("click", () => {
+      invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
+    });
+  }
+
+  // Toggling `disabled` on every keystroke via a full shell.rerender() would
+  // rebuild the whole pane (losing focus and cursor position mid-type), so
+  // this pokes the send button directly instead.
+  function updateComposerButton(shell: ShellState): void {
+    const button = document.getElementById("composer-send") as HTMLButtonElement | null;
     if (!button) return;
+    const task = view === "compose" ? undefined : selectedTask();
+    const value = task ? replyDraft : draft;
+    const submitting = task ? submittingReply : submittingTask;
+    const running = !!task && (task.status === "running" || task.status === "queued");
     const connected = shell.status.state === "connected";
     const selected = selectedModel();
-    const modelReady = !!selected && selected.has_key;
-    button.disabled = submittingTask || !draft.trim() || !connected || !modelReady;
+    const modelReady = task ? true : !!selected && selected.has_key;
+    button.disabled = submitting || running || !value.trim() || !connected || !modelReady;
   }
 
-  // Mirrors updateSubmitButton: toggling `disabled` on every keystroke via a
-  // full shell.rerender() would rebuild the whole detail pane (losing focus
-  // and cursor position mid-type), so this pokes the button directly instead.
-  function updateReplyButton(shell: ShellState): void {
-    const button = document.getElementById("task-reply-submit") as HTMLButtonElement | null;
-    if (!button) return;
-    const connected = shell.status.state === "connected";
-    button.disabled = submittingReply || !replyDraft.trim() || !connected;
-  }
-
-  // Grows the reply textarea with its content instead of leaving multi-line
-  // replies scrollable in a one-row box; capped by the CSS max-height (the
-  // browser clips `height` to it, so no separate JS cap is needed).
-  function autosizeReplyInput(el: HTMLTextAreaElement): void {
+  // Grows the composer textarea with its content instead of leaving multi-line
+  // input scrollable in a short box; capped by the CSS max-height (the browser
+  // clips `height` to it, so no separate JS cap is needed).
+  function autosizeComposerInput(el: HTMLTextAreaElement): void {
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
   }
@@ -879,6 +925,9 @@ export namespace agentPanel {
     if (!value || submittingReply) return;
     submittingReply = true;
     replyError = "";
+    // Sending snaps the thread back to the newest content (and re-arms
+    // auto-follow), even if the user had scrolled up to read.
+    streamScroll.set(taskId, { top: 0, pinned: true });
     shell.rerender();
     try {
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_reply", {
@@ -900,8 +949,16 @@ export namespace agentPanel {
     const pending = pendingEvents.get(snapshot.task_id) ?? [];
     pendingEvents.delete(snapshot.task_id);
     if (existing) {
+      const wasActive = statusRank(existing.status) < 2;
       const merged = mergeSnapshot(existing, snapshot);
       Object.assign(existing, merged, { events: mergeEvents(existing.events, pending) });
+      // The answer landing auto-folds the activity: drop the task's explicit
+      // fold choices so the default (closed once finished) takes over.
+      if (wasActive && statusRank(existing.status) >= 2) {
+        for (const key of [...activityOpen.keys()]) {
+          if (key.startsWith(`${snapshot.task_id}#`)) activityOpen.delete(key);
+        }
+      }
       return existing;
     }
     const created = { ...snapshot, events: mergeEvents([], pending) };
@@ -970,6 +1027,9 @@ export namespace agentPanel {
     tasks = tasks.filter((task) => task.task_id !== taskId);
     pendingEvents.delete(taskId);
     streamScroll.delete(taskId);
+    for (const key of [...activityOpen.keys()]) {
+      if (key.startsWith(`${taskId}#`)) activityOpen.delete(key);
+    }
     if (selectedTaskId === taskId) {
       const next = sorted[idx + 1] ?? sorted[idx - 1];
       selectedTaskId = next?.task_id ?? null;
@@ -1074,43 +1134,37 @@ export namespace agentPanel {
     return [...items].sort((a, b) => b.created_at - a.created_at)[0];
   }
 
-  // Streamed rows must land inside the same `.run-group` structure a full
-  // render builds — otherwise a follow-up's rows pile up ungrouped at the
-  // stream's end (after the previous run's answer card) until the next full
-  // render reshuffles them. "queued" opens a run's group; "started" renders
-  // as the group's "you" message (mirroring renderRunGroup), not as a row.
+  // Patch a streamed row into the live turn without a full render (which
+  // would drop the thread's scroll offset on every reasoning/tool row). Run
+  // boundaries ("queued"/"started") never reach here — appendTaskEvent asks
+  // for a full render that rebuilds the turn structure. The row lands in the
+  // last turn's activity fold (skipped when the user folded it — the next
+  // full render/toggle rebuilds from state); a result's notes land in the
+  // always-visible notes container beneath the fold.
   function appendEventRowIfSelected(payload: AgentTaskEventPayload): void {
     if (payload.task_id !== selectedTaskId) return;
     const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${payload.task_id}"]`);
     if (!stream) return;
 
-    const placeholder = stream.querySelector("[data-events-placeholder]");
-    if (placeholder) placeholder.remove();
-
-    // A result row claims its notes (its own embed renders them), so refresh
+    const pinned = isPinnedToBottom(stream);
+    // A result row claims its notes (its own group renders them), so refresh
     // the live strip right away instead of waiting for the next poll tick.
     if (payload.kind === "tool_result") {
       stream.querySelector("[data-live-strip]")?.remove();
       liveStripKey = "";
     }
-    const pinned = isPinnedToBottom(stream);
 
-    const groups = stream.querySelectorAll<HTMLDivElement>(":scope > .run-group");
-    let group: HTMLDivElement | null = groups[groups.length - 1] ?? null;
-    const groupHasRun = !!group?.querySelector(".run-message, .event-started");
-    if (!group || payload.kind === "queued" || (payload.kind === "started" && groupHasRun)) {
-      stream.insertAdjacentHTML("beforeend", `<div class="run-group"></div>`);
-      const fresh = stream.querySelectorAll<HTMLDivElement>(":scope > .run-group");
-      group = fresh[fresh.length - 1] ?? null;
+    const turn = stream.querySelector<HTMLDivElement>(".thread-inner > .turn:last-child");
+    const activity = turn?.querySelector<HTMLDivElement>(".activity");
+    if (activity) {
+      const working = activity.querySelector(".act-row--working");
+      if (working) working.insertAdjacentHTML("beforebegin", renderEventRow(payload));
+      else activity.insertAdjacentHTML("beforeend", renderEventRow(payload));
     }
-    if (group) {
-      if (payload.kind === "started") {
-        if (payload.task && !group.querySelector(".run-message")) {
-          group.insertAdjacentHTML("afterbegin", renderRunMessage(payload.task));
-        }
-      } else {
-        group.insertAdjacentHTML("beforeend", renderAgentEvent(payload));
-      }
+
+    if (payload.kind === "tool_result") {
+      const group = renderSearchGroupForEvent(payload);
+      if (group) lastTurnNotesContainer(stream)?.insertAdjacentHTML("beforeend", group);
     }
 
     if (pinned) stream.scrollTop = stream.scrollHeight;

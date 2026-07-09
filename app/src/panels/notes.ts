@@ -1,9 +1,9 @@
 //! Embedded rich-note UI (SocaiV2 design, ported from the Claude Design handoff).
 //!
 //! A note is a Xiaohongshu post the agent saw/cited. Notes live in a per-run
-//! registry (note_id -> NoteData); the timeline embeds a rich card per note it
-//! surfaced, the answer cites notes with `note:<id>` links upgraded into pills,
-//! and any reference opens one lightbox viewer. Media is served from disk via
+//! registry (note_id -> NoteData); the conversation embeds a rich card per
+//! note each search surfaced, the answer cites notes with `note:<id>` links
+//! upgraded into pills, and any reference opens one lightbox viewer. Media is served from disk via
 //! the Tauri asset protocol (convertFileSrc) — images/video play locally.
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -174,11 +174,11 @@ function renderCard(note: NoteData, density: "rich" | "compact" = "rich"): strin
     </div>`;
 }
 
-/** The notes a tool_result surfaced, as rich cards beneath its row. */
-export function renderTimelineEmbed(refs: string[], density: "rich" | "compact" = "rich"): string {
+/** Rich cards for the given refs, unwrapped — the conversation's search-note
+ *  groups supply their own scrolling row container. Empty when none resolve. */
+export function renderNoteCards(refs: string[], density: "rich" | "compact" = "rich"): string {
   const notes = refs.map(resolveNote).filter((n): n is NoteData => !!n);
-  if (notes.length === 0) return "";
-  return `<div class="event-embed">${notes.map((n) => renderCard(n, density)).join("")}</div>`;
+  return notes.map((n) => renderCard(n, density)).join("");
 }
 
 // ── answer citations (pills + hover preview) ────────────────────────

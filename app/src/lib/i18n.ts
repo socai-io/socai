@@ -171,8 +171,7 @@ const messages = {
   "task.new": { en: "new task", zh: "新任务" },
   "task.history": { en: "history", zh: "历史" },
   "task.historyAria": { en: "task history", zh: "任务历史" },
-  "task.selected": { en: "selected task", zh: "已选任务" },
-  "task.selectedAria": { en: "selected task", zh: "已选任务" },
+  "task.viewAria": { en: "task view", zh: "任务视图" },
   "task.noTasks": { en: "no tasks yet.", zh: "暂无任务。" },
   "task.cancel": { en: "cancel", zh: "取消" },
   "task.delete": { en: "delete", zh: "删除" },
@@ -183,35 +182,17 @@ const messages = {
     zh: "该任务及其所有产物将被永久删除。此操作不可撤销。",
   },
   "task.deleteKeep": { en: "keep", zh: "保留" },
-  "task.finalAnswer": { en: "final answer", zh: "最终回答" },
-  "task.answerInPanel": {
-    en: "shown in the answer panel",
-    zh: "见右侧回答面板",
-  },
-  "task.answerBelow": { en: "see the answer below", zh: "见下方回答" },
-  "task.jumpToAnswerAria": {
-    en: "go to the final answer",
-    zh: "跳转到最终回答",
-  },
-  "task.timeline": { en: "timeline", zh: "时间线" },
-  "task.errorLabel": { en: "error", zh: "错误" },
-  "task.waitingForEvents": { en: "waiting for events…", zh: "等待事件…" },
-  "task.noTimeline": {
-    en: "no event timeline available.",
-    zh: "暂无事件时间线。",
-  },
-  "task.emptyDetail": {
-    en: "start a task or choose one from history.",
-    zh: "启动一个任务或从历史中选择。",
-  },
   "task.you": { en: "you", zh: "你" },
+  "task.working": { en: "working…", zh: "运行中…" },
+  "task.activityLabel": { en: "activity", zh: "运行过程" },
+  "task.searchLabel": { en: "search", zh: "搜索" },
+  "task.notesLabel": { en: "notes", zh: "笔记" },
   "task.replyPlaceholder": { en: "ask a follow-up…", zh: "继续追问…" },
   "task.replyConnectHint": {
     en: "connect chrome to send a follow-up",
     zh: "连接 chrome 后可继续追问",
   },
   "task.replySend": { en: "send", zh: "发送" },
-  "task.replySending": { en: "sending…", zh: "发送中…" },
 
   "task.hero": {
     en: "what should socai research?",
@@ -221,18 +202,13 @@ const messages = {
     en: "start a one-shot browser task. socai opens a temporary chrome tab, runs the agent, saves the result, then closes the tab.",
     zh: "启动一次性浏览器任务。socai 会打开临时 chrome 标签页、运行智能体、保存结果，然后关闭标签页。",
   },
-  "task.starting": { en: "starting…", zh: "启动中…" },
-  "task.loadingModels": {
-    en: "loading agent models…",
-    zh: "正在加载智能体模型…",
-  },
   "task.addKeyHint": {
     en: "add an api key in the model menu (top right) to run.",
     zh: "在右上角模型菜单中添加 api key 后即可运行。",
   },
   "task.agentPlaceholder": {
-    en: "tell socai what you want researched…\neach task opens its own temporary chrome tab.",
-    zh: "告诉 socai 你想研究什么…\n每个任务都会打开自己的临时 chrome 标签页。",
+    en: "tell socai what you want researched…",
+    zh: "告诉 socai 你想研究什么…",
   },
   "task.today": { en: "today", zh: "今天" },
   "task.yesterday": { en: "yesterday", zh: "昨天" },
@@ -332,9 +308,9 @@ export function formatTaskCount(count: number): string {
   return `${count} task${count === 1 ? "" : "s"}`;
 }
 
-export function formatSourceCount(count: number): string {
-  if (currentLanguage === "zh") return `${count} 条来源`;
-  return `${count} source${count === 1 ? "" : "s"}`;
+export function formatStepCount(count: number): string {
+  if (currentLanguage === "zh") return `${count} 步`;
+  return `${count} step${count === 1 ? "" : "s"}`;
 }
 
 export function formatTokenUsage(
