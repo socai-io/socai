@@ -164,6 +164,20 @@ pub fn run() {
             commands::config_unset,
             commands::pro_activate,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running socai");
+        .build(tauri::generate_context!())
+        .expect("error while building socai")
+        .run(|app_handle, event| {
+            // On quit, close socai-owned chrome tabs the same way the explicit
+            // disconnect button does. Tauri fires ExitRequested before the
+            // process tears down; block on the async cleanup so the
+            // Target.closeTarget calls actually reach chrome before we exit —
+            // otherwise the tabs socai opened linger after the app is gone.
+            // (Managed chrome is killed on drop regardless; this matters for the
+            // attach-to-existing-browser case, where only socai's own tabs
+            // should be closed, not the whole browser.)
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let runtime = app_handle.state::<SocaiRuntime>().inner().clone();
+                tauri::async_runtime::block_on(runtime.disconnect_browser());
+            }
+        });
 }
