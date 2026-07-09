@@ -1486,9 +1486,11 @@ async fn join_note_transcribe(
 
 /// Build the archived note record from a freshly-read scan entry
 /// (`{ ok, entity }`) in the desktop app's `NoteData` shape (see
-/// app/src/main.ts): identity + title/excerpt, author, `posted_at` (epoch
-/// ms), numeric `stats` (a key is omitted when XHS hid the count; `shares`
-/// has no source at all), and a `media` array of locally-downloaded assets —
+/// app/src/main.ts): identity + title, full `content` (plus the short
+/// `excerpt` derived from it), author (name + profile url), `posted_at`
+/// (epoch ms), `ip_location`, top `comments`, numeric `stats` (a key is
+/// omitted when XHS hid the count; `shares` has no source at all), and a
+/// `media` array of locally-downloaded assets —
 /// cover first, a video before its carousel — with run-relative paths, plus
 /// run provenance (`site`, `first_seen_step`, `level`). Media entries come
 /// from the on-disk-validated media manifest, so only files that actually
@@ -1525,21 +1527,41 @@ pub fn note_data_record(
         record.insert("url".into(), Value::String(url));
     }
     record.insert("title".into(), Value::String(text("title")));
-    if let Some(excerpt) = note_excerpt(&text("content")) {
+    let content = text("content");
+    if !content.is_empty() {
+        record.insert("content".into(), Value::String(content.clone()));
+    }
+    if let Some(excerpt) = note_excerpt(&content) {
         record.insert("excerpt".into(), Value::String(excerpt));
     }
     let author_name = text("author");
     if !author_name.is_empty() {
-        // Just the display name: XHS note pages expose no avatar, and the
+        // Name + profile url: XHS note pages expose no avatar, and the
         // internal author_id is not the user-facing handle (小红书号) — a
         // fabricated "@<id-prefix>" would masquerade as one. `handle` stays
         // absent until the extractor captures the real thing.
         let mut author = Map::new();
         author.insert("name".into(), Value::String(author_name));
+        let author_url = text("author_url");
+        if !author_url.is_empty() {
+            author.insert("url".into(), Value::String(author_url));
+        }
         record.insert("author".into(), Value::Object(author));
     }
     if let Some(posted_at) = parse_posted_at_ms(&text("date")) {
         record.insert("posted_at".into(), Value::from(posted_at));
+    }
+    let ip_location = text("ip_location");
+    if !ip_location.is_empty() {
+        record.insert("ip_location".into(), Value::String(ip_location));
+    }
+    // Top comments (full objects from the DOM read) in the app's shape:
+    // {author, text, likes, time, replies[]}. Absent when none were read.
+    if let Some(comments) = entity.get("top_comments").and_then(Value::as_array) {
+        let list: Vec<Value> = comments.iter().filter_map(app_note_comment).collect();
+        if !list.is_empty() {
+            record.insert("comments".into(), Value::Array(list));
+        }
     }
     let mut stats = Map::new();
     for (stat, field) in [
@@ -1574,6 +1596,59 @@ pub fn note_data_record(
 
 fn build_note_record(entry: &Value, ctx: &ToolContext, level: &str) -> Option<(String, Value)> {
     note_data_record(entry, ctx.output_dir(), &ctx.run_dir, ctx.step, level)
+}
+
+/// One archived comment in the app's `NoteComment` shape, from the full DOM
+/// comment object (`username`/`text`/`like_count`/`time`/`sub_comments`).
+/// `None` when the comment has no text. Replies flatten one level (XHS replies
+/// don't nest further).
+fn app_note_comment(comment: &Value) -> Option<Value> {
+    let text = comment
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty())?;
+    let mut map = Map::new();
+    map.insert("text".into(), Value::String(text.to_string()));
+    if let Some(author) = comment
+        .get("username")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        map.insert("author".into(), Value::String(author.to_string()));
+    }
+    if let Some(likes) = comment
+        .get("like_count")
+        .and_then(Value::as_i64)
+        .filter(|&n| n > 0)
+    {
+        map.insert("likes".into(), Value::from(likes));
+    }
+    if let Some(time) = comment
+        .get("time")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        map.insert("time".into(), Value::String(time.to_string()));
+    }
+    if comment
+        .get("is_author_reply")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        map.insert("is_author".into(), Value::Bool(true));
+    }
+    let replies: Vec<Value> = comment
+        .get("sub_comments")
+        .and_then(Value::as_array)
+        .map(|subs| subs.iter().filter_map(app_note_comment).collect())
+        .unwrap_or_default();
+    if !replies.is_empty() {
+        map.insert("replies".into(), Value::Array(replies));
+    }
+    Some(Value::Object(map))
 }
 
 /// Map validated manifest rows to the app's `NoteMedia` entries: only assets

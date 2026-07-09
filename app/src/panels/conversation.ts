@@ -33,7 +33,6 @@ export interface ComposerProps {
   modelReady: boolean;
   /** True while the shown task runs — the composer waits for the slot. */
   running: boolean;
-  contextLabel: string;
 }
 
 export interface ConversationProps {
@@ -436,7 +435,6 @@ function renderComposer(c: ComposerProps): string {
           >${glyph}</button>
         </div>
       </form>
-      ${c.contextLabel ? `<div class="composer__context">${esc(c.contextLabel)}</div>` : ""}
       ${connectHint}
       ${keyHint}
       ${c.error ? `<pre class="composer__error">${esc(c.error)}</pre>` : ""}

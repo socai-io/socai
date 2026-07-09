@@ -1726,6 +1726,7 @@ fn parse_note(body: &Value) -> XhsNote {
         hashtags,
         date: s("date"),
         location: s("location"),
+        ip_location: s("ip_location"),
         likes: s("likes"),
         favorites: s("favorites"),
         comments_count: s("comments_count"),

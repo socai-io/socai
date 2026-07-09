@@ -187,6 +187,10 @@ const messages = {
   "task.activityLabel": { en: "activity", zh: "运行过程" },
   "task.searchLabel": { en: "search", zh: "搜索" },
   "task.notesLabel": { en: "notes", zh: "笔记" },
+  "note.commentsHead": { en: "{n} comments", zh: "共 {n} 条评论" },
+  "note.authorBadge": { en: "author", zh: "作者" },
+  "note.transcript": { en: "transcript", zh: "语音转写" },
+  "note.openExternal": { en: "open on xiaohongshu", zh: "在小红书打开" },
   "task.replyPlaceholder": { en: "ask a follow-up…", zh: "继续追问…" },
   "task.replyConnectHint": {
     en: "connect chrome to send a follow-up",

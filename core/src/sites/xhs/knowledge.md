@@ -114,6 +114,8 @@ the cached level/media setting is insufficient for the current task.
 ## Evidence Rules
 
 - Ground final answers in collected XHS evidence.
+- When citing a note link, including the `xsec_token=…` part. Otherwise a bare 
+  `xiaohongshu.com/explore/<id>` link without xsec_token cannot be opened on desktop web.
 - Distinguish note body text, comments, author profile facts, engagement, and
   media observations.
 - If a macro returns partial success, use the collected evidence and clearly say

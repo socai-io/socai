@@ -8,8 +8,9 @@
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { esc } from "../lib/html";
+import { getLocale, t } from "../lib/i18n";
 import { renderMarkdown } from "../lib/markdown";
-import type { NoteData, NoteMedia } from "../main";
+import type { NoteComment, NoteData, NoteMedia } from "../main";
 
 // ── per-run registry (the selected task's notes) ────────────────────
 let REGISTRY: Record<string, NoteData> = {};
@@ -42,7 +43,13 @@ function fmtStat(n: number | undefined | null): string {
 function fmtDate(ms: number | undefined): string {
   if (!ms) return "";
   try {
-    return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const date = new Date(ms);
+    const sameYear = date.getFullYear() === new Date().getFullYear();
+    return date.toLocaleDateString(getLocale(), {
+      month: "short",
+      day: "numeric",
+      ...(sameYear ? {} : { year: "numeric" }),
+    });
   } catch {
     return "";
   }
@@ -68,9 +75,11 @@ const svg = (inner: string, sw = 1.7, filled = false): string =>
   `<svg viewBox="0 0 24 24" fill="${filled ? "currentColor" : "none"}" stroke="${filled ? "none" : "currentColor"}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
 const IC = {
   heart: () => svg(`<path d="M12 20s-6.5-4.1-6.5-9A3.5 3.5 0 0 1 12 7a3.5 3.5 0 0 1 6.5 4c0 4.9-6.5 9-6.5 9z" />`),
-  bookmark: () => svg(`<path d="M6.5 4.5h11v15l-5.5-3.6-5.5 3.6z" />`),
-  comment: () => svg(`<path d="M5 5.5h14v9H9.5L5 18z" />`),
-  share: () => svg(`<path d="M12 3.5v11" /><path d="M8 7l4-3.5L16 7" /><path d="M5 12.5V20h14v-7.5" />`),
+  // XHS uses a five-pointed star for collects and a round speech bubble for
+  // comments — mirror both so the counts read instantly to XHS users.
+  star: () => svg(`<path d="M12 2.76 14.84 8.52 21.2 9.45 16.6 13.93 17.69 20.26 12 17.27 6.31 20.26 7.4 13.93 2.8 9.45 9.16 8.52z" />`),
+  comment: () =>
+    svg(`<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />`),
   play: () => svg(`<path d="M8 5.2v13.6L19 12z" />`, 1.7, true),
   stack: () => svg(`<rect x="8" y="3.5" width="12.5" height="12.5" rx="1.6" /><path d="M15.5 19.5H4.5a1 1 0 0 1-1-1V7.5" />`, 1.8),
   external: () => svg(`<path d="M14 4.5h5.5V10" /><path d="M19.5 4.5 11 13" /><path d="M18 14.5v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1h4" />`),
@@ -117,13 +126,14 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
   return `<span class="note-media" data-kind="image">${img}${badge}</span>`;
 }
 
+// No shares entry: XHS exposes no share count anywhere we read, so the column
+// would always render the "—" placeholder.
 function statsRow(note: NoteData): string {
   const s = note.stats || {};
   const items: Array<[string, string, number | undefined]> = [
     ["likes", IC.heart(), s.likes],
-    ["collects", IC.bookmark(), s.collects],
+    ["collects", IC.star(), s.collects],
     ["comments", IC.comment(), s.comments],
-    ["shares", IC.share(), s.shares],
   ];
   return `<span class="note-stats">${items
     .map(([k, icon, v]) => `<span class="note-stat" title="${k}">${icon}${fmtStat(v)}</span>`)
@@ -191,17 +201,6 @@ function pillHTML(id: string, label: string, note: NoteData): string {
     `<span class="note-cite__kind">${kindIcon(note)}</span></span></span>`
   );
 }
-function citePreviewHTML(note: NoteData): string {
-  const cover = coverOf(note);
-  const name = esc((note.author && note.author.name) || "");
-  return (
-    `<span class="note-cite-pop__inner">` +
-    `<span class="note-cite-pop__media">${mediaFrame(note, cover, "dot")}</span>` +
-    `<span class="note-cite-pop__body">` +
-    `<span class="note-cite-pop__title">${esc(note.title || "")}</span>` +
-    `<span class="note-cite-pop__author">${avatar(note)}${name}</span>${statsRow(note)}</span></span>`
-  );
-}
 
 /** Render the markdown answer, upgrading `note:<id>` links into citation pills.
  *  The `note:` scheme is rewritten to a `#note:` fragment before markdown so it
@@ -260,65 +259,87 @@ function galleryThumbs(note: NoteData, idx: number): string {
     )
     .join("")}</div>`;
 }
-function metaPanel(note: NoteData): string {
-  const s = note.stats || {};
-  const transcript = typeof note.transcript === "string" ? note.transcript.trim() : "";
-  const stats: Array<[string, string, number | undefined]> = [
-    ["likes", IC.heart(), s.likes],
-    ["collects", IC.bookmark(), s.collects],
-    ["comments", IC.comment(), s.comments],
-    ["shares", IC.share(), s.shares],
-  ];
-  const statGrid = stats
-    .map(
-      ([k, icon, v]) =>
-        `<div class="note-meta__stat"><span class="note-meta__stat-k">${icon}${k}</span><span class="note-meta__stat-v">${fmtStat(v)}</span></div>`,
-    )
-    .join("");
+// The right panel mirrors the XHS note modal: author row on top (clickable
+// into the profile when the archive captured author.url), the full body
+// (never the truncated excerpt when content is available), a quiet date + IP
+// line, the transcript, then the captured top comments — and a slim
+// icon-count engage bar pinned at the bottom.
+function commentHTML(comment: NoteComment, isReply = false): string {
+  const author = esc(comment.author || "·");
+  const metaBits = [comment.time, comment.likes ? `${fmtStat(comment.likes)} ♥` : ""].filter(Boolean);
+  const replies = (comment.replies || []).map((reply) => commentHTML(reply, true)).join("");
   return `
-    <div class="note-meta">
-      <h3 class="note-meta__title">${esc(note.title || "")}</h3>
-      ${note.excerpt ? `<p class="note-meta__excerpt">${esc(note.excerpt)}</p>` : ""}
-      ${
-        transcript
-          ? `<div class="note-meta__transcript"><span class="note-meta__transcript-label">transcript</span><p class="note-meta__transcript-text">${esc(transcript)}</p></div>`
-          : ""
-      }
-      <div class="note-meta__statgrid">${statGrid}</div>
-      <div class="note-meta__rows">
-        <div class="note-meta__row"><span class="note-meta__row-k">posted</span><span class="note-meta__row-v">${esc(fmtDate(note.posted_at))}</span></div>
-        <div class="note-meta__row"><span class="note-meta__row-k">note_id</span><span class="note-meta__row-v" title="${esc(note.note_id)}">${esc(note.note_id)}</span></div>
+    <div class="note-comment${isReply ? " note-comment--reply" : ""}">
+      <span class="note-author__avatar note-comment__avatar" aria-hidden="true">${esc(Array.from(comment.author || "·")[0])}</span>
+      <div class="note-comment__body">
+        <span class="note-comment__author">${author}${comment.is_author ? `<span class="note-comment__badge">${esc(t("note.authorBadge"))}</span>` : ""}</span>
+        <p class="note-comment__text">${esc(comment.text)}</p>
+        ${metaBits.length ? `<span class="note-comment__meta">${esc(metaBits.join(" · "))}</span>` : ""}
+        ${replies ? `<div class="note-comment__replies">${replies}</div>` : ""}
       </div>
-      ${
-        note.url
-          ? `<span class="btn-ghost btn-compact note-meta__link" data-note-external="${esc(note.url)}" role="button" tabindex="0">${IC.external()}open on xiaohongshu</span>`
-          : ""
-      }
-      <span class="note-meta__saved"><i></i>${(note.media || []).length} media · saved locally</span>
     </div>`;
 }
-function viewerHTML(note: NoteData): string {
+function viewPanel(note: NoteData): string {
   const name = esc((note.author && note.author.name) || "");
-  const handle = esc((note.author && note.author.handle) || note.note_id);
+  const authorUrl = (note.author && note.author.url) || "";
+  const authorAttrs = authorUrl
+    ? ` data-note-external="${esc(authorUrl)}" role="button" tabindex="0" title="${esc(authorUrl)}"`
+    : "";
+  const body = (typeof note.content === "string" && note.content.trim()) || note.excerpt || "";
+  const transcript = typeof note.transcript === "string" ? note.transcript.trim() : "";
+  const dateBits = [fmtDate(note.posted_at), note.ip_location || ""].filter(Boolean);
+  const comments = note.comments || [];
+  const commentTotal = note.stats?.comments ?? (comments.length || undefined);
+  return `
+    <div class="note-view">
+      ${
+        name
+          ? `<div class="note-view__author${authorUrl ? " is-link" : ""}"${authorAttrs}>
+              ${avatar(note, "note-view__avatar")}
+              <span class="note-view__author-name">${name}</span>
+            </div>`
+          : ""
+      }
+      <div class="note-view__scroll">
+        ${note.title ? `<h3 class="note-view__title">${esc(note.title)}</h3>` : ""}
+        ${body ? `<p class="note-view__content">${esc(body)}</p>` : ""}
+        ${dateBits.length ? `<p class="note-view__date">${esc(dateBits.join(" "))}</p>` : ""}
+        ${
+          transcript
+            ? `<div class="note-view__transcript"><span class="note-view__transcript-label">${esc(t("note.transcript"))}</span><p class="note-view__transcript-text">${esc(transcript)}</p></div>`
+            : ""
+        }
+        ${
+          comments.length
+            ? `<div class="note-view__comments">
+                <span class="note-view__comments-head">${esc(t("note.commentsHead", { n: fmtStat(commentTotal) }))}</span>
+                ${comments.map((comment) => commentHTML(comment)).join("")}
+              </div>`
+            : ""
+        }
+      </div>
+      <div class="note-view__engage">
+        ${statsRow(note)}
+      </div>
+    </div>`;
+}
+// No X: clicking outside the panel closes (and Esc still works), matching the
+// XHS modal. The top-right corner instead opens the note on xiaohongshu —
+// only a note with no archived url keeps a close glyph so the corner isn't dead.
+function viewerHTML(note: NoteData): string {
+  const corner = note.url
+    ? `<button type="button" class="note-viewer-corner" data-note-external="${esc(note.url)}" title="${esc(t("note.openExternal"))}" aria-label="${esc(t("note.openExternal"))}">${IC.external()}</button>`
+    : `<button type="button" class="note-viewer-corner" data-note-close aria-label="close">${IC.close()}</button>`;
   return `
     <div class="note-viewer-backdrop" data-note-close>
       <div class="note-viewer-panel" role="dialog" aria-label="${esc(note.title || "note")}" data-note-stop>
-        <div class="note-viewer-head">
-          <span class="note-viewer-head__author">
-            ${avatar(note, "note-viewer-head__avatar")}
-            <span class="note-viewer-head__meta">
-              <span class="note-viewer-head__name">${name}</span>
-              <span class="note-viewer-head__handle">${handle}</span>
-            </span>
-          </span>
-          <button type="button" class="note-viewer-close" data-note-close aria-label="close">${IC.close()}</button>
-        </div>
+        ${corner}
         <div class="note-viewer-body">
           <div class="note-gallery" data-gallery data-idx="0" data-note="${esc(note.note_id)}">
             <div class="note-gallery__stage">${galleryStage(note, 0)}</div>
             ${galleryThumbs(note, 0)}
           </div>
-          ${metaPanel(note)}
+          ${viewPanel(note)}
         </div>
       </div>
     </div>`;
@@ -403,8 +424,9 @@ export function bindNoteInteractions(): void {
       if (gallery) galleryGo(gallery, parseInt(thumb.getAttribute("data-gallery-thumb") || "0", 10));
       return;
     }
-    // close: the X button, or a click on the backdrop itself (outside the panel)
-    if (target.closest(".note-viewer-close")) {
+    // close: the corner glyph (inside the data-note-stop panel, so it needs
+    // its own branch), or a click on the backdrop itself (outside the panel)
+    if (target.closest(".note-viewer-corner[data-note-close]")) {
       closeViewer();
       return;
     }
@@ -431,14 +453,15 @@ export function bindNoteInteractions(): void {
     const target = e.target as HTMLElement;
     if (target.closest("input, textarea, select, [contenteditable]")) return;
     const actionable = target.closest<HTMLElement>(
-      "[data-note-open], [data-note-external], [data-note-nav], [data-gallery-nav], [data-gallery-thumb], [data-note-close], .note-viewer-close",
+      "[data-note-open], [data-note-external], [data-note-nav], [data-gallery-nav], [data-gallery-thumb], [data-note-close], .note-viewer-corner",
     );
     if (!actionable) return;
     e.preventDefault();
     actionable.click();
   });
 
-  // citation hover preview (position:fixed popover so it escapes overflow)
+  // citation hover preview — the same rich card the search strips render
+  // (position:fixed popover so it escapes overflow)
   document.addEventListener(
     "mouseover",
     (e) => {
@@ -447,8 +470,8 @@ export function bindNoteInteractions(): void {
       const note = resolveNote(wrap.getAttribute("data-note-cite") || "");
       if (!note) return;
       const r = wrap.getBoundingClientRect();
-      const W = 250,
-        H = 128,
+      const W = 208,
+        H = 372,
         gap = 8;
       const above = r.top > H + gap;
       const left = Math.max(W / 2 + 8, Math.min(window.innerWidth - W / 2 - 8, r.left + r.width / 2));
@@ -458,7 +481,7 @@ export function bindNoteInteractions(): void {
       pop.style.left = `${left}px`;
       pop.style.top = `${top}px`;
       pop.style.transform = above ? "translate(-50%, -100%)" : "translate(-50%, 0)";
-      pop.innerHTML = citePreviewHTML(note);
+      pop.innerHTML = renderCard(note, "rich");
       wrap.appendChild(pop);
     },
     true,

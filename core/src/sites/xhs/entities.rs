@@ -22,10 +22,13 @@ pub struct XhsNote {
     pub hashtags: Vec<String>,
     pub date: String,
     /// Note POI / geo-tag label (the place the author tagged on the note).
-    /// Distinct from the author's IP territory, which only appears on the
-    /// profile header — notes never expose it — so there is no note-level
-    /// `ip_location`.
+    /// Distinct from [`Self::ip_location`], the author's IP territory.
     pub location: String,
+    /// Author IP territory shown on the note detail's date bar ("广东").
+    /// Empty when the page didn't expose one; omitted from the wire shape
+    /// in that case so older artifacts stay byte-identical.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ip_location: String,
     pub likes: String,
     pub favorites: String,
     pub comments_count: String,
@@ -214,6 +217,7 @@ impl Default for XhsNote {
             hashtags: Vec::new(),
             date: String::new(),
             location: String::new(),
+            ip_location: String::new(),
             likes: String::new(),
             favorites: String::new(),
             comments_count: String::new(),

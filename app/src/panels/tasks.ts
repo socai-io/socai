@@ -672,7 +672,7 @@ export namespace agentPanel {
       task,
       running,
       isActivityOpen: (turnIndex, defaultOpen) => isActivityOpen(task.task_id, turnIndex, defaultOpen),
-      composer: replyComposer(shell, task, running),
+      composer: replyComposer(shell, running),
     })}${dialog}`;
   }
 
@@ -686,13 +686,10 @@ export namespace agentPanel {
       status: shell.status,
       modelReady: !!selected && selected.has_key,
       running: false,
-      contextLabel: selected
-        ? `${t("agent.label")} · ${providerDisplayLabel(selected)} · ${modelId(selected)}`
-        : `${t("agent.label")} · ${t("agent.loading")}`,
     };
   }
 
-  function replyComposer(shell: ShellState, task: AgentTaskView, running: boolean): ComposerProps {
+  function replyComposer(shell: ShellState, running: boolean): ComposerProps {
     return {
       mode: "reply",
       value: replyDraft,
@@ -701,7 +698,6 @@ export namespace agentPanel {
       status: shell.status,
       modelReady: true,
       running,
-      contextLabel: task.model ? `${t("agent.label")} · ${task.model}` : "",
     };
   }
 

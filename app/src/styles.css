@@ -1173,13 +1173,6 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex-direction: column;
   gap: var(--sp-2);
 }
-.composer__context {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.01em;
-  color: var(--fg-soft);
-  padding: 0 var(--sp-1);
-}
 .composer__form { margin: 0; }
 /* the input is a self-contained rounded box floating in the pane — no outer
    dock divider boxing it off from the conversation above. */
@@ -1538,18 +1531,15 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
 .note-cite__dot { flex: 0 0 auto; width: 15px; height: 15px; border-radius: var(--r-pill); overflow: hidden; position: relative; }
 .note-cite__kind { display: inline-flex; color: var(--fg-faint); }
 .note-cite__kind svg { width: 11px; height: 11px; }
+/* The hover preview is literally the search-strip rich card, floated in a
+   fixed popover — the card supplies border/background/radius, the pop only
+   positions it and adds the popover shadow. */
 .note-cite-pop {
-  position: fixed; z-index: 80; width: 250px; background: var(--surface); border: var(--hairline);
-  border-radius: var(--r-4); box-shadow: var(--shadow-pop); overflow: hidden; pointer-events: none;
+  position: fixed; z-index: 80; width: 208px; border-radius: var(--r-4);
+  box-shadow: var(--shadow-pop); pointer-events: none;
   animation: noteFade var(--t-fast) var(--ease);
 }
-.note-cite-pop__inner { display: flex; gap: 10px; padding: 9px; }
-.note-cite-pop__media { position: relative; flex: 0 0 auto; width: 54px; aspect-ratio: 3 / 4; border-radius: var(--r-2); overflow: hidden; }
-.note-cite-pop__body { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-.note-cite-pop__title { font-size: 12px; font-weight: 500; color: var(--ink-1); line-height: 1.32; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.note-cite-pop__author { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--fg-muted); }
-.note-cite-pop__author .note-author__avatar { width: 16px; height: 16px; font-size: 8px; }
-.note-cite-pop .note-stats { font-size: 10px; gap: 8px; }
+.note-cite-pop .note-card[data-density="rich"] { width: 100%; }
 
 /* ── viewer (lightbox) ─────────────────────────────────────────────── */
 .note-viewer-backdrop {
@@ -1561,33 +1551,29 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
    9:16 video the height also drives the width — wide enough that the native
    controls render their full timeline instead of the scrubber-less pill. */
 .note-viewer-panel {
-  display: flex; flex-direction: column; background: var(--surface); border: var(--hairline);
-  overflow: hidden; min-height: 0; width: min(900px, 96vw); max-height: min(800px, 90vh);
+  position: relative; display: flex; flex-direction: column; background: var(--surface); border: var(--hairline);
+  overflow: hidden; min-height: 0; width: min(900px, 96vw); height: min(800px, 90vh);
   border-radius: var(--r-5); box-shadow: var(--shadow-pop);
 }
-.note-viewer-head {
-  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 11px 12px 11px 14px; border-bottom: var(--hairline); background: var(--surface);
-}
-.note-viewer-head__author { display: inline-flex; align-items: center; gap: 9px; min-width: 0; }
-.note-viewer-head__avatar { width: 26px; height: 26px; font-size: 11px; }
-.note-viewer-head__meta { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.note-viewer-head__name { font-size: 13px; font-weight: 500; color: var(--ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.note-viewer-head__handle { font-family: var(--font-mono); font-size: 10px; color: var(--fg-soft); }
-.note-viewer-close {
-  flex: 0 0 auto; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+/* No head bar — the corner button (open-on-xiaohongshu, or a close glyph for
+   url-less notes) floats over the right panel's top corner; the author row
+   below leaves it a right-hand gutter. Backdrop click / Esc close the modal. */
+.note-viewer-corner {
+  position: absolute; top: 10px; right: 10px; z-index: 5;
+  width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: var(--r-pill); background: transparent; color: var(--fg-soft); cursor: pointer;
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
-.note-viewer-close:hover { background: var(--ink-7); color: var(--ink-0); }
-.note-viewer-close svg { width: 16px; height: 16px; }
+.note-viewer-corner:hover { background: var(--ink-7); color: var(--ink-0); }
+.note-viewer-corner svg { width: 16px; height: 16px; }
 .note-viewer-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.32fr 1fr; }
 
+/* Media fills the left pane edge-to-edge — no padding, no frame chrome. */
 .note-gallery { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--ink-8); }
-.note-gallery__stage { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; padding: 18px; min-height: 0; }
+.note-gallery__stage { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
 /* aspect-ratio here is only the fallback — galleryStage sets the current
    media's own ratio inline (9:16 videos render full-bleed, no pillarbox). */
-.note-gallery__frame { position: relative; max-width: 100%; max-height: 100%; aspect-ratio: 3 / 4; height: 100%; border-radius: var(--r-3); overflow: hidden; border: var(--hairline); }
+.note-gallery__frame { position: relative; max-width: 100%; max-height: 100%; aspect-ratio: 3 / 4; height: 100%; overflow: hidden; }
 .note-gallery__frame .note-media__img { object-fit: contain; background: var(--ink-8); }
 .note-gallery__nav {
   position: absolute; top: 50%; transform: translateY(-50%); width: 32px; height: 32px;
@@ -1609,29 +1595,48 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
 .note-gallery__thumb:hover { opacity: 1; }
 .note-gallery__thumb.is-active { opacity: 1; border-color: var(--ink-0); }
 
-.note-meta { display: flex; flex-direction: column; gap: 14px; padding: 16px; overflow: auto; min-height: 0; border-left: var(--hairline); }
-.note-meta__title { margin: 0; font-family: var(--font-sans); font-weight: 500; font-size: 16px; line-height: 1.32; letter-spacing: -0.01em; color: var(--ink-0); }
-.note-meta__excerpt { margin: 0; font-size: 13px; line-height: 1.6; color: var(--fg-muted); }
-.note-meta__transcript { display: flex; flex-direction: column; gap: 6px; border-top: var(--hairline); padding-top: 10px; }
-.note-meta__transcript-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-soft); }
-.note-meta__transcript-text { margin: 0; font-size: 12px; line-height: 1.6; color: var(--fg-muted); max-height: 180px; overflow-y: auto; white-space: pre-wrap; }
-.note-meta__statgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; border: var(--hairline); border-radius: var(--r-3); overflow: hidden; background: var(--line); }
-.note-meta__stat { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; background: var(--canvas); }
-.note-meta__stat-k { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-soft); }
-.note-meta__stat-k svg { width: 12px; height: 12px; }
-.note-meta__stat-v { font-family: var(--font-mono); font-size: 15px; color: var(--ink-0); }
-.note-meta__rows { display: flex; flex-direction: column; gap: 0; border-top: var(--hairline); }
-.note-meta__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: var(--hairline); }
-.note-meta__row-k { font-family: var(--font-mono); font-size: 11px; color: var(--fg-soft); }
-.note-meta__row-v { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.note-meta__link { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.note-meta__link svg { width: 13px; height: 13px; }
-.note-meta__saved { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-family: var(--font-mono); font-size: 10px; color: var(--fg-soft); }
-.note-meta__saved i { width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--ink-0); }
+/* ── right panel: author / body / comments / engage bar ────────────── */
+.note-view { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: var(--hairline); }
+.note-view__author {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 12px 46px 12px 16px; border-bottom: var(--hairline);
+}
+.note-view__author.is-link { cursor: pointer; }
+.note-view__author.is-link:hover .note-view__author-name { color: var(--ink-0); }
+.note-view__avatar { width: 28px; height: 28px; font-size: 11px; }
+.note-view__author-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; font-weight: 500; color: var(--ink-1);
+  transition: color var(--t-fast) var(--ease);
+}
+.note-view__scroll { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
+.note-view__title { margin: 0; font-family: var(--font-sans); font-weight: 500; font-size: 16px; line-height: 1.32; letter-spacing: -0.01em; color: var(--ink-0); }
+.note-view__content { margin: 0; font-size: 13px; line-height: 1.65; color: var(--fg); white-space: pre-wrap; overflow-wrap: break-word; }
+.note-view__date { margin: 0; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-soft); }
+.note-view__transcript { display: flex; flex-direction: column; gap: 6px; border-top: var(--hairline); padding-top: 10px; }
+.note-view__transcript-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-soft); }
+.note-view__transcript-text { margin: 0; font-size: 12px; line-height: 1.6; color: var(--fg-muted); max-height: 180px; overflow-y: auto; white-space: pre-wrap; }
+.note-view__comments { display: flex; flex-direction: column; gap: 13px; border-top: var(--hairline); padding-top: 12px; }
+.note-view__comments-head { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-soft); }
+.note-comment { display: flex; gap: 9px; min-width: 0; }
+.note-comment__avatar { width: 24px; height: 24px; font-size: 10px; }
+.note-comment--reply .note-comment__avatar { width: 20px; height: 20px; font-size: 9px; }
+.note-comment__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.note-comment__author { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-soft); }
+.note-comment__badge { font-family: var(--font-mono); font-size: 9px; padding: 0 5px; border: var(--hairline); border-radius: var(--r-pill); color: var(--fg-muted); }
+.note-comment__text { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--fg); white-space: pre-wrap; overflow-wrap: break-word; }
+.note-comment__meta { font-family: var(--font-mono); font-size: 10px; color: var(--fg-faint); }
+.note-comment__replies { display: flex; flex-direction: column; gap: 9px; margin-top: 7px; }
+.note-view__engage {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; border-top: var(--hairline);
+}
+.note-view__engage .note-stats { flex-wrap: nowrap; gap: 16px; font-size: 11.5px; color: var(--fg-muted); }
+.note-view__engage .note-stat svg { width: 15px; height: 15px; color: var(--fg-muted); }
 
 @media (max-width: 720px) {
   .note-viewer-body { grid-template-columns: 1fr; }
-  .note-meta { border-left: 0; border-top: var(--hairline); }
+  .note-view { border-left: 0; border-top: var(--hairline); }
 }
 
 code {

@@ -76,15 +76,28 @@ export interface NoteMedia {
   h?: number;
 }
 
+/** One archived top comment on a note (replies flatten one level). */
+export interface NoteComment {
+  text: string;
+  author?: string;
+  likes?: number;
+  time?: string;
+  is_author?: boolean; // the note author replying in their own comments
+  replies?: NoteComment[];
+}
+
 /** A note the agent saw/cited — one canonical object per note (the registry unit). */
 export interface NoteData {
   note_id: string;
   url?: string;
   title?: string;
+  content?: string; // full note body (excerpt is its first ~90 chars)
   excerpt?: string;
-  author?: { name?: string; handle?: string; avatar?: string };
+  author?: { name?: string; handle?: string; avatar?: string; url?: string };
   posted_at?: number; // epoch ms
+  ip_location?: string; // author IP territory shown on the note ("广东")
   stats?: { likes?: number; collects?: number; comments?: number; shares?: number };
+  comments?: NoteComment[]; // top comments captured with the read
   media?: NoteMedia[]; // media[0] === cover
   media_dir?: string; // run-relative folder, when src paths are relative
   transcript?: string; // video audio transcript (cloud ASR)

@@ -589,6 +589,19 @@ const SocaiXhsPageScripts = (() => {
     return t;
   }
 
+  // The author's IP territory ("广东") as shown on the note detail. The note's
+  // __INITIAL_STATE__ field is the original value — return it verbatim. Only
+  // the DOM fallback needs parsing: in the `.date` bar the territory is the
+  // trailing whitespace-separated token ("3天前 广东", "编辑于 03-28 北京"),
+  // so take that token when it isn't part of the date itself.
+  function extractIpLocation(dateText, stateNote) {
+    const fromState = norm(String(unwrapStateValue(stateNote?.ipLocation) || ''));
+    if (fromState) return fromState;
+    const tokens = norm(dateText).split(/\s+/);
+    const tail = tokens.length > 1 ? tokens[tokens.length - 1] : '';
+    return /^\D{1,10}$/.test(tail) && !/[前刚今昨于:]/.test(tail) ? tail : '';
+  }
+
   function unwrapStateValue(value) {
     if (value && typeof value === 'object') {
       if ('_value' in value) return value._value;
@@ -890,6 +903,7 @@ const SocaiXhsPageScripts = (() => {
       firstVisibleText(['.location, .poi, [class*="location"], [class*="poi"]'], root, { excludeComments: true })
     );
     const noteId = extractNoteIdFromUrl();
+    const ipLocation = extractIpLocation(dateText, noteFromInitialState(noteId));
     const stateVideo = videoInfoFromInitialState(noteId);
     const type = detectNoteType(root, stateVideo);
     const imageUrls = type === 'video' ? [] : mergeUrls(imageUrlsFromInitialState(noteId), collectImageUrls(root));
@@ -906,6 +920,7 @@ const SocaiXhsPageScripts = (() => {
       content_source: contentSource,
       date,
       location: locationText,
+      ip_location: ipLocation,
       likes,
       favorites,
       comments_count: commentsCount,
