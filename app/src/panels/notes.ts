@@ -162,6 +162,11 @@ function playInline(btn: HTMLElement): void {
   const video = document.createElement("video");
   video.className = "note-media__video";
   video.playsInline = true;
+  // no native controls, so the element itself is the keyboard control:
+  // focusable, Enter/Space toggling (keeps keyboard users in the loop after
+  // the play button — their focus anchor — is removed below)
+  video.tabIndex = 0;
+  video.setAttribute("aria-label", "video player");
   if (poster) video.poster = poster;
   video.src = src;
 
@@ -190,9 +195,15 @@ function playInline(btn: HTMLElement): void {
   video.addEventListener("loadedmetadata", sync);
   video.addEventListener("play", () => (glyph.hidden = true));
   video.addEventListener("pause", () => (glyph.hidden = false));
-  video.addEventListener("click", () => {
+  const toggle = () => {
     if (video.paused) video.play().catch(() => {});
     else video.pause();
+  };
+  video.addEventListener("click", toggle);
+  video.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault(); // Space must toggle, not scroll the timeline
+    toggle();
   });
   // bar clicks are seeks, never card opens (the delegated open handler sits
   // on document, so stopping propagation here is enough)
@@ -219,10 +230,14 @@ function playInline(btn: HTMLElement): void {
     if (track.hasPointerCapture(e.pointerId)) scrub(e);
   });
 
+  // removing the focused button would strand keyboard focus on <body>;
+  // hand it to the video so Enter/Space keep controlling playback
+  const hadFocus = document.activeElement === btn;
   btn.remove();
   frame.querySelector(".note-media__dur")?.remove(); // the bar shows the clock
   frame.append(video, glyph);
   barHost.appendChild(bar);
+  if (hadFocus) video.focus();
   // Called inside the click gesture, so WKWebView allows playback with sound;
   // if it still refuses, the poster, glyph and toggle remain usable.
   video.play().catch(() => {});
