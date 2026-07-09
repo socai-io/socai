@@ -188,7 +188,8 @@ function playInline(btn: HTMLElement): void {
 
   const sync = () => {
     const d = video.duration;
-    if (isFinite(d) && d > 0) fill.style.width = `${(video.currentTime / d) * 100}%`;
+    // clamp: currentTime can drift a hair past duration at end-of-media
+    if (isFinite(d) && d > 0) fill.style.width = `${Math.min(100, Math.max(0, (video.currentTime / d) * 100))}%`;
     clock.textContent = `${fmtClock(video.currentTime)} / ${isFinite(d) && d > 0 ? fmtClock(d) : durText}`;
   };
   video.addEventListener("timeupdate", sync);
@@ -199,22 +200,35 @@ function playInline(btn: HTMLElement): void {
     if (video.paused) video.play().catch(() => {});
     else video.pause();
   };
+  const seekTo = (t: number) => {
+    const d = video.duration;
+    if (!isFinite(d) || d <= 0) return;
+    video.currentTime = Math.max(0, Math.min(d, t));
+    sync(); // timeupdate is throttled; reflect the seek immediately
+  };
   video.addEventListener("click", toggle);
+  // the focused video is the whole keyboard surface, like a native player:
+  // Enter/Space toggle, arrows seek ±5s, Home/End jump (the track itself
+  // stays pointer-only — no second tab stop per card)
   video.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    e.preventDefault(); // Space must toggle, not scroll the timeline
-    toggle();
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault(); // Space must toggle, not scroll the timeline
+      toggle();
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      seekTo(video.currentTime + (e.key === "ArrowRight" ? 5 : -5));
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      seekTo(e.key === "Home" ? 0 : video.duration);
+    }
   });
   // bar clicks are seeks, never card opens (the delegated open handler sits
   // on document, so stopping propagation here is enough)
   bar.addEventListener("click", (e) => e.stopPropagation());
   const scrub = (e: PointerEvent) => {
     const r = track.getBoundingClientRect();
-    const d = video.duration;
-    if (!isFinite(d) || d <= 0 || r.width <= 0) return;
-    const ratio = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-    video.currentTime = ratio * d;
-    sync(); // timeupdate is throttled; reflect the seek immediately
+    if (r.width <= 0) return;
+    seekTo(((e.clientX - r.left) / r.width) * video.duration);
   };
   track.addEventListener("pointerdown", (e) => {
     e.preventDefault();
