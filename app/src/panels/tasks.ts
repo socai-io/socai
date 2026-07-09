@@ -213,18 +213,16 @@ export namespace agentPanel {
   }
 
   // The last turn's activity-notes container — where streamed note groups and
-  // the live strip land. A sibling of the activity fold (so the strips span
-  // the pane while the fold keeps the prose column), created on demand: a
-  // turn renders without one until its first search result arrives.
+  // the live strip land. Created on demand: a turn renders without one until
+  // its first search result arrives.
   function lastTurnNotesContainer(stream: HTMLDivElement): HTMLDivElement | null {
     const turn = stream.querySelector<HTMLDivElement>(".thread-inner > .turn:last-child");
-    if (!turn) return null;
-    let notes = turn.querySelector<HTMLDivElement>(":scope > .activity-notes");
+    const wrap = turn?.querySelector<HTMLDivElement>(".activity-wrap");
+    if (!wrap) return null;
+    let notes = wrap.querySelector<HTMLDivElement>(".activity-notes");
     if (!notes) {
-      const wrap = turn.querySelector<HTMLDivElement>(":scope > .activity-wrap");
-      if (!wrap) return null;
-      wrap.insertAdjacentHTML("afterend", `<div class="activity-notes"></div>`);
-      notes = turn.querySelector<HTMLDivElement>(":scope > .activity-notes");
+      wrap.insertAdjacentHTML("beforeend", `<div class="activity-notes"></div>`);
+      notes = wrap.querySelector<HTMLDivElement>(".activity-notes");
     }
     return notes;
   }

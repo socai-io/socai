@@ -59,6 +59,12 @@
   --sp-9: 96px;
   --sp-10: 128px;
 
+  /* ── Measures ─────────────────────────────────────────────────── */
+  /* One shared column for the conversation: thread content, composer, and
+     the new-task compose all sit on this measure. With the thread's --sp-5
+     side padding it fits exactly five rich note cards per strip row. */
+  --measure-conv: 1120px;
+
   /* ── Radii ────────────────────────────────────────────────────── */
   --r-1: 2px;
   --r-2: 4px;
@@ -949,23 +955,14 @@ body.has-paper > * { position: relative; z-index: 1; }
   overflow-x: hidden;
   scrollbar-gutter: stable;
 }
-/* Fluid canvas: the thread spans the pane so media strips can use the full
-   width; prose-shaped pieces (bubble, activity fold, answer, meta) pin
-   themselves back onto the centered 760px column shared with the composer. */
+/* One universal centered column (--measure-conv) for everything in the
+   thread — prose, note strips, and the composer share the same measure. */
 .thread-inner {
-  width: 100%;
-  padding: var(--sp-6) var(--sp-6) var(--sp-5);
+  width: min(100%, var(--measure-conv));
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-5) var(--sp-5);
   display: flex;
   flex-direction: column;
-}
-.conv-user,
-.activity-wrap,
-.conv-answer,
-.conv-error,
-.conv-meta {
-  width: 100%;
-  max-width: 760px;
-  margin-inline: auto;
 }
 /* ── one turn (a run: prompt → work → answer) ─────────────────────── */
 .turn { display: flex; flex-direction: column; }
@@ -1092,14 +1089,12 @@ body.has-paper > * { position: relative; z-index: 1; }
 .act-row--working .act-row__glyph { display: inline-flex; align-items: center; }
 .act-row--working .act-row__text { color: var(--fg-muted); }
 
-/* ── per-search note previews (small cards), always visible ─────────
-   Full pane width — a sibling of the centered activity fold, so many
-   results get the room the prose column doesn't need. */
+/* ── per-search note previews (small cards), always visible ────────── */
 .activity-notes {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  margin-top: var(--sp-2);
+  margin-top: 2px;
 }
 .search-group { display: flex; flex-direction: column; gap: 6px; }
 .search-group__label {
@@ -1138,7 +1133,7 @@ body.has-paper > * { position: relative; z-index: 1; }
 .conv-answer .note-cite { font-size: 0.82em; }
 
 .conv-error {
-  margin: var(--sp-4) auto 0;
+  margin: var(--sp-4) 0 0;
   padding: var(--sp-3);
   background: var(--canvas);
   border: var(--hairline);
@@ -1172,7 +1167,7 @@ body.has-paper > * { position: relative; z-index: 1; }
   padding: var(--sp-3) var(--sp-5) var(--sp-4);
 }
 .composer {
-  width: min(100%, 760px);
+  width: min(100%, var(--measure-conv));
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -1286,7 +1281,7 @@ body.has-paper > * { position: relative; z-index: 1; }
   padding: var(--sp-6) var(--sp-5);
 }
 .new-task-compose {
-  width: min(100%, 760px);
+  width: min(100%, var(--measure-conv));
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);

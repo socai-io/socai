@@ -275,8 +275,6 @@ function renderActivity(
     ? `<div class="act-row act-row--working"><span class="act-row__glyph"><i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i></span><span class="act-row__text">${esc(t("task.working"))}</span></div>`
     : "";
 
-  // The notes render OUTSIDE the wrap: the wrap stays on the centered prose
-  // column while the card strips take the pane's full width.
   return `
     <div class="activity-wrap">
       <button
@@ -291,8 +289,8 @@ function renderActivity(
         ${meta}
       </button>
       ${open ? `<div class="activity activity--transcript">${body.map(renderEventRow).join("")}${workingRow}</div>` : ""}
+      ${notesHtml ? `<div class="activity-notes">${notesHtml}</div>` : ""}
     </div>
-    ${notesHtml ? `<div class="activity-notes">${notesHtml}</div>` : ""}
   `;
 }
 
