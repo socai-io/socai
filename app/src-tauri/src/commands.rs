@@ -14,6 +14,7 @@ use socai_core::runtime::{
     run_agent_task as run_agent_with_tools, AgentRunConfig, BrowserStatus, RuntimePageSession,
     SocaiRuntime,
 };
+use socai_core::sites::xhs::XhsHistoryStore;
 use socai_core::sites::{find_site, SiteSpec};
 use socai_core::telemetry::query_text_enabled;
 use socai_core::telemetry::tool_call::{summarize_tool_args, summarize_tool_result};
@@ -716,6 +717,13 @@ pub async fn agent_task_delete(
                 eprintln!("failed to delete task artifacts at {dir}: {err}");
             }
         }
+    }
+    // XHS history caches absolute media paths into these run dirs; scrub them
+    // so cross-run dedupe re-downloads instead of resurrecting dead paths.
+    let run_dirs: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
+    let scrubbed = XhsHistoryStore::open_default().scrub_media_under(&run_dirs);
+    if scrubbed > 0 {
+        eprintln!("forgot cached media for {scrubbed} notes under deleted task {task_id}");
     }
     telemetry.capture(
         "socai_agent_task_delete",

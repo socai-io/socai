@@ -138,6 +138,13 @@ impl XhsHistoryStore {
     /// media, OCR) was present in a prior read. This is what lets a repeated
     /// search/scan reuse the cached entity instead of re-opening, re-downloading,
     /// and re-OCR'ing the same note.
+    ///
+    /// A download request is additionally checked against the disk: cached
+    /// `local_path`s point into the run dir that downloaded them, and run dirs
+    /// are user-deletable (deleting a task wipes them). Once any cached media
+    /// file is gone the request is not satisfied, so the note is re-read and
+    /// re-downloaded into the current run instead of being archived media-less
+    /// on every future reuse.
     pub fn is_satisfied_by(
         &self,
         note_id: &str,
@@ -157,8 +164,15 @@ impl XhsHistoryStore {
         if include_media && !prev.include_media {
             return false;
         }
-        if download_media && !prev.downloaded {
-            return false;
+        if download_media {
+            if !prev.downloaded {
+                return false;
+            }
+            if let Some(entity) = prev.entity.as_ref() {
+                if !entity_media_intact(entity) {
+                    return false;
+                }
+            }
         }
         if ocr && !prev.ocr {
             return false;
@@ -277,6 +291,38 @@ impl XhsHistoryStore {
         // Best-effort write. A failure here just means the next process
         // won't see this entry — agent still works.
         let _ = save_file(&self.path, &snapshot);
+    }
+
+    /// Forget downloaded media that lived under run dirs being deleted: strip
+    /// the cached entities' `local_path`s pointing into them and downgrade the
+    /// `downloaded` flag, so the next request re-reads (and re-downloads) the
+    /// note instead of trusting paths that no longer exist. Returns how many
+    /// entries were scrubbed. Best-effort hygiene: a concurrently running
+    /// agent holds its own store instance and its next record can clobber
+    /// this write — the disk check in `is_satisfied_by` is the backstop.
+    pub fn scrub_media_under(&self, run_dirs: &[PathBuf]) -> usize {
+        let (snapshot, scrubbed) = {
+            let Ok(mut guard) = self.inner.lock() else {
+                return 0;
+            };
+            let mut scrubbed = 0usize;
+            for entry in guard.notes.values_mut() {
+                let Some(entity) = entry.entity.as_mut() else {
+                    continue;
+                };
+                if !scrub_entity_media_under(entity, run_dirs) {
+                    continue;
+                }
+                entry.downloaded = entity_has_downloaded(entity);
+                scrubbed += 1;
+            }
+            if scrubbed == 0 {
+                return 0;
+            }
+            (guard.clone(), scrubbed)
+        };
+        let _ = save_file(&self.path, &snapshot);
+        scrubbed
     }
 }
 
@@ -433,6 +479,69 @@ fn entity_has_downloaded(entity: &Value) -> bool {
     image_local || entity.get("video").is_some_and(has_local)
 }
 
+/// The on-disk media files a cached entity claims: image `local_path`s plus
+/// the video's `local_path` / `poster_local_path` — the same fields the media
+/// manifest validates and the app renders. Empty fields are skipped (they
+/// mean "never downloaded", not "downloaded then lost").
+fn entity_media_paths(entity: &Value) -> Vec<&str> {
+    fn trimmed_path(value: Option<&Value>) -> Option<&str> {
+        value
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+    }
+    let mut paths = Vec::new();
+    if let Some(images) = entity.get("images").and_then(Value::as_array) {
+        for image in images {
+            paths.extend(trimmed_path(image.get("local_path")));
+        }
+    }
+    if let Some(video) = entity.get("video") {
+        paths.extend(trimmed_path(video.get("local_path")));
+        paths.extend(trimmed_path(video.get("poster_local_path")));
+    }
+    paths
+}
+
+/// True while every media file the entity claims still is a non-empty file on
+/// disk — the same bar the media manifest uses to call an asset "downloaded".
+/// Cached paths are absolute (they point into the run dir that downloaded
+/// them); a path we can't verify fails the check.
+fn entity_media_intact(entity: &Value) -> bool {
+    entity_media_paths(entity).into_iter().all(|path| {
+        let path = Path::new(path);
+        path.is_absolute() && fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+    })
+}
+
+/// Remove the entity's image/video `local_path`-style fields that point under
+/// any of `run_dirs`. True when anything was removed.
+fn scrub_entity_media_under(entity: &mut Value, run_dirs: &[PathBuf]) -> bool {
+    fn scrub_field(owner: &mut Value, key: &str, run_dirs: &[PathBuf]) -> bool {
+        let hit = owner.get(key).and_then(Value::as_str).is_some_and(|path| {
+            let path = Path::new(path.trim());
+            run_dirs.iter().any(|dir| path.starts_with(dir))
+        });
+        if hit {
+            if let Some(map) = owner.as_object_mut() {
+                map.remove(key);
+            }
+        }
+        hit
+    }
+    let mut changed = false;
+    if let Some(images) = entity.get_mut("images").and_then(Value::as_array_mut) {
+        for image in images {
+            changed |= scrub_field(image, "local_path", run_dirs);
+        }
+    }
+    if let Some(video) = entity.get_mut("video") {
+        changed |= scrub_field(video, "local_path", run_dirs);
+        changed |= scrub_field(video, "poster_local_path", run_dirs);
+    }
+    changed
+}
+
 fn entity_has_transcript(entity: &Value) -> bool {
     entity
         .get("video")
@@ -522,11 +631,13 @@ mod tests {
     fn satisfied_tracks_downloaded_and_ocr_from_entity() {
         let dir = tempdir().unwrap();
         let store = XhsHistoryStore::open(dir.path().join("h.json"));
+        let media = dir.path().join("x.jpg");
+        std::fs::write(&media, b"jpg").unwrap();
         store.record(
             &json!({
                 "note_id": "n2",
                 "ocr_text": ["cover text", ""],
-                "images": [{"url": "u", "local_path": "/tmp/x.jpg", "ocr_text": "cover text"}],
+                "images": [{"url": "u", "local_path": media.to_string_lossy(), "ocr_text": "cover text"}],
             }),
             "deep",
             false,
@@ -536,6 +647,13 @@ mod tests {
         let entry = store.get("n2").unwrap();
         assert!(entry.downloaded);
         assert!(entry.ocr);
+
+        // Deleting the downloaded file voids download satisfaction (the note
+        // must be re-read, not resurrected with a dead path) — while text-only
+        // coverage is untouched.
+        std::fs::remove_file(&media).unwrap();
+        assert!(!store.is_satisfied_by("n2", "deep", false, true, true, false, 0));
+        assert!(store.is_satisfied_by("n2", "deep", false, false, true, false, 0));
     }
 
     #[test]
