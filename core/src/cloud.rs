@@ -129,10 +129,12 @@ pub async fn transcribe_audio_file(
     let creds = load_credentials().ok_or_else(|| {
         anyhow::anyhow!("socai pro is not activated; run `socai pro activate <invite_code>`")
     })?;
+    // The extension matters: the server passes the filename through to
+    // DashScope, which detects the audio format from it.
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("audio.wav");
+        .unwrap_or("audio.aac");
     let bytes = tokio::fs::read(path)
         .await
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -143,7 +145,7 @@ pub async fn transcribe_audio_file(
             .post(format!("{base_url}/v1/asr/upload-url"))
             .json(&json!({
                 "filename": filename,
-                "content_type": "audio/wav",
+                "content_type": "audio/aac",
                 "size_bytes": bytes.len(),
                 "duration_s": duration_s.max(0),
             })),

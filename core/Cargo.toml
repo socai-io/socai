@@ -22,6 +22,9 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 # Image compositing/resizing for batching note images into 2x2 vision grids.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Pure-Rust mp4 demux for transcription: the AAC track is repacked as ADTS and
+# uploaded as-is (cloud ASR accepts aac), so no decoder and no ffmpeg needed.
+symphonia = { version = "0.5", default-features = false, features = ["isomp4"] }
 # Local OCR engine (PP-OCRv6 tiny via ONNX Runtime). Default features pull a
 # prebuilt ONNX Runtime at build time (download-binaries) + SIMD CPU kernels.
 # CPU-only by design: benchmarks showed CoreML/DirectML run PP-OCR slower, so we

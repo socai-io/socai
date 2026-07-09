@@ -1,7 +1,15 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use symphonia::core::codecs::CODEC_TYPE_AAC;
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
+use symphonia::core::units::TimeBase;
 use tokio::process::Command;
 
 use crate::media::common::{
@@ -30,16 +38,12 @@ impl MediaProcessor {
     ) -> Result<String> {
         let source_path = self.local_audio_source(source, referer).await?;
         if self.config.use_cloud_asr {
-            let wav = self.extract_audio_wav(&source_path).await?;
-            // Real clip duration (the wav is already capped at
-            // max_audio_seconds by ffmpeg); the server uses it for usage
-            // accounting. 0 when ffprobe is unavailable.
-            let duration_s = probe_duration_seconds(&wav)
-                .await
-                .map(|secs| secs.ceil() as i64)
-                .unwrap_or(0);
+            // Real clip duration (the clip is already capped at
+            // max_audio_seconds); the server uses it for usage accounting.
+            let (aac, duration) = self.extract_audio_aac(&source_path).await?;
+            let duration_s = duration.ceil() as i64;
             let result = crate::cloud::transcribe_audio_file(
-                &wav,
+                &aac,
                 duration_s,
                 Duration::from_secs(self.config.whisper_timeout_s.max(60)),
             )
@@ -90,36 +94,12 @@ impl MediaProcessor {
 
         let whisper_cpp = find_in_path("whisper-cli").or_else(|| find_in_path("main"));
         let whisper_model = std::env::var("SOCAI_WHISPER_MODEL").unwrap_or_default();
-        if let (Some(whisper_cpp), model) = (whisper_cpp, whisper_model.trim().to_string()) {
-            if !model.is_empty() {
-                let wav = self.extract_audio_wav(&source_path).await?;
-                let out_prefix = self.config.base_dir.join("transcripts").join(
-                    source_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("audio"),
-                );
-                ensure_dir(out_prefix.parent().unwrap_or(&self.config.base_dir))?;
-                run_command(
-                    Command::new(whisper_cpp)
-                        .arg("-m")
-                        .arg(model)
-                        .arg("-f")
-                        .arg(&wav)
-                        .arg("-l")
-                        .arg(nonempty(language, &self.config.default_language))
-                        .arg("-otxt")
-                        .arg("-of")
-                        .arg(&out_prefix),
-                    Duration::from_secs(self.config.whisper_timeout_s),
-                )
-                .await?;
-                return Ok(tokio::fs::read_to_string(out_prefix.with_extension("txt"))
-                    .await
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string());
-            }
+        if whisper_cpp.is_some() && !whisper_model.trim().is_empty() {
+            // whisper.cpp needs 16kHz wav input; that local decode pipeline was
+            // removed when cloud ASR switched to aac passthrough.
+            anyhow::bail!(MediaUnavailable(
+                "whisper.cpp transcription is no longer supported; use cloud ASR (socai pro) or install `whisper`".into(),
+            ));
         }
 
         anyhow::bail!(MediaUnavailable(
@@ -140,32 +120,20 @@ impl MediaProcessor {
         }
     }
 
-    async fn extract_audio_wav(&self, source_path: &Path) -> Result<PathBuf> {
-        if find_in_path("ffmpeg").is_none() {
-            anyhow::bail!(MediaUnavailable(
-                "ffmpeg is required for whisper.cpp audio extraction".into()
-            ));
-        }
+    /// Extract the source's AAC track into an ADTS `.aac` file without
+    /// re-encoding, capped at `max_audio_seconds`. Cloud ASR (Fun-ASR) accepts
+    /// aac as-is, so no local decode is needed. Returns the file path and its
+    /// duration in seconds.
+    async fn extract_audio_aac(&self, source_path: &Path) -> Result<(PathBuf, f64)> {
         let out = self.audio_output_path(source_path)?;
-        run_command(
-            Command::new("ffmpeg")
-                .arg("-hide_banner")
-                .arg("-loglevel")
-                .arg("error")
-                .arg("-t")
-                .arg(self.config.max_audio_seconds.to_string())
-                .arg("-i")
-                .arg(source_path)
-                .arg("-ar")
-                .arg("16000")
-                .arg("-ac")
-                .arg("1")
-                .arg("-y")
-                .arg(&out),
-            Duration::from_secs(self.config.ffmpeg_timeout_s),
-        )
-        .await?;
-        Ok(out)
+        let source = source_path.to_path_buf();
+        let target = out.clone();
+        let max_seconds = self.config.max_audio_seconds;
+        let duration =
+            tokio::task::spawn_blocking(move || demux_aac_to_adts(&source, &target, max_seconds))
+                .await
+                .context("audio demux task panicked")??;
+        Ok((out, duration))
     }
 
     fn audio_output_path(&self, source_path: &Path) -> Result<PathBuf> {
@@ -178,30 +146,144 @@ impl MediaProcessor {
             self.config.base_dir.join("audio")
         };
         let dir = ensure_dir(&dir)?;
-        Ok(dir.join("audio.wav"))
+        Ok(dir.join("audio.aac"))
     }
 }
 
-async fn probe_duration_seconds(path: &Path) -> Option<f64> {
-    let ffprobe = find_in_path("ffprobe")?;
-    let output = Command::new(ffprobe)
-        .arg("-v")
-        .arg("error")
-        .arg("-show_entries")
-        .arg("format=duration")
-        .arg("-of")
-        .arg("csv=p=0")
-        .arg(path)
-        .output()
-        .await
-        .ok()?;
-    if !output.status.success() {
-        return None;
+/// Copy the first AAC track of `source` into `target` as raw ADTS frames
+/// (one 7-byte header per packet, no re-encoding), keeping at most
+/// `max_seconds` of audio. Returns the written duration in seconds.
+fn demux_aac_to_adts(source: &Path, target: &Path, max_seconds: u64) -> Result<f64> {
+    let file = std::fs::File::open(source)
+        .with_context(|| format!("failed to open {}", source.display()))?;
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = source.extension().and_then(|ext| ext.to_str()) {
+        hint.with_extension(ext);
     }
-    String::from_utf8(output.stdout)
-        .ok()?
-        .trim()
-        .parse::<f64>()
-        .ok()
-        .filter(|secs| secs.is_finite() && *secs >= 0.0)
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .with_context(|| format!("unsupported media container in {}", source.display()))?;
+    let mut format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|track| track.codec_params.codec == CODEC_TYPE_AAC)
+        .ok_or_else(|| MediaUnavailable(format!("no AAC audio track in {}", source.display())))?;
+    let track_id = track.id;
+    let sample_rate = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| MediaUnavailable("AAC track has no sample rate".into()))?;
+    let asc = track
+        .codec_params
+        .extra_data
+        .as_deref()
+        .ok_or_else(|| MediaUnavailable("AAC track has no decoder config".into()))?;
+    let header = AdtsHeader::from_asc(asc)?;
+    let time_base = track
+        .codec_params
+        .time_base
+        .unwrap_or_else(|| TimeBase::new(1, sample_rate));
+
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(target)
+            .with_context(|| format!("failed to create {}", target.display()))?,
+    );
+    let mut end_ts = 0u64;
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(SymphoniaError::IoError(err))
+                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break
+            }
+            Err(err) => return Err(err.into()),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        if timestamp_seconds(time_base, packet.ts) >= max_seconds as f64 {
+            break;
+        }
+        writer.write_all(&header.for_frame(packet.data.len())?)?;
+        writer.write_all(&packet.data)?;
+        end_ts = packet.ts + packet.dur;
+    }
+    writer.flush()?;
+    if end_ts == 0 {
+        anyhow::bail!(MediaUnavailable(format!(
+            "AAC track in {} contains no audio packets",
+            source.display()
+        )));
+    }
+    Ok(timestamp_seconds(time_base, end_ts).min(max_seconds as f64))
+}
+
+fn timestamp_seconds(time_base: TimeBase, ts: u64) -> f64 {
+    let time = time_base.calc_time(ts);
+    time.seconds as f64 + time.frac
+}
+
+/// Fixed part of an ADTS header for an AAC-LC stream; only the per-frame
+/// length bits vary between frames.
+struct AdtsHeader {
+    sample_rate_index: u8,
+    channel_config: u8,
+}
+
+impl AdtsHeader {
+    /// Read the sample rate index and channel configuration from the track's
+    /// AudioSpecificConfig (the mp4 `esds` decoder config).
+    fn from_asc(asc: &[u8]) -> Result<Self> {
+        if asc.len() < 2 {
+            anyhow::bail!(MediaUnavailable("AAC decoder config is too short".into()));
+        }
+        let object_type = asc[0] >> 3;
+        if object_type == 31 {
+            // Escape-coded object type shifts every following field.
+            anyhow::bail!(MediaUnavailable(format!(
+                "unsupported AAC object type {object_type}"
+            )));
+        }
+        let sample_rate_index = ((asc[0] & 0x7) << 1) | (asc[1] >> 7);
+        if sample_rate_index >= 13 {
+            anyhow::bail!(MediaUnavailable(
+                "AAC stream uses an explicit sample rate, unsupported in ADTS".into(),
+            ));
+        }
+        let channel_config = (asc[1] >> 3) & 0xF;
+        if !(1..=7).contains(&channel_config) {
+            anyhow::bail!(MediaUnavailable(format!(
+                "unsupported AAC channel configuration {channel_config}"
+            )));
+        }
+        Ok(Self {
+            sample_rate_index,
+            channel_config,
+        })
+    }
+
+    fn for_frame(&self, payload_len: usize) -> Result<[u8; 7]> {
+        let frame_len = payload_len + 7;
+        if frame_len > 0x1FFF {
+            anyhow::bail!("AAC frame too large for ADTS: {payload_len} bytes");
+        }
+        let frame_len = frame_len as u16;
+        Ok([
+            0xFF,                                                                  // syncword
+            0xF1, // syncword end, MPEG-4, layer 0, no CRC
+            (1 << 6) | (self.sample_rate_index << 2) | (self.channel_config >> 2), // AAC-LC
+            ((self.channel_config & 0x3) << 6) | ((frame_len >> 11) as u8 & 0x3),
+            (frame_len >> 3) as u8,
+            (((frame_len & 0x7) as u8) << 5) | 0x1F, // buffer fullness (VBR)
+            0xFC,                                    // buffer fullness end, 1 frame
+        ])
+    }
 }
