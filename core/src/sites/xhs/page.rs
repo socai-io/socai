@@ -21,6 +21,13 @@ const SEARCH_TRANSITION_TIMEOUT_S: f64 = 12.0;
 /// Upper bound the login gate polls the sidebar for a definitive login read
 /// before falling back to "logged in" (only hit if no sidebar ever renders).
 const LOGIN_GATE_TIMEOUT_S: f64 = 6.0;
+/// How many times to re-open a search note when the cover click lands on the
+/// wrong one. XHS search is a virtualized masonry grid: the pixel coordinates
+/// `clickCard` measures can go stale before the CDP click lands (lazy content
+/// reflows the grid), so the click opens a neighbor. Each retry closes the
+/// wrong overlay and re-opens, which re-measures fresh coordinates. Capped so a
+/// genuinely un-openable target doesn't grind the scan.
+const MAX_STALE_OPEN_RETRIES: u64 = 2;
 
 /// Outcome of the pre-flight [`XhsPageRuntime::login_gate`] check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -516,8 +523,21 @@ impl<'a> XhsPageRuntime<'a> {
             .unwrap_or("cover");
 
         sleep_ms(180).await;
+        // Re-measure the target's coordinates right before clicking. The first
+        // clickCard scrolled the card into view, and the virtualized search
+        // grid keeps reflowing during the settle wait, so coordinates measured
+        // before the sleep can already point at a neighbor. clickCard relocates
+        // the card by data-note-id, so this yields the target's *current*
+        // center; clicking it immediately leaves only a single CDP round-trip
+        // (no scroll, no sleep) for the layout to shift again. Fall back to the
+        // pre-sleep coordinates if the re-measure fails (e.g. the card briefly
+        // unmounted).
+        let fresh = self
+            .expect_object("clickCard", Some(&Value::Object(click_arg.clone())))
+            .await?;
+        let click_at = if script_ok(&fresh) { &fresh } else { &target };
         self.page
-            .click(number(&target, "x"), number(&target, "y"))
+            .click(number(click_at, "x"), number(click_at, "y"))
             .await?;
         let opened = self.wait_for_note_open(per_attempt).await?;
         if note_is_open(&opened) {
@@ -669,8 +689,37 @@ impl<'a> XhsPageRuntime<'a> {
         }
         if !note_id.is_empty() || index.is_some() {
             let t_open = Instant::now();
-            let opened = self.open_note(note_id, index, wait_seconds).await?;
+            let mut opened = self.open_note(note_id, index, wait_seconds).await?;
+            // Guard against the grid opening the wrong note: compare the opened
+            // URL's note_id to the target *before* the expensive extract/
+            // download, and if it mismatches, close the wrong overlay and
+            // re-open (which re-measures fresh click coordinates). Only the
+            // note_id path can verify the target — a pure-index open has no
+            // expected id — and the extract-time check below still backstops
+            // the give-up case.
+            let mut stale_retries: u64 = 0;
+            if !note_id.is_empty() {
+                while script_ok(&opened) {
+                    let opened_id = opened
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .map(opened_note_id_from_url)
+                        .unwrap_or_default();
+                    if opened_id.is_empty() || opened_id == note_id {
+                        break;
+                    }
+                    if stale_retries >= MAX_STALE_OPEN_RETRIES {
+                        break;
+                    }
+                    stale_retries += 1;
+                    let _ = self.close_note((wait_seconds / 2.0).max(0.4)).await;
+                    opened = self.open_note(note_id, index, wait_seconds).await?;
+                }
+            }
             perf.insert("open_ms".into(), json!(t_open.elapsed().as_millis() as u64));
+            if stale_retries > 0 {
+                perf.insert("open_stale_retries".into(), json!(stale_retries));
+            }
             if let Some(strategy) = opened
                 .get("strategy")
                 .and_then(Value::as_str)
@@ -1877,6 +1926,23 @@ fn normalize_image_url(value: &str) -> String {
         return String::new();
     }
     trimmed.replacen("http://", "https://", 1)
+}
+
+/// Note id from an opened XHS detail URL (`/explore/<id>`, `/discovery/<id>`,
+/// or `/search_result/<id>`), stripped of query/hash. Empty when the URL isn't
+/// a detail route, in which case the caller can't verify the opened target and
+/// proceeds to the extract-time note_id check instead.
+fn opened_note_id_from_url(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+    while let Some(segment) = segments.next() {
+        if matches!(segment, "explore" | "discovery" | "search_result") {
+            if let Some(id) = segments.next() {
+                return id.to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 fn note_is_open(state: &Value) -> bool {
