@@ -1442,7 +1442,8 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
    fill; contain-fit letterboxes any real ratio inside it. Click = play/pause
    (the slim bar below carries scrubber + clock — at card width the native
    controls would drop both). */
-.note-media__video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; cursor: default; }
+/* two classes: must outrank `.note-media__inner video`'s object-fit: cover */
+.note-media .note-media__video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; cursor: default; }
 /* the paused HUD glyph hides while playing — the class's display beats the
    UA's [hidden] rule, so honor the attribute explicitly */
 .note-media__play--hud { pointer-events: none; }
