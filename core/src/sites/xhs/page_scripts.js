@@ -95,10 +95,46 @@ const SocaiXhsPageScripts = (() => {
     for (const sel of SEARCH_INPUT_SELECTORS) {
       for (const el of $$(sel)) {
         if (!(el instanceof HTMLElement)) continue;
+        // 2026-07: two decoys can outrank the real composer. The header
+        // carries a display:none duplicate (#search-input inside
+        // .ai-header-container) — zero width, already filtered. Browser
+        // extensions also overlay a near-transparent aria-hidden clone
+        // (data-hp-kind, opacity 1e-05) that has full width, so filter
+        // on aria-hidden and computed opacity too.
+        if (el.getAttribute('aria-hidden') === 'true') continue;
+        if (parseFloat(window.getComputedStyle(el).opacity) < 0.1) continue;
         if (el.getBoundingClientRect().width >= 120) return el;
       }
     }
     return undefined;
+  }
+
+  // Focus the search input and select any existing text, so trusted CDP
+  // per-char typing replaces it wholesale. The 2026-07 home-feed AI
+  // composer ("aiSearchTextarea") ignores synthetic input events:
+  // setSearchInput's native-setter write leaves the framework state empty,
+  // the submit button stays `disabled`, and Enter no-ops — so Rust now
+  // types the query with real CDP key events and keeps setSearchInput only
+  // as a legacy fallback.
+  function selectSearchInput() {
+    const input = findSearchInput();
+    if (!input) return { ok: false, error: 'search_input_not_found' };
+    input.focus();
+    let value = '';
+    if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {
+      value = String(input.value || '');
+      input.setSelectionRange(0, value.length);
+    } else if (input.isContentEditable) {
+      value = String(input.textContent || '');
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } else {
+      return { ok: false, error: 'unsupported_search_input' };
+    }
+    return { ok: true, value };
   }
 
   function setSearchInput(arg) {
@@ -1335,6 +1371,7 @@ const SocaiXhsPageScripts = (() => {
     loginState,
     searchCards,
     searchInput,
+    selectSearchInput,
     setSearchInput,
     searchState,
     searchFilterTrigger,

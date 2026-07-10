@@ -43,6 +43,7 @@ const XHS_PAGE_SCRIPT_FUNCTIONS: &[&str] = &[
     "loginState",
     "searchCards",
     "searchInput",
+    "selectSearchInput",
     "setSearchInput",
     "searchState",
     "searchFilterTrigger",
@@ -321,19 +322,43 @@ impl<'a> XhsPageRuntime<'a> {
             sleep_ms(150).await;
         }
 
-        let set_result = self
-            .expect_object("setSearchInput", Some(&json!({ "query": query })))
-            .await?;
-        if !script_ok(&set_result) {
-            return Ok(json!({
-                "ok": false,
-                "strategy": "set_search_input_failed",
-                "state": set_result,
-                "error": set_result
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Search input did not accept the requested keyword"),
-            }));
+        // Type the query as per-char CDP key events instead of a synthetic JS
+        // `input` event: the 2026-07 home-feed AI composer ignores untrusted
+        // events, so the old native-setter write left its framework state
+        // empty — Enter no-oped for the full transition timeout and the
+        // submit click then searched the rotating placeholder hot-word. (A
+        // single Input.insertText is not enough either: its keyless input
+        // event reads as bot input and dead-ends the composer — see
+        // `type_chars`.) `selectSearchInput` selects any existing text so the
+        // first keystroke replaces it wholesale; the JS value write stays as
+        // a fallback for inputs the typing couldn't reach.
+        let selected = self.expect_object("selectSearchInput", None).await?;
+        let mut typed_ok = false;
+        if script_ok(&selected) {
+            self.page.type_chars(query).await?;
+            sleep_ms(150).await;
+            let state = self.expect_object("searchState", None).await?;
+            let visible = state
+                .get("input_keyword")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            typed_ok = normalize_keyword(visible) == normalize_keyword(query);
+        }
+        if !typed_ok {
+            let set_result = self
+                .expect_object("setSearchInput", Some(&json!({ "query": query })))
+                .await?;
+            if !script_ok(&set_result) {
+                return Ok(json!({
+                    "ok": false,
+                    "strategy": "set_search_input_failed",
+                    "state": set_result,
+                    "error": set_result
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Search input did not accept the requested keyword"),
+                }));
+            }
         }
 
         sleep_ms(150).await;
@@ -344,7 +369,7 @@ impl<'a> XhsPageRuntime<'a> {
         if search_transition_ok(&state, query) {
             return Ok(json!({
                 "ok": true,
-                "strategy": "click_input_set_value_enter",
+                "strategy": if typed_ok { "click_input_type_enter" } else { "click_input_set_value_enter" },
                 "state": state,
                 "url": self.current_url().await?,
             }));

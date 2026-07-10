@@ -241,6 +241,32 @@ impl PageSession {
         Ok(())
     }
 
+    /// Type `text` as a stream of per-character key events (keyDown with the
+    /// char's `text` payload, then keyUp), the way a human keyboard does.
+    /// `type_text`'s single `Input.insertText` fires an `input` event with no
+    /// keydown/keyup around it — XHS's search composer treats that signature
+    /// as bot input and dead-ends the whole widget (submit click and Enter
+    /// both stop responding). Per-char key events keep the page's key-driven
+    /// behaviours (suggestion fetch, submit arming) working.
+    pub async fn type_chars(&self, text: &str) -> anyhow::Result<()> {
+        self.snapshot_before().await;
+        for ch in text.chars() {
+            let ch = ch.to_string();
+            self.execute(
+                "Input.dispatchKeyEvent",
+                json!({ "type": "keyDown", "key": ch, "text": ch }),
+            )
+            .await?;
+            self.execute(
+                "Input.dispatchKeyEvent",
+                json!({ "type": "keyUp", "key": ch }),
+            )
+            .await?;
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(())
+    }
+
     pub async fn press_key(&self, key: &str) -> anyhow::Result<()> {
         self.snapshot_before().await;
         let (vk, code, text) = key_definition(key);
