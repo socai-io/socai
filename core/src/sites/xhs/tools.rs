@@ -1017,14 +1017,14 @@ async fn scan_card_note(
 ) -> Value {
     let requested_media = include_media;
 
-    // Dedup applies to every read, including download/OCR runs: if a prior run
-    // already covers this note at the requested level + enrichments (vision,
-    // downloaded media, OCR), reuse the cached entity instead of re-opening,
-    // re-downloading, and re-OCR'ing it. The cached entity carries its prior
-    // ocr_text / local_path, so the reuse is complete.
-    if !card.note_id.is_empty() && ctx.has_processed_note(&card.note_id, level, requested_media) {
-        return recorded_skip_entry(card, "already_processed", history, ctx, level);
-    }
+    // History is the source of truth for capability-aware dedup. The lighter
+    // in-run marker only tracks level + include_media, so consulting it by
+    // itself would incorrectly skip an upgrade requested later in the same
+    // agent run (for example, a plain read followed by transcribe_audio=true).
+    // In particular, that could reuse a pre-upgrade entity carrying the old
+    // ffmpeg transcription error instead of retrying through cloud ASR.
+    let processed_in_run =
+        !card.note_id.is_empty() && ctx.has_processed_note(&card.note_id, level, requested_media);
     if !card.note_id.is_empty()
         && history.is_satisfied_by(
             &card.note_id,
@@ -1041,7 +1041,12 @@ async fn scan_card_note(
         && history.has_cached_entity(&card.note_id)
     {
         ctx.mark_processed_note(&card.note_id, level, requested_media);
-        return recorded_skip_entry(card, "already_analyzed", history, ctx, level);
+        let reason = if processed_in_run {
+            "already_processed"
+        } else {
+            "already_analyzed"
+        };
+        return recorded_skip_entry(card, reason, history, ctx, level);
     }
 
     // Per-phase wall times for the scan perf record (stats/scan.json). Seeded
@@ -1453,10 +1458,21 @@ async fn join_note_transcribe(
             .and_then(|entity| entity.get_mut("video"))
             .and_then(Value::as_object_mut)
         {
-            for key in ["transcript", "transcript_error", "transcript_ms"] {
-                if let Some(value) = result.video.get(key) {
-                    video.insert(key.into(), value.clone());
+            // Synchronize success/error state rather than only inserting
+            // fields that are present. A successful retry must remove a stale
+            // transcript_error left by an earlier cached attempt.
+            for key in ["transcript", "transcript_error"] {
+                match result.video.get(key) {
+                    Some(value) => {
+                        video.insert(key.into(), value.clone());
+                    }
+                    None => {
+                        video.remove(key);
+                    }
                 }
+            }
+            if let Some(value) = result.video.get("transcript_ms") {
+                video.insert("transcript_ms".into(), value.clone());
             }
         }
         if note.get("ok").and_then(Value::as_bool) == Some(true) {

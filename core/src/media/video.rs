@@ -181,6 +181,12 @@ impl MediaProcessor {
             insert_string(video, "transcript_error", "video local_path is missing");
             return;
         };
+        // A cached entity may carry an error from an older transcription
+        // implementation. Once a real retry starts, that error is no longer
+        // authoritative; replace it only if this attempt also fails.
+        if let Some(map) = video.as_object_mut() {
+            map.remove("transcript_error");
+        }
         let t0 = Instant::now();
         match self.transcribe_audio(&path, "", "").await {
             Ok(transcript) if !transcript.trim().is_empty() => {
@@ -236,6 +242,9 @@ impl MediaProcessor {
         }
 
         if !source.is_empty() {
+            if let Some(map) = result.as_object_mut() {
+                map.remove("transcript_error");
+            }
             match self.transcribe_audio(&source, referer, "").await {
                 Ok(transcript) if !transcript.trim().is_empty() => {
                     insert_string(&mut result, "transcript", transcript);
