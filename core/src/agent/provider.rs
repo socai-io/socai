@@ -24,6 +24,8 @@ pub enum Provider {
     /// Qwen via international DashScope (dashscope-intl.aliyuncs.com),
     /// keyed from modelstudio.console.alibabacloud.com.
     QwenIntl,
+    /// Doubao via its OpenAI-compatible API.
+    Doubao,
     DeepSeek,
 }
 
@@ -35,6 +37,7 @@ impl Provider {
             Provider::Kimi => "kimi",
             Provider::Qwen => "qwen",
             Provider::QwenIntl => "qwen-intl",
+            Provider::Doubao => "doubao",
             Provider::DeepSeek => "deepseek",
         }
     }
@@ -46,6 +49,7 @@ impl Provider {
             "kimi" | "moonshot" => Some(Self::Kimi),
             "qwen" | "dashscope" => Some(Self::Qwen),
             "qwen-intl" | "qwen_intl" | "dashscope-intl" => Some(Self::QwenIntl),
+            "doubao" => Some(Self::Doubao),
             "deepseek" => Some(Self::DeepSeek),
             _ => None,
         }
@@ -178,6 +182,14 @@ pub static PROVIDERS: &[ProviderConfig] = &[
         // intentionally resolves to the mainland entry; the international
         // deployment is reached by explicit provider selection.
         model_prefixes: &[],
+    },
+    ProviderConfig {
+        provider: Provider::Doubao,
+        display_name: "Doubao",
+        default_model: "doubao-seed-2-1-turbo-260628",
+        env_keys: &["DOUBAO_API_KEY"],
+        base_url: Some("https://ark.cn-beijing.volces.com/api/v3"),
+        model_prefixes: &["doubao-"],
     },
     ProviderConfig {
         provider: Provider::DeepSeek,
@@ -576,6 +588,7 @@ mod tests {
         assert_eq!(Provider::from_name("MOONSHOT"), Some(Provider::Kimi));
         assert_eq!(Provider::from_name("DashScope"), Some(Provider::Qwen));
         assert_eq!(Provider::from_name("qwen-intl"), Some(Provider::QwenIntl));
+        assert_eq!(Provider::from_name("doubao"), Some(Provider::Doubao));
         assert_eq!(Provider::from_name("DeepSeek"), Some(Provider::DeepSeek));
         assert_eq!(Provider::from_name("nope"), None);
     }
@@ -588,6 +601,7 @@ mod tests {
             Provider::Kimi,
             Provider::Qwen,
             Provider::QwenIntl,
+            Provider::Doubao,
             Provider::DeepSeek,
         ] {
             let cfg = config_for(p);

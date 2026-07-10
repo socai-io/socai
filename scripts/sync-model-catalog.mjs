@@ -43,6 +43,11 @@ const FALLBACK = {
     entry("qwen3.6-plus", "Qwen 3.6 Plus"),
     entry("qwen3.6-max-preview", "Qwen 3.6 Max Preview"),
   ],
+  doubao: [
+    entry("doubao-seed-2-1-turbo-260628", "Doubao Seed 2.1 Turbo (260628)", "fallback", true),
+    entry("doubao-seed-2-1-pro-260628", "Doubao Seed 2.1 Pro (260628)"),
+    entry("doubao-seed-evolving", "Doubao Seed Evolving"),
+  ],
   deepseek: [
     entry("deepseek-v4-pro", "DeepSeek V4 Pro", "fallback", true),
     entry("deepseek-v4-flash", "DeepSeek V4 Flash"),
@@ -83,6 +88,14 @@ const PROVIDERS = {
     include: (id) => /^(qwen|qwq-|qvq-)/i.test(id),
     piProviders: [],
   },
+  doubao: {
+    env: ["DOUBAO_API_KEY"],
+    url: "https://ark.cn-beijing.volces.com/api/v3/models",
+    auth: bearer,
+    data: (json) => json?.data,
+    include: (id) => /^doubao-/i.test(id),
+    piProviders: [],
+  },
   deepseek: {
     env: ["DEEPSEEK_API_KEY"],
     url: "https://api.deepseek.com/v1/models",
@@ -116,6 +129,8 @@ function titleFromId(id) {
     .replace(/^accounts\/fireworks\/models\//, "")
     .replace(/[-_/]+/g, " ")
     .replace(/\bqwen(\d)/gi, "Qwen $1")
+    .replace(/\bdoubao\b/gi, "Doubao")
+    .replace(/\bseed\b/gi, "Seed")
     .replace(/\bgpt\b/gi, "GPT")
     .replace(/\bkimi\b/gi, "Kimi")
     .replace(/\bdeepseek\b/gi, "DeepSeek")
@@ -126,6 +141,7 @@ function titleFromId(id) {
     .replace(/\bplus\b/gi, "Plus")
     .replace(/\bmax\b/gi, "Max")
     .replace(/\bflash\b/gi, "Flash")
+    .replace(/\bturbo\b/gi, "Turbo")
     .replace(/\bpro\b/gi, "Pro")
     .replace(/\bpreview\b/gi, "Preview")
     .replace(/\s+/g, " ")
@@ -310,6 +326,7 @@ function versionParts(provider, lower) {
     openai: /gpt-(\d+)(?:[.-](\d+|o))?/,
     kimi: /kimi-k(\d+)(?:[.-](\d+))?/,
     qwen: /qwen(\d+)(?:[.-](\d+))?/,
+    doubao: /doubao-seed-(\d+)(?:[.-](\d+))?/,
     deepseek: /deepseek-v(\d+)(?:[.-](\d+))?/,
   };
   const match = lower.match(matchers[provider]) || lower.match(/(\d+)(?:[.-](\d+))?/);

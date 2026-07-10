@@ -39,6 +39,7 @@ const PROVIDER_ORDER: &[Provider] = &[
     Provider::Kimi,
     Provider::Qwen,
     Provider::QwenIntl,
+    Provider::Doubao,
     Provider::DeepSeek,
     Provider::OpenAI,
     Provider::Anthropic,
@@ -543,7 +544,8 @@ async fn ensure_any_llm_key() -> Result<()> {
     if !io::stdin().is_terminal() {
         anyhow::bail!(
             "No LLM credential found. Set OPENAI_API_KEY / ANTHROPIC_API_KEY / \
-             KIMI_API_KEY / QWEN_API_KEY, run `codex login`, or run `socai tui` \
+             KIMI_API_KEY / QWEN_API_KEY / DOUBAO_API_KEY / DEEPSEEK_API_KEY, \
+             run `codex login`, or run `socai tui` \
              in a terminal to save one."
         );
     }

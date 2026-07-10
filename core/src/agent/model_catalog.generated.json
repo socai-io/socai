@@ -408,6 +408,24 @@
         "source": "pi-ai"
       }
     ],
+    "doubao": [
+      {
+        "id": "doubao-seed-2-1-pro-260628",
+        "display_name": "Doubao Seed 2.1 Pro (260628)",
+        "source": "fallback"
+      },
+      {
+        "id": "doubao-seed-2-1-turbo-260628",
+        "display_name": "Doubao Seed 2.1 Turbo (260628)",
+        "source": "fallback",
+        "recommended": true
+      },
+      {
+        "id": "doubao-seed-evolving",
+        "display_name": "Doubao Seed Evolving",
+        "source": "fallback"
+      }
+    ],
     "deepseek": [
       {
         "id": "deepseek-v4-pro",

@@ -105,13 +105,13 @@ impl OpenAICompatBackend {
         extra
     }
 
-    /// Some providers (Kimi, Qwen) want `reasoning_content` round-tripped
+    /// Some providers (Kimi, Qwen, Doubao) want `reasoning_content` round-tripped
     /// in the assistant message when tool_calls are present. Others
     /// (OpenAI proper) ignore it. Toggle is per-provider.
     fn preserve_reasoning_content(&self) -> bool {
         matches!(
             self.provider,
-            Provider::Kimi | Provider::Qwen | Provider::QwenIntl
+            Provider::Kimi | Provider::Qwen | Provider::QwenIntl | Provider::Doubao
         )
     }
 
