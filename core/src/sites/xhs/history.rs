@@ -36,14 +36,16 @@ pub struct HistoryEntry {
     /// True once any past read had media (vision) enabled.
     #[serde(default)]
     pub include_media: bool,
-    /// True once any past read downloaded the note's media (images/video carry
-    /// a `local_path`).
+    /// The cached entity holds downloaded media (an image or the video carries
+    /// a `local_path`). Derived from the entity on every record, so it always
+    /// states what the cache can actually serve.
     #[serde(default)]
     pub downloaded: bool,
-    /// True once any past read ran OCR (the entity carries `ocr_text`).
+    /// The cached entity holds OCR output. Derived like `downloaded`.
     #[serde(default)]
     pub ocr: bool,
-    /// True once any past read attached a non-empty video audio transcript.
+    /// The cached entity holds a non-empty video audio transcript. Derived
+    /// like `downloaded`.
     #[serde(default)]
     pub transcribed: bool,
     /// Most comments (primary + replies) ever cached for this note. Lets a later
@@ -99,7 +101,8 @@ impl XhsHistoryStore {
 
     pub fn open(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
-        let inner = load_file(&path).unwrap_or_default();
+        let mut inner = load_file(&path).unwrap_or_default();
+        normalize_loaded_entries(&mut inner);
         Self {
             path,
             inner: Mutex::new(inner),
@@ -215,9 +218,23 @@ impl XhsHistoryStore {
         HistorySnapshot { entries }
     }
 
-    /// Upsert an entry after a successful read. Never downgrades the
-    /// recorded level or media flag — once a note was read deeply, that
-    /// stays.
+    /// Upsert an entry after a read. The cache is a growing union of
+    /// information per note, kept consistent by construction:
+    ///
+    /// - `level` / `include_media` record the deepest *request* ever served
+    ///   and never downgrade.
+    /// - The cached `entity` merges the fresh read into what was already
+    ///   cached ([`merge_entities`]): fresh fields win, enrichments only a
+    ///   prior read produced (transcript, media paths, OCR text, a larger
+    ///   comment set) are carried over rather than lost.
+    /// - `downloaded` / `ocr` / `transcribed` are then *derived* from the
+    ///   merged entity, so each flag states exactly whether the cache holds
+    ///   that information. `is_satisfied_by` serves any request the flags
+    ///   cover and forces a re-read for anything more — including retries
+    ///   after failed attempts, since failures leave no information behind.
+    /// - Attempt outcomes (`*_error` fields) are never cached: an error says
+    ///   nothing durable about the note, and the absent information already
+    ///   makes the next request that needs it re-read.
     pub fn record(&self, entity: &Value, level: &str, include_media: bool) {
         let Some(note_id) = entity
             .get("note_id")
@@ -232,6 +249,8 @@ impl XhsHistoryStore {
         let title = string_field(entity, "title");
         let author = string_field(entity, "author");
         let url = string_field(entity, "url");
+        let mut fresh = entity.clone();
+        strip_error_fields(&mut fresh);
 
         let snapshot = {
             let Ok(mut guard) = self.inner.lock() else {
@@ -259,30 +278,19 @@ impl XhsHistoryStore {
             if include_media {
                 entry.include_media = true;
             }
-            // Infer the downloaded/OCR flags from the entity itself so a reused
-            // note is only short-circuited when the cache actually covers what a
-            // later run asks for.
-            if entity_has_downloaded(entity) {
-                entry.downloaded = true;
-            }
-            if entity_has_ocr(entity) {
-                entry.ocr = true;
-            }
-            if entity_has_transcript(entity) {
-                entry.transcribed = true;
-            }
-            // Track comment coverage (primary + replies) so a later, larger
-            // request re-reads instead of reusing a smaller cached set.
-            let loaded = entity_comment_count(entity);
-            if loaded > entry.comments_loaded {
-                entry.comments_loaded = loaded;
-            }
-            let total = entity_comment_total(entity);
+            let merged = match entry.entity.take() {
+                Some(prev) => merge_entities(&prev, fresh),
+                None => fresh,
+            };
+            entry.downloaded = entity_has_downloaded(&merged);
+            entry.ocr = entity_has_ocr(&merged);
+            entry.transcribed = entity_has_transcript(&merged);
+            entry.comments_loaded = entity_comment_count(&merged);
+            let total = entity_comment_total(&merged);
             if total > entry.comments_total {
                 entry.comments_total = total;
             }
-            // Cache the full entity so a later reuse returns complete data.
-            entry.entity = Some(entity.clone());
+            entry.entity = Some(merged);
             entry.analysis_count = entry.analysis_count.saturating_add(1);
             entry.last_seen_at = now;
             guard.clone()
@@ -548,6 +556,101 @@ fn entity_has_transcript(entity: &Value) -> bool {
         .and_then(|video| video.get("transcript"))
         .and_then(Value::as_str)
         .is_some_and(|text| !text.trim().is_empty())
+}
+
+/// Remove attempt outcomes (`*_error` fields) from an entity before caching:
+/// on the note itself, its `video` object, and each image. An error describes
+/// one failed attempt, not the note — caching it would keep re-serving a
+/// stale failure after the underlying cause is gone, while the *absence* of
+/// the information (via the derived flags) is what correctly drives a retry.
+fn strip_error_fields(entity: &mut Value) {
+    fn strip(obj: &mut serde_json::Map<String, Value>) {
+        obj.retain(|key, _| !key.ends_with("_error"));
+    }
+    let Some(obj) = entity.as_object_mut() else {
+        return;
+    };
+    strip(obj);
+    if let Some(video) = obj.get_mut("video").and_then(Value::as_object_mut) {
+        strip(video);
+    }
+    if let Some(images) = obj.get_mut("images").and_then(Value::as_array_mut) {
+        for image in images {
+            if let Some(image) = image.as_object_mut() {
+                strip(image);
+            }
+        }
+    }
+}
+
+/// Merge a fresh read into the previously cached entity so a lesser re-read
+/// never erases information a prior read paid for. Fresh fields win — they
+/// are newer — with three carry-overs of prior enrichment work:
+///
+/// - `video`: merged key by key; keys the fresh read didn't produce
+///   (transcript, `local_path`, `poster_ocr`, …) are kept from the cache.
+/// - `images`: kept from the cache when the fresh read collected none.
+/// - `top_comments`: kept from the cache when it holds more than the fresh
+///   read loaded.
+///
+/// The capability flags are re-derived from the merged result, so any
+/// information this merge does drop (e.g. fresh images replacing OCR'd ones)
+/// is reflected in the flags and re-acquired by the next request needing it.
+fn merge_entities(prev: &Value, mut fresh: Value) -> Value {
+    let Some(fresh_obj) = fresh.as_object_mut() else {
+        return prev.clone();
+    };
+    if let Some(prev_video) = prev.get("video").and_then(Value::as_object) {
+        let fresh_video = fresh_obj
+            .entry("video")
+            .or_insert_with(|| Value::Object(Default::default()));
+        if let Some(fresh_video) = fresh_video.as_object_mut() {
+            for (key, value) in prev_video {
+                fresh_video
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+        }
+    }
+    let fresh_has_images = fresh_obj
+        .get("images")
+        .and_then(Value::as_array)
+        .is_some_and(|images| !images.is_empty());
+    if !fresh_has_images {
+        if let Some(prev_images) = prev
+            .get("images")
+            .and_then(Value::as_array)
+            .filter(|images| !images.is_empty())
+        {
+            fresh_obj.insert("images".into(), Value::Array(prev_images.clone()));
+            fresh_obj.insert("image_count".into(), json!(prev_images.len()));
+        }
+    }
+    if entity_comment_count(prev) > entity_comment_count(&fresh) {
+        if let Some(prev_comments) = prev.get("top_comments") {
+            if let Some(fresh_obj) = fresh.as_object_mut() {
+                fresh_obj.insert("top_comments".into(), prev_comments.clone());
+            }
+        }
+    }
+    fresh
+}
+
+/// Re-establish the cache invariants on entries written by older versions:
+/// cached entities must not carry attempt outcomes, and the information flags
+/// must state what the cached entity actually holds. In-memory only; the
+/// normalized state persists with the next regular save.
+fn normalize_loaded_entries(data: &mut HistoryFile) {
+    for entry in data.notes.values_mut() {
+        let Some(entity) = entry.entity.as_mut() else {
+            continue;
+        };
+        strip_error_fields(entity);
+        let entity = &*entity;
+        entry.downloaded = entity_has_downloaded(entity);
+        entry.ocr = entity_has_ocr(entity);
+        entry.transcribed = entity_has_transcript(entity);
+    }
 }
 
 fn load_file(path: &Path) -> Option<HistoryFile> {

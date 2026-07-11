@@ -84,6 +84,10 @@ Shared options (same meaning for both):
   pipelined behind the browse loop so it's near-free). Each note gets `ocr_text`
   as a per-image array (cover first); implies `download_media`; in `preview` mode
   it OCRs each card's cover only.
+- `transcribe_audio=true` — transcribe a video note's audio in the cloud
+  (socai pro), attaching `video.transcript`; a
+  `transcript_error` saying no speech was detected means the video genuinely
+  has no narration — report that as the answer.
 
 ### Note details
 

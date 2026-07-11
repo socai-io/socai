@@ -188,10 +188,20 @@ pub async fn transcribe_audio_file(
                         });
                     }
                     "failed" => {
-                        anyhow::bail!(
-                            "socai pro ASR failed: {}",
-                            task.error.unwrap_or_else(|| "unknown error".into())
-                        );
+                        let error = task.error.unwrap_or_else(|| "unknown error".into());
+                        // Fun-ASR reports an audio track it decoded fine but
+                        // heard no speech in (music/SFX-only videos) as a
+                        // failure. Surface the meaning, not the provider blob,
+                        // so the agent tells the user the video has no
+                        // narration instead of inventing a tooling problem.
+                        if error.contains("ASR_RESPONSE_HAVE_NO_WORDS") {
+                            anyhow::bail!(
+                                "no speech detected in the video's audio track (it likely \
+                                 contains only music or sound effects), so there is no \
+                                 spoken content to transcribe"
+                            );
+                        }
+                        anyhow::bail!("socai pro ASR failed: {}", short_error(&error));
                     }
                     _ => {}
                 }
@@ -208,6 +218,19 @@ pub async fn transcribe_audio_file(
         }
         tokio::time::sleep(ASR_TASK_POLL_INTERVAL).await;
     }
+}
+
+/// Trim a provider error to something an agent can read. Raw DashScope task
+/// dumps run to kilobytes of nested JSON with signed URLs; the leading part
+/// carries the task id + failure code, which is all a transcript_error needs.
+fn short_error(error: &str) -> String {
+    const MAX: usize = 300;
+    let trimmed = error.trim();
+    if trimmed.chars().count() <= MAX {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(MAX).collect();
+    format!("{head}… (truncated)")
 }
 
 async fn poll_task(
