@@ -139,7 +139,6 @@ impl MediaProcessor {
 
     pub fn diagnostics(&self) -> Value {
         json!({
-            "ffmpeg": find_in_path("ffmpeg").map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
             "whisper_cli": find_in_path("whisper").map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
             "whisper_cpp": find_in_path("whisper-cli")
                 .or_else(|| find_in_path("main"))

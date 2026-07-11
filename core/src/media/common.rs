@@ -15,16 +15,13 @@ AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36";
 pub struct MediaConfig {
     pub base_dir: PathBuf,
     pub request_timeout_s: u64,
-    pub ffmpeg_timeout_s: u64,
     pub whisper_timeout_s: u64,
     pub max_audio_seconds: u64,
-    pub max_frame_seconds: u64,
     pub default_language: String,
     pub use_ocr: bool,
     pub use_vision: bool,
     pub use_whisper: bool,
     pub use_cloud_asr: bool,
-    pub use_ffmpeg: bool,
     pub vision_concurrency: usize,
 }
 
@@ -33,16 +30,13 @@ impl MediaConfig {
         Self {
             base_dir: base_dir.into(),
             request_timeout_s: 25,
-            ffmpeg_timeout_s: 180,
             whisper_timeout_s: 300,
             max_audio_seconds: 300,
-            max_frame_seconds: 60,
             default_language: "zh".into(),
             use_ocr: true,
             use_vision: true,
             use_whisper: true,
             use_cloud_asr: false,
-            use_ffmpeg: true,
             vision_concurrency: 3,
         }
     }

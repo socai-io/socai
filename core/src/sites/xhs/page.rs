@@ -106,7 +106,6 @@ pub struct ReadNoteOptions {
     /// server. Implies `download_media` and `download_video_file` at the caller.
     pub transcribe_audio: bool,
     pub max_images: usize,
-    pub max_video_frames: usize,
     pub poster_url_fallback: String,
     pub note_id_fallback: String,
 }
@@ -121,7 +120,6 @@ impl Default for ReadNoteOptions {
             ocr: false,
             transcribe_audio: false,
             max_images: 12,
-            max_video_frames: 4,
             poster_url_fallback: String::new(),
             note_id_fallback: String::new(),
         }
@@ -1429,8 +1427,7 @@ impl<'a> XhsPageRuntime<'a> {
 
         if options.include_media {
             let t_enrich = Instant::now();
-            self.enrich_note_media(&mut note, options.max_images, options.max_video_frames)
-                .await?;
+            self.enrich_note_media(&mut note, options.max_images).await?;
             perf.insert(
                 "enrich_ms".into(),
                 json!(t_enrich.elapsed().as_millis() as u64),
@@ -1543,12 +1540,7 @@ impl<'a> XhsPageRuntime<'a> {
         Ok(())
     }
 
-    async fn enrich_note_media(
-        &self,
-        note: &mut XhsNote,
-        max_images: usize,
-        max_video_frames: usize,
-    ) -> Result<()> {
+    async fn enrich_note_media(&self, note: &mut XhsNote, max_images: usize) -> Result<()> {
         let Some(media) = &self.media else {
             if note.r#type == "video" {
                 insert_value_string(
@@ -1566,14 +1558,7 @@ impl<'a> XhsPageRuntime<'a> {
 
         if note.r#type == "video" {
             note.video = media
-                .enrich_video(
-                    &note.video,
-                    &note.note_id,
-                    &note.title,
-                    &note.url,
-                    max_video_frames,
-                    true,
-                )
+                .enrich_video(&note.video, &note.note_id, &note.title, &note.url, true)
                 .await;
             return Ok(());
         }

@@ -723,7 +723,6 @@ fn read_note_options(input: &Value) -> ReadNoteOptions {
         ocr,
         transcribe_audio,
         max_images: get_i64(input, "max_images", 12).max(1) as usize,
-        max_video_frames: get_i64(input, "max_video_frames", 4).max(1) as usize,
         poster_url_fallback: get_str(input, "poster_url_fallback")
             .unwrap_or("")
             .to_string(),
@@ -1078,7 +1077,6 @@ async fn scan_card_note(
                 // Pure downloads are cheap compared with OCR/vision, so allow
                 // full XHS carousels instead of the enrichment-oriented default.
                 max_images: if download_media { 100 } else { 12 },
-                max_video_frames: 4,
                 poster_url_fallback: card.cover_url.clone(),
                 note_id_fallback: card.note_id.clone(),
             },
@@ -2424,8 +2422,7 @@ impl Tool for ReadNoteTool {
                 "include_media": { "type": "boolean", "default": false },
                 "download_media": { "type": "boolean", "default": false },
                 "transcribe_audio": { "type": "boolean", "default": false },
-                "max_images": { "type": "integer", "default": 12, "minimum": 1 },
-                "max_video_frames": { "type": "integer", "default": 4, "minimum": 1 }
+                "max_images": { "type": "integer", "default": 12, "minimum": 1 }
             }
         });
         if !self.pro {
@@ -2548,8 +2545,7 @@ impl Tool for ExtractNoteTool {
                 "include_media": { "type": "boolean", "default": false },
                 "download_media": { "type": "boolean", "default": false },
                 "transcribe_audio": { "type": "boolean", "default": false },
-                "max_images": { "type": "integer", "default": 12, "minimum": 1 },
-                "max_video_frames": { "type": "integer", "default": 4, "minimum": 1 }
+                "max_images": { "type": "integer", "default": 12, "minimum": 1 }
             }
         });
         if !self.pro {
