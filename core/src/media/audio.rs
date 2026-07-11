@@ -10,101 +10,48 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::TimeBase;
-use tokio::process::Command;
 
-use crate::media::common::{
-    ensure_dir, find_in_path, nonempty, run_command, url_suffix, MediaUnavailable,
-};
+use crate::media::common::{ensure_dir, url_suffix, MediaUnavailable};
 use crate::media::processor::MediaProcessor;
 
 impl MediaProcessor {
-    pub async fn transcribe_audio(
-        &self,
-        source: &str,
-        referer: &str,
-        language: &str,
-    ) -> Result<String> {
+    /// Transcribe a video/audio source through socai pro cloud ASR — the only
+    /// transcription path (local whisper was removed as uncontrollable).
+    pub async fn transcribe_audio(&self, source: &str, referer: &str) -> Result<String> {
         let t0 = Instant::now();
-        let result = self.transcribe_audio_inner(source, referer, language).await;
-        self.timing.record("whisper_transcribe", t0.elapsed());
+        let result = self.transcribe_audio_inner(source, referer).await;
+        self.timing.record("asr_transcribe", t0.elapsed());
         result
     }
 
-    async fn transcribe_audio_inner(
-        &self,
-        source: &str,
-        referer: &str,
-        language: &str,
-    ) -> Result<String> {
-        let source_path = self.local_audio_source(source, referer).await?;
-        if self.config.use_cloud_asr {
-            // Real clip duration (the clip is already capped at
-            // max_audio_seconds); the server uses it for usage accounting.
-            let (aac, duration) = self.extract_audio_aac(&source_path).await?;
-            let duration_s = duration.ceil() as i64;
-            let result = crate::cloud::transcribe_audio_file(
-                &aac,
-                duration_s,
-                Duration::from_secs(self.config.whisper_timeout_s.max(60)),
-            )
-            .await?;
-            self.timing.record(
-                "cloud_asr_total",
-                Duration::from_millis(result.total_latency_ms as u64),
-            );
-            if result.provider_latency_ms > 0 {
-                self.timing.record(
-                    "cloud_asr_provider",
-                    Duration::from_millis(result.provider_latency_ms as u64),
-                );
-            }
-            return Ok(result.transcript.trim().to_string());
-        }
-
-        if !self.config.use_whisper {
-            anyhow::bail!(MediaUnavailable("Whisper transcription is disabled".into()));
-        }
-        if let Some(whisper_cli) = find_in_path("whisper") {
-            let out_dir = ensure_dir(&self.config.base_dir.join("transcripts"))?;
-            run_command(
-                Command::new(whisper_cli)
-                    .arg(&source_path)
-                    .arg("--language")
-                    .arg(nonempty(language, &self.config.default_language))
-                    .arg("--output_format")
-                    .arg("txt")
-                    .arg("--output_dir")
-                    .arg(&out_dir),
-                Duration::from_secs(self.config.whisper_timeout_s),
-            )
-            .await?;
-            let txt = out_dir.join(format!(
-                "{}.txt",
-                source_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-            ));
-            return Ok(tokio::fs::read_to_string(txt)
-                .await
-                .unwrap_or_default()
-                .trim()
-                .to_string());
-        }
-
-        let whisper_cpp = find_in_path("whisper-cli").or_else(|| find_in_path("main"));
-        let whisper_model = std::env::var("SOCAI_WHISPER_MODEL").unwrap_or_default();
-        if whisper_cpp.is_some() && !whisper_model.trim().is_empty() {
-            // whisper.cpp needs 16kHz wav input; that local decode pipeline was
-            // removed when cloud ASR switched to aac passthrough.
+    async fn transcribe_audio_inner(&self, source: &str, referer: &str) -> Result<String> {
+        if !self.config.use_cloud_asr {
             anyhow::bail!(MediaUnavailable(
-                "whisper.cpp transcription is no longer supported; use cloud ASR (socai pro) or install `whisper`".into(),
+                "audio transcription requires socai pro (cloud ASR)".into()
             ));
         }
-
-        anyhow::bail!(MediaUnavailable(
-            "No whisper provider configured. Install `whisper`, or set SOCAI_WHISPER_MODEL for whisper.cpp.".into(),
-        ));
+        let source_path = self.local_audio_source(source, referer).await?;
+        // Real clip duration (the clip is already capped at
+        // max_audio_seconds); the server uses it for usage accounting.
+        let (aac, duration) = self.extract_audio_aac(&source_path).await?;
+        let duration_s = duration.ceil() as i64;
+        let result = crate::cloud::transcribe_audio_file(
+            &aac,
+            duration_s,
+            Duration::from_secs(self.config.asr_timeout_s.max(60)),
+        )
+        .await?;
+        self.timing.record(
+            "cloud_asr_total",
+            Duration::from_millis(result.total_latency_ms as u64),
+        );
+        if result.provider_latency_ms > 0 {
+            self.timing.record(
+                "cloud_asr_provider",
+                Duration::from_millis(result.provider_latency_ms as u64),
+            );
+        }
+        Ok(result.transcript.trim().to_string())
     }
 
     async fn local_audio_source(&self, source: &str, referer: &str) -> Result<PathBuf> {

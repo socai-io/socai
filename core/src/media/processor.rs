@@ -4,11 +4,9 @@ use std::time::{Duration, Instant};
 
 use crate::agent::Backend as LlmProvider;
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use crate::media::common::{
-    ensure_dir, find_in_path, save_bytes, save_named_bytes, MediaConfig, USER_AGENT,
-};
+use crate::media::common::{ensure_dir, save_bytes, save_named_bytes, MediaConfig, USER_AGENT};
 use crate::media::timing::TimingRecord;
 
 #[derive(Clone)]
@@ -137,17 +135,4 @@ impl MediaProcessor {
         self.save_bytes(&payload, label, suffix)
     }
 
-    pub fn diagnostics(&self) -> Value {
-        json!({
-            "whisper_cli": find_in_path("whisper").map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
-            "whisper_cpp": find_in_path("whisper-cli")
-                .or_else(|| find_in_path("main"))
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            "whisper_cpp_model": std::env::var("SOCAI_WHISPER_MODEL").unwrap_or_default(),
-            "mlx_whisper_model": "",
-            "rust_ocr": "",
-            "agent_vision_llm_provider": self.llm_provider.as_ref().map(|b| b.label()).unwrap_or_default(),
-        })
-    }
 }

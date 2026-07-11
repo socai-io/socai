@@ -181,7 +181,7 @@ impl MediaProcessor {
             map.remove("transcript_error");
         }
         let t0 = Instant::now();
-        match self.transcribe_audio(&path, "", "").await {
+        match self.transcribe_audio(&path, "").await {
             Ok(transcript) if !transcript.trim().is_empty() => {
                 insert_string(video, "transcript", transcript);
             }
@@ -233,11 +233,14 @@ impl MediaProcessor {
                 .await;
         }
 
-        if !source.is_empty() {
+        // Inline transcription only when cloud ASR is enabled for this run;
+        // attempting it without pro would just stamp every enriched video with
+        // a "requires socai pro" transcript_error.
+        if !source.is_empty() && self.config.use_cloud_asr {
             if let Some(map) = result.as_object_mut() {
                 map.remove("transcript_error");
             }
-            match self.transcribe_audio(&source, referer, "").await {
+            match self.transcribe_audio(&source, referer).await {
                 Ok(transcript) if !transcript.trim().is_empty() => {
                     insert_string(&mut result, "transcript", transcript);
                 }

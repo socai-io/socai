@@ -1,10 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{Map, Value};
-use tokio::process::Command;
 
 use crate::media::md5;
 
@@ -15,12 +12,11 @@ AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36";
 pub struct MediaConfig {
     pub base_dir: PathBuf,
     pub request_timeout_s: u64,
-    pub whisper_timeout_s: u64,
+    /// Wall-clock cap for one cloud ASR round trip (upload + poll).
+    pub asr_timeout_s: u64,
     pub max_audio_seconds: u64,
-    pub default_language: String,
     pub use_ocr: bool,
     pub use_vision: bool,
-    pub use_whisper: bool,
     pub use_cloud_asr: bool,
     pub vision_concurrency: usize,
 }
@@ -30,12 +26,10 @@ impl MediaConfig {
         Self {
             base_dir: base_dir.into(),
             request_timeout_s: 25,
-            whisper_timeout_s: 300,
+            asr_timeout_s: 300,
             max_audio_seconds: 300,
-            default_language: "zh".into(),
             use_ocr: true,
             use_vision: true,
-            use_whisper: true,
             use_cloud_asr: false,
             vision_concurrency: 3,
         }
@@ -136,41 +130,6 @@ pub(crate) fn insert_string(value: &mut Value, key: &str, text: impl Into<String
 pub(crate) fn insert_value(value: &mut Value, key: &str, item: Value) {
     if let Some(map) = value.as_object_mut() {
         map.insert(key.to_string(), item);
-    }
-}
-
-pub(crate) async fn run_command(command: &mut Command, timeout: Duration) -> Result<()> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = tokio::time::timeout(timeout, command.output())
-        .await
-        .context("command timed out")??;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("command failed: {}", stderr.trim());
-    }
-    Ok(())
-}
-
-pub(crate) fn find_in_path(name: &str) -> Option<PathBuf> {
-    if name.contains('/') {
-        let path = PathBuf::from(name);
-        return path.is_file().then_some(path);
-    }
-    let paths = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&paths) {
-        let path = dir.join(name);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    None
-}
-
-pub(crate) fn nonempty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
-    if value.trim().is_empty() {
-        fallback
-    } else {
-        value
     }
 }
 
