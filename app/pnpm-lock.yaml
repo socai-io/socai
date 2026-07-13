@@ -25,8 +25,8 @@ importers:
         version: 18.0.5
     devDependencies:
       '@earendil-works/pi-ai':
-        specifier: 0.80.3
-        version: 0.80.3(ws@8.21.0)(zod@4.4.3)
+        specifier: 0.80.6
+        version: 0.80.6(ws@8.21.0)(zod@4.4.3)
       '@tauri-apps/cli':
         specifier: ^2.11.1
         version: 2.11.1
@@ -153,8 +153,8 @@ packages:
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
     engines: {node: '>=6.9.0'}
 
-  '@earendil-works/pi-ai@0.80.3':
-    resolution: {integrity: sha512-jPZLMeGL5kkMSEAwAklfXTMHqZvfhsJtCCpKGIr5Duk7mc0n4skjB1dugk7y0z3z8ZHIUCmPAWHdyDqgUz5vdA==}
+  '@earendil-works/pi-ai@0.80.6':
+    resolution: {integrity: sha512-7xfLk8sANBp+bpPEbjoOZTbPxsa+++b1JXAoSJsNa3vbs9AHHEclmvg54XLQcxH+fuwaeti/g2jeIfJ+mVYLpA==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
@@ -1160,7 +1160,7 @@ snapshots:
 
   '@babel/runtime@7.29.7': {}
 
-  '@earendil-works/pi-ai@0.80.3(ws@8.21.0)(zod@4.4.3)':
+  '@earendil-works/pi-ai@0.80.6(ws@8.21.0)(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/sdk': 0.91.1(zod@4.4.3)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
