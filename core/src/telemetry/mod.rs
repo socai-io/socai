@@ -331,6 +331,15 @@ pub fn query_text_enabled() -> bool {
     )
 }
 
+/// Gates LLM chat content (`gen_ai.input.messages` / `gen_ai.output.messages` /
+/// `gen_ai.system_instructions`) on run-trace `chat` spans.
+pub fn chat_text_enabled() -> bool {
+    !env_value_is(
+        "SOCAI_TELEMETRY_CHAT_TEXT",
+        &["0", "false", "off", "disabled", "no"],
+    )
+}
+
 fn device_info() -> &'static DeviceInfo {
     static DEVICE_INFO: OnceLock<DeviceInfo> = OnceLock::new();
     DEVICE_INFO.get_or_init(|| {

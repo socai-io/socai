@@ -179,6 +179,11 @@ pub async fn run_agent_with_events(
 
     let mut messages: Vec<Message> = options.seed_messages.clone();
     messages.push(Message::user(task.to_string()));
+    // Everything before this index is already in the trace: seed messages were
+    // uploaded by the earlier turns that share this conversation's trace id,
+    // and within the run the marker advances so each `chat` span carries only
+    // the messages new since the previous LLM call (see RunTraceBuilder).
+    let mut traced_len = options.seed_messages.len();
 
     emit(
         &events,
@@ -229,14 +234,27 @@ pub async fn run_agent_with_events(
             Ok(response) => {
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_response(step, &response, duration_ms)?;
-                run_trace.record_llm(step, duration_ms, &response);
+                run_trace.record_llm(
+                    step,
+                    duration_ms,
+                    &system,
+                    &messages[traced_len..],
+                    &response,
+                );
+                traced_len = messages.len();
                 response
             }
             Err(e) => {
                 let msg = format!("{e:#}");
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_error(step, &msg, duration_ms)?;
-                run_trace.record_llm_error(step, duration_ms, &msg);
+                run_trace.record_llm_error(
+                    step,
+                    duration_ms,
+                    &system,
+                    &messages[traced_len..],
+                    &msg,
+                );
                 warn!(step, error = %msg, "backend error");
                 emit(
                     &events,
@@ -329,6 +347,9 @@ pub async fn run_agent_with_events(
         //   ASSISTANT_TEXT_MAX_CHARS (320 chars)
         let assistant_blocks = build_assistant_blocks(&response, &visible_texts);
         messages.push(Message::assistant_blocks(assistant_blocks));
+        // The assistant turn is already on the trace as the previous span's
+        // gen_ai.output.messages; don't repeat it in the next input delta.
+        traced_len = messages.len();
 
         for text in &visible_texts {
             emit(
@@ -482,7 +503,13 @@ pub async fn run_agent_with_events(
             Ok(response) => {
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_response(step + 1, &response, duration_ms)?;
-                run_trace.record_llm(step + 1, duration_ms, &response);
+                run_trace.record_llm(
+                    step + 1,
+                    duration_ms,
+                    &last_system,
+                    &messages[traced_len..],
+                    &response,
+                );
                 total_input_tokens += response.input_tokens;
                 total_output_tokens += response.output_tokens;
                 let (visible_texts, _) = split_thinking(&response.text_blocks);
@@ -501,7 +528,13 @@ pub async fn run_agent_with_events(
                 let msg = format!("{e:#}");
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_error(step + 1, &msg, duration_ms)?;
-                run_trace.record_llm_error(step + 1, duration_ms, &msg);
+                run_trace.record_llm_error(
+                    step + 1,
+                    duration_ms,
+                    &last_system,
+                    &messages[traced_len..],
+                    &msg,
+                );
                 warn!(step = step + 1, error = %msg, "forced summary error");
                 emit(
                     &events,
@@ -718,10 +751,14 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
     s
 }
 
+/// Prompt-driven thinking convention: models without a native thinking
+/// channel are asked to prefix reasoning text with this marker. Shared with
+/// the run-trace builder so those blocks upload as reasoning, not answer text.
+pub(crate) const THINKING_TEXT_PREFIX: &str = "[Thinking] ";
+
 /// Split assistant text blocks into (visible, thinking) by the `[Thinking] `
 /// prefix. Whitespace-only blocks are dropped from both buckets.
 fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
-    const PREFIX: &str = "[Thinking] ";
     let mut visible: Vec<String> = Vec::new();
     let mut thinking: Vec<String> = Vec::new();
     for block in text_blocks {
@@ -729,7 +766,7 @@ fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix(PREFIX) {
+        if let Some(rest) = trimmed.strip_prefix(THINKING_TEXT_PREFIX) {
             thinking.push(rest.trim().to_string());
         } else {
             visible.push(trimmed.to_string());

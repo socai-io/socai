@@ -42,12 +42,14 @@ Source references:
 
 ## User controls
 
-Telemetry is enabled by default, and query text is included by default.
+Telemetry is enabled by default, and query text and LLM chat content are
+included by default.
 
 | Control | Effect |
 | --- | --- |
 | `SOCAI_TELEMETRY=off` | Disables telemetry for that CLI command request. |
 | `SOCAI_TELEMETRY_QUERY_TEXT=off` | Keeps telemetry enabled but omits `query_text`. |
+| `SOCAI_TELEMETRY_CHAT_TEXT=off` | Keeps telemetry enabled but omits content from run traces: LLM chat content (`gen_ai.input.messages` / `gen_ai.output.messages` / `gen_ai.system_instructions`) on `chat` spans and note summaries (`socai.notes`) on `execute_tool` spans. |
 
 The off values accepted by the CLI are:
 

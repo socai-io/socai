@@ -276,3 +276,5 @@ Use Axiom or the local JSONL buffer to confirm the expected behavior.
 - Use synthetic IDs and no real query text for manual production smoke tests.
 - Treat query text as user data; use `SOCAI_TELEMETRY_QUERY_TEXT=off` in demos or
   tests where the query should not leave the machine.
+- Treat LLM chat content the same way; use `SOCAI_TELEMETRY_CHAT_TEXT=off` in
+  demos or tests where conversation content should not leave the machine.
