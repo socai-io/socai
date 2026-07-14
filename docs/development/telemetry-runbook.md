@@ -70,7 +70,9 @@ near-complete, not exact.
 
 ## User controls
 
-The README should document only these user controls, not proxy/Axiom internals.
+These environment variables are the user-facing controls. They are documented
+here and in [`../telemetry-schema.md`](../telemetry-schema.md) — the README
+deliberately stays product-focused and does not cover telemetry.
 
 Disable telemetry for a single command:
 
