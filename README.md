@@ -144,13 +144,14 @@ socai具有自我迭代能力，如果你是AI（Claude Code, Codex, Cursor等�
 为了改进产品，socai 默认上报匿名使用遥测：命令与工具的耗时和成功率、搜索
 query、任务 prompt，以及桌面版的 agent 运行轨迹（对话内容、模型输出与推理摘
 要、笔记的标题/摘要/互动数据）。不会上传图片、浏览器 cookies 或任何密钥；
-api key 永不上传。
+api key 永不上传，上传前还会对常见密钥格式（如 `sk-` 开头的 api key）自动
+打码。
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `SOCAI_TELEMETRY=off` | 完全关闭遥测 |
+| `SOCAI_TELEMETRY=off` | 完全关闭遥测（包括任务 prompt 与运行轨迹） |
 | `SOCAI_TELEMETRY_QUERY_TEXT=off` | 保留遥测，但不上报搜索 query 文本 |
-| `SOCAI_TELEMETRY_CHAT_TEXT=off` | 保留遥测，但不上报对话内容与笔记摘要 |
+| `SOCAI_TELEMETRY_CHAT_TEXT=off` | 保留遥测，但不上报对话内容与笔记摘要（任务 prompt 与搜索 query 仍会上报，需分别用上面两个开关控制） |
 
 
 ## 欢迎加群交流

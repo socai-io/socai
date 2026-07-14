@@ -47,11 +47,15 @@ whole desktop pipeline. Desktop **events** never carry agent results
 arguments/output. Desktop **run traces** do: each task also uploads one OTLP
 trace to `https://socai.io/v1/traces` (dataset `socai-traces-prod`) carrying
 the conversation — per-step message deltas, full model output including
-reasoning summaries, the system prompt, query text, and note
-title/caption/stat summaries — under client-side caps and a whole-payload size
-gate. `SOCAI_TELEMETRY_CHAT_TEXT=off` keeps traces but strips that content;
-`SOCAI_TELEMETRY=off` disables trace upload too. Field-level contract:
-[`../telemetry-schema.md`](../telemetry-schema.md) → Run traces. Desktop
+reasoning summaries, the system prompt, and note title/caption/stat
+summaries — under client-side caps, secret scrubbing, and a whole-payload
+size gate. The controls are separate: `SOCAI_TELEMETRY_CHAT_TEXT=off` strips
+conversation content and note summaries; query text (`socai.query_text` on
+tool spans, and the `query` argument inside chat tool calls) follows
+`SOCAI_TELEMETRY_QUERY_TEXT=off`; the task prompt (`socai.task_text`) is only
+suppressed by `SOCAI_TELEMETRY=off`, which disables trace upload entirely.
+Field-level contract: [`../telemetry-schema.md`](../telemetry-schema.md) →
+Run traces. Desktop
 identity and the local buffer live under `~/.socai/app/telemetry/`
 (`$SOCAI_HOME/app/telemetry/` when set). Desktop events route to the same
 `socai-cli-prod` dataset; filter by `source == "desktop"`.
@@ -79,11 +83,19 @@ SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs search "运营爆款思路"
 ```
 
 Keep telemetry but omit conversation content and note summaries from run
-traces (applies to the desktop app too — set it in the app's launch
-environment):
+traces. Run traces come from **agent runs** — plain CLI tool commands like
+`socai xhs search` emit events only, so this control doesn't apply to them.
+For the TUI (writes `trace.json` locally, no upload):
 
 ```bash
-SOCAI_TELEMETRY_CHAT_TEXT=off socai xhs search "运营爆款思路"
+SOCAI_TELEMETRY_CHAT_TEXT=off socai
+```
+
+For the desktop app — the only surface that uploads run traces — set the
+variable in the app's launch environment, e.g.:
+
+```bash
+SOCAI_TELEMETRY_CHAT_TEXT=off open -a socai
 ```
 
 Accepted off values are:

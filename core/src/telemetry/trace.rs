@@ -231,23 +231,29 @@ impl RunTraceBuilder {
         if !chat_text_enabled() {
             return;
         }
+        // Query text has its own gate: when it's off, tool-call arguments in
+        // chat content redact their `query` field too, matching the events
+        // pipeline. Tool RESULTS may still echo the query — full removal of
+        // conversation content is the chat gate's job.
+        let include_query = query_text_enabled();
         attrs.push(attr_int("socai.new_messages", new_messages.len() as i64));
         let system_hash = md5_hex(system.as_bytes());
         if self.last_system_hash != system_hash {
             self.last_system_hash = system_hash;
+            let system = redact_secrets(system);
             let rendered = capped_chat_json(
-                |cap| json!([{ "type": "text", "content": truncate_chars(system, cap) }]),
+                |cap| json!([{ "type": "text", "content": truncate_chars(&system, cap) }]),
             );
             if !self.push_budgeted(attrs, "gen_ai.system_instructions", rendered) {
                 return;
             }
         }
-        let input = capped_chat_json(|cap| input_messages_json(new_messages, cap));
+        let input = capped_chat_json(|cap| input_messages_json(new_messages, cap, include_query));
         if !self.push_budgeted(attrs, "gen_ai.input.messages", input) {
             return;
         }
         if let Some(response) = response {
-            let output = capped_chat_json(|cap| output_messages_json(response, cap));
+            let output = capped_chat_json(|cap| output_messages_json(response, cap, include_query));
             self.push_budgeted(attrs, "gen_ai.output.messages", output);
         }
     }
@@ -607,14 +613,14 @@ fn capped_chat_json(build: impl Fn(usize) -> Value) -> String {
 }
 
 /// OTel GenAI `gen_ai.input.messages` shape: `[{role, parts: [...]}]`.
-fn input_messages_json(messages: &[Message], part_cap: usize) -> Value {
+fn input_messages_json(messages: &[Message], part_cap: usize, include_query: bool) -> Value {
     Value::Array(
         messages
             .iter()
             .map(|message| {
                 json!({
                     "role": message_role(message),
-                    "parts": message_parts(&message.content.as_blocks(), part_cap),
+                    "parts": message_parts(&message.content.as_blocks(), part_cap, include_query),
                 })
             })
             .collect(),
@@ -624,18 +630,18 @@ fn input_messages_json(messages: &[Message], part_cap: usize) -> Value {
 /// OTel GenAI `gen_ai.output.messages` shape. Built from the raw response —
 /// not conversation history, which truncates assistant text — so the trace
 /// carries the full text, reasoning, and tool calls of this step.
-fn output_messages_json(response: &LLMResponse, part_cap: usize) -> Value {
+fn output_messages_json(response: &LLMResponse, part_cap: usize, include_query: bool) -> Value {
     let mut parts: Vec<Value> = Vec::new();
     for block in &response.thinking_blocks {
         parts.push(json!({
             "type": "reasoning",
-            "content": truncate_chars(&block.thinking, part_cap),
+            "content": chat_text(&block.thinking, part_cap),
         }));
     }
     if response.thinking_blocks.is_empty() && !response.reasoning_content.trim().is_empty() {
         parts.push(json!({
             "type": "reasoning",
-            "content": truncate_chars(&response.reasoning_content, part_cap),
+            "content": chat_text(&response.reasoning_content, part_cap),
         }));
     }
     for text in &response.text_blocks {
@@ -648,11 +654,9 @@ fn output_messages_json(response: &LLMResponse, part_cap: usize) -> Value {
         match trimmed.strip_prefix(THINKING_TEXT_PREFIX) {
             Some(thinking) => parts.push(json!({
                 "type": "reasoning",
-                "content": truncate_chars(thinking.trim(), part_cap),
+                "content": chat_text(thinking.trim(), part_cap),
             })),
-            None => {
-                parts.push(json!({ "type": "text", "content": truncate_chars(trimmed, part_cap) }))
-            }
+            None => parts.push(json!({ "type": "text", "content": chat_text(trimmed, part_cap) })),
         }
     }
     for tool_call in &response.tool_calls {
@@ -660,7 +664,7 @@ fn output_messages_json(response: &LLMResponse, part_cap: usize) -> Value {
             "type": "tool_call",
             "id": tool_call.id,
             "name": tool_call.name,
-            "arguments": capped_arguments(&tool_call.input, part_cap),
+            "arguments": tool_call_arguments(&tool_call.input, part_cap, include_query),
         }));
     }
     json!([{
@@ -668,6 +672,12 @@ fn output_messages_json(response: &LLMResponse, part_cap: usize) -> Value {
         "parts": parts,
         "finish_reason": stop_reason_str(response),
     }])
+}
+
+/// Redact-then-truncate for every chat content string. Redaction runs on the
+/// full text first so a cap can't split a secret and leak its prefix.
+fn chat_text(text: &str, part_cap: usize) -> String {
+    truncate_chars(&redact_secrets(text), part_cap)
 }
 
 /// Compact note summaries (id/title/caption/stats) pulled from a site tool's
@@ -701,7 +711,8 @@ fn note_summaries(output: &Value) -> Vec<Value> {
             data.get("selected_cards"),
             // author_scan preview: `profile.note_cards` is the sole listing
             // (it's stripped once notes are opened — see xhs tools).
-            data.get("profile").and_then(|profile| profile.get("note_cards")),
+            data.get("profile")
+                .and_then(|profile| profile.get("note_cards")),
         ];
         for items in card_lists.into_iter().flatten() {
             if let Some(items) = items.as_array() {
@@ -734,13 +745,13 @@ fn push_note_summary(entity: &Value, notes: &mut Vec<Value>, seen_ids: &mut Vec<
         note.insert("id".into(), json!(id));
     }
     if !title.is_empty() {
-        note.insert("title".into(), json!(title));
+        note.insert("title".into(), json!(redact_secrets(&title)));
     }
     let caption = string_field(entity, "content");
     if !caption.is_empty() {
         note.insert(
             "caption".into(),
-            json!(truncate_chars(&caption, NOTE_CAPTION_MAX_CHARS)),
+            json!(chat_text(&caption, NOTE_CAPTION_MAX_CHARS)),
         );
     }
     for (field, key) in [
@@ -766,6 +777,146 @@ fn string_field(entity: &Value, key: &str) -> String {
     }
 }
 
+/// JSON field names whose string values are scrubbed by [`redact_secrets`].
+/// Covers `~/.socai/auth.json` (every provider key lives under `api_key`)
+/// and common token envelopes a `bash`/`read_file` result could echo.
+const SECRET_JSON_FIELDS: [&str; 9] = [
+    "api_key",
+    "apikey",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "client_secret",
+    "authorization",
+    "password",
+    "secret",
+];
+
+/// Client-side secret scrub applied to every chat-content string before it
+/// enters a trace attribute. Desktop `read_file`/`bash` are confined to
+/// `~/.socai` — which is exactly where `auth.json` stores provider api keys —
+/// so tool results can legitimately contain live secrets. Targeted patterns,
+/// chosen for near-zero false positives on prose:
+/// - values of sensitive JSON fields (`"api_key": "…"` → `"api_key":"[redacted]"`)
+/// - `sk-`-prefixed token runs (every configured provider's key shape)
+/// - JWT-shaped `eyJ…` runs (oauth access/id tokens)
+/// - `Bearer <token>` header values
+fn redact_secrets(text: &str) -> String {
+    let text = redact_json_secret_fields(text);
+    redact_token_runs(&text)
+}
+
+fn redact_json_secret_fields(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            if let Some(key_end) = match_secret_field(&lower, i) {
+                let mut j = key_end;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b':' {
+                    let mut k = j + 1;
+                    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                        k += 1;
+                    }
+                    if k < bytes.len() && bytes[k] == b'"' {
+                        let mut v = k + 1;
+                        while v < bytes.len() && !(bytes[v] == b'"' && bytes[v - 1] != b'\\') {
+                            v += 1;
+                        }
+                        if v < bytes.len() {
+                            out.push_str(&text[i..=k]);
+                            out.push_str("[redacted]");
+                            out.push('"');
+                            i = v + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        let step = utf8_len(bytes[i]);
+        out.push_str(&text[i..i + step]);
+        i += step;
+    }
+    out
+}
+
+/// If `lower[start..]` opens a quoted sensitive field name, return the byte
+/// index just past its closing quote.
+fn match_secret_field(lower: &str, start: usize) -> Option<usize> {
+    let rest = &lower.as_bytes()[start + 1..];
+    for field in SECRET_JSON_FIELDS {
+        let f = field.as_bytes();
+        if rest.len() > f.len() && rest.starts_with(f) && rest[f.len()] == b'"' {
+            return Some(start + 1 + f.len() + 1);
+        }
+    }
+    None
+}
+
+fn redact_token_runs(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &text[i..];
+        if rest.starts_with("sk-") {
+            let run = token_run_len(&bytes[i + 3..], |b| {
+                b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+            });
+            if run >= 12 {
+                out.push_str("sk-[redacted]");
+                i += 3 + run;
+                continue;
+            }
+        }
+        if rest.starts_with("eyJ") {
+            let run = token_run_len(&bytes[i..], |b| {
+                b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.'
+            });
+            if run >= 20 && bytes[i..i + run].contains(&b'.') {
+                out.push_str("[redacted-jwt]");
+                i += run;
+                continue;
+            }
+        }
+        if bytes.len() - i > 7 && bytes[i..i + 7].eq_ignore_ascii_case(b"bearer ") {
+            let run = token_run_len(&bytes[i + 7..], |b| {
+                b.is_ascii_alphanumeric()
+                    || matches!(b, b'.' | b'_' | b'~' | b'+' | b'/' | b'-' | b'=')
+            });
+            if run >= 16 {
+                out.push_str(&text[i..i + 7]);
+                out.push_str("[redacted]");
+                i += 7 + run;
+                continue;
+            }
+        }
+        let step = utf8_len(bytes[i]);
+        out.push_str(&text[i..i + step]);
+        i += step;
+    }
+    out
+}
+
+fn token_run_len(bytes: &[u8], accept: impl Fn(u8) -> bool) -> usize {
+    bytes.iter().take_while(|&&b| accept(b)).count()
+}
+
+fn utf8_len(lead: u8) -> usize {
+    match lead {
+        b if b < 0x80 => 1,
+        b if b < 0xE0 => 2,
+        b if b < 0xF0 => 3,
+        _ => 4,
+    }
+}
+
 /// Tool results travel as user messages internally; semconv wants them under
 /// role `tool` so GenAI-aware views render them as tool output.
 fn message_role(message: &Message) -> &'static str {
@@ -784,12 +935,12 @@ fn message_role(message: &Message) -> &'static str {
     }
 }
 
-fn message_parts(blocks: &[Block], part_cap: usize) -> Vec<Value> {
+fn message_parts(blocks: &[Block], part_cap: usize, include_query: bool) -> Vec<Value> {
     let mut parts: Vec<Value> = Vec::new();
     for block in blocks {
         match block {
             Block::Text { text } => {
-                parts.push(json!({ "type": "text", "content": truncate_chars(text, part_cap) }));
+                parts.push(json!({ "type": "text", "content": chat_text(text, part_cap) }));
             }
             Block::Image { media_type, .. } => {
                 parts.push(
@@ -797,15 +948,12 @@ fn message_parts(blocks: &[Block], part_cap: usize) -> Vec<Value> {
                 );
             }
             Block::ReasoningContent { text } => {
-                parts.push(
-                    json!({ "type": "reasoning", "content": truncate_chars(text, part_cap) }),
-                );
+                parts.push(json!({ "type": "reasoning", "content": chat_text(text, part_cap) }));
             }
             // Signature is an opaque replay token — only the thinking text goes up.
             Block::Thinking { thinking, .. } => {
-                parts.push(
-                    json!({ "type": "reasoning", "content": truncate_chars(thinking, part_cap) }),
-                );
+                parts
+                    .push(json!({ "type": "reasoning", "content": chat_text(thinking, part_cap) }));
             }
             // Encrypted replay blob; nothing human-readable to upload.
             Block::OpenAIReasoning { .. } => {}
@@ -814,7 +962,7 @@ fn message_parts(blocks: &[Block], part_cap: usize) -> Vec<Value> {
                     "type": "tool_call",
                     "id": id,
                     "name": name,
-                    "arguments": capped_arguments(input, part_cap),
+                    "arguments": tool_call_arguments(input, part_cap, include_query),
                 }));
             }
             Block::ToolResult {
@@ -824,7 +972,7 @@ fn message_parts(blocks: &[Block], part_cap: usize) -> Vec<Value> {
                 parts.push(json!({
                     "type": "tool_call_response",
                     "id": tool_use_id,
-                    "response": truncate_chars(&tool_result_text(content), part_cap),
+                    "response": chat_text(&tool_result_text(content), part_cap),
                 }));
             }
         }
@@ -843,14 +991,28 @@ fn tool_result_text(content: &[ToolResultContent]) -> String {
         .join("\n")
 }
 
-/// Tool arguments stay structured JSON unless oversized, in which case they
-/// degrade to a truncated string form.
-fn capped_arguments(input: &Value, part_cap: usize) -> Value {
+/// Tool arguments stay structured JSON unless a secret was redacted or the
+/// serialized form is oversized, in which case they degrade to a (redacted,
+/// truncated) string form. `include_query` mirrors the events pipeline's
+/// query gate: when off, a top-level `query` string argument is redacted.
+fn tool_call_arguments(input: &Value, part_cap: usize, include_query: bool) -> Value {
+    let mut input = input.clone();
+    if !include_query {
+        if let Some(query) = input
+            .as_object_mut()
+            .and_then(|object| object.get_mut("query"))
+        {
+            if query.is_string() {
+                *query = json!("[redacted]");
+            }
+        }
+    }
     let rendered = input.to_string();
-    if rendered.chars().count() <= part_cap {
-        input.clone()
+    let redacted = redact_secrets(&rendered);
+    if redacted == rendered && rendered.chars().count() <= part_cap {
+        input
     } else {
-        Value::String(truncate_chars(&rendered, part_cap))
+        Value::String(truncate_chars(&redacted, part_cap))
     }
 }
 

@@ -183,6 +183,14 @@ pub async fn run_agent_with_events(
     // uploaded by the earlier turns that share this conversation's trace id,
     // and within the run the marker advances so each `chat` span carries only
     // the messages new since the previous LLM call (see RunTraceBuilder).
+    //
+    // Known divergence, accepted: follow-up seeds are rebuilt from persisted
+    // turn outputs (`Conversation::chat_messages` reads the artifact-enriched
+    // report.md), while the earlier turn's span recorded the raw LLMResponse.
+    // The joined trace is the per-turn transcript, not a byte-exact replay of
+    // the next request — the same class of local-only divergence as
+    // compaction rewrites. Tracking a persisted cross-run cursor to close the
+    // gap isn't worth the state it would add.
     let mut traced_len = options.seed_messages.len();
 
     emit(

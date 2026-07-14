@@ -279,7 +279,17 @@ pipeline for reading what an agent actually did:
 
 Never uploaded, regardless of settings: image bytes/screenshots, Anthropic
 thinking signatures, encrypted reasoning items, browser cookies/session
-storage, or secrets.
+storage, or secrets. Every chat-content string is additionally scrubbed
+client-side for secret-shaped values before upload — `sk-`-prefixed api keys,
+JWT-shaped tokens, `Bearer` header values, and sensitive JSON fields
+(`api_key`, `access_token`, …) — because desktop `read_file`/`bash` are
+confined to `~/.socai`, where `auth.json` stores provider api keys, so a tool
+result can legitimately contain live secrets.
+
+The trace is the per-turn transcript, not a byte-exact request replay: context
+compaction rewrites of older history stay local, and a follow-up turn's seed
+messages are rebuilt from the persisted (artifact-enriched) report rather than
+the raw output the earlier turn's span recorded.
 
 Size limits are enforced client-side: 20,000 chars per message part, 200-char
 note captions, 150 KB per attribute, a 300 KB per-run content budget charged at
@@ -290,7 +300,12 @@ stays transport-only (shape gate, body-size cap, rate limit — no field
 inspection).
 
 Controls: `SOCAI_TELEMETRY_CHAT_TEXT=off` removes conversation content and
-note summaries (spans keep counts, timings, and status only);
+note summaries. It is **not** a text-free trace: the root span still carries
+`socai.task_text` (only `SOCAI_TELEMETRY=off` suppresses it), and tool spans
+still carry the `socai.query_text` / `socai.metadata` argument summaries.
+Query text has its own gate — `SOCAI_TELEMETRY_QUERY_TEXT=off` — which also
+redacts the `query` argument inside chat tool-call parts (tool *results* can
+still echo the query; removing those requires the chat gate).
 `SOCAI_TELEMETRY=off` disables the desktop telemetry pipeline entirely,
 including trace upload.
 
