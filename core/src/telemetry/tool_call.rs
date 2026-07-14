@@ -27,7 +27,10 @@ pub fn summarize_tool_args(args: &Value, include_query_text: bool) -> Map<String
                     props.insert("query_len".into(), json!(query.chars().count()));
                     props.insert("query_text_enabled".into(), json!(include_query_text));
                     if include_query_text {
-                        props.insert("query_text".into(), json!(query));
+                        props.insert(
+                            "query_text".into(),
+                            json!(super::trace::redact_secrets(query)),
+                        );
                     }
                 }
             }

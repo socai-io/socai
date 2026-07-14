@@ -269,7 +269,7 @@ pipeline for reading what an agent actually did:
 
 - `chat` spans — `gen_ai.input.messages` (only the messages new since the
   previous LLM call), `gen_ai.output.messages` (that call's full response,
-  including reasoning/thinking summaries and tool calls), and
+  including reasoning/thinking content and tool calls), and
   `gen_ai.system_instructions` (once per run, again when it changes).
 - `execute_tool` spans — the argument summary (query text under the
   `SOCAI_TELEMETRY_QUERY_TEXT` gate), count-only result metrics, and
@@ -278,13 +278,16 @@ pipeline for reading what an agent actually did:
   count, and token totals.
 
 Never uploaded, regardless of settings: image bytes/screenshots, Anthropic
-thinking signatures, encrypted reasoning items, browser cookies/session
-storage, or secrets. Every chat-content string is additionally scrubbed
-client-side for secret-shaped values before upload — `sk-`-prefixed api keys,
+thinking signatures, encrypted reasoning items, and browser cookies/session
+storage. For secrets, every uploaded text field — chat content, the root
+`socai.task_text`, and `query_text` on both pipelines — passes a client-side
+scrubber for secret-shaped values before upload: `sk-`-prefixed api keys,
 JWT-shaped tokens, `Bearer` header values, and sensitive JSON fields
-(`api_key`, `access_token`, …) — because desktop `read_file`/`bash` are
-confined to `~/.socai`, where `auth.json` stores provider api keys, so a tool
-result can legitimately contain live secrets.
+(`api_key`, `device_token`, `access_token`, …). Desktop `read_file`/`bash`
+are confined to `~/.socai`, where `auth.json` stores provider api keys and
+the socai pro `device_token`, so tool results can legitimately contain live
+secrets. The scrubber is pattern-based — a safety net for known formats, not
+a guarantee for arbitrary secret material.
 
 The trace is the per-turn transcript, not a byte-exact request replay: context
 compaction rewrites of older history stay local, and a follow-up turn's seed

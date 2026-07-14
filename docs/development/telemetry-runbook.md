@@ -28,7 +28,9 @@ approximate device capacity, terminal app, and explicitly provided optional CLI
 parameters under `metadata`.
 
 Over the events pipeline, socai does not send note bodies, comments, images,
-browser cookies, API keys, raw tool output bodies, or Axiom credentials. Run
+browser cookies, raw tool output bodies, or Axiom credentials; the free-text
+fields it does send (task prompt, query text) are scrubbed client-side for
+secret-shaped values (api keys, tokens) before capture. Run
 traces (desktop only) are the deliberate exception: they carry conversation
 content and note summaries by default — see the desktop section below and
 [`../telemetry-schema.md`](../telemetry-schema.md) → Run traces.
@@ -47,7 +49,7 @@ whole desktop pipeline. Desktop **events** never carry agent results
 arguments/output. Desktop **run traces** do: each task also uploads one OTLP
 trace to `https://socai.io/v1/traces` (dataset `socai-traces-prod`) carrying
 the conversation — per-step message deltas, full model output including
-reasoning summaries, the system prompt, and note title/caption/stat
+reasoning content, the system prompt, and note title/caption/stat
 summaries — under client-side caps, secret scrubbing, and a whole-payload
 size gate. The controls are separate: `SOCAI_TELEMETRY_CHAT_TEXT=off` strips
 conversation content and note summaries; query text (`socai.query_text` on
@@ -91,11 +93,13 @@ For the TUI (writes `trace.json` locally, no upload):
 SOCAI_TELEMETRY_CHAT_TEXT=off socai
 ```
 
-For the desktop app — the only surface that uploads run traces — set the
-variable in the app's launch environment, e.g.:
+For the desktop app — the only surface that uploads run traces — the variable
+must reach the app process itself. A plain `VAR=... open -a socai` does NOT
+work (LaunchServices drops the client environment); quit socai first, then
+launch with `open --env`:
 
 ```bash
-SOCAI_TELEMETRY_CHAT_TEXT=off open -a socai
+open --env SOCAI_TELEMETRY_CHAT_TEXT=off -a socai
 ```
 
 Accepted off values are:

@@ -801,7 +801,7 @@ async fn run_agent_task_background(
             "provider": provider.clone(),
             "model": model.clone(),
             "task_len": task.chars().count(),
-            "task_text": task.clone(),
+            "task_text": socai_core::telemetry::redact_secrets(&task),
         }),
     );
 

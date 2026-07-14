@@ -65,6 +65,11 @@ const CHAT_BUDGET_BYTES: usize = 300_000;
 const NOTES_MAX_PER_SPAN: usize = 25;
 /// Caption (note body) cap inside a note summary.
 const NOTE_CAPTION_MAX_CHARS: usize = 200;
+/// Remaining note-summary field caps; with all fields bounded, 25 notes stay
+/// far below the per-attribute byte cap even in CJK.
+const NOTE_TITLE_MAX_CHARS: usize = 300;
+const NOTE_ID_MAX_CHARS: usize = 100;
+const NOTE_STAT_MAX_CHARS: usize = 50;
 /// Ceiling for the assembled payload: the traces proxy rejects bodies over
 /// 512 KiB, and the uploader appends identity resource attributes. The chat
 /// budget bounds content, but span envelopes and non-content attributes ride
@@ -144,7 +149,7 @@ impl RunTraceBuilder {
             trace_id,
             root_span_id: new_span_id(),
             run_id: run_id.to_string(),
-            task_text: truncate_chars(task, TASK_TEXT_MAX_CHARS),
+            task_text: truncate_chars(&redact_secrets(task), TASK_TEXT_MAX_CHARS),
             model: model.to_string(),
             session_id: session_id.map(ToOwned::to_owned),
             seed_messages,
@@ -301,7 +306,12 @@ impl RunTraceBuilder {
         if chat_text_enabled() {
             let notes = note_summaries(output);
             if !notes.is_empty() {
-                let rendered = Value::Array(notes).to_string();
+                let mut rendered = Value::Array(notes).to_string();
+                // Field caps bound this far below CHAT_ATTR_MAX_BYTES; the
+                // marker is a belt against unforeseen shapes.
+                if rendered.len() > CHAT_ATTR_MAX_BYTES {
+                    rendered = "[notes omitted: over attribute cap]".to_string();
+                }
                 self.push_budgeted(&mut attrs, "socai.notes", rendered);
             }
         }
@@ -729,7 +739,7 @@ fn push_note_summary(entity: &Value, notes: &mut Vec<Value>, seen_ids: &mut Vec<
     if notes.len() >= NOTES_MAX_PER_SPAN {
         return;
     }
-    let id = string_field(entity, "note_id");
+    let id = truncate_chars(&string_field(entity, "note_id"), NOTE_ID_MAX_CHARS);
     let title = string_field(entity, "title");
     if id.is_empty() && title.is_empty() {
         return;
@@ -745,7 +755,10 @@ fn push_note_summary(entity: &Value, notes: &mut Vec<Value>, seen_ids: &mut Vec<
         note.insert("id".into(), json!(id));
     }
     if !title.is_empty() {
-        note.insert("title".into(), json!(redact_secrets(&title)));
+        note.insert(
+            "title".into(),
+            json!(chat_text(&title, NOTE_TITLE_MAX_CHARS)),
+        );
     }
     let caption = string_field(entity, "content");
     if !caption.is_empty() {
@@ -759,7 +772,7 @@ fn push_note_summary(entity: &Value, notes: &mut Vec<Value>, seen_ids: &mut Vec<
         ("favorites", "favorites"),
         ("comments_count", "comments"),
     ] {
-        let value = string_field(entity, field);
+        let value = truncate_chars(&string_field(entity, field), NOTE_STAT_MAX_CHARS);
         if !value.is_empty() {
             note.insert(key.into(), json!(value));
         }
@@ -780,13 +793,14 @@ fn string_field(entity: &Value, key: &str) -> String {
 /// JSON field names whose string values are scrubbed by [`redact_secrets`].
 /// Covers `~/.socai/auth.json` (every provider key lives under `api_key`)
 /// and common token envelopes a `bash`/`read_file` result could echo.
-const SECRET_JSON_FIELDS: [&str; 9] = [
+const SECRET_JSON_FIELDS: [&str; 10] = [
     "api_key",
     "apikey",
     "access_token",
     "refresh_token",
     "id_token",
     "client_secret",
+    "device_token",
     "authorization",
     "password",
     "secret",
@@ -801,7 +815,7 @@ const SECRET_JSON_FIELDS: [&str; 9] = [
 /// - `sk-`-prefixed token runs (every configured provider's key shape)
 /// - JWT-shaped `eyJ…` runs (oauth access/id tokens)
 /// - `Bearer <token>` header values
-fn redact_secrets(text: &str) -> String {
+pub fn redact_secrets(text: &str) -> String {
     let text = redact_json_secret_fields(text);
     redact_token_runs(&text)
 }

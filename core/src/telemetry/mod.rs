@@ -10,6 +10,8 @@ use tokio::time::MissedTickBehavior;
 pub mod tool_call;
 pub mod trace;
 
+pub use trace::redact_secrets;
+
 const EVENT_SCHEMA_VERSION: u32 = 1;
 const TELEMETRY_ENDPOINT: &str = "https://socai.io/v1/events";
 const TRACES_ENDPOINT: &str = "https://socai.io/v1/traces";
