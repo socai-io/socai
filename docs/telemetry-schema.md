@@ -13,6 +13,11 @@ the same first-party proxy at `https://socai.io/v1/events`, and the same Axiom
 dataset; the `source` field distinguishes them. The public clients never talk to
 PostHog or Axiom directly.
 
+Agent runs additionally upload one OTLP **run trace** per turn — conversation
+content included — through `https://socai.io/v1/traces`. That pipeline has its
+own content contract and controls; see
+[Run traces (agent conversations)](#run-traces-agent-conversations) below.
+
 ## Transport and ownership
 
 ```text
@@ -222,9 +227,12 @@ the proxy; the proxy forwards every remaining field, sanitizing values only.
 
 ## Privacy boundaries
 
-These boundaries are enforced **entirely by the clients** — the proxy no longer
-filters fields, so anything a client sends reaches Axiom. The clients must never
-send:
+These boundaries apply to the **events pipeline** (`/v1/events`); the run-trace
+pipeline intentionally carries conversation content under its own contract —
+see [Run traces (agent conversations)](#run-traces-agent-conversations). Event
+boundaries are enforced **entirely by the clients** — the proxy no longer
+filters fields, so anything a client sends reaches Axiom. On this pipeline the
+clients must never send:
 
 - note body text
 - comments
@@ -236,7 +244,7 @@ send:
 - desktop agent results or model output: `report.md` / `final_text`, assistant or
   reasoning text, and raw tool arguments/results
 
-Approved content-bearing telemetry is limited to:
+Approved content-bearing **event** telemetry is limited to:
 
 - the CLI search `query_text` — included by default, omit with
   `SOCAI_TELEMETRY_QUERY_TEXT=off`; and
@@ -244,8 +252,47 @@ Approved content-bearing telemetry is limited to:
   desktop telemetry is enabled, with no per-field opt-out. Only
   `SOCAI_TELEMETRY=off` suppresses it.
 
-Desktop tool telemetry is limited to tool name, timing, success, and a truncated
-error string — never tool arguments or output bodies.
+Desktop tool **events** are limited to tool name, timing, success, and a
+truncated error string — never tool arguments or output bodies.
+
+## Run traces (agent conversations)
+
+Separately from events, each agent run writes an OTLP/JSON trace to its run dir
+and the desktop uploads it to `https://socai.io/v1/traces` → the
+`socai-traces-prod` Axiom dataset (proxy: `site/api/traces.js`; assembly:
+`core/src/telemetry/trace.rs`). The TUI writes the same `trace.json` locally but
+never uploads. One conversation = one trace: follow-up turns join the first
+turn's trace id.
+
+Unlike events, run traces are **content-bearing by default** — this is the
+pipeline for reading what an agent actually did:
+
+- `chat` spans — `gen_ai.input.messages` (only the messages new since the
+  previous LLM call), `gen_ai.output.messages` (that call's full response,
+  including reasoning/thinking summaries and tool calls), and
+  `gen_ai.system_instructions` (once per run, again when it changes).
+- `execute_tool` spans — the argument summary (query text under the
+  `SOCAI_TELEMETRY_QUERY_TEXT` gate), count-only result metrics, and
+  `socai.notes`: id/title/caption/stats summaries of notes the tool returned.
+- root span — `socai.task_text` (capped at 8,000 chars) plus run status, step
+  count, and token totals.
+
+Never uploaded, regardless of settings: image bytes/screenshots, Anthropic
+thinking signatures, encrypted reasoning items, browser cookies/session
+storage, or secrets.
+
+Size limits are enforced client-side: 20,000 chars per message part, 200-char
+note captions, 150 KB per attribute, a 300 KB per-run content budget charged at
+JSON-escaped wire length, and a final whole-payload gate that strips content
+attributes (oldest spans first, marked `socai.content_dropped`) whenever the
+assembled trace would exceed the proxy's 512 KiB body cap. The traces proxy
+stays transport-only (shape gate, body-size cap, rate limit — no field
+inspection).
+
+Controls: `SOCAI_TELEMETRY_CHAT_TEXT=off` removes conversation content and
+note summaries (spans keep counts, timings, and status only);
+`SOCAI_TELEMETRY=off` disables the desktop telemetry pipeline entirely,
+including trace upload.
 
 ## Sanitization and limits
 

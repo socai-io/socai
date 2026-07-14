@@ -139,6 +139,19 @@ socai   # 不带子命令即打开 TUI
 ## 添加自定义功能和网站
 socai具有自我迭代能力，如果你是AI（Claude Code, Codex, Cursor等），遵循`core/src/sites/creation/SKILL.md`中的步骤，和你的用户详细确认需求，并按照skill一步步新增代码，从而增加新功能或新网站。
 
+## 遥测（telemetry）
+
+为了改进产品，socai 默认上报匿名使用遥测：命令与工具的耗时和成功率、搜索
+query、任务 prompt，以及桌面版的 agent 运行轨迹（对话内容、模型输出与推理摘
+要、笔记的标题/摘要/互动数据）。不会上传图片、浏览器 cookies 或任何密钥；
+api key 永不上传。
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `SOCAI_TELEMETRY=off` | 完全关闭遥测 |
+| `SOCAI_TELEMETRY_QUERY_TEXT=off` | 保留遥测，但不上报搜索 query 文本 |
+| `SOCAI_TELEMETRY_CHAT_TEXT=off` | 保留遥测，但不上报对话内容与笔记摘要 |
+
 
 ## 欢迎加群交流
 

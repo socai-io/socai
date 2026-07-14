@@ -65,6 +65,26 @@ const CHAT_BUDGET_BYTES: usize = 300_000;
 const NOTES_MAX_PER_SPAN: usize = 25;
 /// Caption (note body) cap inside a note summary.
 const NOTE_CAPTION_MAX_CHARS: usize = 200;
+/// Ceiling for the assembled payload: the traces proxy rejects bodies over
+/// 512 KiB, and the uploader appends identity resource attributes. The chat
+/// budget bounds content, but span envelopes and non-content attributes ride
+/// on top of it — `enforce_payload_cap` strips content from oldest spans
+/// when the serialized whole would overshoot.
+const PAYLOAD_MAX_BYTES: usize = 460_000;
+/// What `enforce_payload_cap` may strip, in order: chat/note content first,
+/// then the unbounded summarizer strings (query text, arg metadata). Every
+/// attribute not listed here is small and bounded, so a payload with both
+/// tiers stripped always fits under [`PAYLOAD_MAX_BYTES`] at
+/// [`MAX_CHILD_SPANS`].
+const STRIP_TIERS: [&[&str]; 2] = [
+    &[
+        "gen_ai.system_instructions",
+        "gen_ai.input.messages",
+        "gen_ai.output.messages",
+        "socai.notes",
+    ],
+    &["socai.query_text", "socai.metadata"],
+];
 
 const SPAN_KIND_INTERNAL: u32 = 1;
 const SPAN_KIND_CLIENT: u32 = 3;
@@ -356,7 +376,7 @@ impl RunTraceBuilder {
         let mut spans = std::mem::take(&mut self.spans);
         spans.insert(0, root);
 
-        json!({
+        let mut payload = json!({
             "resourceSpans": [{
                 "resource": {
                     "attributes": [
@@ -373,7 +393,9 @@ impl RunTraceBuilder {
                     "spans": spans,
                 }],
             }],
-        })
+        });
+        enforce_payload_cap(&mut payload);
+        payload
     }
 
     /// Append a completed child span. Start time is derived from the duration
@@ -507,6 +529,66 @@ fn attr_int(key: &str, value: i64) -> Value {
 
 fn attr_bool(key: &str, value: bool) -> Value {
     json!({ "key": key, "value": { "boolValue": value } })
+}
+
+/// Last-line size gate on the assembled payload: the chat budget bounds
+/// content bytes, but span envelopes and non-content attributes (tool arg
+/// summaries, query text, timings) ride on top, so a span-heavy run could
+/// still overshoot the proxy's body cap and lose the whole trace. When the
+/// serialized payload exceeds [`PAYLOAD_MAX_BYTES`], strip attributes tier by
+/// tier ([`STRIP_TIERS`]) and, within a tier, span by span — oldest first, so
+/// the most recent steps stay readable — marking each stripped span with
+/// `socai.content_dropped`. Freed bytes are counted from each removed
+/// attribute's own serialized size (exact modulo separators). With both tiers
+/// stripped only small bounded attributes remain, so the result always fits.
+fn enforce_payload_cap(payload: &mut Value) {
+    let Ok(serialized) = serde_json::to_vec(payload) else {
+        return;
+    };
+    let mut total = serialized.len();
+    if total <= PAYLOAD_MAX_BYTES {
+        return;
+    }
+    let Some(spans) = payload
+        .pointer_mut("/resourceSpans/0/scopeSpans/0/spans")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    'tiers: for keys in STRIP_TIERS {
+        for span in spans.iter_mut() {
+            if total <= PAYLOAD_MAX_BYTES {
+                break 'tiers;
+            }
+            let Some(attrs) = span.get_mut("attributes").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let mut freed = 0usize;
+            attrs.retain(|attr| {
+                let strip = attr
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| keys.contains(&key));
+                if strip {
+                    freed += serde_json::to_string(attr).map(|s| s.len()).unwrap_or(0);
+                }
+                !strip
+            });
+            if freed == 0 {
+                continue;
+            }
+            let marker_key = "socai.content_dropped";
+            if !attrs
+                .iter()
+                .any(|attr| attr.get("key").and_then(Value::as_str) == Some(marker_key))
+            {
+                let marker = attr_bool(marker_key, true);
+                freed = freed.saturating_sub(marker.to_string().len());
+                attrs.push(marker);
+            }
+            total = total.saturating_sub(freed);
+        }
+    }
 }
 
 /// Serialize chat content, retrying with a tighter per-part cap when the

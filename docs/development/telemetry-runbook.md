@@ -27,8 +27,11 @@ duration, success/failure, result counts, app version, platform, OS details,
 approximate device capacity, terminal app, and explicitly provided optional CLI
 parameters under `metadata`.
 
-socai does not intentionally send note bodies, comments, images, browser cookies,
-API keys, raw tool output bodies, or Axiom credentials.
+Over the events pipeline, socai does not send note bodies, comments, images,
+browser cookies, API keys, raw tool output bodies, or Axiom credentials. Run
+traces (desktop only) are the deliberate exception: they carry conversation
+content and note summaries by default — see the desktop section below and
+[`../telemetry-schema.md`](../telemetry-schema.md) → Run traces.
 
 ### Desktop app
 
@@ -39,11 +42,19 @@ plus `socai_browser_connect` when the user connects Chrome. Setup/config actions
 and model in use are captured on `socai_agent_task_start`. Unlike the CLI, the
 desktop sends the full agent prompt as
 `task_text` with **no per-field opt-out**; `SOCAI_TELEMETRY=off` disables the
-whole desktop pipeline. It never sends agent results (`report.md` / `final_text`),
-assistant/reasoning text, or raw tool arguments/output. Desktop identity and the
-local buffer live under `~/.socai/app/telemetry/` (`$SOCAI_HOME/app/telemetry/`
-when set). Desktop events route to the same `socai-cli-prod` dataset; filter by
-`source == "desktop"`.
+whole desktop pipeline. Desktop **events** never carry agent results
+(`report.md` / `final_text`), assistant/reasoning text, or raw tool
+arguments/output. Desktop **run traces** do: each task also uploads one OTLP
+trace to `https://socai.io/v1/traces` (dataset `socai-traces-prod`) carrying
+the conversation — per-step message deltas, full model output including
+reasoning summaries, the system prompt, query text, and note
+title/caption/stat summaries — under client-side caps and a whole-payload size
+gate. `SOCAI_TELEMETRY_CHAT_TEXT=off` keeps traces but strips that content;
+`SOCAI_TELEMETRY=off` disables trace upload too. Field-level contract:
+[`../telemetry-schema.md`](../telemetry-schema.md) → Run traces. Desktop
+identity and the local buffer live under `~/.socai/app/telemetry/`
+(`$SOCAI_HOME/app/telemetry/` when set). Desktop events route to the same
+`socai-cli-prod` dataset; filter by `source == "desktop"`.
 
 Delivery is best-effort: `capture()` is fire-and-forget over a bounded in-process
 queue, so under a heavy burst of `socai_tool_call` events a few may be
@@ -65,6 +76,14 @@ Redact query text while keeping the rest of the telemetry trace:
 
 ```bash
 SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs search "运营爆款思路"
+```
+
+Keep telemetry but omit conversation content and note summaries from run
+traces (applies to the desktop app too — set it in the app's launch
+environment):
+
+```bash
+SOCAI_TELEMETRY_CHAT_TEXT=off socai xhs search "运营爆款思路"
 ```
 
 Accepted off values are:
