@@ -360,7 +360,11 @@ impl RunTraceBuilder {
             attr_int("gen_ai.usage.output_tokens", output_tokens as i64),
         ];
         if let Some(session_id) = &self.session_id {
-            attrs.push(attr_str("socai.session_id", session_id));
+            // Desktop session ids embed the first task's slug (conversation
+            // dir name), so scrub the uploaded attribute; the trace id was
+            // already derived from the original, keeping follow-up turns
+            // joined.
+            attrs.push(attr_str("socai.session_id", &redact_secrets(session_id)));
         }
         attrs.push(attr_bool("socai.follow_up", self.seed_messages > 0));
         attrs.push(attr_int("socai.seed_messages", self.seed_messages as i64));
@@ -820,6 +824,31 @@ pub fn redact_secrets(text: &str) -> String {
     redact_token_runs(&text)
 }
 
+/// Recursively scrub every string inside a JSON value — used for structured
+/// payloads (tool-arg `metadata`) where secrets can sit in any nested string,
+/// e.g. a desktop `bash` command carrying an `Authorization: Bearer …` header.
+pub fn redact_secrets_in_value(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            let scrubbed = redact_secrets(text);
+            if scrubbed != *text {
+                *text = scrubbed;
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                redact_secrets_in_value(item);
+            }
+        }
+        Value::Object(map) => {
+            for (_, item) in map.iter_mut() {
+                redact_secrets_in_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn redact_json_secret_fields(text: &str) -> String {
     let bytes = text.as_bytes();
     let lower = text.to_ascii_lowercase();
@@ -1012,12 +1041,11 @@ fn tool_result_text(content: &[ToolResultContent]) -> String {
 fn tool_call_arguments(input: &Value, part_cap: usize, include_query: bool) -> Value {
     let mut input = input.clone();
     if !include_query {
-        if let Some(query) = input
-            .as_object_mut()
-            .and_then(|object| object.get_mut("query"))
-        {
-            if query.is_string() {
-                *query = json!("[redacted]");
+        if let Some(object) = input.as_object_mut() {
+            // Any type: a malformed tool call ({"query": {…}}) must not
+            // sidestep the gate.
+            if object.contains_key("query") {
+                object.insert("query".into(), json!("[redacted]"));
             }
         }
     }

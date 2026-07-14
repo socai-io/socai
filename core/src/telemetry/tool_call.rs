@@ -36,7 +36,8 @@ pub fn summarize_tool_args(args: &Value, include_query_text: bool) -> Map<String
             }
             continue;
         }
-        if let Some(value) = meaningful_metadata_value(value) {
+        if let Some(mut value) = meaningful_metadata_value(value) {
+            super::trace::redact_secrets_in_value(&mut value);
             metadata.insert(key.clone(), value);
         }
     }

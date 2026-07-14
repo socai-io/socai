@@ -1,8 +1,8 @@
 # socai telemetry maintainer runbook
 
 This is development/maintainer documentation for operating socai CLI telemetry.
-It intentionally lives outside the README: the README should stay focused on
-what CLI users need to run socai and control telemetry.
+It intentionally lives outside the README: the README stays focused on what
+users need to run socai.
 
 The final implementation sends one sanitized trace per top-level CLI tool
 command through the first-party endpoint at `https://socai.io/v1/events`.
@@ -85,6 +85,11 @@ Redact query text while keeping the rest of the telemetry trace:
 ```bash
 SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs search "运营爆款思路"
 ```
+
+For agent runs, the query gate removes the dedicated query attributes and
+redacts tool-call arguments, but tool results can still echo the query into
+chat content — when the query must not leave the machine at all, set **both**
+`SOCAI_TELEMETRY_QUERY_TEXT=off` and `SOCAI_TELEMETRY_CHAT_TEXT=off`.
 
 Keep telemetry but omit conversation content and note summaries from run
 traces. Run traces come from **agent runs** — plain CLI tool commands like
