@@ -25,7 +25,7 @@
 //! the conversation exactly once instead of O(n²) re-uploads — and
 //! `gen_ai.output.messages` carries that call's full response (history keeps
 //! a truncated copy; the trace keeps the real one). `gen_ai.system_instructions`
-//! is emitted when the system prompt changes. Image bytes, thinking
+//! is emitted once per run and again when it changes. Image bytes, thinking
 //! signatures, and encrypted reasoning items never leave the machine, and a
 //! per-run byte budget keeps the upload inside the traces proxy's body cap.
 //! Under the same gate and budget, `execute_tool` spans carry `socai.notes` —
@@ -93,7 +93,11 @@ pub struct RunTraceBuilder {
     /// spans carry `socai.chat_text_dropped` instead of content.
     chat_bytes_left: usize,
     /// Hash of the last uploaded system prompt, so `gen_ai.system_instructions`
-    /// is emitted only when it changes.
+    /// is emitted once and then only when it changes — **per run**. Follow-up
+    /// runs of a conversation share the trace id but each uploads its own
+    /// trace.json, and deliberately re-emit the (unchanged) system prompt so
+    /// every turn's upload is self-contained: readable even if another turn's
+    /// upload is lost or arrives out of order.
     last_system_hash: String,
     finalized: bool,
 }
@@ -230,13 +234,20 @@ impl RunTraceBuilder {
 
     /// Push one chat-content attribute if it fits the remaining budget;
     /// otherwise zero the budget and mark the span. Returns whether it fit.
+    /// The budget is charged at the attribute's wire cost — the JSON-escaped
+    /// form the upload serializes (quotes/backslashes/newlines in the content
+    /// escape a second time there), not the raw string length, so admitted
+    /// content can't push the POST past the proxy's body cap.
     fn push_budgeted(&mut self, attrs: &mut Vec<Value>, key: &str, rendered: String) -> bool {
-        if self.chat_bytes_left < rendered.len() {
+        let wire_len = serde_json::to_string(&rendered)
+            .map(|escaped| escaped.len())
+            .unwrap_or(rendered.len());
+        if self.chat_bytes_left < wire_len {
             self.chat_bytes_left = 0;
             attrs.push(attr_bool("socai.chat_text_dropped", true));
             return false;
         }
-        self.chat_bytes_left -= rendered.len();
+        self.chat_bytes_left -= wire_len;
         attrs.push(attr_str(key, &rendered));
         true
     }
@@ -606,6 +617,9 @@ fn note_summaries(output: &Value) -> Vec<Value> {
             data.get("cards"),
             data.get("search").and_then(|search| search.get("cards")),
             data.get("selected_cards"),
+            // author_scan preview: `profile.note_cards` is the sole listing
+            // (it's stripped once notes are opened — see xhs tools).
+            data.get("profile").and_then(|profile| profile.get("note_cards")),
         ];
         for items in card_lists.into_iter().flatten() {
             if let Some(items) = items.as_array() {
