@@ -50,7 +50,9 @@ The session root is `SOCAI_SESSIONS_DIR`, then `SOCAI_HOME/sessions`, then
 - run id and optional parent session id;
 - task and model;
 - status, start time, and total duration;
-- turn count and aggregate token usage;
+- step count and aggregate usage: logical/uncached input tokens, output tokens,
+  cache reads, cache writes, reasoning tokens when reported, and estimated cost
+  when the selected model has catalog pricing;
 - an error only for failed/interrupted runs.
 
 `report.md` is the single durable copy of the final user-facing answer.
@@ -61,9 +63,14 @@ headers. Its shape therefore follows the active API (Anthropic Messages,
 OpenAI-compatible Chat Completions, or Responses).
 
 The matching response contains text, exposed reasoning, tool calls, stop
-reason, token usage, request duration, and completion time. An unsuccessful
-request contains its duration, completion time, and error. Authentication
-headers, credentials, and raw response bytes are not recorded.
+reason, normalized `usage`, the provider's original `usage` object, request
+duration, and completion time. Normalized usage separates ordinary input,
+cache-read input, cache-creation input, output, and reasoning output where the
+provider exposes it. Estimated cost includes its currency, per-component
+breakdown, rates, and pricing source; it is omitted when no catalog price is
+known or the credential is subscription-based rather than metered API billing.
+An unsuccessful request contains its duration, completion time, and error.
+Authentication headers, credentials, and raw response bytes are not recorded.
 
 The LLM files are also the canonical ordered execution trace. Socai does not
 write a parallel event log or span log: LLM duration lives on the response,

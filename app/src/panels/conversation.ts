@@ -208,7 +208,14 @@ function renderTurn(
       const duration = formatDuration(task);
       if (duration) metaBits.push(duration);
       if (task.input_tokens !== null && task.output_tokens !== null) {
-        metaBits.push(formatTokenUsage(task.input_tokens, task.output_tokens));
+        metaBits.push(formatTokenUsage(
+          task.input_tokens,
+          task.output_tokens,
+          task.cached_input_tokens,
+          task.cache_creation_input_tokens ?? 0,
+          task.estimated_cost,
+          task.cost_currency,
+        ));
       }
     } else if (task.error) {
       answer = `<pre class="conv-error">${esc(task.error)}</pre>`;

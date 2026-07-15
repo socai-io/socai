@@ -9,9 +9,11 @@ use serde_json::Value;
 
 pub mod anthropic;
 pub mod openai;
+pub mod usage;
 
 pub use self::anthropic::AnthropicBackend;
 pub use self::openai::OpenAICompatBackend;
+pub use self::usage::{TokenUsage, UsageCost};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -152,8 +154,11 @@ pub struct LLMResponse {
     pub text_blocks: Vec<String>,
     pub tool_calls: Vec<ToolCall>,
     pub stop_reason: StopReason,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
+    pub usage: TokenUsage,
+    /// The provider's usage object before normalization. This keeps new or
+    /// provider-specific counters available in persisted step responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_usage: Option<Value>,
     /// Reasoning trace surfaced by Kimi K2.6 / Qwen. Empty for providers
     /// that don't expose it.
     pub reasoning_content: String,

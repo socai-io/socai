@@ -47,6 +47,10 @@ pub struct AgentTaskSnapshot {
     pub(crate) steps: Option<u32>,
     pub(crate) input_tokens: Option<u64>,
     pub(crate) output_tokens: Option<u64>,
+    pub(crate) cached_input_tokens: Option<u64>,
+    pub(crate) cache_creation_input_tokens: Option<u64>,
+    pub(crate) estimated_cost: Option<f64>,
+    pub(crate) cost_currency: Option<String>,
     // The text driving the in-flight/most recent run — distinct from `task`,
     // which stays the thread's original title across replies. Not persisted
     // to tasks.json (Option fields default to None on load, which is the
@@ -134,6 +138,10 @@ impl AgentTaskRegistry {
             steps: None,
             input_tokens: None,
             output_tokens: None,
+            cached_input_tokens: None,
+            cache_creation_input_tokens: None,
+            estimated_cost: None,
+            cost_currency: None,
         };
         guard.tasks.push(snapshot.clone());
         persist_task_index(&guard.tasks);
@@ -408,6 +416,17 @@ fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
                 snapshot.input_tokens = run.pointer("/usage/input_tokens").and_then(Value::as_u64);
                 snapshot.output_tokens =
                     run.pointer("/usage/output_tokens").and_then(Value::as_u64);
+                snapshot.cached_input_tokens = run
+                    .pointer("/usage/cache_read_input_tokens")
+                    .and_then(Value::as_u64);
+                snapshot.cache_creation_input_tokens = run
+                    .pointer("/usage/cache_creation_input_tokens")
+                    .and_then(Value::as_u64);
+                snapshot.estimated_cost = run.pointer("/usage/cost/total").and_then(Value::as_f64);
+                snapshot.cost_currency = run
+                    .pointer("/usage/cost/currency")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
             }
         }
     }

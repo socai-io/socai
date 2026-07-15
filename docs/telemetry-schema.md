@@ -166,7 +166,7 @@ and model in use are captured on `socai_agent_task_start`.
 | --- | --- | --- |
 | `socai_browser_connect` | User connects Chrome | — |
 | `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
-| `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `turns`, `input_tokens`, `output_tokens`, `duration_ms`, `error` |
+| `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `steps`, token/cache usage, estimated cost breakdown, `duration_ms`, `error` |
 | `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error`, `query_text`, `query_len`, `metadata`, `note_id_present` |
 
 Desktop field semantics:
@@ -178,8 +178,18 @@ Desktop field semantics:
 | `provider` | string | LLM provider requested for the task. |
 | `model` | string | Model id requested for the task. |
 | `outcome` | string | Terminal state: `completed`, `failed`, `cancelled`, or `interrupted`. |
-| `turns` | number | Agent loop turns when known. |
-| `input_tokens` / `output_tokens` | number | Token usage for the run when known. |
+| `steps` | number | Agent loop steps when known. |
+| `input_tokens` / `output_tokens` | number | Token usage for the run when known. Input includes cached input. |
+| `uncached_input_tokens` | number | Input tokens processed normally rather than read from or written to cache. |
+| `reasoning_output_tokens` | number | Reasoning tokens when the provider reports a separate count. |
+| `cached_input_tokens` | number | Input tokens served from a provider prompt cache. |
+| `cache_creation_input_tokens` | number | Input tokens written to a provider prompt cache. |
+| `estimated_input_cost` / `estimated_output_cost` | number | Best-effort ordinary input and output cost components. |
+| `estimated_cache_read_cost` / `estimated_cache_creation_cost` | number | Best-effort cache cost components. |
+| `estimated_cost` | number | Sum of the estimated cost components; this is not a provider invoice. |
+| `cost_currency` | string | ISO currency code used by `estimated_cost`. |
+| `cost_estimated` | boolean | Always true for catalog-derived costs. |
+| `cost_pricing_source` | string | Model catalog pricing provenance. |
 | `task_len` | number | Agent prompt length in Unicode scalar values. |
 | `task_text` | string | Full agent prompt. Always sent on desktop; see privacy boundaries. |
 | `turn` / `sequence` | number | Position of a tool call within the run. |
@@ -274,8 +284,13 @@ pipeline for reading what an agent actually did:
 - `execute_tool` spans — the argument summary (query text under the
   `SOCAI_TELEMETRY_QUERY_TEXT` gate), count-only result metrics, and
   `socai.notes`: id/title/caption/stats summaries of notes the tool returned.
-- root span — `socai.task_text` (capped at 8,000 chars) plus run status, step
-  count, and token totals.
+- every `chat` span and the root span carry normalized usage: logical and
+  uncached input tokens, output and optional reasoning tokens, cache reads and
+  writes, plus estimated input/output/cache cost components, total, currency,
+  and pricing source. The root values aggregate the run; `chat` values describe
+  one provider call.
+- root span — `socai.task_text` (capped at 8,000 chars) plus run status and step
+  count.
 
 Never uploaded, regardless of settings: image bytes/screenshots, Anthropic
 thinking signatures, encrypted reasoning items, and browser cookies/session

@@ -91,6 +91,10 @@ pnpm --dir app sync-models                                # official APIs if key
 The sync script prefers official provider `/models` APIs, then pi's generated
 `@earendil-works/pi-ai` catalog, then socai fallback entries. AI agents should
 use the `socai-model-sync` skill for model-list refreshes and validation.
+Catalog entries can also carry per-million-token pricing used for the estimated
+cost in `llm/*.response.json`, `run.json`, the CLI summary, and desktop task
+metadata. Token counts are provider-reported; cost is an estimate at the
+catalog rate, not a provider invoice.
 
 ### Website
 

@@ -8,12 +8,12 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::agent::api_errors::format_http_error;
 use crate::agent::llm::{
-    Backend, Block, LLMResponse, Message, StopReason, ThinkingBlock, ToolCall, ToolResultContent,
-    ToolSchema,
+    Backend, Block, LLMResponse, Message, StopReason, ThinkingBlock, TokenUsage, ToolCall,
+    ToolResultContent, ToolSchema,
 };
 use crate::agent::provider::{config_for, load_api_key, Provider};
 
@@ -217,7 +217,7 @@ struct WireResponse {
     usage: WireUsage,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 struct WireUsage {
     #[serde(default)]
     input_tokens: u64,
@@ -227,6 +227,8 @@ struct WireUsage {
     cache_read_input_tokens: u64,
     #[serde(default)]
     cache_creation_input_tokens: u64,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -333,16 +335,15 @@ impl Backend for AnthropicBackend {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let input_total = parsed.usage.input_tokens
-            + parsed.usage.cache_creation_input_tokens
-            + parsed.usage.cache_read_input_tokens;
+        let provider_usage = serde_json::to_value(&parsed.usage)?;
+        let usage = TokenUsage::from_anthropic(Provider::Anthropic, &self.model, &provider_usage);
 
         Ok(LLMResponse {
             text_blocks,
             tool_calls,
             stop_reason: parse_stop_reason(parsed.stop_reason.as_deref()),
-            input_tokens: input_total,
-            output_tokens: parsed.usage.output_tokens,
+            usage,
+            provider_usage: Some(provider_usage),
             reasoning_content,
             thinking_blocks,
             reasoning_items: Vec::new(),

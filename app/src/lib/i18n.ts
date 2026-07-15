@@ -320,10 +320,42 @@ export function formatStepCount(count: number): string {
 export function formatTokenUsage(
   inputTokens: number,
   outputTokens: number,
+  cachedInputTokens: number | null = null,
+  cacheCreationInputTokens = 0,
+  estimatedCost: number | null = null,
+  costCurrency: string | null = null,
 ): string {
-  if (currentLanguage === "zh")
-    return `输入 ${inputTokens} / 输出 ${outputTokens} tokens`;
-  return `in ${inputTokens} / out ${outputTokens} tokens`;
+  const locale = getLocale();
+  const number = (value: number) => value.toLocaleString(locale);
+  const parts = currentLanguage === "zh"
+    ? [`输入 ${number(inputTokens)} / 输出 ${number(outputTokens)} tokens`]
+    : [`in ${number(inputTokens)} / out ${number(outputTokens)} tokens`];
+  if (cachedInputTokens !== null) {
+    const ratio = inputTokens > 0 ? ` (${(cachedInputTokens / inputTokens * 100).toFixed(1)}%)` : "";
+    parts.push(currentLanguage === "zh"
+      ? `缓存命中 ${number(cachedInputTokens)}${ratio}`
+      : `cache hit ${number(cachedInputTokens)}${ratio}`);
+  }
+  if (cacheCreationInputTokens > 0) {
+    parts.push(currentLanguage === "zh"
+      ? `缓存写入 ${number(cacheCreationInputTokens)}`
+      : `cache write ${number(cacheCreationInputTokens)}`);
+  }
+  if (estimatedCost !== null && costCurrency) {
+    let amount: string;
+    try {
+      amount = new Intl.NumberFormat(locale, {
+        style: "currency",
+        currency: costCurrency,
+        minimumFractionDigits: 4,
+        maximumFractionDigits: 6,
+      }).format(estimatedCost);
+    } catch {
+      amount = `${estimatedCost.toFixed(6)} ${costCurrency}`;
+    }
+    parts.push(currentLanguage === "zh" ? `估算 ${amount}` : `est. ${amount}`);
+  }
+  return parts.join(" · ");
 }
 
 // Task timestamps read as "today 14:30" / "yesterday 09:15" for the last two

@@ -13,7 +13,8 @@ use serde_json::{json, Map, Value};
 
 use crate::agent::api_errors::format_http_error;
 use crate::agent::llm::{
-    Backend, Block, LLMResponse, Message, StopReason, ToolCall, ToolResultContent, ToolSchema,
+    Backend, Block, LLMResponse, Message, StopReason, TokenUsage, ToolCall, ToolResultContent,
+    ToolSchema,
 };
 use crate::agent::provider::{
     config_for, load_api_key, load_openai_credential, Credential, Provider, ProviderConfig,
@@ -202,15 +203,16 @@ event: response.completed
 data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":5}}}
 "#;
 
-        let parsed = parse_responses_sse(body).expect("sse should parse");
+        let parsed =
+            parse_responses_sse(body, Provider::OpenAI, "gpt-5.5", true).expect("sse should parse");
         assert_eq!(parsed.text_blocks, vec!["hello"]);
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].id, "call_1");
         assert_eq!(parsed.tool_calls[0].name, "lookup");
         assert_eq!(parsed.tool_calls[0].input["key"], "abc");
         assert_eq!(parsed.stop_reason, StopReason::ToolUse);
-        assert_eq!(parsed.input_tokens, 3);
-        assert_eq!(parsed.output_tokens, 5);
+        assert_eq!(parsed.usage.input_tokens, 3);
+        assert_eq!(parsed.usage.output_tokens, 5);
     }
 
     #[test]
@@ -512,15 +514,7 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
 struct WireResponse {
     choices: Vec<WireChoice>,
     #[serde(default)]
-    usage: WireUsage,
-}
-
-#[derive(Deserialize, Default)]
-struct WireUsage {
-    #[serde(default)]
-    prompt_tokens: u64,
-    #[serde(default)]
-    completion_tokens: u64,
+    usage: Value,
 }
 
 #[derive(Deserialize)]
@@ -595,13 +589,17 @@ struct ResponsesRequest {
     include: Vec<&'static str>,
 }
 
-fn parse_responses_sse(body: &str) -> anyhow::Result<LLMResponse> {
+fn parse_responses_sse(
+    body: &str,
+    provider: Provider,
+    model: &str,
+    estimate_cost: bool,
+) -> anyhow::Result<LLMResponse> {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     let mut reasoning_items: Vec<Value> = Vec::new();
     let mut reasoning_texts: Vec<String> = Vec::new();
-    let mut input_tokens = 0;
-    let mut output_tokens = 0;
+    let mut provider_usage: Option<Value> = None;
     let mut completed = false;
 
     for line in body.lines() {
@@ -659,19 +657,8 @@ fn parse_responses_sse(body: &str) -> anyhow::Result<LLMResponse> {
             }
             Some("response.completed") => {
                 completed = true;
-                if let Some(usage) = value
-                    .get("response")
-                    .and_then(|r| r.get("usage"))
-                    .and_then(Value::as_object)
-                {
-                    input_tokens = usage
-                        .get("input_tokens")
-                        .and_then(Value::as_u64)
-                        .unwrap_or_default();
-                    output_tokens = usage
-                        .get("output_tokens")
-                        .and_then(Value::as_u64)
-                        .unwrap_or_default();
+                if let Some(usage) = value.get("response").and_then(|r| r.get("usage")) {
+                    provider_usage = Some(usage.clone());
                 }
             }
             Some("response.failed") | Some("response.incomplete") => {
@@ -695,12 +682,14 @@ fn parse_responses_sse(body: &str) -> anyhow::Result<LLMResponse> {
     } else {
         StopReason::ToolUse
     };
+    let provider_usage = provider_usage.unwrap_or_else(|| json!({}));
+    let usage = TokenUsage::from_openai_compatible(provider, model, &provider_usage, estimate_cost);
     Ok(LLMResponse {
         text_blocks,
         tool_calls,
         stop_reason,
-        input_tokens,
-        output_tokens,
+        usage,
+        provider_usage: Some(provider_usage),
         reasoning_content: reasoning_texts.join("\n\n"),
         thinking_blocks: Vec::new(),
         reasoning_items,
@@ -741,7 +730,9 @@ impl Backend for OpenAICompatBackend {
         max_tokens: u32,
     ) -> anyhow::Result<LLMResponse> {
         if self.provider == Provider::OpenAI {
-            return self.send_responses(system, messages, tools, max_tokens).await;
+            return self
+                .send_responses(system, messages, tools, max_tokens)
+                .await;
         }
 
         let body = self.build_chat_request(system, messages, tools, max_tokens);
@@ -765,6 +756,7 @@ impl Backend for OpenAICompatBackend {
         }
 
         let parsed: WireResponse = response.json().await?;
+        let provider_usage = parsed.usage.clone();
         let choice = parsed
             .choices
             .into_iter()
@@ -789,12 +781,14 @@ impl Backend for OpenAICompatBackend {
             });
         }
 
+        let usage =
+            TokenUsage::from_openai_compatible(self.provider, &self.model, &provider_usage, true);
         Ok(LLMResponse {
             text_blocks,
             tool_calls,
             stop_reason: parse_stop_reason(choice.finish_reason.as_deref()),
-            input_tokens: parsed.usage.prompt_tokens,
-            output_tokens: parsed.usage.completion_tokens,
+            usage,
+            provider_usage: Some(provider_usage),
             reasoning_content: choice.message.reasoning_content.unwrap_or_default(),
             thinking_blocks: Vec::new(),
             reasoning_items: Vec::new(),
@@ -825,7 +819,10 @@ impl OpenAICompatBackend {
         self.parse_responses_response(response).await
     }
 
-    async fn send_responses_once(&self, body: &ResponsesRequest) -> anyhow::Result<reqwest::Response> {
+    async fn send_responses_once(
+        &self,
+        body: &ResponsesRequest,
+    ) -> anyhow::Result<reqwest::Response> {
         let credential = &self.credential;
         let request = self.client.post(self.responses_url());
         let request = match credential {
@@ -858,6 +855,11 @@ impl OpenAICompatBackend {
             }
             anyhow::bail!(format_http_error(label, status.as_u16(), &text));
         }
-        parse_responses_sse(&text)
+        parse_responses_sse(
+            &text,
+            Provider::OpenAI,
+            &self.model,
+            !matches!(self.credential, Credential::CodexOAuth { .. }),
+        )
     }
 }

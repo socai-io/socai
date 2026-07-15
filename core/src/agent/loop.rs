@@ -29,7 +29,8 @@ use tracing::{debug, info, warn};
 
 use crate::agent::compaction::{compress_text_maybe_json, TOOL_RESULT_TEXT_MAX_CHARS};
 use crate::agent::llm::{
-    Backend, Block, LLMResponse, Message, StopReason, ToolCall, ToolResultContent, ToolSchema,
+    Backend, Block, LLMResponse, Message, StopReason, TokenUsage, ToolCall, ToolResultContent,
+    ToolSchema,
 };
 use crate::agent::memory::prepare_messages_for_context;
 use crate::agent::report::report_with_artifacts;
@@ -131,8 +132,7 @@ pub struct AgentOutcome {
     pub run_dir: PathBuf,
     pub steps: u32,
     pub final_text: String,
-    pub total_input_tokens: u64,
-    pub total_output_tokens: u64,
+    pub usage: TokenUsage,
 }
 
 pub async fn run_agent(
@@ -204,8 +204,7 @@ pub async fn run_agent_with_events(
 
     let mut step = 0u32;
     let mut final_text = String::new();
-    let mut total_input_tokens = 0u64;
-    let mut total_output_tokens = 0u64;
+    let mut usage = TokenUsage::default();
     let mut context_memory: Vec<String> = Vec::new();
     let mut tool_call_history: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut completed = false;
@@ -277,8 +276,7 @@ pub async fn run_agent_with_events(
             }
         };
 
-        total_input_tokens += response.input_tokens;
-        total_output_tokens += response.output_tokens;
+        usage += &response.usage;
 
         // Split text_blocks into visible vs "[Thinking] "-prefixed thinking.
         // Some hosts (Anthropic without extended-thinking enabled) ask the
@@ -518,8 +516,7 @@ pub async fn run_agent_with_events(
                     &messages[traced_len..],
                     &response,
                 );
-                total_input_tokens += response.input_tokens;
-                total_output_tokens += response.output_tokens;
+                usage += &response.usage;
                 let (visible_texts, _) = split_thinking(&response.text_blocks);
                 for text in &visible_texts {
                     emit(
@@ -573,28 +570,15 @@ pub async fn run_agent_with_events(
     } else {
         "completed"
     };
-    run_recorder.finish(
-        status,
-        step,
-        total_input_tokens,
-        total_output_tokens,
-        terminal_error.as_deref(),
-    )?;
-    run_trace.finish(
-        status,
-        step,
-        total_input_tokens,
-        total_output_tokens,
-        terminal_error.as_deref(),
-    );
+    run_recorder.finish(status, step, &usage, terminal_error.as_deref())?;
+    run_trace.finish(status, step, &usage, terminal_error.as_deref());
 
     Ok(AgentOutcome {
         run_id,
         run_dir,
         steps: step,
         final_text,
-        total_input_tokens,
-        total_output_tokens,
+        usage,
     })
 }
 

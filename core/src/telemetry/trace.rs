@@ -39,7 +39,7 @@ use uuid::Uuid;
 use super::tool_call::{summarize_tool_args, summarize_tool_result};
 use super::{chat_text_enabled, query_text_enabled};
 use crate::agent::llm::{
-    Block, LLMResponse, Message, MessageContent, MessageRole, ToolResultContent,
+    Block, LLMResponse, Message, MessageContent, MessageRole, TokenUsage, ToolResultContent,
 };
 use crate::agent::r#loop::THINKING_TEXT_PREFIX;
 use crate::agent::signature::md5_hex;
@@ -112,8 +112,7 @@ pub struct RunTraceBuilder {
     /// Running figures for the drop guard; `finish` overwrites them with the
     /// loop's authoritative totals.
     steps_seen: u32,
-    input_tokens: u64,
-    output_tokens: u64,
+    usage: TokenUsage,
     /// Remaining chat-content bytes for this run's upload; once spent, later
     /// spans carry `socai.chat_text_dropped` instead of content.
     chat_bytes_left: usize,
@@ -157,8 +156,7 @@ impl RunTraceBuilder {
             spans: Vec::new(),
             dropped_spans: 0,
             steps_seen: 0,
-            input_tokens: 0,
-            output_tokens: 0,
+            usage: TokenUsage::default(),
             chat_bytes_left: CHAT_BUDGET_BYTES,
             last_system_hash: String::new(),
             finalized: false,
@@ -177,17 +175,15 @@ impl RunTraceBuilder {
         response: &LLMResponse,
     ) {
         self.steps_seen = self.steps_seen.max(step);
-        self.input_tokens += response.input_tokens;
-        self.output_tokens += response.output_tokens;
+        self.usage += &response.usage;
         let mut attrs = vec![
             attr_str("gen_ai.operation.name", "chat"),
             attr_str("gen_ai.request.model", &self.model),
             attr_int("socai.step", step as i64),
             attr_str("socai.stop_reason", stop_reason_str(response)),
             attr_int("socai.tool_calls", response.tool_calls.len() as i64),
-            attr_int("gen_ai.usage.input_tokens", response.input_tokens as i64),
-            attr_int("gen_ai.usage.output_tokens", response.output_tokens as i64),
         ];
+        push_usage_attrs(&mut attrs, &response.usage);
         self.push_chat_attrs(&mut attrs, system, new_messages, Some(response));
         self.push_span(
             format!("chat {}", self.model),
@@ -326,16 +322,9 @@ impl RunTraceBuilder {
 
     /// Close the root span and write the OTLP `ExportTraceServiceRequest` to
     /// `run_dir/trace.json` (best-effort, like every other telemetry write).
-    pub fn finish(
-        &mut self,
-        status: &str,
-        steps: u32,
-        input_tokens: u64,
-        output_tokens: u64,
-        error: Option<&str>,
-    ) {
+    pub fn finish(&mut self, status: &str, steps: u32, usage: &TokenUsage, error: Option<&str>) {
         self.finalized = true;
-        let payload = self.build_payload(status, steps, input_tokens, output_tokens, error);
+        let payload = self.build_payload(status, steps, usage, error);
         self.write_trace_file(&payload);
     }
 
@@ -343,8 +332,7 @@ impl RunTraceBuilder {
         &mut self,
         status: &str,
         steps: u32,
-        input_tokens: u64,
-        output_tokens: u64,
+        usage: &TokenUsage,
         error: Option<&str>,
     ) -> Value {
         let end_ns = now_ns();
@@ -356,9 +344,8 @@ impl RunTraceBuilder {
             attr_str("socai.task_text", &self.task_text),
             attr_str("socai.status", status),
             attr_int("socai.steps", steps as i64),
-            attr_int("gen_ai.usage.input_tokens", input_tokens as i64),
-            attr_int("gen_ai.usage.output_tokens", output_tokens as i64),
         ];
+        push_usage_attrs(&mut attrs, usage);
         if let Some(session_id) = &self.session_id {
             // Desktop session ids embed the first task's slug (conversation
             // dir name), so scrub the uploaded attribute; the trace id was
@@ -471,13 +458,8 @@ impl Drop for RunTraceBuilder {
         if self.finalized {
             return;
         }
-        let payload = self.build_payload(
-            "interrupted",
-            self.steps_seen,
-            self.input_tokens,
-            self.output_tokens,
-            None,
-        );
+        let usage = self.usage.clone();
+        let payload = self.build_payload("interrupted", self.steps_seen, &usage, None);
         self.write_trace_file(&payload);
     }
 }
@@ -549,6 +531,53 @@ fn attr_int(key: &str, value: i64) -> Value {
 
 fn attr_bool(key: &str, value: bool) -> Value {
     json!({ "key": key, "value": { "boolValue": value } })
+}
+
+fn attr_double(key: &str, value: f64) -> Value {
+    json!({ "key": key, "value": { "doubleValue": value } })
+}
+
+/// Attach the same normalized usage contract to both per-call chat spans and
+/// the aggregate agent-run span. Raw provider usage stays in local run files;
+/// telemetry only carries bounded numeric totals and pricing provenance.
+fn push_usage_attrs(attrs: &mut Vec<Value>, usage: &TokenUsage) {
+    attrs.extend([
+        attr_int("gen_ai.usage.input_tokens", usage.input_tokens as i64),
+        attr_int(
+            "gen_ai.usage.uncached_input_tokens",
+            usage.uncached_input_tokens as i64,
+        ),
+        attr_int("gen_ai.usage.output_tokens", usage.output_tokens as i64),
+        attr_int(
+            "gen_ai.usage.cache_read_input_tokens",
+            usage.cache_read_input_tokens as i64,
+        ),
+        attr_int(
+            "gen_ai.usage.cache_creation_input_tokens",
+            usage.cache_creation_input_tokens as i64,
+        ),
+    ]);
+    if let Some(tokens) = usage.reasoning_output_tokens {
+        attrs.push(attr_int(
+            "gen_ai.usage.reasoning_output_tokens",
+            tokens as i64,
+        ));
+    }
+    if let Some(cost) = &usage.cost {
+        attrs.extend([
+            attr_double("gen_ai.usage.estimated_input_cost", cost.input),
+            attr_double("gen_ai.usage.estimated_output_cost", cost.output),
+            attr_double("gen_ai.usage.estimated_cache_read_cost", cost.cache_read),
+            attr_double(
+                "gen_ai.usage.estimated_cache_creation_cost",
+                cost.cache_creation,
+            ),
+            attr_double("gen_ai.usage.estimated_cost", cost.total),
+            attr_bool("gen_ai.usage.cost_estimated", cost.estimated),
+            attr_str("gen_ai.usage.cost_currency", &cost.currency),
+            attr_str("gen_ai.usage.cost_pricing_source", &cost.pricing_source),
+        ]);
+    }
 }
 
 /// Last-line size gate on the assembled payload: the chat budget bounds

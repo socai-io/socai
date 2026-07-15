@@ -1056,6 +1056,11 @@ export namespace agentPanel {
       steps: incoming.steps ?? existing.steps,
       input_tokens: incoming.input_tokens ?? existing.input_tokens,
       output_tokens: incoming.output_tokens ?? existing.output_tokens,
+      cached_input_tokens: incoming.cached_input_tokens ?? existing.cached_input_tokens,
+      cache_creation_input_tokens:
+        incoming.cache_creation_input_tokens ?? existing.cache_creation_input_tokens,
+      estimated_cost: incoming.estimated_cost ?? existing.estimated_cost,
+      cost_currency: incoming.cost_currency ?? existing.cost_currency,
     };
   }
 

@@ -20,7 +20,7 @@ use chrono::{Local, Utc};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::agent::llm::LLMResponse;
+use crate::agent::llm::{LLMResponse, TokenUsage};
 use crate::agent::tool::ToolResultBlock;
 
 fn timestamp() -> String {
@@ -189,20 +189,10 @@ impl AgentRunRecorder {
         // show them live mid-run; `finish` overwrites with the final figures.
         {
             let mut manifest = self.manifest.lock().expect("poisoned");
-            let input = manifest
-                .pointer("/usage/input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-                + response.input_tokens;
-            let output = manifest
-                .pointer("/usage/output_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-                + response.output_tokens;
-            manifest["usage"] = json!({
-                "input_tokens": input,
-                "output_tokens": output,
-            });
+            let mut usage =
+                serde_json::from_value::<TokenUsage>(manifest["usage"].clone()).unwrap_or_default();
+            usage += &response.usage;
+            manifest["usage"] = serde_json::to_value(usage).map_err(std::io::Error::other)?;
             manifest["steps"] = json!(step);
             write_json_atomic(&self.manifest_path, &manifest)?;
         }
@@ -243,18 +233,14 @@ impl AgentRunRecorder {
         &self,
         status: &str,
         steps: u32,
-        input_tokens: u64,
-        output_tokens: u64,
+        usage: &TokenUsage,
         error: Option<&str>,
     ) -> std::io::Result<()> {
         let mut manifest = self.manifest.lock().expect("poisoned");
         manifest["status"] = json!(status);
         manifest["duration_ms"] = json!(self.started.elapsed().as_millis() as u64);
         manifest["steps"] = json!(steps);
-        manifest["usage"] = json!({
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-        });
+        manifest["usage"] = serde_json::to_value(usage).map_err(std::io::Error::other)?;
         if let Some(error) = error {
             manifest["error"] = json!(error);
         }

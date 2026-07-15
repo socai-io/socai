@@ -58,6 +58,10 @@ export interface AgentTaskSnapshot {
   steps: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  cached_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  estimated_cost: number | null;
+  cost_currency: string | null;
 }
 
 export interface TimelineEntity {

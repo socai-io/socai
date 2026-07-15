@@ -354,6 +354,7 @@ fn model_options() -> Vec<ModelOption> {
                         display_name: Some(selected_model.clone()),
                         source: Some("saved-default".into()),
                         recommended: false,
+                        pricing: None,
                     },
                 );
             }
@@ -720,9 +721,20 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     println!();
     println!("{}", outcome.final_text.trim());
     println!();
+    let cost = outcome
+        .usage
+        .cost
+        .as_ref()
+        .map(|cost| format!(" estimated_cost={:.6}_{}", cost.total, cost.currency))
+        .unwrap_or_default();
     println!(
-        "[socai] run_id={} steps={} input_tokens={} output_tokens={}",
-        outcome.run_id, outcome.steps, outcome.total_input_tokens, outcome.total_output_tokens
+        "[socai] run_id={} steps={} input_tokens={} output_tokens={} cached_input_tokens={}{}",
+        outcome.run_id,
+        outcome.steps,
+        outcome.usage.input_tokens,
+        outcome.usage.output_tokens,
+        outcome.usage.cache_read_input_tokens,
+        cost,
     );
     println!("[socai] run_dir={}", outcome.run_dir.display());
     println!();

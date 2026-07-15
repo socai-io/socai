@@ -14,6 +14,35 @@ const shouldCheck = args.has("--check");
 const noOfficial = args.has("--no-official") || process.env.SOCAI_MODEL_SYNC_OFFLINE === "1";
 const noPi = args.has("--no-pi");
 
+const QWEN_PRICING_SOURCE = "https://help.aliyun.com/zh/model-studio/model-pricing";
+const DOUBAO_PRICING_SOURCE = "https://www.volcengine.com/product/doubao";
+
+function pricing(currency, source, tiers, overrides = undefined) {
+  return {
+    currency,
+    source,
+    tiers,
+    ...(overrides ? { overrides } : {}),
+  };
+}
+
+function priceTier(maxInputTokens, input, output, cacheRead = 0, cacheWrite = 0) {
+  return {
+    ...(maxInputTokens ? { max_input_tokens: maxInputTokens } : {}),
+    input_per_million: input,
+    output_per_million: output,
+    cache_read_per_million: cacheRead,
+    cache_write_per_million: cacheWrite,
+  };
+}
+
+// Qwen implicit-cache reads are billed at 20% of the stable list input rate.
+// Derive that rate from the input column so it cannot accidentally be copied
+// from one of the two output-price columns in Alibaba's Plus pricing tables.
+function qwenPriceTier(maxInputTokens, input, output) {
+  return priceTier(maxInputTokens, input, output, Number((input * 0.2).toFixed(6)));
+}
+
 const FALLBACK = {
   anthropic: [
     entry("claude-sonnet-5", "Claude Sonnet 5", "fallback", true),
@@ -37,16 +66,66 @@ const FALLBACK = {
     entry("kimi-k2-thinking", "Kimi K2 Thinking"),
   ],
   qwen: [
-    entry("qwen3.7-plus", "Qwen 3.7 Plus", "fallback", true),
-    entry("qwen3.6-plus-2026-04-02", "Qwen 3.6 Plus (2026-04-02)"),
-    entry("qwen3.7-max", "Qwen 3.7 Max"),
-    entry("qwen3.6-plus", "Qwen 3.6 Plus"),
-    entry("qwen3.6-max-preview", "Qwen 3.6 Max Preview"),
+    entry("qwen3.7-plus", "Qwen 3.7 Plus", "fallback", true, pricing("CNY", QWEN_PRICING_SOURCE, [
+      qwenPriceTier(256000, 2, 8),
+      qwenPriceTier(1000000, 6, 24),
+    ], {
+      "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
+        qwenPriceTier(256000, 2.998, 11.991),
+        qwenPriceTier(1000000, 8.993, 35.972),
+      ]),
+    })),
+    entry("qwen3.6-plus-2026-04-02", "Qwen 3.6 Plus (2026-04-02)", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
+      qwenPriceTier(256000, 2, 12),
+      qwenPriceTier(1000000, 8, 48),
+    ], {
+      "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
+        qwenPriceTier(256000, 3.7471, 22.4826),
+        qwenPriceTier(1000000, 14.9884, 44.965),
+      ]),
+    })),
+    entry("qwen3.7-max", "Qwen 3.7 Max", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
+      qwenPriceTier(1000000, 12, 36),
+    ], {
+      "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
+        qwenPriceTier(1000000, 18.736, 56.207),
+      ]),
+    })),
+    entry("qwen3.6-plus", "Qwen 3.6 Plus", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
+      qwenPriceTier(256000, 2, 12),
+      qwenPriceTier(1000000, 8, 48),
+    ], {
+      "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
+        qwenPriceTier(256000, 3.7471, 22.4826),
+        qwenPriceTier(1000000, 14.9884, 44.965),
+      ]),
+    })),
+    entry("qwen3.6-max-preview", "Qwen 3.6 Max Preview", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
+      qwenPriceTier(128000, 9, 54),
+      qwenPriceTier(256000, 15, 90),
+    ], {
+      "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
+        qwenPriceTier(128000, 9.742, 58.455),
+        qwenPriceTier(256000, 14.988, 89.93),
+      ]),
+    })),
+    entry("qwen3.6-flash", "Qwen 3.6 Flash", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
+      qwenPriceTier(256000, 1.2, 7.2),
+      qwenPriceTier(1000000, 4.8, 28.8),
+    ], {
+      "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
+        qwenPriceTier(256000, 1.87355, 11.2413),
+        qwenPriceTier(1000000, 7.4942, 29.9758),
+      ]),
+    })),
   ],
   doubao: [
-    entry("doubao-seed-2-1-turbo-260628", "Doubao Seed 2.1 Turbo (260628)", "fallback", true),
-    entry("doubao-seed-2-1-pro-260628", "Doubao Seed 2.1 Pro (260628)"),
-    entry("doubao-seed-evolving", "Doubao Seed Evolving"),
+    entry("doubao-seed-2-1-turbo-260628", "Doubao Seed 2.1 Turbo (260628)", "fallback", true,
+      pricing("CNY", DOUBAO_PRICING_SOURCE, [priceTier(undefined, 3, 15, 0.6)])),
+    entry("doubao-seed-2-1-pro-260628", "Doubao Seed 2.1 Pro (260628)", "fallback", false,
+      pricing("CNY", DOUBAO_PRICING_SOURCE, [priceTier(undefined, 6, 30, 1.2)])),
+    entry("doubao-seed-evolving", "Doubao Seed Evolving", "fallback", false,
+      pricing("CNY", DOUBAO_PRICING_SOURCE, [priceTier(undefined, 6, 30, 1.2)])),
   ],
   deepseek: [
     entry("deepseek-v4-pro", "DeepSeek V4 Pro", "fallback", true),
@@ -106,8 +185,28 @@ const PROVIDERS = {
   },
 };
 
-function entry(id, displayName = titleFromId(id), source = "fallback", recommended = false) {
-  return { id, display_name: displayName, source, ...(recommended ? { recommended: true } : {}) };
+function entry(id, displayName = titleFromId(id), source = "fallback", recommended = false, modelPricing = undefined) {
+  return {
+    id,
+    display_name: displayName,
+    source,
+    ...(recommended ? { recommended: true } : {}),
+    ...(modelPricing ? { pricing: modelPricing } : {}),
+  };
+}
+
+function pricingFromPi(cost) {
+  if (!cost || typeof cost !== "object") return undefined;
+  const input = Number(cost.input);
+  const output = Number(cost.output);
+  if (!Number.isFinite(input) || !Number.isFinite(output)) return undefined;
+  return pricing("USD", "pi-ai", [priceTier(
+    undefined,
+    input,
+    output,
+    Number(cost.cacheRead) || 0,
+    Number(cost.cacheWrite) || 0,
+  )]);
 }
 
 function bearer(key) {
@@ -231,7 +330,7 @@ function piEntriesForProvider(pi, provider, cfg) {
       if (!id) continue;
       if (cfg.include && !cfg.include(id)) continue;
       if (cfg.exclude && cfg.exclude(id)) continue;
-      out.push(entry(id, model.name || titleFromId(id), "pi-ai"));
+      out.push(entry(id, model.name || titleFromId(id), "pi-ai", false, pricingFromPi(model.cost)));
     }
     if (out.length > 0) break;
   }
@@ -278,14 +377,21 @@ function markRecommended(provider, models) {
 }
 
 function dedupe(entries) {
-  const seen = new Set();
+  const seen = new Map();
   const out = [];
   for (const item of entries) {
     const id = item.id.trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
+    if (!id) continue;
+    if (seen.has(id)) {
+      const existing = seen.get(id);
+      if (!existing.pricing && item.pricing) existing.pricing = item.pricing;
+      if (!existing.recommended && item.recommended) existing.recommended = true;
+      continue;
+    }
     const clean = { id, display_name: item.display_name || titleFromId(id), source: item.source || "unknown" };
     if (item.recommended) clean.recommended = true;
+    if (item.pricing) clean.pricing = item.pricing;
+    seen.set(id, clean);
     out.push(clean);
   }
   return out;
