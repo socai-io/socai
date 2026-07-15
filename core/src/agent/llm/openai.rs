@@ -88,17 +88,16 @@ impl OpenAICompatBackend {
     }
 
     /// Provider-specific extra fields merged into the request body.
-    fn extra_body(&self, has_tools: bool) -> Map<String, Value> {
+    /// Thinking is explicitly enabled where the provider has a toggle;
+    /// non-streaming thinking is supported by kimi-k2.6 and qwen3.5+.
+    fn extra_body(&self) -> Map<String, Value> {
         let mut extra = Map::new();
-        if !has_tools {
-            return extra;
-        }
         match self.provider {
             Provider::Kimi if self.model.starts_with("kimi-k2.6") => {
-                extra.insert("thinking".into(), json!({"type": "disabled"}));
+                extra.insert("thinking".into(), json!({"type": "enabled"}));
             }
             Provider::Qwen | Provider::QwenIntl => {
-                extra.insert("enable_thinking".into(), Value::Bool(false));
+                extra.insert("enable_thinking".into(), Value::Bool(true));
             }
             _ => {}
         }
@@ -130,7 +129,7 @@ impl OpenAICompatBackend {
             max_tokens,
             tools: chat_tools,
             tool_choice: if has_tools { Some("auto") } else { None },
-            extra: self.extra_body(has_tools),
+            extra: self.extra_body(),
         }
     }
 
