@@ -438,6 +438,7 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
 pub(crate) fn user_label(name: &str) -> String {
     match name {
         "search" => "searched xiaohongshu",
+        "get_notes" => "read xiaohongshu notes",
         "extract_search_cards" => "read search cards",
         "list_search_tabs" => "listed search tabs",
         "click_search_tab" => "switched search tab",
@@ -985,6 +986,19 @@ fn normalize_entities(tool: &str, value: &Value) -> Vec<TimelineEntity> {
             .get("entity")
             .filter(|entity| entity.is_object())
             .map(|entity_value| vec![entity("xhs_note", entity_value.clone())])
+            .unwrap_or_default(),
+        "get_notes" => value
+            .get("notes")
+            .and_then(Value::as_array)
+            .map(|notes| {
+                notes
+                    .iter()
+                    .filter_map(|note| note.get("entity"))
+                    .filter(|entity| entity.is_object())
+                    .cloned()
+                    .map(|entity_value| entity("xhs_note", entity_value))
+                    .collect()
+            })
             .unwrap_or_default(),
         "extract_note" => {
             if value.is_object() {

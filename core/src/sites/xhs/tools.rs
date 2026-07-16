@@ -30,7 +30,7 @@ use crate::sites::xhs::entities::{parse_posted_at_ms, parse_stat_count};
 use crate::sites::xhs::media_manifest::{
     ensure_entity_note_id, search_media_manifest, write_media_manifest_file,
 };
-use crate::sites::xhs::page::XHS_SEARCH_FILTERS;
+use crate::sites::xhs::page::{LoginGate, XHS_SEARCH_FILTERS};
 use crate::sites::xhs::{
     ReadNoteOptions, XhsAuthorProfile, XhsHistoryStore, XhsNoteCard, XhsPageRuntime, XHS_HOME_URL,
 };
@@ -64,6 +64,14 @@ pub fn xhs_tools_with_llm_provider(
     let history = Arc::new(XhsHistoryStore::open_default());
     let pro = crate::cloud::pro_activated();
     vec![
+        Arc::new(GetNotesTool {
+            page: page.clone(),
+            llm_provider: llm_provider.clone(),
+            history: history.clone(),
+            always_download_media: false,
+            always_ocr: false,
+            pro,
+        }) as Arc<dyn Tool>,
         Arc::new(ExtractSearchCardsTool {
             page: page.clone(),
             history: history.clone(),
@@ -118,6 +126,14 @@ pub fn xhs_macro_tools_with_llm_provider(
     // files are on hand for deeper analysis, and always OCRs every image; the
     // CLI keeps its --download-media / --ocr opt-ins via the full tool set above.
     vec![
+        Arc::new(GetNotesTool {
+            page: page.clone(),
+            llm_provider: llm_provider.clone(),
+            history: history.clone(),
+            always_download_media: true,
+            always_ocr: true,
+            pro,
+        }) as Arc<dyn Tool>,
         Arc::new(SearchTool {
             page: page.clone(),
             llm_provider,
@@ -176,6 +192,55 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
     agent_instructions: xhs_agent_instructions,
     default_agent_instructions: Some(xhs_agent_instructions),
     commands: &[
+        SiteCommand {
+            name: "get-notes",
+            tool_name: "get_notes",
+            about: "Read one or more Xiaohongshu notes directly by note id and xsec token.",
+            args: &[
+                CommandArg {
+                    key: "notes",
+                    long: Some("note"),
+                    value_name: "NOTE_ID=XSEC_TOKEN",
+                    help: "Note id and xsec token (repeatable).",
+                    required: true,
+                    kind: ArgKind::StrList,
+                },
+                CommandArg {
+                    key: "num_comments",
+                    long: Some("num-comments"),
+                    value_name: "N",
+                    help: "Comments to load per note. Default 8; 0 skips comments.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "download_media",
+                    long: Some("download-media"),
+                    value_name: "DOWNLOAD_MEDIA",
+                    help: "Download note images/videos into the run_dir.",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+                CommandArg {
+                    key: "ocr",
+                    long: Some("ocr"),
+                    value_name: "OCR",
+                    help: "OCR every note image, or a video note's cover, locally.",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+                CommandArg {
+                    key: "transcribe_audio",
+                    long: Some("transcribe-audio"),
+                    value_name: "TRANSCRIBE_AUDIO",
+                    help: "For video notes, transcribe audio through socai pro.",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_get_notes,
+        },
         SiteCommand {
             name: "search",
             tool_name: "search",
@@ -343,6 +408,49 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
     ],
 };
 
+fn run_get_notes(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
+    Box::pin(async move {
+        let notes = args
+            .get("notes")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("missing required argument: notes"))?
+            .iter()
+            .map(|item| {
+                let raw = item.as_str().unwrap_or_default();
+                let (note_id, xsec_token) = raw.split_once('=').ok_or_else(|| {
+                    anyhow::anyhow!("--note expects NOTE_ID=XSEC_TOKEN, got: {raw}")
+                })?;
+                if note_id.trim().is_empty() || xsec_token.trim().is_empty() {
+                    anyhow::bail!("--note expects non-empty NOTE_ID=XSEC_TOKEN, got: {raw}");
+                }
+                Ok::<Value, anyhow::Error>(json!({
+                    "note_id": note_id.trim(),
+                    "xsec_token": xsec_token.trim(),
+                }))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut input = json!({
+            "notes": notes,
+            "num_comments": args
+                .get("num_comments")
+                .and_then(Value::as_i64)
+                .unwrap_or(TOP_COMMENTS_PER_NOTE)
+                .max(0),
+        });
+        for key in ["download_media", "ocr", "transcribe_audio"] {
+            if args.get(key).and_then(Value::as_bool).unwrap_or(false) {
+                input[key] = json!(true);
+            }
+        }
+        run_xhs_tool_command(page, GET_NOTES_COMMAND, input, debug_snapshot, progress).await
+    })
+}
+
 /// `search` dispatches on `--preview`: default opens each result (full scan —
 /// body + top comments); `--preview` returns result cards only (titles/likes/
 /// covers) without opening any note.
@@ -485,6 +593,14 @@ const AUTHOR_SCAN_COMMAND: XhsCommandSpec = XhsCommandSpec {
     before: CommandPageAction::CloseOpenNote,
     after: CommandPageAction::CloseOpenNote,
     include_run_metadata: false,
+};
+
+const GET_NOTES_COMMAND: XhsCommandSpec = XhsCommandSpec {
+    command_name: "get-notes",
+    tool_name: "get_notes",
+    before: CommandPageAction::None,
+    after: CommandPageAction::None,
+    include_run_metadata: true,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -722,6 +838,7 @@ fn read_note_options(input: &Value) -> ReadNoteOptions {
         download_video_file: true,
         ocr,
         transcribe_audio,
+        settle_ms: 0,
         max_images: get_i64(input, "max_images", 12).max(1) as usize,
         poster_url_fallback: get_str(input, "poster_url_fallback")
             .unwrap_or("")
@@ -1071,6 +1188,7 @@ async fn scan_card_note(
                 // the real `transcribe_audio` flag, so a cache hit returns the
                 // already-transcribed entity.
                 transcribe_audio: false,
+                settle_ms: 0,
                 // Inline OCR only when not deferred; otherwise just download and
                 // let the caller OCR in the background.
                 ocr: ocr && !defer_ocr,
@@ -2392,6 +2510,482 @@ impl Tool for CloseNoteTool {
         let xhs = XhsPageRuntime::new(&self.page);
         let value = xhs.close_note(wait_seconds).await?;
         Ok(json_result(&value))
+    }
+}
+
+const MAX_DIRECT_NOTES: usize = 20;
+
+#[derive(Clone)]
+struct DirectNoteRef {
+    note_id: String,
+    xsec_token: String,
+}
+
+fn direct_note_refs(input: &Value) -> anyhow::Result<Vec<DirectNoteRef>> {
+    let notes = input
+        .get("notes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("notes must be an array"))?;
+    if notes.is_empty() {
+        anyhow::bail!("notes must contain at least one item");
+    }
+    if notes.len() > MAX_DIRECT_NOTES {
+        anyhow::bail!("notes accepts at most {MAX_DIRECT_NOTES} items per call");
+    }
+    notes
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let note_id = get_str(item, "note_id")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("notes[{index}].note_id is required"))?;
+            let xsec_token = get_str(item, "xsec_token")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("notes[{index}].xsec_token is required"))?;
+            Ok(DirectNoteRef {
+                note_id: note_id.to_string(),
+                xsec_token: xsec_token.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Open a tokenized full-screen note route, extract the same entity shape used
+/// by search/author scans, attach comments, and record it in run/history.
+#[allow(clippy::too_many_arguments)]
+async fn scan_direct_note(
+    xhs: &XhsPageRuntime<'_>,
+    history: &XhsHistoryStore,
+    ctx: &ToolContext,
+    target: &DirectNoteRef,
+    position: usize,
+    comment_count: i64,
+    download_media: bool,
+    download_media_requested: bool,
+    ocr: bool,
+    defer_ocr: bool,
+) -> Value {
+    let mut perf = Map::new();
+    let t_open = std::time::Instant::now();
+    let open = xhs
+        .open_note_direct(&target.note_id, &target.xsec_token, 8.0)
+        .await;
+    perf.insert("open_ms".into(), json!(t_open.elapsed().as_millis() as u64));
+    let open = match open {
+        Ok(value) => value,
+        Err(err) => {
+            return json!({
+                "source_position": position,
+                "ok": false,
+                "entity": { "note_id": target.note_id },
+                "error": format!("{err:#}"),
+                "scan_perf": perf,
+            });
+        }
+    };
+    if !open.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        return json!({
+            "source_position": position,
+            "ok": false,
+            "entity": {
+                "note_id": target.note_id,
+                "url": open.get("url").cloned().unwrap_or(Value::Null),
+            },
+            "error": open.get("reason").and_then(Value::as_str).unwrap_or("direct_open_failed"),
+            "open": open,
+            "scan_perf": perf,
+        });
+    }
+
+    let t_extract = std::time::Instant::now();
+    let extracted = xhs
+        .extract_note_with_options(
+            8.0,
+            ReadNoteOptions {
+                level: "deep".to_string(),
+                include_media: false,
+                download_media,
+                download_video_file: download_media_requested,
+                ocr: ocr && !defer_ocr,
+                transcribe_audio: false,
+                settle_ms: 800,
+                max_images: if download_media { 100 } else { 12 },
+                poster_url_fallback: String::new(),
+                note_id_fallback: target.note_id.clone(),
+            },
+        )
+        .await;
+    perf.insert(
+        "extract_ms".into(),
+        json!(t_extract.elapsed().as_millis() as u64),
+    );
+
+    let mut entity = match extracted {
+        Ok(note) => serde_json::to_value(note).unwrap_or(Value::Null),
+        Err(err) => {
+            return json!({
+                "source_position": position,
+                "ok": false,
+                "entity": { "note_id": target.note_id, "url": open.get("url").cloned().unwrap_or(Value::Null) },
+                "error": format!("{err:#}"),
+                "open": open,
+                "scan_perf": perf,
+            });
+        }
+    };
+
+    let actual_id = entity
+        .get("note_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if actual_id != target.note_id {
+        return json!({
+            "source_position": position,
+            "ok": false,
+            "entity": entity,
+            "error": format!("stale_note: expected {}, got {actual_id}", target.note_id),
+            "open": open,
+            "scan_perf": perf,
+        });
+    }
+    let has_detail = ["title", "author", "content"].iter().any(|key| {
+        entity
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    }) || entity
+        .get("image_count")
+        .and_then(Value::as_i64)
+        .is_some_and(|count| count > 0)
+        || entity.get("type").and_then(Value::as_str) == Some("video");
+    if !has_detail {
+        return json!({
+            "source_position": position,
+            "ok": false,
+            "entity": entity,
+            "error": "note_content_unavailable",
+            "open": open,
+            "scan_perf": perf,
+        });
+    }
+
+    if comment_count > 0 {
+        let t_comments = std::time::Instant::now();
+        if let Ok(payload) = xhs
+            .load_comments(comment_count, COMMENT_LOAD_TIMEOUT_S)
+            .await
+        {
+            let comments = payload
+                .get("comments")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(map) = entity.as_object_mut() {
+                map.insert("top_comments".into(), Value::Array(comments));
+                map.insert(
+                    "top_comments_wait".into(),
+                    json!({
+                        "ready": payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
+                        "loaded_total": payload.get("loaded_total").and_then(Value::as_i64).unwrap_or(0),
+                        "returned_total": payload.get("returned_total").and_then(Value::as_i64).unwrap_or(0),
+                        "rounds": payload.get("rounds").and_then(Value::as_i64).unwrap_or(0),
+                        "stop_reason": payload.get("stop_reason").and_then(Value::as_str).unwrap_or(""),
+                    }),
+                );
+            }
+        }
+        perf.insert(
+            "comments_ms".into(),
+            json!(t_comments.elapsed().as_millis() as u64),
+        );
+    }
+
+    ctx.mark_processed_note(&target.note_id, "deep", false);
+    history.record(&entity, "deep", false);
+    let mut entry = json!({
+        "source_position": position,
+        "ok": true,
+        "entity": entity,
+    });
+    if let Some((note_id, record)) = build_note_record(&entry, ctx, "deep") {
+        ctx.record_note(&note_id, record);
+    }
+    if let Some(map) = entry.as_object_mut() {
+        map.insert("scan_perf".into(), Value::Object(perf));
+    }
+    entry
+}
+
+/// get_notes(notes) -> note detail bundle
+pub struct GetNotesTool {
+    page: Arc<PageSession>,
+    llm_provider: Option<Arc<dyn LlmProvider>>,
+    history: Arc<XhsHistoryStore>,
+    always_download_media: bool,
+    always_ocr: bool,
+    pro: bool,
+}
+
+#[async_trait]
+impl Tool for GetNotesTool {
+    fn name(&self) -> &str {
+        "get_notes"
+    }
+
+    fn description(&self) -> &str {
+        "Read one or more Xiaohongshu notes directly from note_id + xsec_token pairs. \
+         Use tokens returned by search or author_scan when you need to revisit \
+         specific notes without repeating the search/profile click flow. Opens \
+         one full-screen detail route per item and returns body + top comments; \
+         latency scales with the number of notes."
+    }
+
+    fn input_schema(&self) -> Value {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "notes": {
+                    "type": "array",
+                    "description": "Note locators previously returned by search or author_scan.",
+                    "minItems": 1,
+                    "maxItems": MAX_DIRECT_NOTES,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "note_id": { "type": "string" },
+                            "xsec_token": { "type": "string" }
+                        },
+                        "required": ["note_id", "xsec_token"],
+                        "additionalProperties": false
+                    }
+                },
+                "num_comments": {
+                    "type": "integer",
+                    "description": "Comments to load per note; replies count toward the total. 0 skips comments.",
+                    "default": TOP_COMMENTS_PER_NOTE,
+                    "minimum": 0
+                },
+                "download_media": {
+                    "type": "boolean",
+                    "description": "Download note images/videos into the run dir and include local paths.",
+                    "default": false
+                },
+                "ocr": {
+                    "type": "boolean",
+                    "description": "Run local OCR on every carousel image, or a video note's cover.",
+                    "default": false
+                },
+                "transcribe_audio": {
+                    "type": "boolean",
+                    "description": "For video notes, download the video and transcribe audio through socai pro.",
+                    "default": false
+                }
+            },
+            "required": ["notes"],
+            "additionalProperties": false
+        });
+        if !self.pro {
+            strip_pro_schema(&mut schema);
+        }
+        schema
+    }
+
+    fn effective_input(&self, input: &Value) -> Value {
+        effective_macro_input(input, None, self.always_download_media, self.always_ocr)
+    }
+
+    async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let pro_skipped = !self.pro && strip_pro_input(&mut input);
+        let targets = direct_note_refs(&input)?;
+        let login = XhsPageRuntime::new(&self.page).login_gate(true).await?;
+        if login == LoginGate::Required {
+            return Ok(json_result(&json!({
+                "ok": false,
+                "notes": [],
+                "reason": "login_required",
+            })));
+        }
+
+        let comment_count = get_i64(&input, "num_comments", TOP_COMMENTS_PER_NOTE).max(0);
+        let ocr = self.always_ocr || get_bool(&input, "ocr", false);
+        let transcribe_audio = get_bool(&input, "transcribe_audio", false);
+        let download_media_requested = self.always_download_media
+            || get_bool(&input, "download_media", false)
+            || transcribe_audio;
+        let download_media = ocr || download_media_requested;
+        if ocr {
+            tokio::task::spawn_blocking(ocr_warm_up);
+        }
+
+        let media = media_for(
+            ctx,
+            self.llm_provider.clone(),
+            download_media,
+            transcribe_audio,
+        )?;
+        let media_baseline = media.as_ref().map(|value| value.timing().snapshot());
+        let xhs = XhsPageRuntime::new_with_media(&self.page, media.clone());
+        let mut notes = Vec::with_capacity(targets.len());
+        let ocr_sem = Arc::new(tokio::sync::Semaphore::new(OCR_PIPELINE_CONCURRENCY));
+        let mut pending_ocr = Vec::new();
+        let asr_sem = Arc::new(tokio::sync::Semaphore::new(ASR_PIPELINE_CONCURRENCY));
+        let mut pending_transcribe = Vec::new();
+        let mut note_perfs = Vec::new();
+        let scan_progress = ScanProgress::new(ctx, targets.len());
+        let browse_t0 = std::time::Instant::now();
+        let mut stop_reason = String::new();
+
+        for (position, target) in targets.iter().enumerate() {
+            ctx.add_search_note_ids(std::slice::from_ref(&target.note_id));
+            let item_index = position + 1;
+            let title = Some(target.note_id.clone());
+            scan_progress.reading_started(item_index, title.clone());
+            let note_started_ms = browse_t0.elapsed().as_millis() as u64;
+            let entry = scan_direct_note(
+                &xhs,
+                &self.history,
+                ctx,
+                target,
+                position,
+                comment_count,
+                download_media,
+                download_media_requested,
+                ocr,
+                ocr,
+            )
+            .await;
+            let login_lost = entry
+                .get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|reason| reason == "login_required");
+            notes.push(entry);
+            let idx = notes.len() - 1;
+            if ocr {
+                if let Some(handle) = spawn_note_ocr(
+                    &media,
+                    &ocr_sem,
+                    &notes[idx],
+                    browse_t0,
+                    scan_progress.clone(),
+                    item_index,
+                    title.clone(),
+                ) {
+                    pending_ocr.push((idx, handle));
+                } else {
+                    scan_progress.ocr_completed(item_index, title.clone());
+                }
+            }
+            if transcribe_audio {
+                if let Some(handle) =
+                    spawn_note_transcribe(&media, &asr_sem, &notes[idx], browse_t0)
+                {
+                    pending_transcribe.push((idx, handle));
+                }
+            }
+            scan_progress.reading_completed(item_index, title);
+            let total_ms = (browse_t0.elapsed().as_millis() as u64).saturating_sub(note_started_ms);
+            note_perfs.push(harvest_note_perf(
+                &mut notes[idx],
+                idx,
+                note_started_ms,
+                0,
+                total_ms,
+            ));
+            if login_lost {
+                stop_reason = "login_required".to_string();
+                break;
+            }
+        }
+
+        scan_progress.finish_reading(notes.len());
+        let browse_ms = browse_t0.elapsed().as_millis() as u64;
+        let ocr_timings =
+            join_note_ocr(&mut notes, pending_ocr, &self.history, "deep", false).await;
+        join_note_transcribe(
+            &mut notes,
+            pending_transcribe,
+            &mut note_perfs,
+            &self.history,
+            ctx,
+            "deep",
+            false,
+        )
+        .await;
+        write_scan_perf(ctx, &notes, browse_ms, &ocr_timings, &note_perfs);
+        if ocr {
+            scan_progress.finish_ocr(notes.len());
+        }
+
+        let successful = notes
+            .iter()
+            .filter(|entry| entry.get("ok").and_then(Value::as_bool) == Some(true))
+            .count();
+        let mut media_timing = match (&media, &media_baseline) {
+            (Some(media), Some(before)) => timing_delta(before, &media.timing().snapshot()),
+            _ => json!({}),
+        };
+        strip_ocr_timing(&mut media_timing);
+        let media_manifest_metadata = if download_media {
+            let manifest = search_media_manifest(&notes, ctx.output_dir());
+            let count = manifest.as_array().map(Vec::len).unwrap_or_default();
+            let (path, error) = match write_media_manifest_file(ctx, &manifest) {
+                Ok(path) => (Some(path), None),
+                Err(err) => (None, Some(format!("{err:#}"))),
+            };
+            Some((count, path, error))
+        } else {
+            None
+        };
+
+        let mut payload = json!({
+            "ok": successful == targets.len() && stop_reason.is_empty(),
+            "notes": notes,
+            "sampling": {
+                "requested": targets.len(),
+                "attempted": note_perfs.len(),
+                "successful": successful,
+                "comments_per_note": comment_count,
+                "download_media": download_media,
+                "ocr": ocr,
+                "transcribe_audio": transcribe_audio,
+            },
+            "timing": { "media": media_timing },
+        });
+        if !stop_reason.is_empty() {
+            payload["reason"] = json!(stop_reason);
+        }
+        if let Some((count, path, error)) = media_manifest_metadata {
+            payload["media_manifest_count"] = json!(count);
+            if let Some(path) = path {
+                payload["media_manifest_path"] = json!(path);
+            }
+            if let Some(error) = error {
+                payload["media_manifest_error"] = json!(error);
+            }
+        }
+
+        let first_id = targets
+            .first()
+            .map(|target| target.note_id.as_str())
+            .unwrap_or("notes");
+        let artifact_path = ctx
+            .write_json_artifact(
+                &format!("xhs_get_notes_{}", sanitize_for_filename(first_id)),
+                &payload,
+                "artifacts",
+                "get_notes",
+                "json",
+                &format!("Direct note read: {successful}/{} notes", targets.len()),
+                json!({"site": "xhs", "category": "get_notes"}),
+            )
+            .ok()
+            .map(|rel| ctx.run_dir.join(rel).to_string_lossy().into_owned());
+        lean_scan_payload(&mut payload);
+        attach_artifact_pointer(&mut payload, artifact_path, ARTIFACT_EXTRA_NOTE_PROPERTIES);
+        attach_pro_skip_note(&mut payload, pro_skipped);
+        Ok(json_result(&payload))
     }
 }
 

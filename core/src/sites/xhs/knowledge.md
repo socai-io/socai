@@ -22,6 +22,7 @@ The default interactive XHS tools are intentionally high level:
 
 - `search` — the topic/keyword search macro, and the single XHS search tool.
 - `author_scan` — author/profile macro.
+- `get_notes` — revisit specific notes by previously collected note id + xsec token.
 
 Stateful micro tools such as opening/closing a current note, scrolling a note,
 extracting the current modal, or reading current page state are not part of the
@@ -29,9 +30,11 @@ normal app/TUI agent workflow.
 
 ## Anti-Bot / Rate-Limit Guardrails
 
-Macro tools navigate through search/profile/card flows because direct detail
-URLs and rapid repeated reads are more likely to trigger Xiaohongshu security
-states. If a macro reports security verification, captcha, login/session loss,
+`search` and `author_scan` keep using search/profile card clicks for first-time
+discovery. `get_notes` may navigate directly only when each note has the xsec
+token previously returned by one of those flows. Direct detail reads and rapid
+repeats can still trigger Xiaohongshu security states. If a macro reports
+security verification, captcha, login/session loss,
 blank/404/app-only detail pages, or copy such as "帖子不见了" / "内容无法展示" /
 "page unavailable", do not loop the same macro with identical inputs. Treat it
 as a platform/session/rate-limit blocker: use whatever evidence was collected,
@@ -40,7 +43,7 @@ the route, and otherwise explain the blocker to the user.
 
 ## Login Detection
 
-Both macros run a pre-flight login gate: if logged out they return
+All three macros run a pre-flight login gate: if logged out they return
 `{ok:false, reason:"login_required"}` immediately (login is read from the
 persistent sidebar, so a dismissed QR modal is never mistaken for a session).
 
@@ -67,6 +70,9 @@ artifacts, and return a compact bundle. They differ only in where they enter:
   the profile header). Use for a specific creator. Needs an `author_id` (trailing
   segment of `/user/profile/<id>`); if the user only gives a display name/handle,
   discover it with a focused `search` first or ask for the profile URL.
+
+Both flows keep opening notes by clicking their cards. Their card/note URLs
+carry the xsec token needed for a later `get_notes` call.
 
 For deep, complex topic research only, consider `author_scan` when a search
 finds a high-quality, suspicious, or representative note. A quick profile check
@@ -95,13 +101,14 @@ Shared options (same meaning for both):
   `transcript_error` saying no speech was detected means the video genuinely
   has no narration — report that as the answer.
 
-### Note details
+### `get_notes`
 
-A standalone note-snapshot macro is deferred for V1 because direct note opening
-can require tokenized URLs or source card context. Prefer note details already
-collected by `search` or `author_scan` artifacts. If note details are
-missing, run a focused `search` or `author_scan` that can reach the note via
-search/profile context.
+`get_notes(notes=[{note_id, xsec_token}, ...])` directly opens tokenized
+full-screen detail pages and returns each note's body + top comments. Batch the
+specific notes you need into one call. Only use tokens already collected from
+`search` or `author_scan`; a bare note id is insufficient. It supports the same
+`num_comments`, `download_media`, `ocr`, and `transcribe_audio` options as the
+full scan macros.
 
 ## Artifact-First Reasoning
 

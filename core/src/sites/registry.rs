@@ -70,6 +70,8 @@ pub struct CommandArg {
 
 pub enum ArgKind {
     Str,
+    /// Repeatable string flag collected into a JSON array, preserving order.
+    StrList,
     Int,
     /// Boolean `--flag`; sent as `true` only when set.
     Flag,

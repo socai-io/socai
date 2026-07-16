@@ -58,6 +58,7 @@ cargo install --path cli --force
 ```bash
 socai xhs search "运营爆款思路" --num-notes 30 --filter publish_time=一周内 --download-media  # 搜索并逐个打开帖子，获取正文+评论，并下载图片/视频
 socai xhs author <作者id> --num-notes 10 --preview                               # 打开作者主页，拿作者简介，并逐个打开帖子读正文+评论；加 --preview 则只拿帖子概要
+socai xhs get-notes --note '<帖子id>=<xsec_token>' --note '<帖子id>=<xsec_token>'  # 用 search/author 返回的 token 批量重新读取指定帖子
 socai stop                                                             # 停止 daemon（关闭工具标签页）
 ```
 

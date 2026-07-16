@@ -140,6 +140,7 @@ fn arg_to_clap(arg: &'static CommandArg) -> Arg {
     }
     match arg.kind {
         ArgKind::Str => clap_arg,
+        ArgKind::StrList => clap_arg.action(ArgAction::Append),
         ArgKind::Int => clap_arg.value_parser(clap::value_parser!(i64)),
         ArgKind::Flag => clap_arg.action(ArgAction::SetTrue),
         ArgKind::KeyValueMap => clap_arg.action(ArgAction::Append),
@@ -154,6 +155,14 @@ fn collect_args(command: &'static SiteCommand, matches: &ArgMatches) -> Result<V
             ArgKind::Str => {
                 if let Some(value) = matches.get_one::<String>(arg.key) {
                     args.insert(arg.key.to_string(), Value::String(value.clone()));
+                }
+            }
+            ArgKind::StrList => {
+                if let Some(values) = matches.get_many::<String>(arg.key) {
+                    args.insert(
+                        arg.key.to_string(),
+                        Value::Array(values.cloned().map(Value::String).collect()),
+                    );
                 }
             }
             ArgKind::Int => {

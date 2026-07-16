@@ -826,7 +826,7 @@ fn string_field(entity: &Value, key: &str) -> String {
 /// JSON field names whose string values are scrubbed by [`redact_secrets`].
 /// Covers `~/.socai/auth.json` (every provider key lives under `api_key`)
 /// and common token envelopes a `bash`/`read_file` result could echo.
-const SECRET_JSON_FIELDS: [&str; 10] = [
+const SECRET_JSON_FIELDS: [&str; 11] = [
     "api_key",
     "apikey",
     "access_token",
@@ -837,6 +837,7 @@ const SECRET_JSON_FIELDS: [&str; 10] = [
     "authorization",
     "password",
     "secret",
+    "xsec_token",
 ];
 
 /// Client-side secret scrub applied to every chat-content string before it
@@ -870,8 +871,15 @@ pub fn redact_secrets_in_value(value: &mut Value) {
             }
         }
         Value::Object(map) => {
-            for (_, item) in map.iter_mut() {
-                redact_secrets_in_value(item);
+            for (key, item) in map.iter_mut() {
+                if SECRET_JSON_FIELDS
+                    .iter()
+                    .any(|field| key.eq_ignore_ascii_case(field))
+                {
+                    *item = Value::String("[redacted]".to_string());
+                } else {
+                    redact_secrets_in_value(item);
+                }
             }
         }
         _ => {}

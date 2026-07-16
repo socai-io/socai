@@ -30,7 +30,10 @@ const SocaiXhsPageScripts = (() => {
 
   // ── note modal scoping (the core fix for content extraction) ─
   function getNoteOverlay() {
-    const overlay = $('.note-detail-mask, .note-overlay, .note-detail-modal, #noteContainer');
+    // `#noteContainer` is also the root of a directly navigated full-screen
+    // detail page. Only overlay wrappers count as modal state; getNoteRoot()
+    // falls back to the same note container for full-screen extraction.
+    const overlay = $('.note-detail-mask, .note-overlay, .note-detail-modal');
     return overlay && overlay.offsetHeight > 0 ? overlay : null;
   }
 
@@ -313,10 +316,28 @@ const SocaiXhsPageScripts = (() => {
     const cards = $$('section.note-item, [data-note-id], .feeds-page .note-item');
     return cards.map((card, i) => {
       const linkEl = card.querySelector('a[href*="/explore/"], a[href*="/search_result/"]') || card.closest('a') || card.querySelector('a');
-      const link = linkEl ? linkEl.href : '';
-      const idMatch = link.match(/\/(?:explore|search_result|discovery)\/([^/?#]+)/);
+      const bareLink = linkEl ? linkEl.href : '';
+      const idMatch = bareLink.match(/\/(?:explore|search_result|discovery)\/([^/?#]+)/);
       const noteId = card.dataset?.noteId || (idMatch ? idMatch[1] : '');
-      const authorEl = card.querySelector('a[href*="/user/profile/"], .author-wrapper a, .author a');
+      // Profile cards render a hidden bare /explore/<id> link plus visible
+      // cover/title links shaped /user/profile/<author>/<note>?xsec_token=… .
+      // The token belongs to the note even though that route looks like a
+      // profile URL. Resolve it from the href that contains this card's id,
+      // then expose a canonical tokenized /explore URL for get_notes handoff.
+      const tokenLink = $$('a[href*="xsec_token="]', card).find((anchor) => {
+        try {
+          const url = new URL(anchor.href || anchor.getAttribute('href'), location.href);
+          return !!url.searchParams.get('xsec_token') && (!noteId || url.pathname.includes(noteId));
+        } catch (e) { return false; }
+      });
+      let xsecToken = '';
+      if (tokenLink) {
+        try { xsecToken = new URL(tokenLink.href, location.href).searchParams.get('xsec_token') || ''; } catch (e) {}
+      }
+      const link = noteId && xsecToken
+        ? `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=pc_user`
+        : bareLink;
+      const authorEl = card.querySelector('.author-wrapper a[href*="/user/profile/"], a.author[href*="/user/profile/"]');
       const authorUrl = authorEl ? absUrl(authorEl.href || authorEl.getAttribute('href')) : '';
       const authorIdMatch = authorUrl.match(/\/user\/profile\/([^/?#]+)/);
       return {
@@ -329,7 +350,7 @@ const SocaiXhsPageScripts = (() => {
         cover_url: card.querySelector('.cover img, .note-cover img, img')?.src || '',
         type: card.querySelector('video, .play-icon, .video-icon, svg[class*="video"], .duration') ? 'video' : 'image',
         position: i,
-        xsec_token: '',
+        xsec_token: xsecToken,
         link,
       };
     }).filter((c) => c.note_id || c.title || c.link);
@@ -1027,9 +1048,11 @@ const SocaiXhsPageScripts = (() => {
   function noteWithWait(opts = {}) {
     const timeoutMs = Math.max(500, Number(opts.timeout_ms) || 8000);
     const shellSettleMs = Math.max(500, Number(opts.shell_settle_ms) || 3500);
+    const contentSettleMs = Math.max(0, Number(opts.settle_ms) || 0);
     return new Promise((resolve) => {
       const startedAt = Date.now();
       let shellSeenAt = 0;
+      let contentSeenAt = 0;
       let best = null;
       let attempts = 0;
       const tick = () => {
@@ -1040,8 +1063,9 @@ const SocaiXhsPageScripts = (() => {
         const hasShell = !!(value.note_id || value.title || value.author || value.likes || value.comments_count);
         const pending = pendingHydration(root);
         if (hasShell) { best = value; if (!shellSeenAt) shellSeenAt = Date.now(); }
-        if (hasContent) {
-          resolve({ ready: true, reason: 'content_ready', waited_ms: Date.now() - startedAt, attempts, note: value });
+        if (hasContent && !contentSeenAt) contentSeenAt = Date.now();
+        if (hasContent && (contentSettleMs === 0 || Date.now() - contentSeenAt >= contentSettleMs)) {
+          resolve({ ready: true, reason: contentSettleMs > 0 ? 'content_settled' : 'content_ready', waited_ms: Date.now() - startedAt, attempts, note: value });
           return;
         }
         if (hasShell && !pending && Date.now() - shellSeenAt >= shellSettleMs) {

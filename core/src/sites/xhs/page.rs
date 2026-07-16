@@ -105,6 +105,10 @@ pub struct ReadNoteOptions {
     /// Transcribe downloaded video notes through the configured cloud ASR
     /// server. Implies `download_media` and `download_video_file` at the caller.
     pub transcribe_audio: bool,
+    /// Optional hydration settle after body content first appears. Direct
+    /// full-screen note routes use this because engagement counts can mount a
+    /// fraction later than the body; modal reads keep the zero default.
+    pub settle_ms: i64,
     pub max_images: usize,
     pub poster_url_fallback: String,
     pub note_id_fallback: String,
@@ -119,6 +123,7 @@ impl Default for ReadNoteOptions {
             download_video_file: true,
             ocr: false,
             transcribe_audio: false,
+            settle_ms: 0,
             max_images: 12,
             poster_url_fallback: String::new(),
             note_id_fallback: String::new(),
@@ -1229,8 +1234,68 @@ impl<'a> XhsPageRuntime<'a> {
         Ok(cards)
     }
 
+    /// Navigate directly to a note detail route using the xsec token captured
+    /// from a search/profile card. This is the entry action for `get_notes`;
+    /// search and author scans continue to open their cards in place.
+    pub async fn open_note_direct(
+        &self,
+        note_id: &str,
+        xsec_token: &str,
+        wait_seconds: f64,
+    ) -> Result<Value> {
+        let note_id = note_id.trim();
+        let xsec_token = xsec_token.trim();
+        if note_id.is_empty() || !note_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            anyhow::bail!("note_id must be non-empty ASCII letters/digits");
+        }
+        if xsec_token.is_empty() {
+            anyhow::bail!("xsec_token is required");
+        }
+        self.ensure_xhs(true).await?;
+
+        let mut url =
+            reqwest::Url::parse(&format!("https://www.xiaohongshu.com/explore/{note_id}"))?;
+        url.query_pairs_mut()
+            .append_pair("xsec_token", xsec_token)
+            .append_pair("xsec_source", "pc_search");
+        self.set_last_note_id(String::new());
+        self.page.navigate_with_timeout(url.as_str(), 60.0).await?;
+
+        let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.max(1.0));
+        let mut state = self.expect_object("pageState", None).await?;
+        loop {
+            let kind = state.get("state").and_then(Value::as_str).unwrap_or("");
+            let login = state
+                .get("login_required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if kind == "note_detail" || login || Instant::now() >= deadline {
+                break;
+            }
+            sleep_ms(300).await;
+            state = self.expect_object("pageState", None).await?;
+        }
+
+        let kind = state.get("state").and_then(Value::as_str).unwrap_or("");
+        let login = state
+            .get("login_required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Ok(json!({
+            "ok": kind == "note_detail" && !login,
+            "url": self.current_url().await?,
+            "reason": if login {
+                "login_required"
+            } else if kind == "note_detail" {
+                ""
+            } else {
+                "not_note_detail"
+            },
+        }))
+    }
+
     /// Navigate directly to an author's profile page by id and wait for the
-    /// page to settle on a `profile_page` state. This is the single allowed
+    /// page to settle on a `profile_page` state. This is the profile-entry
     /// direct-URL navigation — it's the entry point of an author scan; every
     /// subsequent action (scrolling, opening notes) is DOM-driven like the
     /// rest of the site. Stops early if a login wall appears.
@@ -1373,7 +1438,13 @@ impl<'a> XhsPageRuntime<'a> {
         let t_extract = Instant::now();
         let timeout_ms = (wait_seconds.max(0.5) * 1000.0) as i64;
         let raw = self
-            .run_script("noteWithWait", Some(&json!({ "timeout_ms": timeout_ms })))
+            .run_script(
+                "noteWithWait",
+                Some(&json!({
+                    "timeout_ms": timeout_ms,
+                    "settle_ms": options.settle_ms.max(0),
+                })),
+            )
             .await?;
 
         let body = raw
