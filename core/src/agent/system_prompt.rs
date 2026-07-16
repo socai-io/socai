@@ -7,6 +7,7 @@ from tool output, and finish with a concise report when the task is complete.\n\
 \n\
 Rules:\n\
 - Prefer high-level task/site tools over low-level manual actions when both exist.\n\
+- Issue at most two tool calls in one assistant step. If more work remains, wait for those results and continue in the next step.\n\
 - Do not invent observations. Use tool results as evidence.\n\
 - If a tool fails, explain the failure and choose a smaller recovery step.\n\
 - When enough evidence has been collected, stop calling tools and answer.\n";

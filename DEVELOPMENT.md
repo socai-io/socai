@@ -116,6 +116,7 @@ in [Website deployment](docs/website-deployment.md).
 | Doc | Covers |
 | --- | --- |
 | [Data model](docs/data-model.md) | Run artifacts, desktop task index, and timeline replay. |
+| [Context window management](docs/context-window-management.md) | Agent turns, tool-result bounds, sawtooth compaction, prompt caching, and artifact evidence retention. |
 | [CLI telemetry schema](docs/telemetry-schema.md) | Telemetry schema, privacy, and configuration contract for the CLI daemon. |
 | [Telemetry runbook](docs/development/telemetry-runbook.md) | Maintainer runbook for operating CLI telemetry. |
 | [Release flow](docs/release-flow.md) | GitHub Release workflow, platform build graph, assets, and installer smoke tests. |
