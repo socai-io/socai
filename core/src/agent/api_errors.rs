@@ -72,17 +72,28 @@ pub fn format_http_error(provider: &str, status: u16, body_text: &str) -> String
 }
 
 /// Whether a chat error is worth retrying: transport-level failures
-/// (connect, timeout, mid-body decode) and overload-ish HTTP statuses
+/// (connect, timeout, mid-body I/O) and overload-ish HTTP statuses
 /// (408/429/5xx, per the `status=` field [`format_http_error`] embeds).
 /// Quota exhaustion also arrives as 429 on OpenAI, so those stay permanent.
 pub fn is_transient_api_error(error: &anyhow::Error) -> bool {
+    // Scan the whole chain before deciding: reqwest wraps a 200 response
+    // whose JSON doesn't match the wire schema (`response.json()`) as a
+    // Decode error whose *source* is serde_json — a permanent failure,
+    // unlike the transport Decode errors (mid-body timeouts) worth retrying.
+    let mut transport_failure = None;
     for cause in error.chain() {
+        if cause.downcast_ref::<serde_json::Error>().is_some() {
+            return false;
+        }
         if let Some(e) = cause.downcast_ref::<reqwest::Error>() {
             // Non-2xx statuses never surface as reqwest errors here (the
-            // clients read status themselves), so any reqwest error short of
-            // a builder/redirect bug is a transport failure.
-            return !(e.is_builder() || e.is_redirect());
+            // clients read status themselves), so short of a builder or
+            // redirect bug this is a transport failure.
+            transport_failure = Some(!(e.is_builder() || e.is_redirect()));
         }
+    }
+    if let Some(transient) = transport_failure {
+        return transient;
     }
     let msg = format!("{error:#}");
     if msg.contains("insufficient_quota") {

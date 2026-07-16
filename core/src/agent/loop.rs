@@ -494,7 +494,7 @@ pub async fn run_agent_with_events(
         messages.push(Message::user_blocks(tool_result_blocks));
     }
 
-    if !completed && step >= options.max_steps {
+    if !completed && terminal_error.is_none() && step >= options.max_steps {
         info!(step, "reached max_steps, forcing final summary");
         messages.push(Message::user(format!(
             "You have reached the maximum of {} tool-using steps. Do not call any \
