@@ -739,17 +739,17 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     println!("[socai] run_dir={}", outcome.run_dir.display());
     println!();
 
-    // An API error surfaces as an Ok outcome whose final_text is the error.
-    // Record a short marker instead of dumping the whole provider message into
-    // the conversation seed.
-    let recorded = if outcome.final_text.starts_with("API error:") {
-        "[run failed: LLM API error]".to_string()
+    // A terminal API error still returns an Ok outcome (the run dir and
+    // usage are real). Record it as failed, with a short marker instead of
+    // the whole provider message in the conversation seed.
+    let (recorded, status) = if outcome.error.is_some() {
+        ("[run failed: LLM API error]".to_string(), "failed")
     } else {
-        outcome.final_text.clone()
+        (outcome.final_text.clone(), "completed")
     };
     state
         .conversation
-        .record_run(task, &recorded, &outcome.run_dir, "completed");
+        .record_run(task, &recorded, &outcome.run_dir, status);
     Ok(())
 }
 
