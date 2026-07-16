@@ -47,6 +47,11 @@ const SEARCH_WAIT_SECONDS: f64 = 2.0;
 /// (one extra JS read, no extra navigation), so every note read includes them.
 const TOP_COMMENTS_PER_NOTE: i64 = 8;
 
+/// Default comment depth for the agent's composite search tools. Keep this
+/// lower than the CLI's top-level default so multi-note agent runs spend less
+/// context and latency on comment threads.
+const AGENT_TOP_COMMENTS_PER_NOTE: i64 = 5;
+
 /// XHS macro-agent playbook for the single app/TUI agent interface. Embedded
 /// at compile time so the agent prompt always carries the latest copy.
 pub const XHS_KNOWLEDGE: &str = include_str!("knowledge.md");
@@ -3034,7 +3039,7 @@ impl Tool for SearchTool {
                 "num_comments": {
                     "type": "integer",
                     "description": "Comments to load per note. Scrolls the comment area and expands reply threads to reach this many; replies count toward the total. Higher values add latency per note. Ignored in preview mode.",
-                    "default": TOP_COMMENTS_PER_NOTE,
+                    "default": AGENT_TOP_COMMENTS_PER_NOTE,
                     "minimum": 0
                 },
                 "download_media": {
@@ -3259,7 +3264,7 @@ impl Tool for SearchTool {
                 "sampling": {
                     "num_notes": num_notes,
                     "selected": 0,
-                    "comments_per_note": TOP_COMMENTS_PER_NOTE,
+                    "comments_per_note": AGENT_TOP_COMMENTS_PER_NOTE,
                     "include_media": include_media,
                     "download_media": download_media,
                     "ocr": ocr,
@@ -3280,7 +3285,7 @@ impl Tool for SearchTool {
         // Every sampled note is read with the same extraction level (body +
         // top comments).
         let level = "deep";
-        let comment_count = get_i64(&input, "num_comments", TOP_COMMENTS_PER_NOTE).max(0);
+        let comment_count = get_i64(&input, "num_comments", AGENT_TOP_COMMENTS_PER_NOTE).max(0);
         let want = num_notes.max(1) as usize;
 
         // Read top-to-bottom: pull cards from the results state (which only
@@ -3588,7 +3593,7 @@ impl Tool for AuthorScanTool {
                 "num_comments": {
                     "type": "integer",
                     "description": "Comments to load per note. Scrolls the comment area and expands reply threads to reach this many; replies count toward the total. Higher values add latency per note. Ignored in preview mode.",
-                    "default": TOP_COMMENTS_PER_NOTE,
+                    "default": AGENT_TOP_COMMENTS_PER_NOTE,
                     "minimum": 0
                 },
                 "preview": {
@@ -3658,7 +3663,7 @@ impl Tool for AuthorScanTool {
             .and_then(Value::as_i64)
             .filter(|n| *n > 0)
             .map(|n| n as usize);
-        let comment_count = get_i64(&input, "num_comments", TOP_COMMENTS_PER_NOTE).max(0);
+        let comment_count = get_i64(&input, "num_comments", AGENT_TOP_COMMENTS_PER_NOTE).max(0);
 
         // Media processor only needed when downloading note media (no vision,
         // so no LLM provider required).
