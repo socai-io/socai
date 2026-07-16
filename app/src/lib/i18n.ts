@@ -317,6 +317,17 @@ export function formatStepCount(count: number): string {
   return `${count} step${count === 1 ? "" : "s"}`;
 }
 
+function formatTokenCount(value: number): string {
+  const compact = (divisor: number, suffix: string) => {
+    const scaled = value / divisor;
+    const digits = scaled >= 100 ? 0 : 1;
+    return `${Number(scaled.toFixed(digits))}${suffix}`;
+  };
+  if (value > 1_000_000) return compact(1_000_000, "M");
+  if (value > 1_000) return compact(1_000, "K");
+  return value.toLocaleString(getLocale());
+}
+
 export function formatTokenUsage(
   inputTokens: number,
   outputTokens: number,
@@ -326,7 +337,7 @@ export function formatTokenUsage(
   costCurrency: string | null = null,
 ): string {
   const locale = getLocale();
-  const number = (value: number) => value.toLocaleString(locale);
+  const number = formatTokenCount;
   const parts = currentLanguage === "zh"
     ? [`输入 ${number(inputTokens)} / 输出 ${number(outputTokens)} tokens`]
     : [`in ${number(inputTokens)} / out ${number(outputTokens)} tokens`];
@@ -342,16 +353,17 @@ export function formatTokenUsage(
       : `cache write ${number(cacheCreationInputTokens)}`);
   }
   if (estimatedCost !== null && costCurrency) {
+    const cents = Math.trunc(estimatedCost * 100) / 100;
     let amount: string;
     try {
       amount = new Intl.NumberFormat(locale, {
         style: "currency",
         currency: costCurrency,
-        minimumFractionDigits: 4,
-        maximumFractionDigits: 6,
-      }).format(estimatedCost);
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(cents);
     } catch {
-      amount = `${estimatedCost.toFixed(6)} ${costCurrency}`;
+      amount = `${cents.toFixed(2)} ${costCurrency}`;
     }
     parts.push(currentLanguage === "zh" ? `估算 ${amount}` : `est. ${amount}`);
   }
