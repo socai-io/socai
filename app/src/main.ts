@@ -4,7 +4,6 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 
 import { applyLanguageToDocument, formatTabs, t } from "./lib/i18n";
@@ -402,8 +401,12 @@ function bindUpdateChip(): void {
   });
 }
 
+// Custom command, not the process plugin's relaunch(): that one respawns
+// during event-loop teardown and on macOS the process dies before the new
+// instance finishes spawning — the app quits and never reopens
+// (tauri-apps/tauri#11392).
 function doRelaunch(): void {
-  relaunch().catch((e) => console.error("relaunch failed:", e));
+  invoke("app_relaunch").catch((e) => console.error("relaunch failed:", e));
 }
 
 // Download + install the update in the background. The chip announces the

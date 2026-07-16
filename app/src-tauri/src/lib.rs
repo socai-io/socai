@@ -53,7 +53,6 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
         .manage(runtime)
         .manage(AgentTaskRegistry::default())
         .manage(telemetry)
@@ -146,6 +145,7 @@ pub fn run() {
             commands::cdp_disconnect,
             commands::cdp_status,
             commands::cdp_refresh,
+            commands::app_relaunch,
             commands::open_external,
             commands::agent_list_models,
             commands::agent_set_default_model,

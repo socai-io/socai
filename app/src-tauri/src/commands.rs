@@ -22,7 +22,7 @@ use socai_core::telemetry::trace::mark_run_trace_status;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 const TAURI_AGENT_PREAMBLE: &str =
     "You are running inside the socai desktop app as a conversational, multi-turn agent. \
@@ -86,6 +86,20 @@ pub async fn cdp_status(runtime: State<'_, SocaiRuntime>) -> Result<BrowserStatu
 #[tauri::command]
 pub async fn cdp_refresh(_runtime: State<'_, SocaiRuntime>) -> Result<(), String> {
     Ok(())
+}
+
+// ── App lifecycle ───────────────────────────────────────────────────────────
+
+/// Relaunch into a staged update. The process plugin's `relaunch()` routes the
+/// respawn through event-loop teardown (`request_restart`), and on macOS the
+/// process dies before the replacement finishes spawning — the app quits and
+/// never comes back (tauri-apps/tauri#11392). Spawn the replacement while the
+/// app is still fully alive instead, after the same browser cleanup quit does.
+#[tauri::command]
+pub async fn app_relaunch(app: AppHandle) {
+    app.state::<SocaiRuntime>().disconnect_browser().await;
+    app.cleanup_before_exit();
+    tauri::process::restart(&app.env());
 }
 
 async fn require_connected(runtime: &SocaiRuntime) -> Result<(), String> {
