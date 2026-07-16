@@ -134,10 +134,11 @@ pub struct AgentOutcome {
     pub steps: u32,
     pub final_text: String,
     pub usage: TokenUsage,
-    /// Terminal LLM error that ended the run early. When set, run.json and
-    /// the trace already carry status "failed" and `final_text` is only the
-    /// "API error: …" placeholder — callers must not report the run as
-    /// completed.
+    /// Terminal error that ended the run early: an unretryable LLM API
+    /// error, repeated max-token truncation, or a failed forced summary.
+    /// When set, run.json and the trace already carry status "failed", and
+    /// `final_text` is best-effort — an error placeholder, or partial output
+    /// from earlier steps — so callers must not report the run as completed.
     pub error: Option<String>,
 }
 
