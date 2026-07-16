@@ -201,10 +201,14 @@ fn extract_markdown_evidence(markdown: &str) -> (BTreeSet<(String, String)>, BTr
 
     while let Some(open_offset) = markdown[cursor..].find('[') {
         let open = cursor + open_offset;
-        let Some(close_offset) = markdown[open + 1..].find("](") else {
+        let Some(close_offset) = markdown[open + 1..].find(']') else {
             break;
         };
         let close = open + 1 + close_offset;
+        if markdown.as_bytes().get(close + 1) != Some(&b'(') {
+            cursor = close + 1;
+            continue;
+        }
         let target_start = close + 2;
         let Some(target_offset) = markdown[target_start..].find(')') else {
             break;
