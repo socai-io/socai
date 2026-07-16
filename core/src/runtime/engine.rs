@@ -300,8 +300,8 @@ pub fn ensure_llm_provider_configured_for(
 pub struct AgentRunConfig {
     pub max_steps: u32,
     pub max_tokens: u32,
+    pub compact_after_messages: usize,
     pub keep_recent_messages: usize,
-    pub memory_max_chars: usize,
     pub extra_instructions: String,
     pub enabled_sites: Vec<String>,
     pub run_dir: Option<PathBuf>,
@@ -318,8 +318,8 @@ impl Default for AgentRunConfig {
             // models (Sonnet 5 thinks by default), so 4096 starves the final
             // report. 16000 is the recommended non-streaming ceiling.
             max_tokens: 16000,
-            keep_recent_messages: 12,
-            memory_max_chars: 6000,
+            compact_after_messages: crate::agent::memory::DEFAULT_COMPACT_AFTER_MESSAGES,
+            keep_recent_messages: crate::agent::memory::DEFAULT_KEEP_RECENT_MESSAGES,
             extra_instructions: String::new(),
             enabled_sites: Vec::new(),
             run_dir: None,
@@ -346,8 +346,8 @@ pub async fn run_agent_task(
         extra_instructions: config.extra_instructions,
         run_dir: config.run_dir,
         enabled_sites: config.enabled_sites,
+        compact_after_messages: config.compact_after_messages,
         keep_recent_messages: config.keep_recent_messages,
-        memory_max_chars: config.memory_max_chars,
         seed_messages: config.seed_messages,
         session_id: config.session_id,
     };

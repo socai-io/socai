@@ -32,7 +32,10 @@ use crate::agent::llm::{
     Backend, Block, LLMResponse, Message, StopReason, TokenUsage, ToolCall, ToolResultContent,
     ToolSchema,
 };
-use crate::agent::memory::prepare_messages_for_context;
+use crate::agent::memory::{
+    compact_messages_for_context, DEFAULT_COMPACT_AFTER_MESSAGES,
+    DEFAULT_KEEP_RECENT_MESSAGES,
+};
 use crate::agent::report::report_with_artifacts;
 use crate::agent::run_logging::{make_run_dir, AgentRunRecorder};
 use crate::agent::run_state::RunState;
@@ -98,10 +101,10 @@ pub struct AgentOptions {
     pub run_dir: Option<PathBuf>,
     /// Site names to pre-enable in ToolContext (gates `defer_until_site` tools).
     pub enabled_sites: Vec<String>,
-    /// Recent-message window kept verbatim when history is condensed.
+    /// Full-message count that triggers deterministic transcript compaction.
+    pub compact_after_messages: usize,
+    /// Recent full-message window kept verbatim after compaction.
     pub keep_recent_messages: usize,
-    /// Memory budget for the condensed context_block.
-    pub memory_max_chars: usize,
     /// Prior chat-level messages to seed the conversation with, so a reply can
     /// continue an ongoing conversation. The current task is appended as
     /// the final user message. Empty = a fresh, single-shot run.
@@ -118,8 +121,8 @@ impl Default for AgentOptions {
             extra_instructions: String::new(),
             run_dir: None,
             enabled_sites: Vec::new(),
-            keep_recent_messages: 12,
-            memory_max_chars: 6000,
+            compact_after_messages: DEFAULT_COMPACT_AFTER_MESSAGES,
+            keep_recent_messages: DEFAULT_KEEP_RECENT_MESSAGES,
             seed_messages: Vec::new(),
             session_id: None,
         }
@@ -205,7 +208,6 @@ pub async fn run_agent_with_events(
     let mut step = 0u32;
     let mut final_text = String::new();
     let mut usage = TokenUsage::default();
-    let mut context_memory: Vec<String> = Vec::new();
     let mut tool_call_history: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut completed = false;
     let mut terminal_error: Option<String> = None;
@@ -222,13 +224,18 @@ pub async fn run_agent_with_events(
         let tool_names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         let system = build_system_prompt(&tool_names, &options.extra_instructions);
         last_system = system.clone();
-        let request_messages = prepare_messages_for_context(
-            &messages,
-            Some(&run_state),
-            &context_memory,
+        if compact_messages_for_context(
+            &mut messages,
+            options.compact_after_messages,
             options.keep_recent_messages,
-            options.memory_max_chars,
-        );
+        ) {
+            // The trace is an append-only diagnostic record. The rewritten
+            // transcript is local context management, so restart its cursor
+            // rather than attempting to represent the synthetic summary as a
+            // normal user message in the trace.
+            traced_len = messages.len();
+        }
+        let request_messages = messages.clone();
         let request_payload =
             backend.request_payload(&system, &request_messages, &schemas, options.max_tokens)?;
         run_recorder.record_llm_request(step, &request_payload)?;
@@ -465,17 +472,6 @@ pub async fn run_agent_with_events(
                 content: history_content,
             });
 
-            context_memory.push(format!(
-                "- step {step} {name}({}): {summary}",
-                truncate_summary(
-                    &serde_json::to_string(&effective_input).unwrap_or_default(),
-                    160,
-                )
-            ));
-            if context_memory.len() > 80 {
-                let overflow = context_memory.len() - 80;
-                context_memory.drain(0..overflow);
-            }
             ctx.active_tool_name.clear();
         }
         messages.push(Message::user_blocks(tool_result_blocks));
@@ -491,13 +487,14 @@ pub async fn run_agent_with_events(
              what is missing, and give your best-effort conclusion.",
             options.max_steps
         )));
-        let request_messages = prepare_messages_for_context(
-            &messages,
-            Some(&run_state),
-            &context_memory,
+        if compact_messages_for_context(
+            &mut messages,
+            options.compact_after_messages,
             options.keep_recent_messages,
-            options.memory_max_chars,
-        );
+        ) {
+            traced_len = messages.len();
+        }
+        let request_messages = messages.clone();
         let request_payload =
             backend.request_payload(&last_system, &request_messages, &[], options.max_tokens)?;
         run_recorder.record_llm_request(step + 1, &request_payload)?;
