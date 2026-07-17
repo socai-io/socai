@@ -1,8 +1,10 @@
 //! Persistent conversation index of agent runs.
 //!
 //! A conversation owns user-message order and references to L2 agent runs.
-//! Assistant output is read from each run's `report.md`; an inline fallback
-//! is stored only when a run did not produce a report.
+//! Completed runs read assistant output from their `report.md`; an inline
+//! fallback is stored — and preferred when seeding follow-up turns — for
+//! runs that did not complete (their report is an error placeholder, if it
+//! exists at all) or that produced no report.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -1107,10 +1107,11 @@ async fn run_agent_task_on_shared_page(
         let _ = pump.await;
         let outcome = outcome?;
         if let Some(error) = outcome.error {
-            // The run died on a terminal LLM error; run.json and the trace
-            // already say "failed". Bail into the caller's failed arm — which
-            // marks the task failed and uploads the trace — instead of
-            // recording the "API error: …" placeholder as a completed task.
+            // The run ended on a terminal error (unretryable API failure,
+            // repeated truncation, or a failed forced summary); run.json and
+            // the trace already say "failed" and final_text is best-effort.
+            // Bail into the caller's failed arm — which marks the task failed
+            // and uploads the trace — instead of reporting a completed task.
             anyhow::bail!(error);
         }
         telemetry.upload_run_trace(&outcome.run_dir);
