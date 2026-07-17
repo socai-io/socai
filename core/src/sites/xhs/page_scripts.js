@@ -218,9 +218,14 @@ const SocaiXhsPageScripts = (() => {
     const bodyText = text(document.body);
     const loading = $$('.loading, .spinner, [class*="loading"]').some((el) => isVisible(el));
     const hasNoResults = /暂无|没有找到|无结果|换个词试试|no result/i.test(bodyText);
+    // Exactly the classic results list. `includes('/search_result')` would
+    // also match `/search_result_ai` — the AI-search page some submits get
+    // hijacked onto (its ranking differs and the filter panel is missing) —
+    // and `/search_result/<id>` detail routes.
+    const isResultsList = url.pathname.replace(/\/+$/, '') === '/search_result';
     return {
       ok: true,
-      page_state: url.pathname.includes('/search_result') ? 'search_results' : 'unknown',
+      page_state: isResultsList ? 'search_results' : 'unknown',
       url: location.href,
       url_keyword: url.searchParams.get('keyword') || '',
       input_keyword: input ? String(input.value || input.textContent || '').trim() : '',
