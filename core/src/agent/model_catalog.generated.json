@@ -240,11 +240,6 @@
             }
           ]
         }
-      },
-      {
-        "id": "claude-3-7-sonnet-20250219",
-        "display_name": "Claude Sonnet 3.7",
-        "source": "fallback"
       }
     ],
     "openai": [
@@ -263,7 +258,8 @@
               "cache_write_per_million": 3.125
             }
           ]
-        }
+        },
+        "recommended": true
       },
       {
         "id": "gpt-5.6-sol",
@@ -331,8 +327,7 @@
               "cache_write_per_million": 0
             }
           ]
-        },
-        "recommended": true
+        }
       },
       {
         "id": "gpt-5.4-pro",
@@ -983,6 +978,23 @@
     ],
     "kimi": [
       {
+        "id": "kimi-k3",
+        "display_name": "Kimi K3",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "CNY",
+          "source": "https://platform.kimi.com/docs/pricing/chat-k3",
+          "tiers": [
+            {
+              "input_per_million": 20,
+              "output_per_million": 100,
+              "cache_read_per_million": 2,
+              "cache_write_per_million": 0
+            }
+          ]
+        }
+      },
+      {
         "id": "kimi-k2.7-code-highspeed",
         "display_name": "Kimi K2.7 Code HighSpeed",
         "source": "pi-ai",
@@ -1218,53 +1230,6 @@
           }
         },
         "recommended": true
-      },
-      {
-        "id": "qwen3.6-plus-2026-04-02",
-        "display_name": "Qwen 3.6 Plus (2026-04-02)",
-        "source": "fallback",
-        "pricing": {
-          "currency": "CNY",
-          "source": "https://help.aliyun.com/zh/model-studio/model-pricing",
-          "tiers": [
-            {
-              "max_input_tokens": 256000,
-              "input_per_million": 2,
-              "output_per_million": 12,
-              "cache_read_per_million": 0.4,
-              "cache_write_per_million": 0
-            },
-            {
-              "max_input_tokens": 1000000,
-              "input_per_million": 8,
-              "output_per_million": 48,
-              "cache_read_per_million": 1.6,
-              "cache_write_per_million": 0
-            }
-          ],
-          "overrides": {
-            "qwen-intl": {
-              "currency": "CNY",
-              "source": "https://help.aliyun.com/zh/model-studio/model-pricing",
-              "tiers": [
-                {
-                  "max_input_tokens": 256000,
-                  "input_per_million": 3.7471,
-                  "output_per_million": 22.4826,
-                  "cache_read_per_million": 0.74942,
-                  "cache_write_per_million": 0
-                },
-                {
-                  "max_input_tokens": 1000000,
-                  "input_per_million": 14.9884,
-                  "output_per_million": 44.965,
-                  "cache_read_per_million": 2.99768,
-                  "cache_write_per_million": 0
-                }
-              ]
-            }
-          }
-        }
       },
       {
         "id": "qwen3.6-max-preview",

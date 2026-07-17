@@ -14,6 +14,7 @@ const shouldCheck = args.has("--check");
 const noOfficial = args.has("--no-official") || process.env.SOCAI_MODEL_SYNC_OFFLINE === "1";
 const noPi = args.has("--no-pi");
 
+const KIMI_PRICING_SOURCE = "https://platform.kimi.com/docs/pricing/chat-k3";
 const QWEN_PRICING_SOURCE = "https://help.aliyun.com/zh/model-studio/model-pricing";
 const DOUBAO_PRICING_SOURCE = "https://www.volcengine.com/product/doubao";
 
@@ -50,10 +51,10 @@ const FALLBACK = {
     entry("claude-opus-4-8", "Claude Opus 4.8"),
     entry("claude-opus-4-6", "Claude Opus 4.6"),
     entry("claude-haiku-4-5", "Claude Haiku 4.5"),
-    entry("claude-3-7-sonnet-20250219", "Claude Sonnet 3.7"),
   ],
   openai: [
-    entry("gpt-5.5", "GPT-5.5", "fallback", true),
+    entry("gpt-5.6-terra", "GPT-5.6 Terra", "fallback", true),
+    entry("gpt-5.5", "GPT-5.5"),
     entry("gpt-5.4", "GPT-5.4"),
     entry("gpt-5", "GPT-5"),
     entry("gpt-4.1", "GPT-4.1"),
@@ -73,15 +74,6 @@ const FALLBACK = {
       "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
         qwenPriceTier(256000, 2.998, 11.991),
         qwenPriceTier(1000000, 8.993, 35.972),
-      ]),
-    })),
-    entry("qwen3.6-plus-2026-04-02", "Qwen 3.6 Plus (2026-04-02)", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
-      qwenPriceTier(256000, 2, 12),
-      qwenPriceTier(1000000, 8, 48),
-    ], {
-      "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
-        qwenPriceTier(256000, 3.7471, 22.4826),
-        qwenPriceTier(1000000, 14.9884, 44.965),
       ]),
     })),
     entry("qwen3.7-max", "Qwen 3.7 Max", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
@@ -131,6 +123,15 @@ const FALLBACK = {
     entry("deepseek-v4-pro", "DeepSeek V4 Pro", "fallback", true),
     entry("deepseek-v4-flash", "DeepSeek V4 Flash"),
   ],
+};
+
+// Keep provider-specific billing aligned with the endpoint socai actually
+// targets when pi-ai's normalized USD pricing is not the right user-facing
+// rate. Model identity and other metadata still come from pi-ai.
+const PRICING_OVERRIDES = {
+  kimi: {
+    "kimi-k3": pricing("CNY", KIMI_PRICING_SOURCE, [priceTier(undefined, 20, 100, 2)]),
+  },
 };
 
 const PROVIDERS = {
@@ -489,6 +490,10 @@ async function buildCatalog() {
     }
     const piEntries = piEntriesForProvider(pi, provider, cfg);
     const merged = dedupe([...official, ...piEntries, ...(FALLBACK[provider] || [])]);
+    for (const model of merged) {
+      const modelPricing = PRICING_OVERRIDES[provider]?.[model.id];
+      if (modelPricing) model.pricing = modelPricing;
+    }
     providers[provider] = sortEntries(provider, markRecommended(provider, merged));
     const sourceSummary = [...new Set(providers[provider].map((item) => item.source))].join(", ");
     console.error(`[model-sync] ${provider}: ${providers[provider].length} models (${sourceSummary})`);

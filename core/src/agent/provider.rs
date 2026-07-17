@@ -191,7 +191,7 @@ pub static PROVIDERS: &[ProviderConfig] = &[
     ProviderConfig {
         provider: Provider::OpenAI,
         display_name: "OpenAI",
-        default_model: "gpt-5.5",
+        default_model: "gpt-5.6-terra",
         env_keys: &["OPENAI_API_KEY"],
         base_url: Some("https://api.openai.com/v1"),
         model_prefixes: &["gpt-", "o1", "o3", "o4", "chatgpt-"],
