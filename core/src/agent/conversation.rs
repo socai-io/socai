@@ -97,7 +97,11 @@ impl Conversation {
     }
 
     pub fn record_run(&mut self, user: &str, assistant: &str, run_dir: &Path, status: &str) {
-        let assistant_fallback = (!run_dir.join("report.md").is_file())
+        // Completed runs seed follow-up turns from the canonical report.md.
+        // Non-completed runs keep the caller's short marker instead: their
+        // report is an error placeholder (or missing entirely), and seeding
+        // the full provider error would bloat every later turn.
+        let assistant_fallback = (status != "completed" || !run_dir.join("report.md").is_file())
             .then(|| assistant.to_string())
             .filter(|value| !value.is_empty());
         self.runs.push(Run {
@@ -115,9 +119,12 @@ impl Conversation {
         let mut messages = Vec::with_capacity(self.runs.len() * 2);
         for run in &self.runs {
             messages.push(Message::user(run.user.clone()));
-            let report = std::fs::read_to_string(Path::new(&run.run_dir).join("report.md"))
-                .ok()
-                .or_else(|| run.assistant_fallback.clone())
+            let report = run
+                .assistant_fallback
+                .clone()
+                .or_else(|| {
+                    std::fs::read_to_string(Path::new(&run.run_dir).join("report.md")).ok()
+                })
                 .unwrap_or_default();
             // Providers reject empty text blocks, so a run that produced
             // neither a report nor a fallback seeds a placeholder instead.

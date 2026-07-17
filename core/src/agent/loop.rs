@@ -572,14 +572,18 @@ pub async fn run_agent_with_events(
         }
     }
 
-    emit(
-        &events,
-        AgentEvent::Done {
-            run_id: run_id.clone(),
-            steps: step,
-            final_text: final_text.clone(),
-        },
-    );
+    // Failed runs already signalled ApiError; a Done event on top would give
+    // subscribers contradictory success ("✓ done") and failure signals.
+    if terminal_error.is_none() {
+        emit(
+            &events,
+            AgentEvent::Done {
+                run_id: run_id.clone(),
+                steps: step,
+                final_text: final_text.clone(),
+            },
+        );
+    }
 
     let enriched_report = report_with_artifacts(&final_text, Some(&run_state));
     let _ = std::fs::write(run_dir.join("report.md"), &enriched_report);
