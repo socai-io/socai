@@ -304,12 +304,13 @@ function bindConnectionStatusBar(): void {
 // ---------------------------------------------------------------------------
 // In-app updater (macOS). Updates download + install in the background; while
 // the download runs the chip shows a passive `downloading update…` state (so
-// the user knows a new version exists), and once staged it becomes the
-// clickable `restart to finish` chip. Checks fire on launch, when the window
-// returns to the foreground, and when a task finishes — throttled, and
-// skipped while an update is already downloading or staged. The updater
-// plugin is configured in tauri.conf.json; check() is gated off in dev
-// because it only installs in bundled builds.
+// the user knows a new version exists). Once staged, the app relaunches
+// automatically when no task is queued or running; while a task is active the
+// clickable `restart to finish` chip remains available as an explicit escape
+// hatch. Checks fire on launch, when the window returns to the foreground, and
+// when a task finishes — throttled, and skipped while an update is already
+// downloading or staged. The updater plugin is configured in tauri.conf.json;
+// check() is gated off in dev because it only installs in bundled builds.
 // ---------------------------------------------------------------------------
 
 type UpdatePhase = "idle" | "downloading" | "ready";
@@ -329,6 +330,8 @@ let lastUpdateCheck = 0;
 const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 // Inline warning shown when restart is clicked while a task is still running.
 let restartWarn = false;
+// Guard manual and automatic paths from racing to relaunch more than once.
+let updateRelaunchStarted = false;
 
 // `downloading` renders a passive announcement, `ready` the restart action;
 // errors reset to idle and retry quietly on the next check.
@@ -406,12 +409,26 @@ function bindUpdateChip(): void {
 // instance finishes spawning — the app quits and never reopens
 // (tauri-apps/tauri#11392).
 function doRelaunch(): void {
-  invoke("app_relaunch").catch((e) => console.error("relaunch failed:", e));
+  if (updateRelaunchStarted) return;
+  updateRelaunchStarted = true;
+  invoke("app_relaunch").catch((e) => {
+    updateRelaunchStarted = false;
+    console.error("relaunch failed:", e);
+  });
+}
+
+// Once the update is staged, take the same path as clicking the update chip as
+// soon as no task is queued or running. If a task is active, its terminal event
+// calls this again after the task snapshot has been updated.
+function maybeRelaunchReadyUpdate(): void {
+  if (updateState.phase !== "ready" || agentPanel.hasActiveTask()) return;
+  doRelaunch();
 }
 
 // Download + install the update in the background. The chip announces the
-// download as soon as it starts, then flips to the restart action once the
-// update is staged; a failure resets to idle so the next trigger retries.
+// download as soon as it starts; once staged, relaunch immediately if idle or
+// wait for the active task to finish. A failure resets to idle so the next
+// trigger retries.
 async function startBackgroundUpgrade(): Promise<void> {
   if (!updateHandle) return;
   updateState = { ...updateState, phase: "downloading" };
@@ -424,6 +441,7 @@ async function startBackgroundUpgrade(): Promise<void> {
     updateState = { phase: "idle" };
   }
   render();
+  maybeRelaunchReadyUpdate();
 }
 
 // Check for an update and, if found, kick off the silent background download.
@@ -545,6 +563,7 @@ async function main(): Promise<void> {
       // point at which its full note archive (notes.json) is on disk to render.
       void maybeCheckForUpdate();
       void agentPanel.loadTaskNotes(event.payload.task_id, shell());
+      maybeRelaunchReadyUpdate();
     }
   });
 
