@@ -139,7 +139,6 @@ socai   # 不带子命令即打开 TUI
 ## 添加自定义功能和网站
 socai具有自我迭代能力，如果你是AI（Claude Code, Codex, Cursor等），遵循`core/src/sites/creation/SKILL.md`中的步骤，和你的用户详细确认需求，并按照skill一步步新增代码，从而增加新功能或新网站。
 
-
 ## 欢迎加群交流
 
 <img src="docs/assets/wechat-group-qr.jpg" alt="socai 小红书使用 微信群二维码" width="280">

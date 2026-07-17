@@ -10,6 +10,8 @@ use tokio::time::MissedTickBehavior;
 pub mod tool_call;
 pub mod trace;
 
+pub use trace::redact_secrets;
+
 const EVENT_SCHEMA_VERSION: u32 = 1;
 const TELEMETRY_ENDPOINT: &str = "https://socai.io/v1/events";
 const TRACES_ENDPOINT: &str = "https://socai.io/v1/traces";
@@ -327,6 +329,15 @@ pub fn telemetry_enabled() -> bool {
 pub fn query_text_enabled() -> bool {
     !env_value_is(
         "SOCAI_TELEMETRY_QUERY_TEXT",
+        &["0", "false", "off", "disabled", "no"],
+    )
+}
+
+/// Gates LLM chat content (`gen_ai.input.messages` / `gen_ai.output.messages` /
+/// `gen_ai.system_instructions`) on run-trace `chat` spans.
+pub fn chat_text_enabled() -> bool {
+    !env_value_is(
+        "SOCAI_TELEMETRY_CHAT_TEXT",
         &["0", "false", "off", "disabled", "no"],
     )
 }

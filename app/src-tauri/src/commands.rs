@@ -7,7 +7,7 @@ use socai_core::agent::{
     catalog_models_for, configured_default_model_for, configured_default_provider,
     desktop_agent_tools, make_run_dir, mark_agent_run_status, provider_credential_kind,
     resolve_provider, save_default_model, AgentEvent, Conversation, CredentialKind,
-    ModelCatalogEntry, Provider,
+    ModelCatalogEntry, Provider, TokenUsage,
 };
 use socai_core::runtime::{
     create_llm_provider_for, ensure_llm_provider_configured_for,
@@ -22,7 +22,7 @@ use socai_core::telemetry::trace::mark_run_trace_status;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 const TAURI_AGENT_PREAMBLE: &str =
     "You are running inside the socai desktop app as a conversational, multi-turn agent. \
@@ -88,6 +88,20 @@ pub async fn cdp_refresh(_runtime: State<'_, SocaiRuntime>) -> Result<(), String
     Ok(())
 }
 
+// ── App lifecycle ───────────────────────────────────────────────────────────
+
+/// Relaunch into a staged update. The process plugin's `relaunch()` routes the
+/// respawn through event-loop teardown (`request_restart`), and on macOS the
+/// process dies before the replacement finishes spawning — the app quits and
+/// never comes back (tauri-apps/tauri#11392). Spawn the replacement while the
+/// app is still fully alive instead, after the same browser cleanup quit does.
+#[tauri::command]
+pub async fn app_relaunch(app: AppHandle) {
+    app.state::<SocaiRuntime>().disconnect_browser().await;
+    app.cleanup_before_exit();
+    tauri::process::restart(&app.env());
+}
+
 async fn require_connected(runtime: &SocaiRuntime) -> Result<(), String> {
     match runtime.browser_status().await {
         BrowserStatus::Connected { .. } => Ok(()),
@@ -134,6 +148,50 @@ fn title_safe(value: &str) -> String {
     compact.chars().take(48).collect()
 }
 
+fn read_run_usage(run_dir: &str) -> Option<TokenUsage> {
+    let value: Value =
+        serde_json::from_slice(&std::fs::read(PathBuf::from(run_dir).join("run.json")).ok()?)
+            .ok()?;
+    serde_json::from_value(value.get("usage")?.clone()).ok()
+}
+
+fn with_usage_telemetry(mut properties: Value, usage: Option<&TokenUsage>) -> Value {
+    let (Some(map), Some(usage)) = (properties.as_object_mut(), usage) else {
+        return properties;
+    };
+    map.insert("input_tokens".into(), json!(usage.input_tokens));
+    map.insert(
+        "uncached_input_tokens".into(),
+        json!(usage.uncached_input_tokens),
+    );
+    map.insert("output_tokens".into(), json!(usage.output_tokens));
+    if let Some(tokens) = usage.reasoning_output_tokens {
+        map.insert("reasoning_output_tokens".into(), json!(tokens));
+    }
+    map.insert(
+        "cached_input_tokens".into(),
+        json!(usage.cache_read_input_tokens),
+    );
+    map.insert(
+        "cache_creation_input_tokens".into(),
+        json!(usage.cache_creation_input_tokens),
+    );
+    if let Some(cost) = &usage.cost {
+        map.insert("estimated_input_cost".into(), json!(cost.input));
+        map.insert("estimated_output_cost".into(), json!(cost.output));
+        map.insert("estimated_cache_read_cost".into(), json!(cost.cache_read));
+        map.insert(
+            "estimated_cache_creation_cost".into(),
+            json!(cost.cache_creation),
+        );
+        map.insert("estimated_cost".into(), json!(cost.total));
+        map.insert("cost_currency".into(), json!(cost.currency));
+        map.insert("cost_estimated".into(), json!(cost.estimated));
+        map.insert("cost_pricing_source".into(), json!(cost.pricing_source));
+    }
+    properties
+}
+
 // ── Agent tasks ────────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, Clone)]
@@ -144,6 +202,12 @@ pub struct AgentRunOutcome {
     final_text: String,
     input_tokens: u64,
     output_tokens: u64,
+    cached_input_tokens: u64,
+    cache_creation_input_tokens: u64,
+    estimated_cost: Option<f64>,
+    cost_currency: Option<String>,
+    #[serde(skip)]
+    usage: TokenUsage,
 }
 
 #[tauri::command]
@@ -196,6 +260,7 @@ pub async fn agent_list_models() -> Result<Vec<Value>, String> {
                     display_name: Some(selected_model.clone()),
                     source: Some("saved-default".into()),
                     recommended: false,
+                    pricing: None,
                 },
             );
         }
@@ -484,6 +549,10 @@ pub async fn agent_task_reply(
             snapshot.steps = None;
             snapshot.input_tokens = None;
             snapshot.output_tokens = None;
+            snapshot.cached_input_tokens = None;
+            snapshot.cache_creation_input_tokens = None;
+            snapshot.estimated_cost = None;
+            snapshot.cost_currency = None;
             snapshot.current_message = Some(message_text.clone());
         })
         .await
@@ -648,6 +717,7 @@ pub async fn agent_task_cancel(
         let _ = runtime.close_target(&target_id).await;
     }
     if changed {
+        let usage = snapshot.run_dir.as_deref().and_then(read_run_usage);
         if let Some(run_dir) = snapshot.run_dir.as_deref() {
             let _ = mark_agent_run_status(run_dir, "cancelled", None);
             // The aborted run future's drop guard wrote trace.json with
@@ -661,17 +731,18 @@ pub async fn agent_task_cancel(
         record_desktop_session(&snapshot, "[cancelled by user]", "cancelled");
         telemetry.capture(
             "socai_agent_task_end",
-            json!({
-                "task_id": task_id.clone(),
-                "provider": snapshot.provider.clone(),
-                "run_id": snapshot.run_id.clone(),
-                "model": snapshot.model.clone(),
-                "outcome": "cancelled",
-                "steps": snapshot.steps,
-                "input_tokens": snapshot.input_tokens,
-                "output_tokens": snapshot.output_tokens,
-                "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
-            }),
+            with_usage_telemetry(
+                json!({
+                    "task_id": task_id.clone(),
+                    "provider": snapshot.provider.clone(),
+                    "run_id": snapshot.run_id.clone(),
+                    "model": snapshot.model.clone(),
+                    "outcome": "cancelled",
+                    "steps": snapshot.steps,
+                    "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
+                }),
+                usage.as_ref(),
+            ),
         );
         emit_task_event(
             &app,
@@ -801,7 +872,7 @@ async fn run_agent_task_background(
             "provider": provider.clone(),
             "model": model.clone(),
             "task_len": task.chars().count(),
-            "task_text": task.clone(),
+            "task_text": socai_core::telemetry::redact_secrets(&task),
         }),
     );
 
@@ -835,23 +906,29 @@ async fn run_agent_task_background(
                     snapshot.steps = Some(outcome.steps);
                     snapshot.input_tokens = Some(outcome.input_tokens);
                     snapshot.output_tokens = Some(outcome.output_tokens);
+                    snapshot.cached_input_tokens = Some(outcome.cached_input_tokens);
+                    snapshot.cache_creation_input_tokens =
+                        Some(outcome.cache_creation_input_tokens);
+                    snapshot.estimated_cost = outcome.estimated_cost;
+                    snapshot.cost_currency = outcome.cost_currency.clone();
                 })
                 .await
             {
                 record_desktop_session(&snapshot, &outcome.final_text, "completed");
                 telemetry.capture(
                     "socai_agent_task_end",
-                    json!({
-                        "task_id": task_id.clone(),
-                        "run_id": outcome.run_id.clone(),
-                        "provider": provider.clone(),
-                        "model": model.clone(),
-                        "outcome": "completed",
-                        "steps": outcome.steps,
-                        "input_tokens": outcome.input_tokens,
-                        "output_tokens": outcome.output_tokens,
-                        "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
-                    }),
+                    with_usage_telemetry(
+                        json!({
+                            "task_id": task_id.clone(),
+                            "run_id": outcome.run_id.clone(),
+                            "provider": provider.clone(),
+                            "model": model.clone(),
+                            "outcome": "completed",
+                            "steps": outcome.steps,
+                            "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
+                        }),
+                        Some(&outcome.usage),
+                    ),
                 );
                 emit_task_event(
                     &app,
@@ -874,20 +951,26 @@ async fn run_agent_task_background(
                 })
                 .await
             {
+                let usage = snapshot.run_dir.as_deref().and_then(read_run_usage);
                 if let Some(run_dir) = snapshot.run_dir.as_deref() {
                     let _ = mark_agent_run_status(run_dir, "failed", Some(&error));
+                    let _ = mark_run_trace_status(run_dir, "failed");
+                    telemetry.upload_run_trace(run_dir);
                 }
                 record_desktop_session(&snapshot, &format!("[task failed: {error}]"), "failed");
                 telemetry.capture(
                     "socai_agent_task_end",
-                    json!({
-                        "task_id": task_id.clone(),
-                        "provider": provider.clone(),
-                        "model": model.clone(),
-                        "outcome": "failed",
-                        "error": short_error(&error),
-                        "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
-                    }),
+                    with_usage_telemetry(
+                        json!({
+                            "task_id": task_id.clone(),
+                            "provider": provider.clone(),
+                            "model": model.clone(),
+                            "outcome": "failed",
+                            "error": short_error(&error),
+                            "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
+                        }),
+                        usage.as_ref(),
+                    ),
                 );
                 emit_task_event(&app, &registry, &task_id, "failed", error, Some(snapshot)).await;
             }
@@ -1023,15 +1106,31 @@ async fn run_agent_task_on_shared_page(
         let outcome = run_agent_with_tools(task, llm_provider, tools, config, tx).await;
         let _ = pump.await;
         let outcome = outcome?;
+        if let Some(error) = outcome.error {
+            // The run ended on a terminal error (unretryable API failure,
+            // repeated truncation, or a failed forced summary); run.json and
+            // the trace already say "failed" and final_text is best-effort.
+            // Bail into the caller's failed arm — which marks the task failed
+            // and uploads the trace — instead of reporting a completed task.
+            anyhow::bail!(error);
+        }
         telemetry.upload_run_trace(&outcome.run_dir);
 
+        let usage = outcome.usage;
+        let estimated_cost = usage.cost.as_ref().map(|cost| cost.total);
+        let cost_currency = usage.cost.as_ref().map(|cost| cost.currency.clone());
         Ok::<AgentRunOutcome, anyhow::Error>(AgentRunOutcome {
             run_id: outcome.run_id,
             run_dir: outcome.run_dir.display().to_string(),
             steps: outcome.steps,
             final_text: outcome.final_text,
-            input_tokens: outcome.total_input_tokens,
-            output_tokens: outcome.total_output_tokens,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cached_input_tokens: usage.cache_read_input_tokens,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens,
+            estimated_cost,
+            cost_currency,
+            usage,
         })
     }
     .await;

@@ -4993,7 +4993,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "socai-cli"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "anyhow",
  "clap",
@@ -5012,7 +5012,7 @@ dependencies = [
 
 [[package]]
 name = "socai-core"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5038,7 +5038,7 @@ dependencies = [
 
 [[package]]
 name = "socai_app"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -5049,7 +5049,6 @@ dependencies = [
  "socai-core",
  "tauri",
  "tauri-build",
- "tauri-plugin-process",
  "tauri-plugin-updater",
  "tokio",
 ]
@@ -5537,16 +5536,6 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
-]
-
-[[package]]
-name = "tauri-plugin-process"
-version = "2.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d55511a7bf6cd70c8767b02c97bf8134fa434daf3926cfc1be0a0f94132d165a"
-dependencies = [
- "tauri",
- "tauri-plugin",
 ]
 
 [[package]]

@@ -21,15 +21,17 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+use crate::agent::api_errors::is_transient_api_error;
 use crate::agent::compaction::{compress_text_maybe_json, TOOL_RESULT_TEXT_MAX_CHARS};
 use crate::agent::llm::{
-    Backend, Block, LLMResponse, Message, StopReason, ToolCall, ToolResultContent, ToolSchema,
+    Backend, Block, LLMResponse, Message, StopReason, TokenUsage, ToolCall, ToolResultContent,
+    ToolSchema,
 };
 use crate::agent::memory::prepare_messages_for_context;
 use crate::agent::report::report_with_artifacts;
@@ -131,8 +133,13 @@ pub struct AgentOutcome {
     pub run_dir: PathBuf,
     pub steps: u32,
     pub final_text: String,
-    pub total_input_tokens: u64,
-    pub total_output_tokens: u64,
+    pub usage: TokenUsage,
+    /// Terminal error that ended the run early: an unretryable LLM API
+    /// error, repeated max-token truncation, or a failed forced summary.
+    /// When set, run.json and the trace already carry status "failed", and
+    /// `final_text` is best-effort — an error placeholder, or partial output
+    /// from earlier steps — so callers must not report the run as completed.
+    pub error: Option<String>,
 }
 
 pub async fn run_agent(
@@ -179,6 +186,19 @@ pub async fn run_agent_with_events(
 
     let mut messages: Vec<Message> = options.seed_messages.clone();
     messages.push(Message::user(task.to_string()));
+    // Everything before this index is already in the trace: seed messages were
+    // uploaded by the earlier turns that share this conversation's trace id,
+    // and within the run the marker advances so each `chat` span carries only
+    // the messages new since the previous LLM call (see RunTraceBuilder).
+    //
+    // Known divergence, accepted: follow-up seeds are rebuilt from persisted
+    // turn outputs (`Conversation::chat_messages` reads the artifact-enriched
+    // report.md), while the earlier turn's span recorded the raw LLMResponse.
+    // The joined trace is the per-turn transcript, not a byte-exact replay of
+    // the next request — the same class of local-only divergence as
+    // compaction rewrites. Tracking a persisted cross-run cursor to close the
+    // gap isn't worth the state it would add.
+    let mut traced_len = options.seed_messages.len();
 
     emit(
         &events,
@@ -191,8 +211,7 @@ pub async fn run_agent_with_events(
 
     let mut step = 0u32;
     let mut final_text = String::new();
-    let mut total_input_tokens = 0u64;
-    let mut total_output_tokens = 0u64;
+    let mut usage = TokenUsage::default();
     let mut context_memory: Vec<String> = Vec::new();
     let mut tool_call_history: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut completed = false;
@@ -222,21 +241,40 @@ pub async fn run_agent_with_events(
         run_recorder.record_llm_request(step, &request_payload)?;
 
         let llm_started = Instant::now();
-        let response: LLMResponse = match backend
-            .send(&system, &request_messages, &schemas, options.max_tokens)
-            .await
+        let response: LLMResponse = match send_with_retry(
+            &backend,
+            &system,
+            &request_messages,
+            &schemas,
+            options.max_tokens,
+            step,
+        )
+        .await
         {
             Ok(response) => {
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_response(step, &response, duration_ms)?;
-                run_trace.record_llm(step, duration_ms, &response);
+                run_trace.record_llm(
+                    step,
+                    duration_ms,
+                    &system,
+                    &messages[traced_len..],
+                    &response,
+                );
+                traced_len = messages.len();
                 response
             }
             Err(e) => {
                 let msg = format!("{e:#}");
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_error(step, &msg, duration_ms)?;
-                run_trace.record_llm_error(step, duration_ms, &msg);
+                run_trace.record_llm_error(
+                    step,
+                    duration_ms,
+                    &system,
+                    &messages[traced_len..],
+                    &msg,
+                );
                 warn!(step, error = %msg, "backend error");
                 emit(
                     &events,
@@ -251,8 +289,7 @@ pub async fn run_agent_with_events(
             }
         };
 
-        total_input_tokens += response.input_tokens;
-        total_output_tokens += response.output_tokens;
+        usage += &response.usage;
 
         // Split text_blocks into visible vs "[Thinking] "-prefixed thinking.
         // Some hosts (Anthropic without extended-thinking enabled) ask the
@@ -329,6 +366,9 @@ pub async fn run_agent_with_events(
         //   ASSISTANT_TEXT_MAX_CHARS (320 chars)
         let assistant_blocks = build_assistant_blocks(&response, &visible_texts);
         messages.push(Message::assistant_blocks(assistant_blocks));
+        // The assistant turn is already on the trace as the previous span's
+        // gen_ai.output.messages; don't repeat it in the next input delta.
+        traced_len = messages.len();
 
         for text in &visible_texts {
             emit(
@@ -454,7 +494,7 @@ pub async fn run_agent_with_events(
         messages.push(Message::user_blocks(tool_result_blocks));
     }
 
-    if !completed && step >= options.max_steps {
+    if !completed && terminal_error.is_none() && step >= options.max_steps {
         info!(step, "reached max_steps, forcing final summary");
         messages.push(Message::user(format!(
             "You have reached the maximum of {} tool-using steps. Do not call any \
@@ -475,16 +515,27 @@ pub async fn run_agent_with_events(
             backend.request_payload(&last_system, &request_messages, &[], options.max_tokens)?;
         run_recorder.record_llm_request(step + 1, &request_payload)?;
         let llm_started = Instant::now();
-        match backend
-            .send(&last_system, &request_messages, &[], options.max_tokens)
-            .await
+        match send_with_retry(
+            &backend,
+            &last_system,
+            &request_messages,
+            &[],
+            options.max_tokens,
+            step + 1,
+        )
+        .await
         {
             Ok(response) => {
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_response(step + 1, &response, duration_ms)?;
-                run_trace.record_llm(step + 1, duration_ms, &response);
-                total_input_tokens += response.input_tokens;
-                total_output_tokens += response.output_tokens;
+                run_trace.record_llm(
+                    step + 1,
+                    duration_ms,
+                    &last_system,
+                    &messages[traced_len..],
+                    &response,
+                );
+                usage += &response.usage;
                 let (visible_texts, _) = split_thinking(&response.text_blocks);
                 for text in &visible_texts {
                     emit(
@@ -501,7 +552,13 @@ pub async fn run_agent_with_events(
                 let msg = format!("{e:#}");
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_error(step + 1, &msg, duration_ms)?;
-                run_trace.record_llm_error(step + 1, duration_ms, &msg);
+                run_trace.record_llm_error(
+                    step + 1,
+                    duration_ms,
+                    &last_system,
+                    &messages[traced_len..],
+                    &msg,
+                );
                 warn!(step = step + 1, error = %msg, "forced summary error");
                 emit(
                     &events,
@@ -515,14 +572,18 @@ pub async fn run_agent_with_events(
         }
     }
 
-    emit(
-        &events,
-        AgentEvent::Done {
-            run_id: run_id.clone(),
-            steps: step,
-            final_text: final_text.clone(),
-        },
-    );
+    // Failed runs already signalled ApiError; a Done event on top would give
+    // subscribers contradictory success ("✓ done") and failure signals.
+    if terminal_error.is_none() {
+        emit(
+            &events,
+            AgentEvent::Done {
+                run_id: run_id.clone(),
+                steps: step,
+                final_text: final_text.clone(),
+            },
+        );
+    }
 
     let enriched_report = report_with_artifacts(&final_text, Some(&run_state));
     let _ = std::fs::write(run_dir.join("report.md"), &enriched_report);
@@ -532,32 +593,62 @@ pub async fn run_agent_with_events(
     } else {
         "completed"
     };
-    run_recorder.finish(
-        status,
-        step,
-        total_input_tokens,
-        total_output_tokens,
-        terminal_error.as_deref(),
-    )?;
-    run_trace.finish(
-        status,
-        step,
-        total_input_tokens,
-        total_output_tokens,
-        terminal_error.as_deref(),
-    );
+    run_recorder.finish(status, step, &usage, terminal_error.as_deref())?;
+    run_trace.finish(status, step, &usage, terminal_error.as_deref());
 
     Ok(AgentOutcome {
         run_id,
         run_dir,
         steps: step,
         final_text,
-        total_input_tokens,
-        total_output_tokens,
+        usage,
+        error: terminal_error,
     })
 }
 
 // ---------- small private helpers (not core logic, kept here for locality) ----------
+
+/// Backoff schedule for transient chat failures. Two retries keeps the worst
+/// case bounded: a fully dead network adds at most two extra request
+/// timeouts before the run fails.
+const CHAT_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(6)];
+
+/// `backend.send` with retries for transient failures (network transport
+/// errors, 408/429/5xx) — a multi-minute run should not die on one dropped
+/// packet. Permanent errors (auth, billing, bad request) surface on the
+/// first attempt.
+async fn send_with_retry(
+    backend: &Arc<dyn Backend>,
+    system: &str,
+    messages: &[Message],
+    schemas: &[ToolSchema],
+    max_tokens: u32,
+    step: u32,
+) -> anyhow::Result<LLMResponse> {
+    let mut attempt = 0usize;
+    loop {
+        match backend.send(system, messages, schemas, max_tokens).await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let Some(delay) = CHAT_RETRY_DELAYS.get(attempt).copied() else {
+                    return Err(error);
+                };
+                if !is_transient_api_error(&error) {
+                    return Err(error);
+                }
+                attempt += 1;
+                warn!(
+                    step,
+                    attempt,
+                    delay_secs = delay.as_secs(),
+                    error = %format!("{error:#}"),
+                    "transient LLM error; retrying"
+                );
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
 
 fn new_run_id() -> String {
     use chrono::Utc;
@@ -718,10 +809,14 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
     s
 }
 
+/// Prompt-driven thinking convention: models without a native thinking
+/// channel are asked to prefix reasoning text with this marker. Shared with
+/// the run-trace builder so those blocks upload as reasoning, not answer text.
+pub(crate) const THINKING_TEXT_PREFIX: &str = "[Thinking] ";
+
 /// Split assistant text blocks into (visible, thinking) by the `[Thinking] `
 /// prefix. Whitespace-only blocks are dropped from both buckets.
 fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
-    const PREFIX: &str = "[Thinking] ";
     let mut visible: Vec<String> = Vec::new();
     let mut thinking: Vec<String> = Vec::new();
     for block in text_blocks {
@@ -729,7 +824,7 @@ fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix(PREFIX) {
+        if let Some(rest) = trimmed.strip_prefix(THINKING_TEXT_PREFIX) {
             thinking.push(rest.trim().to_string());
         } else {
             visible.push(trimmed.to_string());

@@ -23,14 +23,14 @@ pub mod tool;
 pub use self::file_bash_tools::{desktop_agent_tools, local_agent_tools, BashTool, ReadFileTool};
 pub use self::llm::{
     AnthropicBackend, Backend, Block, LLMResponse, Message, MessageContent, MessageRole,
-    OpenAICompatBackend, StopReason, ToolCall, ToolResultContent, ToolSchema,
+    OpenAICompatBackend, StopReason, TokenUsage, ToolCall, ToolResultContent, ToolSchema, UsageCost,
 };
 pub use self::provider::{
     catalog_model_display_name, catalog_models_for, config_for, configured_default_model_for,
     configured_default_provider, default_model_for, list_available_providers, load_api_key,
     load_openai_credential, load_provider_credential, provider_credential_kind, resolve_provider,
-    save_api_key, save_default_model, Credential, CredentialKind, ModelCatalogEntry, Provider,
-    ProviderConfig, PROVIDERS,
+    save_api_key, save_default_model, Credential, CredentialKind, ModelCatalogEntry, ModelPricing,
+    ModelPricingTier, Provider, ProviderConfig, PROVIDERS,
 };
 pub use self::conversation::{default_sessions_root, Conversation, Run};
 pub use self::r#loop::{run_agent, run_agent_with_events, AgentEvent, AgentOptions, AgentOutcome};

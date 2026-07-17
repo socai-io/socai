@@ -1880,8 +1880,9 @@ fn compact_filter_result(filters: &Value) -> Option<Value> {
 
 /// Per-note entity fields kept in the lean output handed to the LLM: the basic
 /// human-readable post (title/author/content/date), the engagement counts, the
-/// comment texts, and the two locators (`note_id`, `url`). Everything else —
-/// hashtags, images, image_count, author ids/urls, location, type, video,
+/// comment texts, and the three handoff locators (`note_id`, `url`,
+/// `author_id`). Everything else — hashtags, images, image_count, author URLs,
+/// location, type, video,
 /// content_source, and the wait diagnostics — stays only in the run artifact,
 /// which the LLM can re-read by `note_id` when it needs the dropped detail.
 const LEAN_NOTE_FIELDS: &[&str] = &[
@@ -1889,6 +1890,7 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     "url",
     "title",
     "author",
+    "author_id",
     "content",
     "date",
     "likes",
@@ -2235,7 +2237,6 @@ const ARTIFACT_EXTRA_NOTE_PROPERTIES: &[&str] = &[
     "image_count",
     "video",
     "type",
-    "author_id",
     "author_url",
     "location",
     "content_source",
@@ -2245,7 +2246,6 @@ const ARTIFACT_EXTRA_NOTE_PROPERTIES: &[&str] = &[
 /// Per-card properties that live only in the `search --preview` artifact
 /// (dropped from the lean cards by [`lean_preview_cards`]).
 const ARTIFACT_EXTRA_PREVIEW_CARD_PROPERTIES: &[&str] = &[
-    "author_id",
     "author_url",
     "cover_url",
     "xsec_token",
@@ -2283,11 +2283,17 @@ fn attach_artifact_pointer(
 
 /// Per-card fields kept in the lean `search --preview` output. Card-only mode
 /// can't fill the body fields (content/date/comments), so it keeps the subset
-/// that overlaps the full-scan note shape — note_id, url, title, author, likes —
-/// plus `type` (image/video). The card's note link is exposed as `url` to match
-/// the note shape (the raw card calls it `link`).
+/// that overlaps the full-scan note shape — note_id, url, title, author,
+/// author_id, likes — plus `type` (image/video). The card's note link is exposed
+/// as `url` to match the note shape (the raw card calls it `link`).
 const LEAN_PREVIEW_CARD_FIELDS: &[&str] = &[
-    "note_id", "url", "title", "author", "likes", "type",
+    "note_id",
+    "url",
+    "title",
+    "author",
+    "author_id",
+    "likes",
+    "type",
     // Cover-image OCR text, present only when the preview ran with `ocr`.
     "ocr_text",
 ];

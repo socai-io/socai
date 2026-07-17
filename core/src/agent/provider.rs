@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -88,6 +88,29 @@ pub struct ModelCatalogEntry {
     pub source: Option<String>,
     #[serde(default)]
     pub recommended: bool,
+    #[serde(default)]
+    pub pricing: Option<ModelPricing>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelPricing {
+    pub currency: String,
+    pub source: String,
+    pub tiers: Vec<ModelPricingTier>,
+    #[serde(default)]
+    pub overrides: HashMap<String, ModelPricing>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelPricingTier {
+    #[serde(default)]
+    pub max_input_tokens: Option<u64>,
+    pub input_per_million: f64,
+    pub output_per_million: f64,
+    #[serde(default)]
+    pub cache_read_per_million: f64,
+    #[serde(default)]
+    pub cache_write_per_million: f64,
 }
 
 impl ModelCatalogEntry {
@@ -105,7 +128,24 @@ impl ModelCatalogEntry {
             display_name: Some(display_name.into()),
             source: Some("compiled-default".into()),
             recommended: true,
+            pricing: None,
         }
+    }
+}
+
+impl ModelPricing {
+    pub fn for_provider(&self, provider: Provider) -> &Self {
+        self.overrides.get(provider.as_str()).unwrap_or(self)
+    }
+
+    pub fn tier_for_input(&self, input_tokens: u64) -> Option<&ModelPricingTier> {
+        self.tiers
+            .iter()
+            .find(|tier| {
+                tier.max_input_tokens
+                    .is_none_or(|limit| input_tokens <= limit)
+            })
+            .or_else(|| self.tiers.last())
     }
 }
 
@@ -252,6 +292,14 @@ pub fn catalog_model_display_name(provider: Provider, model_id: &str) -> String 
         .find(|model| model.id == trimmed)
         .map(|model| model.label().to_string())
         .unwrap_or_else(|| trimmed.to_string())
+}
+
+pub fn catalog_model_pricing(provider: Provider, model_id: &str) -> Option<ModelPricing> {
+    catalog_models_for(provider)
+        .into_iter()
+        .find(|model| model.id == model_id.trim())
+        .and_then(|model| model.pricing)
+        .map(|pricing| pricing.for_provider(provider).clone())
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,4 +1,5 @@
 {
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD ./",
   "functions": {
     "api/telemetry.js": {
       "maxDuration": 10

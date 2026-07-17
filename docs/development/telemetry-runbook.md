@@ -1,8 +1,8 @@
 # socai telemetry maintainer runbook
 
 This is development/maintainer documentation for operating socai CLI telemetry.
-It intentionally lives outside the README: the README should stay focused on
-what CLI users need to run socai and control telemetry.
+It intentionally lives outside the README: the README stays focused on what
+users need to run socai.
 
 The final implementation sends one sanitized trace per top-level CLI tool
 command through the first-party endpoint at `https://socai.io/v1/events`.
@@ -27,8 +27,13 @@ duration, success/failure, result counts, app version, platform, OS details,
 approximate device capacity, terminal app, and explicitly provided optional CLI
 parameters under `metadata`.
 
-socai does not intentionally send note bodies, comments, images, browser cookies,
-API keys, raw tool output bodies, or Axiom credentials.
+Over the events pipeline, socai does not send note bodies, comments, images,
+browser cookies, raw tool output bodies, or Axiom credentials; the free-text
+fields it does send (task prompt, query text) are scrubbed client-side for
+secret-shaped values (api keys, tokens) before capture. Run
+traces (desktop only) are the deliberate exception: they carry conversation
+content and note summaries by default — see the desktop section below and
+[`../telemetry-schema.md`](../telemetry-schema.md) → Run traces.
 
 ### Desktop app
 
@@ -39,11 +44,23 @@ plus `socai_browser_connect` when the user connects Chrome. Setup/config actions
 and model in use are captured on `socai_agent_task_start`. Unlike the CLI, the
 desktop sends the full agent prompt as
 `task_text` with **no per-field opt-out**; `SOCAI_TELEMETRY=off` disables the
-whole desktop pipeline. It never sends agent results (`report.md` / `final_text`),
-assistant/reasoning text, or raw tool arguments/output. Desktop identity and the
-local buffer live under `~/.socai/app/telemetry/` (`$SOCAI_HOME/app/telemetry/`
-when set). Desktop events route to the same `socai-cli-prod` dataset; filter by
-`source == "desktop"`.
+whole desktop pipeline. Desktop **events** never carry agent results
+(`report.md` / `final_text`), assistant/reasoning text, or raw tool
+arguments/output. Desktop **run traces** do: each task also uploads one OTLP
+trace to `https://socai.io/v1/traces` (dataset `socai-traces-prod`) carrying
+the conversation — per-step message deltas, full model output including
+reasoning content, the system prompt, and note title/caption/stat
+summaries — under client-side caps, secret scrubbing, and a whole-payload
+size gate. The controls are separate: `SOCAI_TELEMETRY_CHAT_TEXT=off` strips
+conversation content and note summaries; query text (`socai.query_text` on
+tool spans, and the `query` argument inside chat tool calls) follows
+`SOCAI_TELEMETRY_QUERY_TEXT=off`; the task prompt (`socai.task_text`) is only
+suppressed by `SOCAI_TELEMETRY=off`, which disables trace upload entirely.
+Field-level contract: [`../telemetry-schema.md`](../telemetry-schema.md) →
+Run traces. Desktop
+identity and the local buffer live under `~/.socai/app/telemetry/`
+(`$SOCAI_HOME/app/telemetry/` when set). Desktop events route to the same
+`socai-cli-prod` dataset; filter by `source == "desktop"`.
 
 Delivery is best-effort: `capture()` is fire-and-forget over a bounded in-process
 queue, so under a heavy burst of `socai_tool_call` events a few may be
@@ -53,7 +70,9 @@ near-complete, not exact.
 
 ## User controls
 
-The README should document only these user controls, not proxy/Axiom internals.
+These environment variables are the user-facing controls. They are documented
+here and in [`../telemetry-schema.md`](../telemetry-schema.md) — the README
+deliberately stays product-focused and does not cover telemetry.
 
 Disable telemetry for a single command:
 
@@ -65,6 +84,29 @@ Redact query text while keeping the rest of the telemetry trace:
 
 ```bash
 SOCAI_TELEMETRY_QUERY_TEXT=off socai xhs search "运营爆款思路"
+```
+
+For agent runs, the query gate removes the dedicated query attributes and
+redacts tool-call arguments, but tool results can still echo the query into
+chat content — when the query must not leave the machine at all, set **both**
+`SOCAI_TELEMETRY_QUERY_TEXT=off` and `SOCAI_TELEMETRY_CHAT_TEXT=off`.
+
+Keep telemetry but omit conversation content and note summaries from run
+traces. Run traces come from **agent runs** — plain CLI tool commands like
+`socai xhs search` emit events only, so this control doesn't apply to them.
+For the TUI (writes `trace.json` locally, no upload):
+
+```bash
+SOCAI_TELEMETRY_CHAT_TEXT=off socai
+```
+
+For the desktop app — the only surface that uploads run traces — the variable
+must reach the app process itself. A plain `VAR=... open -a socai` does NOT
+work (LaunchServices drops the client environment); quit socai first, then
+launch with `open --env`:
+
+```bash
+open --env SOCAI_TELEMETRY_CHAT_TEXT=off -a socai
 ```
 
 Accepted off values are:
@@ -276,3 +318,5 @@ Use Axiom or the local JSONL buffer to confirm the expected behavior.
 - Use synthetic IDs and no real query text for manual production smoke tests.
 - Treat query text as user data; use `SOCAI_TELEMETRY_QUERY_TEXT=off` in demos or
   tests where the query should not leave the machine.
+- Treat LLM chat content the same way; use `SOCAI_TELEMETRY_CHAT_TEXT=off` in
+  demos or tests where conversation content should not leave the machine.

@@ -68,6 +68,12 @@ artifacts, and return a compact bundle. They differ only in where they enter:
   segment of `/user/profile/<id>`); if the user only gives a display name/handle,
   discover it with a focused `search` first or ask for the profile URL.
 
+For deep, complex topic research only, consider `author_scan` when a search
+finds a high-quality, suspicious, or representative note. A quick profile check
+can distinguish firsthand expertise from soft ads/content farms, uncover related
+notes, reveal the author's recurring style and so on. Skip this extra step for routine
+searches.
+
 Shared options (same meaning for both):
 
 - `num_notes=N` — how many notes to collect (default 10); raise only when the

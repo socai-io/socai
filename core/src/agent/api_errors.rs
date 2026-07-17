@@ -19,9 +19,11 @@ pub fn format_http_error(provider: &str, status: u16, body_text: &str) -> String
         serde_json::from_str(trimmed).ok()
     };
 
+    // Only fields actually extracted suppress the raw-body fallback: a JSON
+    // body in an unrecognized shape (e.g. codex 400s) must still surface as
+    // `body=…`, or the error reads as a bare status with nothing to act on.
     let mut had_structured = false;
     if let Some(value) = parsed.as_ref() {
-        had_structured = true;
         let err_obj = value
             .get("error")
             .and_then(Value::as_object)
@@ -35,6 +37,7 @@ pub fn format_http_error(provider: &str, status: u16, body_text: &str) -> String
                 };
                 if !rendered.is_empty() {
                     parts.push(format!("{key}={rendered}"));
+                    had_structured = true;
                 }
             }
         }
@@ -66,6 +69,48 @@ pub fn format_http_error(provider: &str, status: u16, body_text: &str) -> String
         }
     }
     cleaned.join(" | ")
+}
+
+/// Whether a chat error is worth retrying: transport-level failures
+/// (connect, timeout, mid-body I/O) and overload-ish HTTP statuses
+/// (408/429/5xx, per the `status=` field [`format_http_error`] embeds).
+/// Quota exhaustion also arrives as 429 on OpenAI, so those stay permanent.
+pub fn is_transient_api_error(error: &anyhow::Error) -> bool {
+    // Scan the whole chain before deciding: reqwest wraps a 200 response
+    // whose JSON doesn't match the wire schema (`response.json()`) as a
+    // Decode error whose *source* is serde_json — a permanent failure,
+    // unlike the transport Decode errors (mid-body timeouts) worth retrying.
+    let mut transport_failure = None;
+    for cause in error.chain() {
+        if cause.downcast_ref::<serde_json::Error>().is_some() {
+            return false;
+        }
+        if let Some(e) = cause.downcast_ref::<reqwest::Error>() {
+            // Non-2xx statuses never surface as reqwest errors here (the
+            // clients read status themselves), so short of a builder or
+            // redirect bug this is a transport failure.
+            transport_failure = Some(!(e.is_builder() || e.is_redirect()));
+        }
+    }
+    if let Some(transient) = transport_failure {
+        return transient;
+    }
+    let msg = format!("{error:#}");
+    if msg.contains("insufficient_quota") {
+        return false;
+    }
+    // Codex SSE stream cut off server-side before the terminal event.
+    if msg.contains("stream ended without response.completed") {
+        return true;
+    }
+    matches!(parsed_status(&msg), Some(408 | 429 | 500..=599))
+}
+
+/// First `status=NNN` embedded by [`format_http_error`], if any.
+fn parsed_status(msg: &str) -> Option<u16> {
+    let rest = &msg[msg.find("status=")? + "status=".len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 #[cfg(test)]
