@@ -81,6 +81,23 @@ precedence override for local/dev scripts:
 .socai/runs/<run-dir>/
 ```
 
+For account-dependent work before SMS is configured, the desktop can use the
+server's explicitly enabled development login. It creates a real server-side
+user and device token, so authenticated account, quota, and model APIs work in
+both debug and release-mode local builds:
+
+```bash
+SOCAI_PRO_BASE_URL=http://127.0.0.1:8000 \
+SOCAI_DEV_LOGIN_PHONE=13912345678 \
+SOCAI_DEV_LOGIN_KEY=<same-key-configured-on-server> \
+pnpm run dev:desktop:local -- --release
+```
+
+The server endpoint is disabled by default and requires an allowlisted phone
+plus a key of at least 32 characters. The key is a local runtime secret: never
+compile it into a distributed desktop build. Normal SMS login remains available
+for end-to-end testing with `SMS_MOCK_EXPOSE_CODE=true` on a local server.
+
 Persisted execution data has three ownership layers:
 
 - Session/conversation: `~/.socai/sessions/<session-id>/session.json`.

@@ -287,8 +287,71 @@ body.has-paper > * { position: relative; z-index: 1; }
 .update-tooltip-arrow { color: var(--ink-4); }
 .update-tooltip-new { color: var(--ink-9); font-weight: 500; }
 
-/* ── icon button (settings gear) ───────────────────────────────── */
+/* ── account + settings controls ───────────────────────────────── */
+.auth-menu,
 .settings-menu { position: relative; display: inline-flex; flex: 0 0 auto; }
+.auth-chip { min-height: 26px; }
+.auth-popover { width: 300px; gap: var(--sp-3); }
+.auth-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.auth-copy { margin: 5px 0 0; line-height: 1.45; text-wrap: pretty; }
+.auth-form { display: flex; flex-direction: column; gap: var(--sp-2); }
+.auth-phone-row { display: flex; align-items: stretch; }
+.auth-country-code {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-3);
+  border: var(--hairline);
+  border-right: 0;
+  border-radius: var(--r-3) 0 0 var(--r-3);
+  background: var(--surface-2);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.auth-phone-row .auth-input {
+  flex: 1;
+  min-width: 0;
+  border-radius: 0 var(--r-3) var(--r-3) 0;
+}
+.auth-code-input {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  letter-spacing: 0.22em;
+}
+.auth-full-button { width: 100%; }
+.auth-secondary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.auth-text-button {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+.auth-text-button:hover { color: var(--ink-0); }
+.auth-text-button:disabled { color: var(--fg-faint); cursor: not-allowed; }
+.auth-account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: var(--hairline);
+  border-radius: var(--r-3);
+  background: var(--canvas);
+}
+.auth-error { margin: 0; line-height: 1.4; }
 .icon-button {
   appearance: none;
   display: inline-flex;

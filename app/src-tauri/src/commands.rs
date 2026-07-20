@@ -1382,6 +1382,40 @@ pub async fn pro_activate(invite_code: String, label: String) -> Result<Value, S
 }
 
 #[tauri::command]
+pub async fn auth_session() -> Result<socai_core::cloud::AuthSession, String> {
+    socai_core::cloud::auth_session_with_dev_login("desktop-dev")
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn auth_sms_send(
+    phone: String,
+) -> Result<socai_core::cloud::SmsChallengeResponse, String> {
+    socai_core::cloud::send_sms_code(&phone)
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn auth_sms_verify(
+    challenge_id: String,
+    phone: String,
+    code: String,
+) -> Result<socai_core::cloud::AuthSession, String> {
+    socai_core::cloud::verify_sms_code(&challenge_id, &phone, &code, "desktop")
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn auth_logout() -> Result<(), String> {
+    socai_core::cloud::logout()
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
 pub fn config_set(key: String, value: String) -> Result<(), String> {
     socai_core::config::set_config_key(&key, &value)
         .map(|_| ())

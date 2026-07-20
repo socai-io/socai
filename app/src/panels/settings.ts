@@ -301,9 +301,10 @@ export namespace settingsMenu {
     return `<p class="t-small subtle settings-status${status === "error" ? " result-error" : ""}">${esc(text)}</p>`;
   }
 
-  export function bind(shell: ShellState): void {
+  export function bind(shell: ShellState, onOpen: () => void = () => {}): void {
     document.getElementById("settings-toggle")?.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (!open) onOpen();
       open = !open;
       if (open) {
         // Reopening retries a failed initial load so the error state isn't a

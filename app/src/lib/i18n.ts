@@ -81,6 +81,72 @@ const messages = {
   "update.restartAnyway": { en: "restart anyway", zh: "仍然重启" },
   "update.later": { en: "later", zh: "稍后" },
 
+  "auth.title": { en: "account", zh: "账号" },
+  "auth.login": { en: "sign in", zh: "登录" },
+  "auth.loginAria": { en: "sign in to socai", zh: "登录 socai" },
+  "auth.accountAria": { en: "open account menu", zh: "打开账号菜单" },
+  "auth.loginTitle": { en: "sign in with phone", zh: "手机号登录" },
+  "auth.loginHint": {
+    en: "use a mainland China phone number to receive a verification code.",
+    zh: "使用中国大陆手机号接收验证码。",
+  },
+  "auth.phone": { en: "phone", zh: "手机号" },
+  "auth.sendCode": { en: "send code", zh: "获取验证码" },
+  "auth.sending": { en: "sending…", zh: "发送中…" },
+  "auth.enterCode": { en: "enter verification code", zh: "输入验证码" },
+  "auth.code": { en: "verification code", zh: "验证码" },
+  "auth.codeSent": {
+    en: "a 6-digit code was sent to {phone}.",
+    zh: "6 位验证码已发送至 {phone}。",
+  },
+  "auth.debugCode": {
+    en: "development code: {code}",
+    zh: "开发环境验证码：{code}",
+  },
+  "auth.verifying": { en: "signing in…", zh: "登录中…" },
+  "auth.changePhone": { en: "change phone", zh: "更换手机号" },
+  "auth.resend": { en: "resend code", zh: "重新发送" },
+  "auth.resendCountdown": { en: "resend in {seconds}s", zh: "{seconds} 秒后重发" },
+  "auth.account": { en: "account", zh: "账号" },
+  "auth.accountHint": {
+    en: "this account is active on this device.",
+    zh: "此账号已在当前设备登录。",
+  },
+  "auth.loggedIn": { en: "signed in", zh: "已登录" },
+  "auth.logout": { en: "sign out", zh: "退出登录" },
+  "auth.loggingOut": { en: "signing out…", zh: "退出中…" },
+  "auth.invalidPhone": {
+    en: "enter a valid mainland China phone number.",
+    zh: "请输入有效的中国大陆手机号。",
+  },
+  "auth.invalidCodeFormat": {
+    en: "enter the 6-digit verification code.",
+    zh: "请输入 6 位验证码。",
+  },
+  "auth.tooFrequent": {
+    en: "code requested too frequently. try again shortly.",
+    zh: "验证码请求过于频繁，请稍后重试。",
+  },
+  "auth.invalidCode": { en: "the verification code is incorrect.", zh: "验证码不正确。" },
+  "auth.expiredCode": { en: "the verification code has expired.", zh: "验证码已过期。" },
+  "auth.usedCode": { en: "this verification code was already used.", zh: "此验证码已使用。" },
+  "auth.tooManyAttempts": {
+    en: "too many attempts. request a new code.",
+    zh: "尝试次数过多，请重新获取验证码。",
+  },
+  "auth.serverNotConfigured": {
+    en: "the socai service is not configured in this build.",
+    zh: "当前版本尚未配置 socai 服务地址。",
+  },
+  "auth.requestFailed": {
+    en: "request failed. check your connection and try again.",
+    zh: "请求失败，请检查网络后重试。",
+  },
+  "auth.sessionLoadFailed": {
+    en: "could not read the saved sign-in state.",
+    zh: "无法读取已保存的登录状态。",
+  },
+
   "settings.aria": { en: "settings", zh: "设置" },
   "settings.title": { en: "settings", zh: "设置" },
   "settings.general": { en: "general", zh: "通用" },
