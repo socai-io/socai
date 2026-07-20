@@ -504,11 +504,22 @@ const SocaiXhsPageScripts = (() => {
 
   function noteOpen() {
     const url = location.href;
+    // 2026-07 `/search_result_ai` updates history to `/explore/<id>` before
+    // the detail tree mounts. Treating the URL alone as an open note lets the
+    // extractor run against the search feed and pick up the signed-in user or
+    // another card's engagement. The current detail UI exposes these stable
+    // structural roots once it is actually ready for scoped extraction.
+    const detailRoot = getNoteOverlay() || $('#noteContainer');
+    const detailReady = !!detailRoot && isVisible(detailRoot) && (
+      detailRoot.matches?.('#noteContainer, .note-scroller, .note-content')
+      || !!detailRoot.querySelector?.('#noteContainer, .note-scroller, .note-content, .author-container')
+    );
     return {
       ok: true,
       url,
       on_detail_route: /\/(?:explore|discovery|search_result)\/[^/?#]+/.test(url),
       has_modal: !!getNoteOverlay(),
+      detail_ready: detailReady,
       login_required: loginWallVisible(),
     };
   }
@@ -978,10 +989,10 @@ const SocaiXhsPageScripts = (() => {
       date,
       location: locationText,
       ip_location: ipLocation,
-      likes,
-      favorites,
-      comments_count: commentsCount,
-      shares,
+      likes: likes === '赞' ? '' : likes,
+      favorites: favorites === '收藏' ? '' : favorites,
+      comments_count: commentsCount === '评论' ? '' : commentsCount,
+      shares: shares === '分享' ? '' : shares,
       hashtags,
       image_count: imageUrls.length,
       image_urls: imageUrls,
@@ -1047,29 +1058,50 @@ const SocaiXhsPageScripts = (() => {
 
   function noteWithWait(opts = {}) {
     const timeoutMs = Math.max(500, Number(opts.timeout_ms) || 8000);
-    const shellSettleMs = Math.max(500, Number(opts.shell_settle_ms) || 3500);
-    const contentSettleMs = Math.max(0, Number(opts.settle_ms) || 0);
+    // Body text and engagement counters now hydrate in separate passes. Keep
+    // every note open for at least one second after body text appears, and
+    // allow up to three seconds when any of the three counters is still an
+    // empty/label placeholder. A caller may request a longer settle.
+    const contentSettleMs = Math.max(1000, Number(opts.settle_ms) || 0);
+    const incompleteEngagementSettleMs = Math.max(contentSettleMs, 3000);
     return new Promise((resolve) => {
       const startedAt = Date.now();
-      let shellSeenAt = 0;
       let contentSeenAt = 0;
       let best = null;
+      let bestScore = -1;
       let attempts = 0;
+      const meaningfulStat = (value) => {
+        const valueText = norm(value);
+        return !!valueText && !/^(?:赞|收藏|评论|分享)$/.test(valueText);
+      };
+      const hydrationScore = (value) => {
+        const bodyLength = norm(value.content).length;
+        return (bodyLength ? 1000 + Math.min(bodyLength, 4000) : 0)
+          + (norm(value.title) ? 100 : 0)
+          + (norm(value.author) ? 100 : 0)
+          + [value.likes, value.favorites, value.comments_count]
+            .filter(meaningfulStat).length * 200
+          + (Number(value.image_count) > 0 || value.type === 'video' ? 50 : 0);
+      };
       const tick = () => {
         attempts += 1;
-        const root = getNoteRoot();
         const value = note();
         const hasContent = !!norm(value.content);
         const hasShell = !!(value.note_id || value.title || value.author || value.likes || value.comments_count);
-        const pending = pendingHydration(root);
-        if (hasShell) { best = value; if (!shellSeenAt) shellSeenAt = Date.now(); }
-        if (hasContent && !contentSeenAt) contentSeenAt = Date.now();
-        if (hasContent && (contentSettleMs === 0 || Date.now() - contentSeenAt >= contentSettleMs)) {
-          resolve({ ready: true, reason: contentSettleMs > 0 ? 'content_settled' : 'content_ready', waited_ms: Date.now() - startedAt, attempts, note: value });
-          return;
+        const engagementReady = [value.likes, value.favorites, value.comments_count]
+          .every(meaningfulStat);
+        const score = hydrationScore(value);
+        if (hasShell && score >= bestScore) {
+          best = value;
+          bestScore = score;
         }
-        if (hasShell && !pending && Date.now() - shellSeenAt >= shellSettleMs) {
-          resolve({ ready: true, reason: 'shell_settled', waited_ms: Date.now() - startedAt, attempts, note: value });
+        if (hasContent && !contentSeenAt) contentSeenAt = Date.now();
+        const contentAge = contentSeenAt ? Date.now() - contentSeenAt : 0;
+        const requiredSettleMs = engagementReady
+          ? contentSettleMs
+          : incompleteEngagementSettleMs;
+        if (hasContent && contentAge >= requiredSettleMs) {
+          resolve({ ready: true, reason: engagementReady ? 'content_and_engagement_settled' : 'content_settled', waited_ms: Date.now() - startedAt, attempts, note: best || value });
           return;
         }
         if (Date.now() - startedAt >= timeoutMs) {

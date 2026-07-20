@@ -97,6 +97,27 @@ pub(super) fn ensure_entity_note_id(entity: &mut Value, card: &XhsNoteCard) {
     map.insert("note_id".into(), Value::String(fallback_note_id));
 }
 
+/// Preserve trustworthy search-card identity/count fields when the detail DOM
+/// is still partially hydrated. Detail values win whenever they are present.
+pub(super) fn fill_entity_from_card(entity: &mut Value, card: &XhsNoteCard) {
+    let Some(map) = entity.as_object_mut() else {
+        return;
+    };
+    for (key, fallback) in [
+        ("title", card.title.as_str()),
+        ("author", card.author.as_str()),
+        ("author_id", card.author_id.as_str()),
+        ("author_url", card.author_url.as_str()),
+        ("likes", card.likes.as_str()),
+        ("type", card.r#type.as_str()),
+    ] {
+        let current = map.get(key).and_then(Value::as_str).unwrap_or("").trim();
+        if current.is_empty() && !fallback.trim().is_empty() {
+            map.insert(key.into(), Value::String(fallback.trim().to_string()));
+        }
+    }
+}
+
 fn note_id_fallback(entity: &Value, card: &XhsNoteCard) -> String {
     let card_note_id = card.note_id.trim();
     if !card_note_id.is_empty() {

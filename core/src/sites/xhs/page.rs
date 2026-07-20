@@ -105,9 +105,9 @@ pub struct ReadNoteOptions {
     /// Transcribe downloaded video notes through the configured cloud ASR
     /// server. Implies `download_media` and `download_video_file` at the caller.
     pub transcribe_audio: bool,
-    /// Optional hydration settle after body content first appears. Direct
-    /// full-screen note routes use this because engagement counts can mount a
-    /// fraction later than the body; modal reads keep the zero default.
+    /// Optional additional hydration settle after body content first appears.
+    /// The page script always applies a small baseline settle because XHS can
+    /// mount engagement counts after the body.
     pub settle_ms: i64,
     pub max_images: usize,
     pub poster_url_fallback: String,
@@ -2028,13 +2028,9 @@ fn opened_note_id_from_url(url: &str) -> String {
 
 fn note_is_open(state: &Value) -> bool {
     state
-        .get("on_detail_route")
+        .get("detail_ready")
         .and_then(Value::as_bool)
         .unwrap_or(false)
-        || state
-            .get("has_modal")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
 }
 
 fn number(value: &Value, key: &str) -> f64 {

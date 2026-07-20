@@ -28,7 +28,8 @@ use crate::sites::runner::{
 };
 use crate::sites::xhs::entities::{parse_posted_at_ms, parse_stat_count};
 use crate::sites::xhs::media_manifest::{
-    ensure_entity_note_id, search_media_manifest, write_media_manifest_file,
+    ensure_entity_note_id, fill_entity_from_card, search_media_manifest,
+    write_media_manifest_file,
 };
 use crate::sites::xhs::page::{LoginGate, XHS_SEARCH_FILTERS};
 use crate::sites::xhs::{
@@ -1216,6 +1217,7 @@ async fn scan_card_note(
             let ok = payload.get("ok").and_then(Value::as_bool).unwrap_or(false);
             let mut entity = payload.get("entity").cloned().unwrap_or(Value::Null);
             ensure_entity_note_id(&mut entity, card);
+            fill_entity_from_card(&mut entity, card);
             // When the read failed (modal never opened, stale note, …), fall
             // back to the card so the entry still carries note_id/title, and
             // surface the failure reason for debugging.
