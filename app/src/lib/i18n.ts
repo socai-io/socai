@@ -147,6 +147,16 @@ const messages = {
     zh: "无法读取已保存的登录状态。",
   },
 
+  "billing.balance": { en: "point balance", zh: "点数余额" },
+  "billing.points": { en: "{points} points", zh: "{points} 点" },
+  "billing.pointsUsed": { en: "{points} points used", zh: "消耗 {points} 点" },
+  "billing.unavailable": { en: "unavailable", zh: "暂不可用" },
+  "billing.rechargeHint": {
+    en: "mock recharge for the MVP; points are added immediately.",
+    zh: "MVP 暂用 mock 充值，点击后点数立即到账。",
+  },
+  "billing.recharging": { en: "adding…", zh: "充值中…" },
+
   "settings.aria": { en: "settings", zh: "设置" },
   "settings.title": { en: "settings", zh: "设置" },
   "settings.general": { en: "general", zh: "通用" },
@@ -216,6 +226,11 @@ const messages = {
     en: "{provider} api key configured.",
     zh: "{provider} api key 已配置。",
   },
+  "agent.managedByAccount": {
+    en: "the model is managed by socai cloud. no API key needed.",
+    zh: "模型由 socai 云端管理，无需填写 API key。",
+  },
+  "agent.managedModel": { en: "managed in cloud", zh: "云端管理" },
   "agent.chatgptConnected": {
     en: "chatgpt subscription connected.",
     zh: "chatgpt 订阅已连接。",

@@ -419,7 +419,9 @@ export namespace agentPanel {
     if (!selected) {
       return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-muted" aria-hidden="true"></i><span class="badge-text">${esc(t("agent.label"))} · ${esc(t("agent.loading"))}</span></button>`;
     }
-    const label = modelDisplayLabel(selected);
+    const label = selected.provider === "socai"
+      ? providerDisplayLabel(selected)
+      : modelDisplayLabel(selected);
     if (!selected.has_key) {
       return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-hollow" aria-hidden="true"></i><span class="badge-text">${esc(t("agent.label"))} · ${esc(label)} · ${esc(t("agent.keyNeeded"))}</span></button>`;
     }
@@ -438,7 +440,9 @@ export namespace agentPanel {
         const dotClass = active ? "badge-dot-ink" : "badge-dot-hollow";
         const flag = provider.hasKey ? "" : `<span class="t-small subtle">${esc(t("agent.keyNeeded"))}</span>`;
         const selectedForProvider = preferredModelForProvider(provider.provider);
-        const hint = selectedForProvider ? modelNameLabel(selectedForProvider) : t("common.loading");
+        const hint = provider.provider === "socai"
+          ? t("agent.managedModel")
+          : selectedForProvider ? modelNameLabel(selectedForProvider) : t("common.loading");
         return `
           <button
             type="button"
@@ -476,7 +480,7 @@ export namespace agentPanel {
           </div>
         </section>
         ${renderCredentialSection(activeModel)}
-        <section class="agent-config-field">
+        ${activeProvider === "socai" ? "" : `<section class="agent-config-field">
           <label class="t-eyebrow agent-config-title" for="agent-model-select">${esc(t("agent.modelVersion"))}</label>
           <select
             id="agent-model-select"
@@ -487,13 +491,21 @@ export namespace agentPanel {
           >
             ${modelOptions}
           </select>
-        </section>
+        </section>`}
       </div>
     `;
   }
 
   function renderCredentialSection(selected: ModelInfo | undefined): string {
     if (!selected) return "";
+    if (selected.provider === "socai") {
+      return `
+        <div class="agent-config-key agent-config-key-ready">
+          <p class="t-eyebrow agent-config-title">${esc(t("agent.apiKey"))}</p>
+          <p class="t-small subtle">${esc(t("agent.managedByAccount"))}</p>
+        </div>
+      `;
+    }
     if (selected.has_key && !editingKey) return renderCredentialConfigured(selected);
     return renderHeaderKeyEntry(selected);
   }
@@ -1125,6 +1137,7 @@ export namespace agentPanel {
         incoming.cache_creation_input_tokens ?? existing.cache_creation_input_tokens,
       estimated_cost: incoming.estimated_cost ?? existing.estimated_cost,
       cost_currency: incoming.cost_currency ?? existing.cost_currency,
+      points_used: incoming.points_used ?? existing.points_used,
     };
   }
 

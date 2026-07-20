@@ -22,6 +22,12 @@ interface SmsChallenge {
   debug_code?: string | null;
 }
 
+interface WalletBalance {
+  balance_points: number;
+  points_per_cny: number;
+  starter_points: number;
+}
+
 type AuthPhase = "loading" | "idle" | "sending" | "verifying" | "logging_out";
 
 const EMPTY_SESSION: AuthSession = {
@@ -42,18 +48,38 @@ export namespace authMenu {
   let retryAt = 0;
   let error = "";
   let countdownTimer: number | null = null;
+  let wallet: WalletBalance | null = null;
+  let walletUnavailable = false;
+  let rechargingPoints: number | null = null;
 
   export async function loadSession(): Promise<void> {
     phase = "loading";
     try {
       session = await invoke<AuthSession>("auth_session");
       error = "";
+      if (session.logged_in) await refreshWallet();
     } catch (err) {
       console.error("auth_session failed:", err);
       session = EMPTY_SESSION;
       error = t("auth.sessionLoadFailed");
     } finally {
       phase = "idle";
+    }
+  }
+
+  export async function refreshWallet(): Promise<void> {
+    if (!session.logged_in) {
+      wallet = null;
+      walletUnavailable = false;
+      return;
+    }
+    try {
+      wallet = await invoke<WalletBalance>("billing_wallet");
+      walletUnavailable = false;
+    } catch (err) {
+      console.error("billing_wallet failed:", err);
+      wallet = null;
+      walletUnavailable = true;
     }
   }
 
@@ -109,6 +135,27 @@ export namespace authMenu {
       <div class="auth-account-row">
         <span class="t-small subtle">${esc(t("auth.phone"))}</span>
         <span class="t-mono">${esc(formatPhone(session.phone))}</span>
+      </div>
+      <div class="auth-wallet">
+        <div class="auth-wallet-balance">
+          <div>
+            <p class="t-eyebrow">${esc(t("billing.balance"))}</p>
+            <p class="t-h2 auth-wallet-points">${wallet
+              ? esc(t("billing.points", { points: wallet.balance_points }))
+              : esc(walletUnavailable ? t("billing.unavailable") : t("common.loading"))}</p>
+          </div>
+        </div>
+        <p class="t-small subtle auth-copy">${esc(t("billing.rechargeHint"))}</p>
+        <div class="auth-recharge-options">
+          ${[50, 100, 300].map((points) => `
+            <button
+              type="button"
+              class="btn-ghost btn-compact"
+              data-recharge-points="${points}"
+              ${rechargingPoints !== null ? "disabled" : ""}
+            >${rechargingPoints === points ? esc(t("billing.recharging")) : esc(t("billing.points", { points }))}</button>
+          `).join("")}
+        </div>
       </div>
       <button id="auth-logout" type="button" class="btn-ghost auth-full-button" ${phase === "logging_out" ? "disabled" : ""}>${esc(phase === "logging_out" ? t("auth.loggingOut") : t("auth.logout"))}</button>
     `;
@@ -177,15 +224,25 @@ export namespace authMenu {
     onSessionChanged: () => Promise<void>,
   ): void {
     document.getElementById("auth-toggle")?.addEventListener("click", () => {
-      if (!open) onOpen();
+      const opening = !open;
+      if (opening) onOpen();
       open = !open;
       error = "";
       shell.rerender();
+      if (opening && session.logged_in) {
+        void refreshWallet().then(shell.rerender);
+      }
     });
 
     if (!open) return;
 
     if (session.logged_in) {
+      document.querySelectorAll<HTMLButtonElement>("[data-recharge-points]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const points = Number(button.dataset.rechargePoints);
+          if (Number.isFinite(points)) void mockRecharge(points, shell);
+        });
+      });
       document.getElementById("auth-logout")?.addEventListener("click", () => {
         void logout(shell, onSessionChanged);
       });
@@ -269,6 +326,7 @@ export namespace authMenu {
       code = "";
       retryAt = 0;
       stopCountdown();
+      await refreshWallet();
       await onSessionChanged();
     } catch (err) {
       console.error("auth_sms_verify failed:", err);
@@ -292,8 +350,32 @@ export namespace authMenu {
       error = friendlyError(err);
     } finally {
       session = EMPTY_SESSION;
+      wallet = null;
+      walletUnavailable = false;
       phase = "idle";
       await onSessionChanged();
+      shell.rerender();
+    }
+  }
+
+  async function mockRecharge(points: number, shell: ShellState): Promise<void> {
+    if (rechargingPoints !== null) return;
+    rechargingPoints = points;
+    error = "";
+    shell.rerender();
+    try {
+      const requestId = typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      wallet = await invoke<WalletBalance>("billing_mock_recharge", {
+        points,
+        requestId,
+      });
+    } catch (err) {
+      console.error("billing_mock_recharge failed:", err);
+      error = friendlyError(err);
+    } finally {
+      rechargingPoints = null;
       shell.rerender();
     }
   }

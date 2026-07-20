@@ -221,6 +221,7 @@ pub struct ToolSchema {
 #[async_trait]
 pub trait Backend: Send + Sync {
     fn label(&self) -> String;
+    fn provider(&self) -> &str;
     fn model(&self) -> &str;
 
     /// JSON body sent to the provider, excluding authentication headers.

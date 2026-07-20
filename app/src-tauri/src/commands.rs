@@ -10,7 +10,7 @@ use socai_core::agent::{
     ModelCatalogEntry, Provider, TokenUsage,
 };
 use socai_core::runtime::{
-    create_llm_provider_for, ensure_llm_provider_configured_for,
+    create_llm_provider_for_task, ensure_llm_provider_configured_for,
     run_agent_task as run_agent_with_tools, wait_browser_connected, AgentRunConfig, BrowserStatus,
     RuntimePageSession, SocaiRuntime,
 };
@@ -219,6 +219,9 @@ pub struct AgentRunOutcome {
 pub async fn agent_save_api_key(provider: String, api_key: String) -> Result<(), String> {
     let provider_enum = Provider::from_name(provider.trim())
         .ok_or_else(|| format!("unknown provider: {provider}"))?;
+    if provider_enum == Provider::Socai {
+        return Err("socai cloud uses your signed-in account, not an API key".into());
+    }
     socai_core::agent::save_api_key(provider_enum, api_key.trim())
         .map(|_| ())
         .map_err(|e| format!("{e:#}"))
@@ -227,6 +230,7 @@ pub async fn agent_save_api_key(provider: String, api_key: String) -> Result<(),
 #[tauri::command]
 pub async fn agent_list_models() -> Result<Vec<Value>, String> {
     use socai_core::agent::PROVIDERS;
+    let _ = socai_core::cloud::take_hosted_llm_default().map_err(|err| format!("{err:#}"))?;
     // The provider/model that would be used right now. Environment overrides
     // win when present; otherwise the desktop restores persisted defaults even
     // if the selected provider still needs a key. The frontend uses
@@ -235,6 +239,8 @@ pub async fn agent_list_models() -> Result<Vec<Value>, String> {
         resolve_provider(None, None)
             .ok()
             .or_else(configured_default_provider)
+    } else if socai_core::cloud::hosted_llm_selected() {
+        Some(Provider::Socai)
     } else {
         configured_default_provider().or_else(|| resolve_provider(None, None).ok())
     };
@@ -242,12 +248,19 @@ pub async fn agent_list_models() -> Result<Vec<Value>, String> {
     let mut out = Vec::new();
     for cfg in PROVIDERS {
         let credential_kind = provider_credential_kind(cfg.provider);
+        if cfg.provider == Provider::Socai && credential_kind.is_none() {
+            continue;
+        }
         let credential_kind_label = match credential_kind {
             Some(CredentialKind::ApiKey) => Some("api_key"),
             Some(CredentialKind::CodexOAuth) => Some("codex_oauth"),
             None => None,
         };
-        let selected_model = if Some(cfg.provider) == default_provider {
+        let selected_model = if cfg.provider == Provider::Socai {
+            // The hosted model is a server concern. Keep an opaque value in
+            // desktop state even when SOCAI_MODEL is set for BYOK providers.
+            cfg.default_model.to_string()
+        } else if Some(cfg.provider) == default_provider {
             env_model
                 .clone()
                 .unwrap_or_else(|| configured_default_model_for(cfg.provider))
@@ -255,6 +268,9 @@ pub async fn agent_list_models() -> Result<Vec<Value>, String> {
             configured_default_model_for(cfg.provider)
         };
         let mut models = catalog_models_for(cfg.provider);
+        if cfg.provider == Provider::Socai {
+            models.retain(|model| model.id == cfg.default_model);
+        }
         if !selected_model.trim().is_empty()
             && !models.iter().any(|model| model.id == selected_model)
         {
@@ -313,12 +329,16 @@ fn model_env_override() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Persist the user's model choice so it survives a relaunch. Writes
-/// `defaults.provider` + `defaults.{provider}_model` to `~/.socai/auth.json`.
+/// Persist the user's model choice so it survives a relaunch. The hosted model
+/// is account-scoped; BYOK choices keep using the shared CLI defaults.
 #[tauri::command]
 pub async fn agent_set_default_model(provider: String, model: String) -> Result<(), String> {
     let provider_enum = Provider::from_name(provider.trim())
         .ok_or_else(|| format!("unknown provider: {provider}"))?;
+    if provider_enum == Provider::Socai {
+        return socai_core::cloud::set_hosted_llm_selected(true).map_err(|err| format!("{err:#}"));
+    }
+    socai_core::cloud::set_hosted_llm_selected(false).map_err(|err| format!("{err:#}"))?;
     save_default_model(provider_enum, model.trim())
         .map(|_| ())
         .map_err(|e| format!("{e:#}"))
@@ -560,6 +580,7 @@ pub async fn agent_task_reply(
             snapshot.cache_creation_input_tokens = None;
             snapshot.estimated_cost = None;
             snapshot.cost_currency = None;
+            snapshot.points_used = None;
             snapshot.current_message = Some(message_text.clone());
         })
         .await
@@ -611,6 +632,34 @@ pub async fn agent_task_reply(
 pub async fn agent_task_list(
     tasks: State<'_, AgentTaskRegistry>,
 ) -> Result<Vec<AgentTaskSnapshot>, String> {
+    // Older hosted tasks predate persisted settlement results. Replaying the
+    // idempotent settlement once on launch lets those tasks show the exact
+    // server charge instead of deriving points from the desktop cost estimate.
+    let snapshots = tasks.list().await;
+    for snapshot in snapshots {
+        if snapshot.provider.as_deref() != Some(Provider::Socai.as_str())
+            || snapshot.points_used.is_some()
+            || !matches!(
+                snapshot.status.as_str(),
+                "completed" | "failed" | "cancelled" | "interrupted"
+            )
+        {
+            continue;
+        }
+        match socai_core::cloud::settle_llm_task(&snapshot.task_id, &snapshot.status).await {
+            Ok(settlement) => {
+                let _ = tasks
+                    .update(&snapshot.task_id, |task| {
+                        task.points_used = Some(settlement.billed_points);
+                    })
+                    .await;
+            }
+            Err(err) => eprintln!(
+                "failed to recover hosted LLM settlement for {}: {err:#}",
+                snapshot.task_id
+            ),
+        }
+    }
     Ok(tasks.list().await)
 }
 
@@ -715,7 +764,7 @@ pub async fn agent_task_cancel(
     telemetry: State<'_, DesktopTelemetry>,
     task_id: String,
 ) -> Result<AgentTaskSnapshot, String> {
-    let (snapshot, abort_handle, target_id, changed) = tasks
+    let (mut snapshot, abort_handle, target_id, changed) = tasks
         .cancel(&task_id)
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
@@ -729,6 +778,18 @@ pub async fn agent_task_cancel(
         let _ = runtime.close_target(&target_id).await;
     }
     if changed {
+        if snapshot.provider.as_deref() == Some(Provider::Socai.as_str()) {
+            if let Some(settlement) = settle_hosted_task_with_retry(&task_id, "cancelled").await {
+                if let Some(updated) = tasks
+                    .update(&task_id, |task| {
+                        task.points_used = Some(settlement.billed_points);
+                    })
+                    .await
+                {
+                    snapshot = updated;
+                }
+            }
+        }
         let usage = snapshot.run_dir.as_deref().and_then(read_run_usage);
         if let Some(run_dir) = snapshot.run_dir.as_deref() {
             let _ = mark_agent_run_status(run_dir, "cancelled", None);
@@ -765,6 +826,36 @@ pub async fn agent_task_cancel(
         .await;
     }
     Ok(snapshot)
+}
+
+async fn settle_hosted_task_with_retry(
+    task_id: &str,
+    final_status: &str,
+) -> Option<socai_core::cloud::LlmSettlement> {
+    let mut delay_ms = 200;
+    for attempt in 0..3 {
+        match socai_core::cloud::settle_llm_task(task_id, final_status).await {
+            Ok(settlement) => return Some(settlement),
+            Err(err) if attempt < 2 => {
+                eprintln!(
+                    "hosted LLM settlement retry {} for task {} ({}): {err:#}",
+                    attempt + 1,
+                    task_id,
+                    final_status,
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                delay_ms *= 4;
+            }
+            Err(err) => {
+                eprintln!(
+                    "hosted LLM settlement failed for task {} ({}); server stale-task settlement will recover it: {err:#}",
+                    task_id,
+                    final_status,
+                );
+            }
+        }
+    }
+    None
 }
 
 /// Remove a task from history and delete its on-disk artifacts: every run dir
@@ -923,6 +1014,17 @@ async fn run_agent_task_background(
     )
     .await;
 
+    let settlement = if provider.as_deref() == Some(Provider::Socai.as_str()) {
+        let final_status = if result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        };
+        settle_hosted_task_with_retry(&task_id, final_status).await
+    } else {
+        None
+    };
+
     let _ = registry.remove_abort_handle(&task_id).await;
 
     match result {
@@ -944,6 +1046,9 @@ async fn run_agent_task_background(
                         Some(outcome.cache_creation_input_tokens);
                     snapshot.estimated_cost = outcome.estimated_cost;
                     snapshot.cost_currency = outcome.cost_currency.clone();
+                    snapshot.points_used = settlement
+                        .as_ref()
+                        .map(|settlement| settlement.billed_points);
                 })
                 .await
             {
@@ -981,6 +1086,9 @@ async fn run_agent_task_background(
                     snapshot.status = "failed".into();
                     snapshot.finished_at = Some(now_ms());
                     snapshot.error = Some(error.clone());
+                    snapshot.points_used = settlement
+                        .as_ref()
+                        .map(|settlement| settlement.billed_points);
                 })
                 .await
             {
@@ -1133,7 +1241,7 @@ async fn run_agent_task_on_shared_page(
         .unwrap_or_default();
 
     ensure_llm_provider_configured_for(provider, model)?;
-    let llm_provider = create_llm_provider_for(provider, model)?;
+    let llm_provider = create_llm_provider_for_task(provider, model, &task_id)?;
     let site = app_site()?;
     // Held for the whole task — LLM thinking pauses between tool calls
     // included — so the remote idle reaper only fires between tasks.
@@ -1411,6 +1519,23 @@ pub async fn auth_sms_verify(
 #[tauri::command]
 pub async fn auth_logout() -> Result<(), String> {
     socai_core::cloud::logout()
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn billing_wallet() -> Result<socai_core::cloud::WalletBalance, String> {
+    socai_core::cloud::wallet_balance()
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn billing_mock_recharge(
+    points: i64,
+    request_id: String,
+) -> Result<socai_core::cloud::RechargeReceipt, String> {
+    socai_core::cloud::mock_recharge(points, &request_id)
         .await
         .map_err(|err| format!("{err:#}"))
 }

@@ -51,6 +51,8 @@ pub struct AgentTaskSnapshot {
     pub(crate) cache_creation_input_tokens: Option<u64>,
     pub(crate) estimated_cost: Option<f64>,
     pub(crate) cost_currency: Option<String>,
+    /// Server-authoritative hosted LLM charge for the latest turn.
+    pub(crate) points_used: Option<i64>,
     // The text driving the in-flight/most recent run — distinct from `task`,
     // which stays the thread's original title across replies. Not persisted
     // to tasks.json (Option fields default to None on load, which is the
@@ -142,6 +144,7 @@ impl AgentTaskRegistry {
             cache_creation_input_tokens: None,
             estimated_cost: None,
             cost_currency: None,
+            points_used: None,
         };
         guard.tasks.push(snapshot.clone());
         persist_task_index(&guard.tasks);
@@ -478,8 +481,10 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // Keep tasks.json as an app index only. Run id, result, error, usage, and
-    // target state are hydrated from the run or are process-local.
+    // Keep tasks.json as an app index only. Run id, result, error, token usage,
+    // and target state are hydrated from the run or are process-local. Hosted
+    // points are persisted because only the server can authoritatively settle
+    // them; they cannot be reconstructed from the local run's estimated cost.
     let records: Vec<Value> = tasks
         .iter()
         .map(|task| {
@@ -494,6 +499,7 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
                 "finished_at": task.finished_at,
                 "run_dir": &task.run_dir,
                 "session_dir": &task.session_dir,
+                "points_used": task.points_used,
             })
         })
         .collect();

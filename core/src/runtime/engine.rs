@@ -461,6 +461,23 @@ pub fn create_llm_provider_for(
     Ok(llm_provider)
 }
 
+pub fn create_llm_provider_for_task(
+    provider: Option<&str>,
+    model: Option<&str>,
+    task_id: &str,
+) -> Result<Arc<dyn Backend>> {
+    let (provider, effective_model) = resolve_llm_model_for(provider, model)?;
+    let llm_provider: Arc<dyn Backend> = match provider {
+        Provider::Anthropic => Arc::new(AnthropicBackend::new(&effective_model)?),
+        other => Arc::new(OpenAICompatBackend::new_for_task(
+            other,
+            &effective_model,
+            Some(task_id),
+        )?),
+    };
+    Ok(llm_provider)
+}
+
 pub fn ensure_llm_provider_configured(model: Option<&str>) -> Result<Provider> {
     ensure_llm_provider_configured_for(None, model)
 }

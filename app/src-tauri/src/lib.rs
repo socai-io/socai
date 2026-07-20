@@ -203,6 +203,8 @@ pub fn run() {
             commands::auth_sms_send,
             commands::auth_sms_verify,
             commands::auth_logout,
+            commands::billing_wallet,
+            commands::billing_mock_recharge,
             connectors::feishu::feishu_status,
             connectors::feishu::feishu_accounts,
             connectors::feishu::feishu_account_identity,

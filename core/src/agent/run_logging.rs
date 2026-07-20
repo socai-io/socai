@@ -140,6 +140,7 @@ impl AgentRunRecorder {
         run_id: &str,
         session_id: Option<&str>,
         task: &str,
+        provider: &str,
         model: &str,
     ) -> std::io::Result<Self> {
         let run_dir = run_dir.as_ref().to_path_buf();
@@ -148,6 +149,7 @@ impl AgentRunRecorder {
         let mut manifest = json!({
             "id": run_id,
             "task": task,
+            "provider": provider,
             "model": model,
             "status": "running",
             "started_at": timestamp(),

@@ -27,12 +27,28 @@ pub struct OpenAICompatBackend {
     credential: Credential,
     base_url: String,
     client: reqwest::Client,
+    task_id: Option<String>,
 }
 
 impl OpenAICompatBackend {
     pub fn new(provider: Provider, model: impl Into<String>) -> anyhow::Result<Self> {
+        Self::new_for_task(provider, model, None)
+    }
+
+    pub fn new_for_task(
+        provider: Provider,
+        model: impl Into<String>,
+        task_id: Option<&str>,
+    ) -> anyhow::Result<Self> {
         let cfg: &'static ProviderConfig = config_for(provider);
-        let credential = if provider == Provider::OpenAI {
+        let gateway = if provider == Provider::Socai {
+            Some(crate::cloud::llm_gateway_config()?)
+        } else {
+            None
+        };
+        let credential = if let Some(gateway) = &gateway {
+            Credential::ApiKey(gateway.device_token.clone())
+        } else if provider == Provider::OpenAI {
             match load_openai_credential() {
                 Some(credential) => credential,
                 None => {
@@ -52,8 +68,9 @@ impl OpenAICompatBackend {
             })?;
             Credential::ApiKey(api_key)
         };
-        let base_url = cfg
-            .base_url
+        let base_url = gateway
+            .map(|gateway| format!("{}/v1/llm", gateway.base_url.trim_end_matches('/')))
+            .or_else(|| cfg.base_url.map(ToOwned::to_owned))
             .ok_or_else(|| anyhow::anyhow!("provider {:?} is not OpenAI-compatible", provider))?
             .trim_end_matches('/')
             .to_string();
@@ -72,6 +89,10 @@ impl OpenAICompatBackend {
             credential,
             base_url,
             client,
+            task_id: task_id
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(ToOwned::to_owned),
         })
     }
 
@@ -111,7 +132,11 @@ impl OpenAICompatBackend {
     fn preserve_reasoning_content(&self) -> bool {
         matches!(
             self.provider,
-            Provider::Kimi | Provider::Qwen | Provider::QwenIntl | Provider::Doubao
+            Provider::Socai
+                | Provider::Kimi
+                | Provider::Qwen
+                | Provider::QwenIntl
+                | Provider::Doubao
         )
     }
 
@@ -702,6 +727,10 @@ impl Backend for OpenAICompatBackend {
         format!("{}:{}", self.provider.as_str(), self.model)
     }
 
+    fn provider(&self) -> &str {
+        self.provider.as_str()
+    }
+
     fn model(&self) -> &str {
         &self.model
     }
@@ -737,13 +766,11 @@ impl Backend for OpenAICompatBackend {
 
         let body = self.build_chat_request(system, messages, tools, max_tokens);
 
-        let response = self
-            .client
-            .post(self.url())
-            .bearer_auth(self.api_key()?)
-            .json(&body)
-            .send()
-            .await?;
+        let mut request = self.client.post(self.url()).bearer_auth(self.api_key()?);
+        if let Some(task_id) = &self.task_id {
+            request = request.header("X-Socai-Task-ID", task_id);
+        }
+        let response = request.json(&body).send().await?;
 
         let status = response.status();
         if !status.is_success() {

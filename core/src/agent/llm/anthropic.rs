@@ -267,6 +267,10 @@ impl Backend for AnthropicBackend {
         format!("anthropic:{}", self.model)
     }
 
+    fn provider(&self) -> &str {
+        Provider::Anthropic.as_str()
+    }
+
     fn model(&self) -> &str {
         &self.model
     }

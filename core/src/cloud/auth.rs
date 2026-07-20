@@ -44,6 +44,16 @@ pub struct CloudCredentials {
     pub phone: String,
     #[serde(default)]
     pub status: String,
+    #[serde(default)]
+    pub hosted_llm_default_applied: bool,
+    #[serde(default)]
+    pub hosted_llm_selected: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmGatewayConfig {
+    pub base_url: String,
+    pub device_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -182,6 +192,8 @@ pub async fn activate_with_base_url(
         user_id: String::new(),
         phone: String::new(),
         status: String::new(),
+        hosted_llm_default_applied: false,
+        hosted_llm_selected: false,
     })?;
     Ok(CloudStatus {
         base_url,
@@ -243,6 +255,8 @@ fn save_login_credentials(
         user_id: body.user_id,
         phone: canonical_phone,
         status: body.status,
+        hosted_llm_default_applied: false,
+        hosted_llm_selected: false,
     })?;
     // Keep the CLI and future app builds pointed at the same accepted service,
     // even when this build received the URL through SOCAI_PRO_BASE_URL. The
@@ -279,6 +293,50 @@ pub async fn logout() -> Result<()> {
     // failed, return that error after removing the local bearer token.
     let clear_result = clear_credentials();
     remote_result.and(clear_result)
+}
+
+pub fn llm_gateway_config() -> Result<LlmGatewayConfig> {
+    let base_url = configured_base_url()
+        .ok_or_else(|| anyhow::anyhow!("socai service URL is not configured"))?;
+    let credentials = load_credentials()
+        .filter(|creds| !creds.user_id.trim().is_empty() && !creds.device_token.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("sign in to use socai cloud"))?;
+    Ok(LlmGatewayConfig {
+        base_url,
+        device_token: credentials.device_token,
+    })
+}
+
+/// Returns true once per saved account, allowing the desktop to select the
+/// hosted model by default without overriding a later explicit BYOK choice.
+pub fn take_hosted_llm_default() -> Result<bool> {
+    let Some(mut credentials) = load_credentials() else {
+        return Ok(false);
+    };
+    if credentials.user_id.trim().is_empty() || credentials.hosted_llm_default_applied {
+        return Ok(false);
+    }
+    credentials.hosted_llm_default_applied = true;
+    credentials.hosted_llm_selected = true;
+    save_credentials(&credentials)?;
+    Ok(true)
+}
+
+pub fn hosted_llm_selected() -> bool {
+    load_credentials().is_some_and(|credentials| {
+        !credentials.user_id.trim().is_empty() && credentials.hosted_llm_selected
+    })
+}
+
+pub fn set_hosted_llm_selected(selected: bool) -> Result<()> {
+    let Some(mut credentials) = load_credentials() else {
+        return Ok(());
+    };
+    if credentials.user_id.trim().is_empty() {
+        return Ok(());
+    }
+    credentials.hosted_llm_selected = selected;
+    save_credentials(&credentials).map(|_| ())
 }
 
 fn logged_out_session() -> AuthSession {
@@ -329,7 +387,10 @@ pub(super) fn bearer(request: reqwest::RequestBuilder, token: &str) -> reqwest::
     request.bearer_auth(token.trim())
 }
 
-async fn require_success(response: reqwest::Response, action: &str) -> Result<reqwest::Response> {
+pub(super) async fn require_success(
+    response: reqwest::Response,
+    action: &str,
+) -> Result<reqwest::Response> {
     if response.status().is_success() {
         return Ok(response);
     }

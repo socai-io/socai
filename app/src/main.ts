@@ -46,6 +46,7 @@ export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "c
 export interface AgentTaskSnapshot {
   task_id: string;
   task: string;
+  provider: string | null;
   model: string | null;
   status: AgentTaskStatus;
   created_at: number;
@@ -63,6 +64,7 @@ export interface AgentTaskSnapshot {
   cache_creation_input_tokens: number | null;
   estimated_cost: number | null;
   cost_currency: string | null;
+  points_used: number | null;
 }
 
 export interface TimelineEntity {
@@ -226,7 +228,9 @@ function render(): void {
   authMenu.bind(
     state,
     () => { settingsMenu.closePopover(); },
-    settingsMenu.loadConfig,
+    async () => {
+      await Promise.all([settingsMenu.loadConfig(), agentPanel.refreshModels()]);
+    },
   );
   settingsMenu.bind(state, () => { authMenu.closePopover(); });
   agentPanel.bind(state);
@@ -589,6 +593,7 @@ async function main(): Promise<void> {
       void maybeCheckForUpdate();
       void agentPanel.loadTaskNotes(event.payload.task_id, shell());
       maybeRelaunchReadyUpdate();
+      void authMenu.refreshWallet().then(render);
     }
   });
   await listen<BackgroundMediaEvent>("agent_task:notes_updated", (event) => {

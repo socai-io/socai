@@ -351,6 +351,28 @@ body.has-paper > * { position: relative; z-index: 1; }
   border-radius: var(--r-3);
   background: var(--canvas);
 }
+.auth-wallet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: var(--hairline);
+  border-radius: var(--r-3);
+  background: var(--canvas);
+}
+.auth-wallet-balance {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.auth-wallet-points { margin: 4px 0 0; }
+.auth-recharge-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+.auth-recharge-options .btn-ghost { padding-inline: var(--sp-2); }
 .auth-error { margin: 0; line-height: 1.4; }
 .icon-button {
   appearance: none;

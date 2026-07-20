@@ -173,12 +173,14 @@ pub async fn run_agent_with_events(
         &run_id,
         options.session_id.as_deref(),
         task,
+        backend.provider(),
         backend.model(),
     )?;
     let mut run_trace = RunTraceBuilder::new(
         &run_dir,
         &run_id,
         task,
+        backend.provider(),
         backend.model(),
         options.session_id.as_deref(),
         options.seed_messages.len(),

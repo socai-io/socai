@@ -202,6 +202,7 @@ function renderTurn(
 ): string {
   const { userText, userAt, body, answerText, answerAt } = buildTurn(events, index === 0, isLast, task);
   const showWorking = isLast && running;
+  const hosted = task.provider === "socai";
 
   // Every agent message gets a quiet meta line; the latest answer's carries
   // the run stats too (model · duration · tokens) after its timestamp.
@@ -214,7 +215,7 @@ function renderTurn(
       exportText = task.final_text;
       answer = `<div class="conv-answer result-md note-answer">${renderNoteAnswer(task.final_text)}</div>`;
       if (finishedAt) metaBits.push(finishedAt);
-      if (task.model) metaBits.push(task.model);
+      if (!hosted && task.model) metaBits.push(task.model);
       const duration = formatDuration(task);
       if (duration) metaBits.push(duration);
       if (task.input_tokens !== null && task.output_tokens !== null) {
@@ -223,9 +224,12 @@ function renderTurn(
           task.output_tokens,
           task.cached_input_tokens,
           task.cache_creation_input_tokens ?? 0,
-          task.estimated_cost,
-          task.cost_currency,
+          hosted ? null : task.estimated_cost,
+          hosted ? null : task.cost_currency,
         ));
+      }
+      if (hosted && task.points_used !== null) {
+        metaBits.push(t("billing.pointsUsed", { points: task.points_used }));
       }
     } else if (task.error) {
       answer = `<pre class="conv-error">${esc(task.error)}</pre>`;

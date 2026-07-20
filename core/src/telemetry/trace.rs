@@ -102,6 +102,7 @@ pub struct RunTraceBuilder {
     root_span_id: String,
     run_id: String,
     task_text: String,
+    provider: String,
     model: String,
     session_id: Option<String>,
     /// Prior chat messages seeding this run — non-zero marks a conversation
@@ -132,6 +133,7 @@ impl RunTraceBuilder {
         run_dir: &Path,
         run_id: &str,
         task: &str,
+        provider: &str,
         model: &str,
         session_id: Option<&str>,
         seed_messages: usize,
@@ -150,6 +152,7 @@ impl RunTraceBuilder {
             root_span_id: new_span_id(),
             run_id: run_id.to_string(),
             task_text: truncate_chars(&redact_secrets(task), TASK_TEXT_MAX_CHARS),
+            provider: provider.to_string(),
             model: model.to_string(),
             session_id: session_id.map(ToOwned::to_owned),
             seed_messages,
@@ -179,6 +182,7 @@ impl RunTraceBuilder {
         self.usage += &response.usage;
         let mut attrs = vec![
             attr_str("gen_ai.operation.name", "chat"),
+            attr_str("gen_ai.provider.name", &self.provider),
             attr_str("gen_ai.request.model", &self.model),
             attr_int("socai.step", step as i64),
             attr_str("socai.stop_reason", stop_reason_str(response)),
@@ -206,6 +210,7 @@ impl RunTraceBuilder {
         self.steps_seen = self.steps_seen.max(step);
         let mut attrs = vec![
             attr_str("gen_ai.operation.name", "chat"),
+            attr_str("gen_ai.provider.name", &self.provider),
             attr_str("gen_ai.request.model", &self.model),
             attr_int("socai.step", step as i64),
         ];
@@ -340,6 +345,7 @@ impl RunTraceBuilder {
         let mut attrs = vec![
             attr_str("gen_ai.operation.name", "invoke_agent"),
             attr_str("gen_ai.agent.name", "socai"),
+            attr_str("gen_ai.provider.name", &self.provider),
             attr_str("gen_ai.request.model", &self.model),
             attr_str("socai.run_id", &self.run_id),
             attr_str("socai.task_text", &self.task_text),
