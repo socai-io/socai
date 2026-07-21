@@ -24,7 +24,6 @@ pub struct SmsChallengeResponse {
     pub challenge_id: String,
     pub expires_in_seconds: i64,
     pub retry_after_seconds: i64,
-    pub debug_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,54 +89,6 @@ pub fn auth_session() -> Result<AuthSession> {
             creds.status
         },
     })
-}
-
-/// Resolve the saved session, or use the explicitly configured developer login
-/// to create a real server-side User + Device token. Unlike a UI-only mock this
-/// works in release-mode local builds and can call authenticated APIs.
-pub async fn auth_session_with_dev_login(label: &str) -> Result<AuthSession> {
-    let current = auth_session()?;
-    if current.logged_in {
-        return Ok(current);
-    }
-    let phone = std::env::var("SOCAI_DEV_LOGIN_PHONE")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let key = std::env::var("SOCAI_DEV_LOGIN_KEY")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    match (phone, key) {
-        (None, None) => Ok(current),
-        (Some(phone), Some(key)) => dev_login(&phone, &key, label).await,
-        _ => anyhow::bail!(
-            "SOCAI_DEV_LOGIN_PHONE and SOCAI_DEV_LOGIN_KEY must be configured together"
-        ),
-    }
-}
-
-async fn dev_login(phone: &str, key: &str, label: &str) -> Result<AuthSession> {
-    let base_url = configured_base_url()
-        .ok_or_else(|| anyhow::anyhow!("socai pro server URL is not configured"))?;
-    let canonical_phone = normalize_mainland_phone(phone)?;
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not resolve $HOME"))?;
-    let install_id = crate::identity::load_or_create_install_id(&home.join(".socai"));
-    let response = http_client()?
-        .post(format!("{base_url}/v1/auth/dev-login"))
-        .header("X-Socai-Dev-Key", key.trim())
-        .json(&json!({
-            "phone": canonical_phone,
-            "install_id": install_id,
-            "app_version": env!("CARGO_PKG_VERSION"),
-            "label": label.trim(),
-        }))
-        .send()
-        .await
-        .context("failed to call development login endpoint")?;
-    let response = require_success(response, "development login").await?;
-    let body: LoginResponse = response.json().await?;
-    save_login_credentials(&base_url, canonical_phone, body)
 }
 
 /// Whether socai pro is activated on this device. Local check only (reads

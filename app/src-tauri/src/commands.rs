@@ -1491,9 +1491,7 @@ pub async fn pro_activate(invite_code: String, label: String) -> Result<Value, S
 
 #[tauri::command]
 pub async fn auth_session() -> Result<socai_core::cloud::AuthSession, String> {
-    socai_core::cloud::auth_session_with_dev_login("desktop-dev")
-        .await
-        .map_err(|err| format!("{err:#}"))
+    socai_core::cloud::auth_session().map_err(|err| format!("{err:#}"))
 }
 
 #[tauri::command]

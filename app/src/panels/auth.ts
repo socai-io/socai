@@ -19,7 +19,6 @@ interface SmsChallenge {
   challenge_id: string;
   expires_in_seconds: number;
   retry_after_seconds: number;
-  debug_code?: string | null;
 }
 
 interface WalletBalance {
@@ -208,7 +207,6 @@ export namespace authMenu {
           value="${esc(code)}"
           ${phase === "verifying" || phase === "sending" ? "disabled" : ""}
         />
-        ${challenge?.debug_code ? `<p class="t-small subtle auth-copy">${esc(t("auth.debugCode", { code: challenge.debug_code }))}</p>` : ""}
         <button type="submit" class="btn-primary auth-full-button" ${phase === "verifying" || phase === "sending" ? "disabled" : ""}>${esc(phase === "verifying" ? t("auth.verifying") : t("auth.login"))}</button>
       </form>
       <div class="auth-secondary-actions">
@@ -295,7 +293,7 @@ export namespace authMenu {
     shell.rerender();
     try {
       challenge = await invoke<SmsChallenge>("auth_sms_send", { phone });
-      code = challenge.debug_code ?? "";
+      code = "";
       retryAt = Date.now() + Math.max(0, challenge.retry_after_seconds) * 1000;
     } catch (err) {
       console.error("auth_sms_send failed:", err);

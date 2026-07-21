@@ -99,10 +99,6 @@ const messages = {
     en: "a 6-digit code was sent to {phone}.",
     zh: "6 位验证码已发送至 {phone}。",
   },
-  "auth.debugCode": {
-    en: "development code: {code}",
-    zh: "开发环境验证码：{code}",
-  },
   "auth.verifying": { en: "signing in…", zh: "登录中…" },
   "auth.changePhone": { en: "change phone", zh: "更换手机号" },
   "auth.resend": { en: "resend code", zh: "重新发送" },
