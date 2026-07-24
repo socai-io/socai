@@ -13,9 +13,14 @@ tauri-build = { version = "2.5.6", features = [] }
 
 [dependencies]
 tauri = { version = "2.11.1", features = ["protocol-asset"] }
+tauri-plugin-shell = "2.3.5"
 tauri-plugin-updater = "2.10.1"
 serde.workspace = true
 serde_json.workspace = true
+base64.workspace = true
+flate2 = "1"
+reqwest.workspace = true
+url = "2"
 tokio = { workspace = true }
 anyhow.workspace = true
 dirs = "5"

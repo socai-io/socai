@@ -1,4 +1,5 @@
 mod commands;
+mod connectors;
 mod tasks;
 mod telemetry;
 mod timeline;
@@ -53,8 +54,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_shell::init())
         .manage(runtime)
         .manage(AgentTaskRegistry::default())
+        .manage(connectors::feishu::FeishuState::default())
         .manage(telemetry)
         .setup(|app| {
             // Let the webview load locally-downloaded note media (images/video)
@@ -163,6 +166,15 @@ pub fn run() {
             commands::config_set,
             commands::config_unset,
             commands::pro_activate,
+            connectors::feishu::feishu_status,
+            connectors::feishu::feishu_accounts,
+            connectors::feishu::feishu_select_account,
+            connectors::feishu::feishu_disconnect_account,
+            connectors::feishu::feishu_connect,
+            connectors::feishu::feishu_cancel_connect,
+            connectors::feishu::feishu_export_task,
+            connectors::feishu::feishu_list_chats,
+            connectors::feishu::feishu_send_task_to_chat,
         ])
         .build(tauri::generate_context!())
         .expect("error while building socai")

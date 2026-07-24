@@ -18,6 +18,7 @@ import { renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup } from 
 import {
   noteRefsFromEvent,
   pendingSearchQuery,
+  answerTextForTurn,
   renderComposePane,
   renderConversation,
   renderEventRow,
@@ -26,6 +27,10 @@ import {
 } from "./conversation";
 import type { ComposerProps } from "./conversation";
 import { bindNoteInteractions, setNoteRegistry } from "./notes";
+import {
+  bindFeishuConnector,
+  renderFeishuConnector,
+} from "../connectors/feishu";
 
 // The workspace is one conversation pane: the compose view (default / "new
 // task") is the empty thread + composer; picking a task shows its thread with
@@ -662,8 +667,9 @@ export namespace agentPanel {
   export function renderWorkspace(shell: ShellState): string {
     const deleteRequest = tasks.find((task) => task.task_id === deleteRequestTaskId);
     const dialog = deleteRequest ? renderConfirmDeleteDialog(deleteRequest) : "";
+    const feishuDialog = renderFeishuConnector(tasks);
     const task = view === "compose" ? null : selectedTask() ?? null;
-    if (!task) return `${renderComposePane(newComposer(shell))}${dialog}`;
+    if (!task) return `${renderComposePane(newComposer(shell))}${dialog}${feishuDialog}`;
     // Point the note UI at this task's archive; the thread's card groups and
     // answer citations resolve refs against it, and so does the viewer.
     setNoteRegistry(task.notes, task.run_dir);
@@ -673,7 +679,7 @@ export namespace agentPanel {
       running,
       isActivityOpen: (turnIndex, defaultOpen) => isActivityOpen(task.task_id, turnIndex, defaultOpen),
       composer: replyComposer(shell, running),
-    })}${dialog}`;
+    })}${dialog}${feishuDialog}`;
   }
 
   function newComposer(shell: ShellState): ComposerProps {
@@ -702,6 +708,10 @@ export namespace agentPanel {
   }
 
   export function bind(shell: ShellState): void {
+    bindFeishuConnector(shell, (taskId, turnIndex) => {
+      const task = tasks.find((item) => item.task_id === taskId);
+      return task ? answerTextForTurn(task, turnIndex) : null;
+    });
     document.getElementById("sidebar-new")?.addEventListener("click", () => {
       view = "compose";
       shell.rerender();

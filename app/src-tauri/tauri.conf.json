@@ -4,9 +4,9 @@
   "version": "0.4.13",
   "identifier": "com.socai.app",
   "build": {
-    "beforeDevCommand": "pnpm run dev",
+    "beforeDevCommand": "pnpm run prepare:lark-cli && pnpm run dev",
     "devUrl": "http://localhost:1421",
-    "beforeBuildCommand": "pnpm run build",
+    "beforeBuildCommand": "pnpm run prepare:lark-cli && pnpm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -37,6 +37,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/lark-cli"
+    ],
+    "resources": [
+      "third-party/lark-cli-LICENSE"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

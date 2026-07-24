@@ -9,6 +9,8 @@ src-tauri/icons/ios/
 src-tauri/icons/android/
 src-tauri/icons/Square*.png
 src-tauri/icons/StoreLogo.png
+src-tauri/binaries/
+.cache/
 src-tauri/icons-dev/ios/
 src-tauri/icons-dev/android/
 src-tauri/icons-dev/Square*.png

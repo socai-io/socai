@@ -20,6 +20,7 @@ import type { AgentTaskEventPayload, Status } from "../main";
 import { esc } from "../lib/html";
 import { formatStepCount, formatTaskTimestamp, formatTokenUsage, t, taskStatusLabel } from "../lib/i18n";
 import { sendShortcutLabel } from "../lib/shortcuts";
+import feishuLogo from "../assets/connectors/feishu.png";
 import { renderNoteAnswer, renderNoteCards } from "./notes";
 import type { AgentTaskView } from "./tasks";
 
@@ -198,10 +199,12 @@ function renderTurn(
   // Every agent message gets a quiet meta line; the latest answer's carries
   // the run stats too (model · duration · tokens) after its timestamp.
   let answer = "";
+  let exportText: string | null = null;
   const metaBits: string[] = [];
   if (isLast) {
     const finishedAt = task.finished_at ? formatTaskTimestamp(task.finished_at) : null;
     if (task.final_text) {
+      exportText = task.final_text;
       answer = `<div class="conv-answer result-md note-answer">${renderNoteAnswer(task.final_text)}</div>`;
       if (finishedAt) metaBits.push(finishedAt);
       if (task.model) metaBits.push(task.model);
@@ -222,10 +225,18 @@ function renderTurn(
       if (finishedAt) metaBits.push(finishedAt);
     }
   } else if (answerText != null) {
+    exportText = answerText;
     answer = `<div class="conv-answer result-md note-answer">${renderNoteAnswer(answerText)}</div>`;
     if (answerAt) metaBits.push(formatTaskTimestamp(answerAt));
   }
   const meta = renderConvMeta(metaBits);
+  const exportAction = exportText
+    ? `<div class="conv-answer-actions">
+        <button type="button" class="btn-ghost btn-compact feishu-export-action" data-feishu-export="${esc(task.task_id)}" data-feishu-turn="${index}">
+          ${feishuIcon()}<span>${esc(t("feishu.export"))}</span>
+        </button>
+      </div>`
+    : "";
 
   const userLabel = userAt ? `${t("task.you")} · ${formatTaskTimestamp(userAt)}` : t("task.you");
   const user = userText
@@ -240,9 +251,24 @@ function renderTurn(
       ${user}
       ${renderActivity(task, body, index, isLast, showWorking, isActivityOpen)}
       ${answer}
+      ${exportAction}
       ${meta}
     </div>
   `;
+}
+
+/** Exact answer represented by an answer-level export button. */
+export function answerTextForTurn(task: AgentTaskView, turnIndex: number): string | null {
+  const groups = groupRunEvents(task, finalAnswerEventIndex(task));
+  const events = groups[turnIndex];
+  if (!events) return null;
+  const isLast = turnIndex === groups.length - 1;
+  if (isLast) return task.final_text ?? null;
+  return buildTurn(events, turnIndex === 0, false, task).answerText;
+}
+
+function feishuIcon(): string {
+  return `<img class="feishu-export-action__icon" src="${esc(feishuLogo)}" alt="">`;
 }
 
 // ── agent activity — auto-compacted by default ───────────────────────

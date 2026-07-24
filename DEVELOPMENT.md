@@ -50,6 +50,26 @@ pnpm run dev:desktop:local -- --release # dev loop, but write records/artifacts 
 pnpm exec tauri build --bundles app     # → target/release/bundle/macos/socai.app
 ```
 
+Desktop builds bundle the official Feishu `lark-cli` sidecar. The Tauri
+pre-build hook runs `pnpm run prepare:lark-cli`, downloads the pinned release,
+verifies its published SHA-256, and prepares the target-triple binary under
+`app/src-tauri/binaries/` (ignored by git). macOS builds prepare arm64, x86_64,
+and universal binaries; Windows builds prepare x64.
+
+Each answer's “导出到飞书” action lets the user choose document or direct
+Markdown group export before creating anything. The sidecar keeps one named
+profile per connected account (`socai`, `socai-2`, …), so switching the browser
+account and connecting again preserves existing accounts. New profiles use
+one-click app creation with the socai name, Feishu's default avatar,
+description, and a minimal explicit permission preset, followed by user
+authorization for document
+creation, group listing, and send-as-user. App secrets and user tokens are
+stored/refreshed by the official CLI through the OS keychain; its non-secret
+profile metadata remains in `~/.lark-cli/config.json`. Later exports reuse that
+authorization. To refresh the bundled CLI version, update the version, asset
+names, and pinned checksums together in
+`app/scripts/prepare-lark-cli.mjs`.
+
 `dev:desktop:local` points `SOCAI_HOME` / `SOCAI_RUNS_DIR` at the repo's
 `.socai/` directory, so runs and the task index land alongside the checkout.
 For normal CLI usage, the equivalent persistent run-artifact setting is
