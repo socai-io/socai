@@ -20,10 +20,12 @@ const LEGACY_EVIDENCE_HEADING: &str = "# Earlier tool evidence";
 
 /// Rewrite the transcript only when it has grown beyond `compact_after` full
 /// messages. The original first message remains, the last `keep_recent`
-/// messages remain verbatim, and the older tool outputs become artifact
-/// locators. Mutating the transcript, rather than rebuilding a summary for
-/// every request, leaves the request prefix stable until the next sawtooth
-/// compaction point and therefore friendly to provider prompt caches.
+/// messages remain verbatim (widened backward when the window would open on
+/// a tool_result message, so tool_use/tool_result pairs never split), and
+/// the older tool outputs become artifact locators. Mutating the transcript,
+/// rather than rebuilding a summary for every request, leaves the request
+/// prefix stable until the next sawtooth compaction point and therefore
+/// friendly to provider prompt caches.
 pub fn compact_messages_for_context(
     messages: &mut Vec<Message>,
     compact_after: usize,
@@ -37,7 +39,18 @@ pub fn compact_messages_for_context(
         return false;
     }
 
-    let recent_start = messages.len() - keep_recent;
+    let mut recent_start = messages.len() - keep_recent;
+    // Tool results live in a user message appended immediately after the
+    // assistant message carrying the matching tool_use blocks, and providers
+    // reject a request that keeps one side of that pair without the other
+    // (OpenAI-compat: tool message without tool_calls; Anthropic: tool_result
+    // without its tool_use). A count-based boundary can land between the two —
+    // an extra lone user message (max-tokens discard note, forced-summary
+    // prompt) shifts the window onto the tool_result — so widen the window
+    // until it no longer starts mid-pair.
+    while recent_start > 1 && contains_tool_result(&messages[recent_start]) {
+        recent_start -= 1;
+    }
     let original = messages[0].clone();
     let older = &messages[1..recent_start];
     let recent = messages[recent_start..].to_vec();
@@ -51,6 +64,15 @@ pub fn compact_messages_for_context(
     compacted.extend(recent);
     *messages = compacted;
     true
+}
+
+fn contains_tool_result(message: &Message) -> bool {
+    match &message.content {
+        MessageContent::Blocks(blocks) => blocks
+            .iter()
+            .any(|block| matches!(block, Block::ToolResult { .. })),
+        MessageContent::Text(_) => false,
+    }
 }
 
 fn compact_older_messages(messages: &[Message]) -> String {
