@@ -4,7 +4,9 @@ set -eu
 repo="socai-io/socai"
 asset="socai-cli-macos-universal.tar.gz"
 checksum="${asset}.sha256"
-base_url="${SOCAI_DOWNLOAD_BASE_URL:-https://github.com/${repo}/releases/latest/download}"
+default_base_url="https://socai-download.oss-cn-beijing.aliyuncs.com/releases/latest"
+github_base_url="https://github.com/${repo}/releases/latest/download"
+base_url="${SOCAI_DOWNLOAD_BASE_URL:-$default_base_url}"
 install_dir="${SOCAI_INSTALL_DIR:-$HOME/.socai/bin}"
 
 case "$(uname -s 2>/dev/null || echo unknown)" in
@@ -39,10 +41,30 @@ archive="$tmp_dir/$asset"
 checksum_file="$tmp_dir/$checksum"
 unpack_dir="$tmp_dir/unpack"
 
-printf 'downloading socai CLI from %s\n' "$base_url"
-curl -fL "$base_url/$asset" -o "$archive"
-curl -fL "$base_url/$checksum" -o "$checksum_file"
-(cd "$tmp_dir" && shasum -a 256 -c "$checksum")
+downloaded=false
+attempted_base_url=""
+for candidate_base_url in "$base_url" "$github_base_url"; do
+  if [ "$candidate_base_url" = "$attempted_base_url" ]; then
+    continue
+  fi
+  attempted_base_url="$candidate_base_url"
+
+  printf 'downloading socai CLI from %s\n' "$candidate_base_url"
+  rm -f "$archive" "$checksum_file"
+  if curl -fL "$candidate_base_url/$asset" -o "$archive" &&
+    curl -fL "$candidate_base_url/$checksum" -o "$checksum_file" &&
+    (cd "$tmp_dir" && shasum -a 256 -c "$checksum"); then
+    base_url="$candidate_base_url"
+    downloaded=true
+    break
+  fi
+  printf 'download or checksum verification failed from %s\n' "$candidate_base_url" >&2
+done
+
+if [ "$downloaded" != "true" ]; then
+  echo "failed to download a verified socai CLI release" >&2
+  exit 1
+fi
 
 mkdir -p "$unpack_dir" "$install_dir"
 tar -xzf "$archive" -C "$unpack_dir"

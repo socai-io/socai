@@ -25,14 +25,41 @@ prepare
   └─ build-windows-cli      # Windows x86_64 CLI
 
 release                    # waits for all platform build jobs
+  ├─ stage versioned assets on Alibaba Cloud OSS
+  ├─ publish GitHub Release
+  ├─ promote OSS releases/latest
   ├─ verify-cli-installer          # macOS latest-release installer smoke
   ├─ verify-windows-cli-installer  # Windows latest-release installer smoke
-  └─ verify-desktop-updater        # desktop latest.json manifest check
+  └─ verify-desktop-updater        # OSS + GitHub latest.json checks
 ```
 
 The macOS app/DMG, macOS CLI, and Windows CLI build jobs run in parallel. The
-`release` job stays centralized so all platform artifacts are collected into one
-GitHub Release atomically.
+`release` job stays centralized so the same signed artifacts are published to
+Alibaba Cloud OSS and GitHub Releases.
+
+## Distribution hosts
+
+Alibaba Cloud OSS is the primary download host for the website, CLI installers,
+and desktop updater. GitHub Releases remains the public archive and updater
+fallback.
+
+The production repository defines these GitHub Actions variables:
+
+- `SOCAI_OSS_BUCKET`
+- `SOCAI_OSS_ENDPOINT`
+- `SOCAI_OSS_PREFIX`
+- `SOCAI_OSS_PUBLIC_BASE_URL`
+
+The release job reads `ALIYUN_ACCESS_KEY_ID` and
+`ALIYUN_ACCESS_KEY_SECRET` from GitHub Actions secrets. The RAM identity should
+be restricted to uploading objects under the configured bucket/prefix. Do not
+put credentials in the repository.
+
+The publisher first uploads immutable objects to
+`releases/vMAJOR.MINOR.PATCH/` and verifies their public URLs. After GitHub
+publishes successfully, it updates the mutable `releases/latest/` objects,
+writing `latest.json` last. Versioned objects use a one-year immutable cache;
+the latest alias uses `no-cache`.
 
 ## Versioning
 
@@ -144,15 +171,17 @@ socai-macos-universal.app.tar.gz.sig
 latest.json
 ```
 
-The release notes link to the app DMG, macOS CLI installer/archive/checksum, and
-Windows CLI installer/archive/checksum. `latest.json`,
-`socai-macos-universal.app.tar.gz`, and its `.sig` back the in-app auto-updater
-and are served via the same `releases/latest/download/...` alias.
+The release notes link to both the OSS mirror and GitHub archive. The GitHub
+`latest.json` continues to reference GitHub assets. The OSS copy is generated
+separately and references immutable OSS version URLs. This keeps the desktop
+updater's second GitHub endpoint a real fallback instead of returning a GitHub
+manifest that still depends on OSS.
 
 ## Installer smoke tests
 
-Installer smoke tests run **after** the GitHub Release is published because they
-use GitHub's real `releases/latest/download/...` URLs.
+Installer smoke tests run after both destinations publish. The scripts are
+fetched from GitHub, then download the CLI archive from OSS by default and retry
+GitHub if the OSS download or checksum verification fails.
 
 ### macOS installer verification
 
@@ -184,12 +213,12 @@ with a temporary `SOCAI_INSTALL_DIR`. It verifies:
 
 ### Desktop updater verification
 
-`verify-desktop-updater` runs on `ubuntu-latest` and fetches
-`releases/latest/download/latest.json`. It verifies:
+`verify-desktop-updater` runs on `ubuntu-latest` and fetches both the OSS and
+GitHub `latest.json` URLs. It verifies:
 
 - the manifest `version` matches the release version
 - each `darwin-*` platform has a non-empty signature
-- each platform's updater tarball URL resolves (HTTP `HEAD`)
+- each platform's updater artifact URL resolves (HTTP `HEAD`)
 
 ## Update behavior
 

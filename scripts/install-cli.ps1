@@ -3,7 +3,9 @@ $ErrorActionPreference = 'Stop'
 $Repo = 'socai-io/socai'
 $Asset = 'socai-cli-windows-x86_64.zip'
 $Checksum = "$Asset.sha256"
-$BaseUrl = if ($env:SOCAI_DOWNLOAD_BASE_URL) { $env:SOCAI_DOWNLOAD_BASE_URL } else { "https://github.com/$Repo/releases/latest/download" }
+$DefaultBaseUrl = 'https://socai-download.oss-cn-beijing.aliyuncs.com/releases/latest'
+$GitHubBaseUrl = "https://github.com/$Repo/releases/latest/download"
+$BaseUrl = if ($env:SOCAI_DOWNLOAD_BASE_URL) { $env:SOCAI_DOWNLOAD_BASE_URL } else { $DefaultBaseUrl }
 $InstallDir = if ($env:SOCAI_INSTALL_DIR) { $env:SOCAI_INSTALL_DIR } else { Join-Path $HOME '.socai\bin' }
 
 if ($env:OS -ne 'Windows_NT') {
@@ -18,14 +20,27 @@ try {
     $ChecksumPath = Join-Path $TempDir $Checksum
     $UnpackDir = Join-Path $TempDir 'unpack'
 
-    Write-Host "downloading socai CLI from $BaseUrl"
-    Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl/$Asset" -OutFile $ArchivePath
-    Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl/$Checksum" -OutFile $ChecksumPath
-
-    $ExpectedHash = ((Get-Content -Raw $ChecksumPath).Trim() -split '\s+')[0].ToLowerInvariant()
-    $ActualHash = (Get-FileHash -Algorithm SHA256 $ArchivePath).Hash.ToLowerInvariant()
-    if ($ActualHash -ne $ExpectedHash) {
-        throw "checksum mismatch for $Asset`: expected $ExpectedHash, got $ActualHash"
+    $Downloaded = $false
+    foreach ($CandidateBaseUrl in (@($BaseUrl, $GitHubBaseUrl) | Select-Object -Unique)) {
+        Write-Host "downloading socai CLI from $CandidateBaseUrl"
+        Remove-Item -Force -LiteralPath $ArchivePath, $ChecksumPath -ErrorAction SilentlyContinue
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri "$CandidateBaseUrl/$Asset" -OutFile $ArchivePath
+            Invoke-WebRequest -UseBasicParsing -Uri "$CandidateBaseUrl/$Checksum" -OutFile $ChecksumPath
+            $ExpectedHash = ((Get-Content -Raw $ChecksumPath).Trim() -split '\s+')[0].ToLowerInvariant()
+            $ActualHash = (Get-FileHash -Algorithm SHA256 $ArchivePath).Hash.ToLowerInvariant()
+            if ($ActualHash -ne $ExpectedHash) {
+                throw "checksum mismatch for $Asset`: expected $ExpectedHash, got $ActualHash"
+            }
+            $BaseUrl = $CandidateBaseUrl
+            $Downloaded = $true
+            break
+        } catch {
+            Write-Warning "download or checksum verification failed from $CandidateBaseUrl`: $_"
+        }
+    }
+    if (-not $Downloaded) {
+        throw 'failed to download a verified socai CLI release'
     }
     Write-Host "$Asset`: OK"
 

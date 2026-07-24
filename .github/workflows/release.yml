@@ -949,6 +949,11 @@ jobs:
       - build-windows-cli
       - build-windows-app
     runs-on: ubuntu-latest
+    env:
+      SOCAI_OSS_BUCKET: ${{ vars.SOCAI_OSS_BUCKET }}
+      SOCAI_OSS_ENDPOINT: ${{ vars.SOCAI_OSS_ENDPOINT }}
+      SOCAI_OSS_PREFIX: ${{ vars.SOCAI_OSS_PREFIX }}
+      SOCAI_OSS_PUBLIC_BASE_URL: ${{ vars.SOCAI_OSS_PUBLIC_BASE_URL }}
 
     steps:
       - name: checkout main
@@ -1002,6 +1007,24 @@ jobs:
 
           echo "merged latest.json:"
           cat "${manifest}"
+
+      - name: install OSS release publisher dependencies
+        run: python3 -m pip install --disable-pip-version-check --quiet oss2==2.19.1
+
+      - name: stage versioned release on Alibaba Cloud OSS
+        env:
+          ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/publish-oss-release.py stage \
+            --source-dir dist-artifacts \
+            --bucket "${SOCAI_OSS_BUCKET}" \
+            --endpoint "${SOCAI_OSS_ENDPOINT}" \
+            --tag "${TAG}" \
+            --prefix "${SOCAI_OSS_PREFIX}" \
+            --public-base-url "${SOCAI_OSS_PUBLIC_BASE_URL}"
 
       - name: publish release
         shell: bash
@@ -1084,6 +1107,15 @@ jobs:
           cat > release-notes.md <<EOF
           ## downloads
 
+          China mirror:
+
+          - [universal mac dmg](${SOCAI_OSS_PUBLIC_BASE_URL}/${TAG}/socai-macos-universal.dmg)
+          - [windows app installer (.exe)](${SOCAI_OSS_PUBLIC_BASE_URL}/${TAG}/socai-windows-x86_64-setup.exe)
+          - [macOS CLI installer](${SOCAI_OSS_PUBLIC_BASE_URL}/${TAG}/install.sh)
+          - [Windows CLI installer](${SOCAI_OSS_PUBLIC_BASE_URL}/${TAG}/install.ps1)
+
+          GitHub archive:
+
           - [universal mac dmg](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-macos-universal.dmg) — supports Apple Silicon and Intel Macs.
           - [windows app installer (.exe)](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-windows-x86_64-setup.exe) — desktop app for Windows 10/11 (x64).
           - [macOS CLI installer](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install.sh) — one-command macOS CLI install.
@@ -1119,6 +1151,21 @@ jobs:
 
           trap - ERR
           cat release-notes.md
+
+      - name: promote OSS latest release
+        env:
+          ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/publish-oss-release.py promote \
+            --source-dir dist-artifacts \
+            --bucket "${SOCAI_OSS_BUCKET}" \
+            --endpoint "${SOCAI_OSS_ENDPOINT}" \
+            --tag "${TAG}" \
+            --prefix "${SOCAI_OSS_PREFIX}" \
+            --public-base-url "${SOCAI_OSS_PUBLIC_BASE_URL}"
 
   verify-cli-installer:
     name: verify latest CLI installer
@@ -1294,41 +1341,42 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          OSS_MANIFEST_URL: ${{ vars.SOCAI_OSS_PUBLIC_BASE_URL }}/latest/latest.json
         run: |
           set -euo pipefail
 
-          manifest_url="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.json"
-
-          manifest=""
-          for attempt in {1..12}; do
-            echo "fetch attempt ${attempt}: ${manifest_url}"
-            if manifest="$(curl -fsSL "${manifest_url}")"; then
-              break
-            fi
+          github_manifest_url="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.json"
+          for manifest_url in "${OSS_MANIFEST_URL}" "${github_manifest_url}"; do
             manifest=""
-            sleep 10
-          done
+            for attempt in {1..12}; do
+              echo "fetch attempt ${attempt}: ${manifest_url}"
+              if manifest="$(curl -fsSL -H 'Cache-Control: no-cache' "${manifest_url}")"; then
+                break
+              fi
+              manifest=""
+              sleep 10
+            done
 
-          if [ -z "${manifest}" ]; then
-            echo "failed to fetch latest.json from latest release" >&2
-            exit 1
-          fi
-
-          echo "${manifest}"
-
-          manifest_version="$(printf '%s' "${manifest}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
-          if [ "${manifest_version}" != "${VERSION}" ]; then
-            echo "latest.json version ${manifest_version} does not match release ${VERSION}" >&2
-            exit 1
-          fi
-
-          for arch in darwin-aarch64 darwin-x86_64 windows-x86_64; do
-            asset_url="$(printf '%s' "${manifest}" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['${arch}']['url'])")"
-            signature="$(printf '%s' "${manifest}" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['${arch}']['signature'])")"
-            if [ -z "${signature}" ]; then
-              echo "latest.json ${arch} signature is empty" >&2
+            if [ -z "${manifest}" ]; then
+              echo "failed to fetch updater manifest ${manifest_url}" >&2
               exit 1
             fi
-            echo "checking ${arch} updater asset: ${asset_url}"
-            curl -fsSL -I "${asset_url}" > /dev/null
+
+            echo "${manifest}"
+            manifest_version="$(printf '%s' "${manifest}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+            if [ "${manifest_version}" != "${VERSION}" ]; then
+              echo "latest.json version ${manifest_version} does not match release ${VERSION}" >&2
+              exit 1
+            fi
+
+            for arch in darwin-aarch64 darwin-x86_64 windows-x86_64; do
+              asset_url="$(printf '%s' "${manifest}" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['${arch}']['url'])")"
+              signature="$(printf '%s' "${manifest}" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['${arch}']['signature'])")"
+              if [ -z "${signature}" ]; then
+                echo "latest.json ${arch} signature is empty" >&2
+                exit 1
+              fi
+              echo "checking ${arch} updater asset: ${asset_url}"
+              curl -fsSL -I "${asset_url}" > /dev/null
+            done
           done
