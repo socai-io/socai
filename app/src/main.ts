@@ -305,12 +305,12 @@ function bindConnectionStatusBar(): void {
 // In-app updater (macOS). Updates download + install in the background; while
 // the download runs the chip shows a passive `downloading update…` state (so
 // the user knows a new version exists). Once staged, the app relaunches
-// automatically when no task is queued or running; while a task is active the
-// clickable `restart to finish` chip remains available as an explicit escape
-// hatch. Checks fire on launch, when the window returns to the foreground, and
-// when a task finishes — throttled, and skipped while an update is already
-// downloading or staged. The updater plugin is configured in tauri.conf.json;
-// check() is gated off in dev because it only installs in bundled builds.
+// automatically when no task is queued or running and socai is not focused;
+// while focused, the clickable `restart to finish` chip remains available.
+// Checks fire on launch, when the window returns to the foreground, and when a
+// task finishes — throttled, and skipped while an update is already downloading
+// or staged. The updater plugin is configured in tauri.conf.json; check() is
+// gated off in dev because it only installs in bundled builds.
 // ---------------------------------------------------------------------------
 
 type UpdatePhase = "idle" | "downloading" | "ready";
@@ -332,6 +332,9 @@ const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 let restartWarn = false;
 // Guard manual and automatic paths from racing to relaunch more than once.
 let updateRelaunchStarted = false;
+// Auto-relaunch only while another app has focus so returning to socai never
+// looks like an unexpected crash. Manual restart remains available while focused.
+let appWindowFocused = document.hasFocus();
 
 // `downloading` renders a passive announcement, `ready` the restart action;
 // errors reset to idle and retry quietly on the next check.
@@ -417,18 +420,18 @@ function doRelaunch(): void {
   });
 }
 
-// Once the update is staged, take the same path as clicking the update chip as
-// soon as no task is queued or running. If a task is active, its terminal event
-// calls this again after the task snapshot has been updated.
+// Once the update is staged, take the same path as clicking the update chip when
+// no task is queued or running and the user is in another app. Task completion
+// and window blur both call this again when their respective gate changes.
 function maybeRelaunchReadyUpdate(): void {
-  if (updateState.phase !== "ready" || agentPanel.hasActiveTask()) return;
+  if (updateState.phase !== "ready" || agentPanel.hasActiveTask() || appWindowFocused) return;
   doRelaunch();
 }
 
 // Download + install the update in the background. The chip announces the
-// download as soon as it starts; once staged, relaunch immediately if idle or
-// wait for the active task to finish. A failure resets to idle so the next
-// trigger retries.
+// download as soon as it starts; once staged, relaunch while idle and unfocused,
+// or wait for the active task to finish / user to switch away. A failure resets
+// to idle so the next trigger retries.
 async function startBackgroundUpgrade(): Promise<void> {
   if (!updateHandle) return;
   updateState = { ...updateState, phase: "downloading" };
@@ -607,7 +610,14 @@ async function main(): Promise<void> {
     // Foreground is the primary update-check trigger; the check throttles itself.
     void maybeCheckForUpdate();
   };
-  window.addEventListener("focus", refresh);
+  window.addEventListener("focus", () => {
+    appWindowFocused = true;
+    refresh();
+  });
+  window.addEventListener("blur", () => {
+    appWindowFocused = false;
+    maybeRelaunchReadyUpdate();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") refresh();
   });
