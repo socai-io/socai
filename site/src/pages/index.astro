@@ -234,7 +234,11 @@ const socialImageAlt = message("meta.socialImageAlt");
                         aria-label={message("hero.actionsAria")}
                         data-i18n-aria-label="hero.actionsAria"
                     >
-                        <a class="button button--primary" href={downloadPath}>
+                        <a
+                            class="button button--primary"
+                            href={downloadPath}
+                            data-download-platform="macos"
+                        >
                             <span data-i18n="hero.download"
                                 >{message("hero.download")}</span
                             >
@@ -245,6 +249,7 @@ const socialImageAlt = message("meta.socialImageAlt");
                         <a
                             class="button button--primary"
                             href={downloadWindowsPath}
+                            data-download-platform="windows"
                         >
                             <span data-i18n="hero.downloadWindows"
                                 >{message("hero.downloadWindows")}</span

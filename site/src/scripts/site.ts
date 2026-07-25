@@ -4,6 +4,8 @@
 // clipboard copy buttons, and the hero typewriter. Each feature no-ops when its
 // markup is absent, so one script serves the home, connect, and contact pages.
 
+import { track } from "@vercel/analytics";
+
 const i18nElement = document.getElementById("site-i18n");
 const dictionary = JSON.parse(i18nElement?.textContent || "{}");
 const languageKey = "socai-language";
@@ -192,6 +194,16 @@ const applyLanguage = (language, shouldPersist = false) => {
 languageOptions.forEach((option) => {
     option.addEventListener("click", () => {
         applyLanguage(option.getAttribute("data-lang-option") || "zh", true);
+    });
+});
+
+document.querySelectorAll("[data-download-platform]").forEach((link) => {
+    link.addEventListener("click", () => {
+        track("download_click", {
+            platform:
+                link.getAttribute("data-download-platform") || "unknown",
+            language: document.documentElement.dataset.language || "zh",
+        });
     });
 });
 

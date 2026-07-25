@@ -55,6 +55,24 @@ The release job reads `ALIYUN_ACCESS_KEY_ID` and
 be restricted to uploading objects under the configured bucket/prefix. Do not
 put credentials in the repository.
 
+### Local Alibaba Cloud credentials
+
+The operator machine keeps local credentials under
+`~/.config/socai/aliyun/`. The CSV contents are local secrets and must never be
+committed, pasted into logs, or included in a PR:
+
+- `oss-release-publisher.csv` is RAM user `socai-oss`. Use it for release-object
+  publishing and OSS inspection. It is the local counterpart of the two
+  `ALIYUN_ACCESS_KEY_*` GitHub Actions secrets and does not have SLS query
+  access.
+- `sls-operator.csv` is RAM user `cym`. Reserve it for read-only OSS/SLS
+  diagnostics, including download-log queries; do not use it as a CI publisher
+  credential.
+
+The local directory must be mode `0700` and both credential files mode `0600`.
+The local `README.md` in that directory records the current service endpoints
+and verified permission boundary without storing either key value in docs.
+
 The publisher first uploads immutable objects to
 `releases/vMAJOR.MINOR.PATCH/` and verifies their public URLs. After GitHub
 publishes successfully, it updates the mutable `releases/latest/` objects,
