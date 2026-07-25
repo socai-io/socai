@@ -9,8 +9,8 @@ use std::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use flate2::{write::GzEncoder, Compression};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tauri::{AppHandle, Emitter, State};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
@@ -18,6 +18,7 @@ use tokio::time::{Duration, Instant};
 use crate::{
     commands,
     tasks::{AgentTaskRegistry, AgentTaskSnapshot},
+    telemetry::{short_error, DesktopTelemetry},
 };
 
 const DEFAULT_PROFILE: &str = "socai";
@@ -267,8 +268,30 @@ pub async fn feishu_export_task(
     profile: String,
     content: String,
 ) -> Result<FeishuDocument, String> {
-    require_connected(&app, &profile).await?;
-    wait_for_scopes(&app, &profile, DOCUMENT_SCOPES, "创建飞书文档").await?;
+    let started_at = Instant::now();
+    let telemetry_task_id = task_id.clone();
+    let run_id = tasks.get(&task_id).await.and_then(|task| task.run_id);
+    let result = export_task(&app, &tasks, task_id, profile, content).await;
+    capture_export_result(
+        app.state::<DesktopTelemetry>().inner(),
+        &telemetry_task_id,
+        run_id.as_deref(),
+        "document",
+        started_at,
+        &result,
+    );
+    result
+}
+
+async fn export_task(
+    app: &AppHandle,
+    tasks: &AgentTaskRegistry,
+    task_id: String,
+    profile: String,
+    content: String,
+) -> Result<FeishuDocument, String> {
+    require_connected(app, &profile).await?;
+    wait_for_scopes(app, &profile, DOCUMENT_SCOPES, "创建飞书文档").await?;
     let task = tasks
         .get(&task_id)
         .await
@@ -290,7 +313,7 @@ pub async fn feishu_export_task(
 
     let title = compact_title(&task.task);
     let output_result = run_cli(
-        &app,
+        app,
         vec![
             "--profile".into(),
             profile,
@@ -402,8 +425,32 @@ pub async fn feishu_send_task_to_chat(
     content: String,
     chat_id: String,
 ) -> Result<FeishuMessage, String> {
-    require_connected(&app, &profile).await?;
-    ensure_send_scopes(&app, &state, &profile).await?;
+    let started_at = Instant::now();
+    let telemetry_task_id = task_id.clone();
+    let run_id = tasks.get(&task_id).await.and_then(|task| task.run_id);
+    let result = send_task_to_chat(&app, &state, &tasks, task_id, profile, content, chat_id).await;
+    capture_export_result(
+        app.state::<DesktopTelemetry>().inner(),
+        &telemetry_task_id,
+        run_id.as_deref(),
+        "chat",
+        started_at,
+        &result,
+    );
+    result
+}
+
+async fn send_task_to_chat(
+    app: &AppHandle,
+    state: &State<'_, FeishuState>,
+    tasks: &AgentTaskRegistry,
+    task_id: String,
+    profile: String,
+    content: String,
+    chat_id: String,
+) -> Result<FeishuMessage, String> {
+    require_connected(app, &profile).await?;
+    ensure_send_scopes(app, state, &profile).await?;
     if !chat_id.starts_with("oc_") {
         return Err("无效的飞书群聊 ID".into());
     }
@@ -417,7 +464,7 @@ pub async fn feishu_send_task_to_chat(
     let content = hydrate_note_links(&task, &content);
     let markdown = format!("**{}**\n\n{}", compact_title(&task.task), content.trim());
     let output = run_cli(
-        &app,
+        app,
         vec![
             "--profile".into(),
             profile,
@@ -454,6 +501,31 @@ pub async fn feishu_send_task_to_chat(
         message_id,
         chat_id: returned_chat,
     })
+}
+
+fn capture_export_result<T>(
+    telemetry: &DesktopTelemetry,
+    task_id: &str,
+    run_id: Option<&str>,
+    destination: &str,
+    started_at: Instant,
+    result: &Result<T, String>,
+) {
+    let (outcome, error) = match result {
+        Ok(_) => ("completed", None),
+        Err(error) => ("failed", Some(short_error(error))),
+    };
+    telemetry.capture(
+        "socai_feishu_export",
+        json!({
+            "task_id": task_id,
+            "run_id": run_id,
+            "destination": destination,
+            "outcome": outcome,
+            "duration_ms": u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "error": error,
+        }),
+    );
 }
 
 async fn require_connected(app: &AppHandle, profile: &str) -> Result<(), String> {
