@@ -14,6 +14,7 @@ import type {
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
 import { isSendShortcut } from "../lib/shortcuts";
+import { settingsMenu } from "./settings";
 import { renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup } from "./task_history";
 import {
   noteRefsFromEvent,
@@ -709,6 +710,7 @@ export namespace agentPanel {
       status: shell.status,
       modelReady: !!selected && selected.has_key,
       running: false,
+      remoteProfile: settingsMenu.isRemoteProfile(),
     };
   }
 
@@ -721,6 +723,7 @@ export namespace agentPanel {
       status: shell.status,
       modelReady: true,
       running,
+      remoteProfile: settingsMenu.isRemoteProfile(),
     };
   }
 
@@ -900,10 +903,12 @@ export namespace agentPanel {
     const value = task ? replyDraft : draft;
     const submitting = task ? submittingReply : submittingTask;
     const running = !!task && (task.status === "running" || task.status === "queued");
-    const connected = shell.status.state === "connected";
+    // Remote profiles submit while disconnected; the run reconnects on demand.
+    const needsConnection =
+      shell.status.state !== "connected" && !settingsMenu.isRemoteProfile();
     const selected = selectedModel();
     const modelReady = task ? true : !!selected && selected.has_key;
-    button.disabled = submitting || running || !value.trim() || !connected || !modelReady;
+    button.disabled = submitting || running || !value.trim() || needsConnection || !modelReady;
   }
 
   // Grows the composer textarea with its content instead of leaving multi-line

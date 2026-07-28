@@ -85,6 +85,13 @@ export namespace settingsMenu {
     }
   }
 
+  /// Whether the configured browser source is socai's remote hosted browser.
+  /// The composer consults this: remote sessions are minted on demand at run
+  /// start, so a disconnected status is routine there, not a setup problem.
+  export function isRemoteProfile(): boolean {
+    return (draft?.chrome_source ?? config?.chrome_source) === "remote";
+  }
+
   export function isOpen(): boolean {
     return open;
   }

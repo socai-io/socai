@@ -34,6 +34,12 @@ export interface ComposerProps {
   modelReady: boolean;
   /** True while the shown task runs — the composer waits for the slot. */
   running: boolean;
+  /**
+   * Configured browser source is the remote hosted browser. Disconnected is
+   * routine there (hosted sessions expire between runs) and submitting a run
+   * reconnects on demand, so the connect overlay and send gating don't apply.
+   */
+  remoteProfile: boolean;
 }
 
 export interface ConversationProps {
@@ -65,7 +71,7 @@ export function renderConversation(props: ConversationProps): string {
 // A centered hero + the same chat composer. When chrome isn't connected the
 // form is masked behind the connect overlay.
 export function renderComposePane(composer: ComposerProps): string {
-  const gated = composer.status.state !== "connected";
+  const gated = !composer.remoteProfile && composer.status.state !== "connected";
   return `
     <div class="compose-pane">
       <div class="new-task-compose">
@@ -427,7 +433,10 @@ function renderComposer(c: ComposerProps): string {
   const connected = c.status.state === "connected";
   const connecting = c.status.state === "connecting";
   const disabled = c.submitting || c.running;
-  const sendDisabled = disabled || !c.value.trim() || !connected || !c.modelReady;
+  // A remote profile submits while disconnected: the run reconnects (minting
+  // a fresh hosted session) on demand.
+  const needsConnection = !connected && !c.remoteProfile;
+  const sendDisabled = disabled || !c.value.trim() || needsConnection || !c.modelReady;
   const placeholder = c.running
     ? t("task.working")
     : c.mode === "new"
@@ -438,7 +447,9 @@ function renderComposer(c: ComposerProps): string {
     : `<svg class="composer__send-glyph" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 7 16 13 8 13"></polyline><polyline points="11 10 8 13 11 16"></polyline></svg>`;
   const connectHint = connected
     ? ""
-    : `
+    : c.remoteProfile
+      ? `<p class="composer__hint">${esc(t("chrome.remoteAutoReconnect"))}</p>`
+      : `
       <p class="composer__hint">
         ${esc(t(c.mode === "new" ? "chrome.connectToStart" : "task.replyConnectHint"))}
         <button id="composer-connect" type="button" class="btn-ghost btn-compact" ${connecting ? "disabled" : ""}>

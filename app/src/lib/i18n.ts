@@ -54,6 +54,10 @@ const messages = {
   },
   "chrome.connectCta": { en: "connect chrome →", zh: "连接 chrome →" },
   "chrome.connectingCta": { en: "connecting…", zh: "连接中…" },
+  "chrome.remoteAutoReconnect": {
+    en: "hosted browser not connected — it reconnects when you send.",
+    zh: "云端浏览器未连接 — 发送时会自动重连。",
+  },
   "chrome.remoteDebuggingHelp": {
     en: "how do i enable remote debugging? ↗",
     zh: "如何启用远程调试？↗",
