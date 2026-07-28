@@ -149,6 +149,9 @@ export function bindFeishuConnector(
     phase = "confirm_disconnect";
     shell.rerender();
   });
+  document.querySelector<HTMLButtonElement>("[data-feishu-reconnect]")?.addEventListener("click", () => {
+    void reconnectAccount(shell);
+  });
   document.querySelector<HTMLButtonElement>("[data-feishu-disconnect-cancel]")?.addEventListener("click", () => {
     phase = phaseBeforeDisconnect;
     shell.rerender();
@@ -235,11 +238,11 @@ function renderAccountPicker(): string {
           ${options || `<option value="" selected disabled>${esc(t("feishu.noAccount"))}</option>`}
           <option value="${CONNECT_ACCOUNT_VALUE}">${esc(t("feishu.connectCurrentAccount"))}</option>
         </select>
-        ${
-          selected
+        ${selected
+          ? selected.connected
             ? `<button type="button" class="btn-ghost btn-compact" data-feishu-disconnect>${esc(t("feishu.disconnect"))}</button>`
-            : ""
-        }
+            : `<button type="button" class="btn-ghost btn-compact" data-feishu-reconnect>${esc(t("feishu.reconnect"))}</button>`
+          : ""}
       </div>
     </div>
   `;
@@ -425,6 +428,38 @@ async function connectNewAccount(shell: ShellState): Promise<void> {
   }
 }
 
+async function reconnectAccount(shell: ShellState): Promise<void> {
+  if (!selectedProfile) return;
+  const currentOperation = ++operation;
+  phase = "connecting";
+  connectMessage = t("feishu.authorizing");
+  errorMessage = "";
+  shell.rerender();
+  try {
+    const status = await invoke<FeishuStatus>("feishu_connect", {
+      profile: selectedProfile,
+      newAccount: false,
+    });
+    if (currentOperation !== operation) return;
+    selectedProfile = status.profile;
+    localStorage.setItem(PROFILE_STORAGE_KEY, selectedProfile);
+    accounts = await invoke<FeishuAccount[]>("feishu_accounts");
+    if (currentOperation !== operation) return;
+    destination = null;
+    documentResult = null;
+    chats = [];
+    phase = "choose";
+    shell.rerender();
+    await refreshChats(shell, currentOperation);
+  } catch (error) {
+    if (currentOperation !== operation) return;
+    errorMessage = `${error}`;
+    phase = "error";
+  } finally {
+    if (currentOperation === operation) shell.rerender();
+  }
+}
+
 async function disconnectAccount(shell: ShellState): Promise<void> {
   if (!selectedProfile) return;
   const currentOperation = ++operation;
@@ -460,6 +495,7 @@ async function disconnectAccount(shell: ShellState): Promise<void> {
 
 async function ensureConnected(currentOperation: number): Promise<string> {
   let profile = selectedProfile;
+  let reconnected = false;
   if (profile) {
     const status = await invoke<FeishuStatus>("feishu_status", { profile });
     if (currentOperation !== operation) throw new Error("cancelled");
@@ -469,6 +505,7 @@ async function ensureConnected(currentOperation: number): Promise<string> {
         newAccount: false,
       });
       profile = connected.profile;
+      reconnected = true;
     }
   } else {
     const connected = await invoke<FeishuStatus>("feishu_connect", {
@@ -476,10 +513,15 @@ async function ensureConnected(currentOperation: number): Promise<string> {
       newAccount: true,
     });
     profile = connected.profile;
+    reconnected = true;
   }
   if (currentOperation !== operation) throw new Error("cancelled");
   selectedProfile = profile;
   localStorage.setItem(PROFILE_STORAGE_KEY, profile);
+  if (reconnected) {
+    accounts = await invoke<FeishuAccount[]>("feishu_accounts");
+    if (currentOperation !== operation) throw new Error("cancelled");
+  }
   return profile;
 }
 

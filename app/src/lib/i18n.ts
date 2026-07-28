@@ -228,6 +228,7 @@ const messages = {
   "feishu.sent": { en: "sent to group", zh: "已发送到群" },
   "feishu.disconnected": { en: "disconnected", zh: "已断开" },
   "feishu.disconnect": { en: "disconnect", zh: "断开" },
+  "feishu.reconnect": { en: "reconnect", zh: "重新连接" },
   "feishu.disconnecting": { en: "disconnecting…", zh: "正在断开账户…" },
   "feishu.disconnectConfirm": {
     en: "Disconnect “{name}”? This removes the local login but does not delete the Feishu app.",

@@ -626,7 +626,14 @@ async fn list_accounts(app: &AppHandle) -> Result<Vec<FeishuAccount>, String> {
                 .and_then(Value::as_str)
                 .filter(|name| !name.trim().is_empty())
                 .map(str::to_string);
-            let connected = item.get("tokenStatus").and_then(Value::as_str) == Some("valid");
+            // lark-cli reports `needs_refresh` when the short-lived access
+            // token is due for refresh but the refresh token is still usable.
+            // The next user API call refreshes it automatically, so this is
+            // still a connected account rather than a reason to re-authorize.
+            let connected = matches!(
+                item.get("tokenStatus").and_then(Value::as_str),
+                Some("valid" | "needs_refresh")
+            );
             let active = item.get("active").and_then(Value::as_bool).unwrap_or(false);
             Some(FeishuAccount {
                 profile,
