@@ -205,26 +205,21 @@ impl From<&CdpState> for StatusPayload {
                 targets,
                 owner,
                 ..
-            } => {
-                let remote = matches!(owner, BrowserOwner::Remote(_));
-                Self::Connected {
-                    // A hosted connect URL is a browser-control credential and
-                    // this payload crosses the Tauri IPC boundary on every
-                    // status change, so remote endpoints are redacted at the
-                    // source rather than merely hidden by the UI.
-                    endpoint: if remote {
-                        crate::cdp::endpoint::redact_remote_ws_url(&endpoint.browser_ws_url)
-                    } else {
-                        endpoint.browser_ws_url.clone()
-                    },
-                    browser_version: browser_version.clone(),
-                    page_count: targets.values().filter(|t| t.r#type == "page").count(),
-                    source: endpoint.source.clone(),
-                    managed: endpoint.managed,
-                    remote,
-                    user_data_dir: endpoint.user_data_dir.clone(),
-                }
-            }
+            } => Self::Connected {
+                // This payload crosses the Tauri IPC boundary on every status
+                // change, so a credential-bearing endpoint is redacted at the
+                // source rather than merely hidden by the UI. `display_ws_url`
+                // covers both minted sessions and credential-shaped overrides.
+                endpoint: endpoint.display_ws_url(),
+                browser_version: browser_version.clone(),
+                page_count: targets.values().filter(|t| t.r#type == "page").count(),
+                source: endpoint.source.clone(),
+                managed: endpoint.managed,
+                // Ownership, not URL shape: `remote` drives teardown/release
+                // and profile matching, so it means "socai minted this".
+                remote: matches!(owner, BrowserOwner::Remote(_)),
+                user_data_dir: endpoint.user_data_dir.clone(),
+            },
         }
     }
 }

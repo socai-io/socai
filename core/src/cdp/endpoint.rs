@@ -201,13 +201,46 @@ pub fn managed_chrome_user_data_dir() -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(".socai/chrome-profile"))
 }
 
-/// Strip the credential-bearing parts of a hosted browser's connect URL,
-/// leaving only scheme + host. A remote `connect_url` is a live
-/// browser-control credential (the session token rides in it), so it must be
-/// redacted before reaching logs, status payloads, or error strings. Local
-/// endpoints are not passed through this — a `ws://127.0.0.1` devtools URL is
-/// useful in bug reports and reachable only from this machine.
-pub(crate) fn redact_remote_ws_url(url: &str) -> String {
+/// `Endpoint::source` for a hosted session socai minted via socai-server.
+pub(crate) const REMOTE_SOURCE: &str = "remote";
+
+impl Endpoint {
+    /// True when socai minted this endpoint as a hosted browser session.
+    pub(crate) fn is_remote_session(&self) -> bool {
+        self.source == REMOTE_SOURCE
+    }
+
+    /// The websocket URL in the form it is safe to display, log, or ship over
+    /// IPC. A hosted connect URL is a live browser-control credential (the
+    /// session token rides in it), so both minted sessions and any
+    /// credential-shaped override are reduced to scheme + host. Loopback
+    /// devtools URLs hold no secret and pass through unchanged — they are
+    /// useful in bug reports and reachable only from this machine.
+    pub(crate) fn display_ws_url(&self) -> String {
+        if self.is_remote_session() || url_carries_credential(&self.browser_ws_url) {
+            redact_ws_url(&self.browser_ws_url)
+        } else {
+            self.browser_ws_url.clone()
+        }
+    }
+}
+
+/// Whether a URL has somewhere a secret could be hiding. A query string is
+/// how hosted CDP endpoints carry their session token, and userinfo
+/// (`user:pass@host`) is a credential by definition. This catches a
+/// `SOCAI_CDP_WS` override pointing at a hosted browser, which socai does not
+/// own and therefore cannot recognize by ownership.
+fn url_carries_credential(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let before_fragment = rest.split('#').next().unwrap_or(rest);
+    before_fragment.contains('?')
+        || before_fragment
+            .split('/')
+            .next()
+            .is_some_and(|authority| authority.contains('@'))
+}
+
+fn redact_ws_url(url: &str) -> String {
     let (scheme, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (scheme, rest),
         None => return "<redacted>".into(),

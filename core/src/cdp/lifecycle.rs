@@ -111,7 +111,7 @@ async fn try_connect_once(cdp: &Cdp, options: Option<ChromeConnectOptions>) -> a
 
     let inventory = connect_inventory(&endpoint)
         .await
-        .map_err(|err| redact_endpoint_in_error(&endpoint, &owner, err))?;
+        .map_err(|err| redact_endpoint_in_error(&endpoint, err))?;
     let monitor_task = spawn_target_poll_loop(cdp.clone(), inventory.browser_client.clone());
 
     {
@@ -157,6 +157,12 @@ async fn open_endpoint(options: Option<ChromeConnectOptions>) -> anyhow::Result<
 
     if !matches!(options.profile, ChromeProfile::Managed) {
         if let Some(endpoint) = endpoint::resolve_explicit_endpoint(None, None).await? {
+            // An explicit override may well point at a hosted browser, but
+            // socai neither minted nor owns it: no release on drop, and it is
+            // not tagged `remote` (the user set that endpoint up and can reach
+            // its own live view, so the normal login protocol applies).
+            // Credential redaction is keyed on URL shape, so it still covers
+            // this case — see `Endpoint::display_ws_url`.
             return Ok(OpenEndpoint {
                 endpoint,
                 owner: BrowserOwner::None,
@@ -196,7 +202,7 @@ async fn open_remote_endpoint() -> anyhow::Result<OpenEndpoint> {
     let session = crate::cloud::create_browser_session().await?;
     Ok(OpenEndpoint {
         endpoint: Endpoint {
-            source: "remote".into(),
+            source: endpoint::REMOTE_SOURCE.into(),
             browser_ws_url: session.connect_url,
             http_version_url: None,
             version: None,
@@ -209,22 +215,18 @@ async fn open_remote_endpoint() -> anyhow::Result<OpenEndpoint> {
     })
 }
 
-/// Rewrite a hosted browser's connect URL out of a connect failure. The
+/// Rewrite a credential-bearing connect URL out of a connect failure. The
 /// websocket layer puts the URL it dialed into its error context, and
 /// `run_connect` sends that text to both tracing and the `Disconnected`
-/// reason — for a remote session that URL is a live browser-control
+/// reason — for a hosted endpoint that URL is a live browser-control
 /// credential. The chain is flattened so the sanitized text survives the
 /// outermost-message-only handling downstream.
-fn redact_endpoint_in_error(
-    endpoint: &Endpoint,
-    owner: &BrowserOwner,
-    err: anyhow::Error,
-) -> anyhow::Error {
-    if !matches!(owner, BrowserOwner::Remote(_)) {
+fn redact_endpoint_in_error(endpoint: &Endpoint, err: anyhow::Error) -> anyhow::Error {
+    let display = endpoint.display_ws_url();
+    if display == endpoint.browser_ws_url {
         return err;
     }
-    let redacted = endpoint::redact_remote_ws_url(&endpoint.browser_ws_url);
-    anyhow::anyhow!(format!("{err:#}").replace(&endpoint.browser_ws_url, &redacted))
+    anyhow::anyhow!(format!("{err:#}").replace(&endpoint.browser_ws_url, &display))
 }
 
 async fn open_existing_endpoint() -> anyhow::Result<OpenEndpoint> {

@@ -226,6 +226,17 @@ pub struct BrowserSessionInfo {
     pub connect_url: String,
 }
 
+/// Browser-session requests get tighter budgets than the shared client's 120s
+/// cap. The CDP connect waiter gives up after 90s
+/// (`runtime::engine::CONNECT_TIMEOUT`) and the connect loop makes up to three
+/// attempts, so a stalled mint must fail fast enough that every attempt fits
+/// inside that window — otherwise the caller reports a timeout while detached
+/// attempts keep minting sessions nobody connects to.
+const BROWSER_SESSION_CREATE_TIMEOUT: Duration = Duration::from_secs(25);
+/// Release is best-effort and runs detached from a drop; the server-side
+/// session timeout is the backstop, so it should never linger.
+const BROWSER_SESSION_RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Mint a remote hosted browser session via socai-server. The server holds
 /// all Browserbase credentials and authorizes the device token; the returned
 /// connect URL carries only a session-scoped token.
@@ -240,7 +251,9 @@ pub async fn create_browser_session() -> Result<BrowserSessionInfo> {
     })?;
     let client = http_client()?;
     let response = bearer(
-        client.post(format!("{base_url}/v1/browser/sessions")),
+        client
+            .post(format!("{base_url}/v1/browser/sessions"))
+            .timeout(BROWSER_SESSION_CREATE_TIMEOUT),
         &creds.device_token,
     )
     .send()
@@ -268,9 +281,11 @@ pub async fn release_browser_session(session_id: &str) -> Result<()> {
     let creds = load_credentials().ok_or_else(|| anyhow::anyhow!("socai pro is not activated"))?;
     let client = http_client()?;
     bearer(
-        client.post(format!(
-            "{base_url}/v1/browser/sessions/{session_id}/release"
-        )),
+        client
+            .post(format!(
+                "{base_url}/v1/browser/sessions/{session_id}/release"
+            ))
+            .timeout(BROWSER_SESSION_RELEASE_TIMEOUT),
         &creds.device_token,
     )
     .send()
