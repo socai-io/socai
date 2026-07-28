@@ -11,8 +11,8 @@ use socai_core::agent::{
 };
 use socai_core::runtime::{
     create_llm_provider_for, ensure_llm_provider_configured_for,
-    run_agent_task as run_agent_with_tools, AgentRunConfig, BrowserStatus, RuntimePageSession,
-    SocaiRuntime,
+    run_agent_task as run_agent_with_tools, wait_browser_connected, AgentRunConfig, BrowserStatus,
+    RuntimePageSession, SocaiRuntime,
 };
 use socai_core::sites::xhs::XhsHistoryStore;
 use socai_core::sites::{find_site, SiteSpec};
@@ -102,11 +102,16 @@ pub async fn app_relaunch(app: AppHandle) {
     tauri::process::restart(&app.env());
 }
 
-async fn require_connected(runtime: &SocaiRuntime) -> Result<(), String> {
-    match runtime.browser_status().await {
-        BrowserStatus::Connected { .. } => Ok(()),
-        _ => Err("chrome not connected — click connect first".into()),
-    }
+/// Ensure the browser is connected before an agent run, connecting when it is
+/// not. Starting a run expresses the user's intent to resume, so a dropped
+/// connection reconnects here instead of bouncing them to the connect button.
+/// Routine for remote profiles — hosted sessions expire on a server-side
+/// timeout between runs, and reconnecting mints a fresh one — and it also
+/// revives a killed managed chrome. Bounded by the runtime's connect budget.
+async fn ensure_browser_connected(runtime: &SocaiRuntime) -> Result<(), String> {
+    wait_browser_connected(runtime)
+        .await
+        .map_err(|err| format!("{err:#}"))
 }
 
 async fn label_controlled_page(page: &RuntimePageSession, label: &str) {
@@ -424,7 +429,7 @@ pub async fn agent_task_start(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<AgentTaskSnapshot, String> {
-    require_connected(&runtime).await?;
+    ensure_browser_connected(&runtime).await?;
     let task_text = task.trim().to_string();
     if task_text.is_empty() {
         return Err("task is empty".into());
@@ -508,7 +513,7 @@ pub async fn agent_task_reply(
     task_id: String,
     message: String,
 ) -> Result<AgentTaskSnapshot, String> {
-    require_connected(&runtime).await?;
+    ensure_browser_connected(&runtime).await?;
     let message_text = message.trim().to_string();
     if message_text.is_empty() {
         return Err("message is empty".into());

@@ -201,7 +201,9 @@ fn browser_status_matches_options(status: &StatusPayload, options: &ChromeConnec
         // `remote: false` (socai didn't mint it); that combination is a debug
         // facility and this options-matching path currently has no callers.
         ChromeProfile::Remote => *remote,
-        ChromeProfile::Auto => true,
+        // Auto resolves to managed or existing — never a hosted browser — so
+        // a remote connection satisfies neither and must be torn down.
+        ChromeProfile::Auto => !remote,
     }
 }
 
