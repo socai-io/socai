@@ -69,11 +69,15 @@ impl PageSessionManager {
             .to_string();
 
         self.cdp.register_owned_target(target_id.clone()).await;
+        // Snapshot the browser mode now: the page outlives connection state
+        // changes, so it must not consult the shared `Cdp` later.
+        let remote_browser = self.cdp.is_remote().await;
         Ok(PageSession::attached(
             target_id,
             browser_client,
             session_id,
             self.cdp.clone(),
+            remote_browser,
         ))
     }
 

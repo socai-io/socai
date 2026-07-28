@@ -915,9 +915,9 @@ const REMOTE_LOGIN_NOTE: &str = "the hosted browser's shared login is unavailabl
 /// Mark a `reason: login_required` result as coming from a remote hosted
 /// browser so the agent reports a socai-side outage instead of starting the
 /// local login protocol. No-op for local browsers or other failure reasons.
-async fn annotate_remote_login_gate(page: &PageSession, value: &mut Value) {
+fn annotate_remote_login_gate(page: &PageSession, value: &mut Value) {
     if value.get("reason").and_then(Value::as_str) != Some("login_required")
-        || !page.is_remote_browser().await
+        || !page.is_remote_browser()
     {
         return;
     }
@@ -3118,7 +3118,7 @@ impl Tool for GetNotesTool {
                 "notes": [],
                 "reason": "login_required",
             });
-            annotate_remote_login_gate(&self.page, &mut payload).await;
+            annotate_remote_login_gate(&self.page, &mut payload);
             return Ok(json_result(&payload));
         }
 
@@ -3278,6 +3278,9 @@ impl Tool for GetNotesTool {
         if !stop_reason.is_empty() {
             payload["reason"] = json!(stop_reason);
         }
+        // Mid-scan login loss surfaces as a top-level `reason` too; mark it
+        // for remote browsers the same way the pre-flight gate is marked.
+        annotate_remote_login_gate(&self.page, &mut payload);
         if let Some((count, path, error)) = media_manifest_metadata {
             payload["media_manifest_count"] = json!(count);
             if let Some(path) = path {
@@ -3615,7 +3618,7 @@ impl Tool for WaitForLoginTool {
         }
         // A remote hosted browser has no window the user could scan a QR in;
         // its shared login is socai-operated. Fail fast instead of polling.
-        if self.page.is_remote_browser().await {
+        if self.page.is_remote_browser() {
             return Ok(json_result(&json!({
                 "logged_in": false,
                 "remote_browser": true,
@@ -4115,7 +4118,7 @@ impl Tool for SearchTool {
                     ARTIFACT_EXTRA_PREVIEW_CARD_PROPERTIES,
                 );
             }
-            annotate_remote_login_gate(&self.page, &mut value).await;
+            annotate_remote_login_gate(&self.page, &mut value);
             return Ok(json_result(&value));
         }
 
@@ -4195,7 +4198,7 @@ impl Tool for SearchTool {
             // `reason` already summarizes the failure; keep the failed scan
             // compact too.
             lean_scan_payload(&mut payload);
-            annotate_remote_login_gate(&self.page, &mut payload).await;
+            annotate_remote_login_gate(&self.page, &mut payload);
             return Ok(json_result(&payload));
         }
 
@@ -4626,7 +4629,7 @@ impl Tool for AuthorScanTool {
                 "notes": [],
                 "reason": reason,
             });
-            annotate_remote_login_gate(&self.page, &mut payload).await;
+            annotate_remote_login_gate(&self.page, &mut payload);
             return Ok(json_result(&payload));
         }
 

@@ -25,6 +25,11 @@ pub struct PageSession {
     owner: Cdp,
     client: RawCdpClient,
     session_id: Option<String>,
+    /// Whether the browser this page was created in was a remote hosted one.
+    /// Captured at attach time: the page keeps its own websocket and can
+    /// outlive `owner`'s current connection, so asking the shared `Cdp` later
+    /// could report a different browser's mode.
+    remote_browser: bool,
     recorder: StdMutex<Option<Arc<SnapshotRecorder>>>,
 }
 
@@ -48,12 +53,14 @@ impl PageSession {
         client: RawCdpClient,
         session_id: String,
         owner: Cdp,
+        remote_browser: bool,
     ) -> Self {
         Self {
             target_id,
             owner,
             client,
             session_id: Some(session_id),
+            remote_browser,
             recorder: StdMutex::new(None),
         }
     }
@@ -62,10 +69,10 @@ impl PageSession {
         &self.target_id
     }
 
-    /// True when this page lives in a remote hosted browser (socai pro
+    /// True when this page was created in a remote hosted browser (socai pro
     /// `chrome.profile remote`) rather than any local chrome.
-    pub async fn is_remote_browser(&self) -> bool {
-        self.owner.is_remote().await
+    pub fn is_remote_browser(&self) -> bool {
+        self.remote_browser
     }
 
     /// Attach a debug snapshot recorder. Captures begin on the next
