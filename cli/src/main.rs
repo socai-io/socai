@@ -349,6 +349,11 @@ fn run_config_command(matches: &ArgMatches) -> Result<()> {
             let canonical = socai_config::canonical_config_key(key)?;
             let path = socai_config::set_config_key(key, value)?;
             println!("set {canonical} in {}", path.display());
+            if canonical == "chrome.profile" && value.trim().eq_ignore_ascii_case("remote") {
+                eprintln!(
+                    "Note: the remote hosted browser is beta — it needs socai pro, applies daily session limits, and its behaviour may change between releases."
+                );
+            }
             if canonical.starts_with("chrome.") {
                 eprintln!(
                     "If the socai daemon is already running, run `socai stop` once so the next session uses the new chrome preference."

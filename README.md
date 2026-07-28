@@ -101,7 +101,7 @@ Config lives in `~/.socai/config.json`. 常用配置项：
   paths from the current directory. `SOCAI_RUNS_DIR` still takes precedence when
   set.
 - `chrome.profile` — browser profile mode: `existing`, `managed`, `auto`, or
-  `remote`. Default is `existing`, which attaches to your existing
+  `remote` (beta). Default is `existing`, which attaches to your existing
   browser/profile with CDP enabled. To opt into socai's isolated profile
   persistently:
 
@@ -118,10 +118,11 @@ Config lives in `~/.socai/config.json`. 常用配置项：
   socai config set chrome.profile_dir ~/.socai/profiles/xhs-test
   ```
 
-- `chrome.profile remote` — run on socai's hosted cloud browser instead of any
-  local chrome: no local chrome install and no xiaohongshu login needed. This
-  is a socai pro feature; activate an invite first with
-  `socai pro activate <invite_code>`.
+- `chrome.profile remote` — **beta** — run on socai's hosted cloud browser
+  instead of any local chrome: no local chrome install and no xiaohongshu login
+  needed. This is a socai pro feature; activate an invite first with
+  `socai pro activate <invite_code>`. Being beta, it is off by default, has
+  daily session limits, and its behaviour may change between releases.
 
 To switch back to your existing browser profile:
 

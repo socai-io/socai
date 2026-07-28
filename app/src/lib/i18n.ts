@@ -41,7 +41,7 @@ const messages = {
   "chrome.source": { en: "source", zh: "来源" },
   "chrome.sourceManaged": { en: "isolated profile", zh: "独立配置文件" },
   "chrome.sourceExisting": { en: "existing browser", zh: "现有浏览器" },
-  "chrome.sourceRemote": { en: "remote browser", zh: "远程浏览器" },
+  "chrome.sourceRemote": { en: "remote (beta)", zh: "远程（beta）" },
   "chrome.profile": { en: "profile", zh: "资料目录" },
   "chrome.disconnect": { en: "disconnect", zh: "断开连接" },
   "chrome.lookingForChrome": {
@@ -103,15 +103,15 @@ const messages = {
   "settings.source": { en: "source", zh: "来源" },
   "settings.sourceManaged": { en: "isolated profile", zh: "独立配置文件" },
   "settings.sourceExisting": { en: "existing browser", zh: "现有浏览器" },
-  "settings.sourceRemote": { en: "remote browser", zh: "远程浏览器" },
+  "settings.sourceRemote": { en: "remote (beta)", zh: "远程（beta）" },
   "settings.profileDir": { en: "profile directory", zh: "资料目录" },
   "settings.profileHint": {
     en: "socai launches a throwaway chrome with this profile.",
     zh: "socai 会用此资料目录启动临时 chrome。",
   },
   "settings.remoteHint": {
-    en: "runs on socai's hosted browser — no local chrome, no xiaohongshu login needed.",
-    zh: "使用 socai 云端托管浏览器 — 无需本地 chrome，也无需登录小红书。",
+    en: "beta — runs on socai's hosted browser; no local chrome, no xiaohongshu login needed. daily session limits apply.",
+    zh: "beta — 使用 socai 云端托管浏览器；无需本地 chrome，也无需登录小红书。每天有会话次数限制。",
   },
   "settings.endpoint": { en: "debugging endpoint", zh: "调试端点" },
   "settings.endpointHint": {

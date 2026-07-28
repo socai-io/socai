@@ -20,7 +20,8 @@ pub enum ChromeProfile {
     Managed,
     /// Try managed first, then fall back to existing-browser discovery.
     Auto,
-    /// Drive a remote hosted browser minted via socai-server (socai pro).
+    /// Drive a remote hosted browser minted via socai-server (socai pro,
+    /// beta).
     Remote,
 }
 
