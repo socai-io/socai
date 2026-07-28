@@ -21,18 +21,22 @@ impl PageSessionManager {
     /// avoids browser-wide CDP target discovery/auto-attach, so unrelated user
     /// tabs are not instrumented.
     pub async fn create_page(&self, start_url: &str) -> anyhow::Result<PageSession> {
-        let browser_client = self
+        // Client and browser mode come from one locked read: the page is
+        // labelled with the browser it is actually created in, even if the
+        // connection is replaced while the target commands below are in flight.
+        let (browser_client, remote_browser) = self
             .cdp
-            .browser_client()
+            .browser_client_with_mode()
             .await
             .ok_or_else(|| anyhow::anyhow!("CDP browser websocket is not connected"))?;
-        self.create_page_via_browser_ws(browser_client, start_url)
+        self.create_page_via_browser_ws(browser_client, remote_browser, start_url)
             .await
     }
 
     async fn create_page_via_browser_ws(
         &self,
         browser_client: crate::cdp::raw_client::RawCdpClient,
+        remote_browser: bool,
         start_url: &str,
     ) -> anyhow::Result<PageSession> {
         let created = browser_client
@@ -69,9 +73,6 @@ impl PageSessionManager {
             .to_string();
 
         self.cdp.register_owned_target(target_id.clone()).await;
-        // Snapshot the browser mode now: the page outlives connection state
-        // changes, so it must not consult the shared `Cdp` later.
-        let remote_browser = self.cdp.is_remote().await;
         Ok(PageSession::attached(
             target_id,
             browser_client,

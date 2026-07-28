@@ -201,6 +201,31 @@ pub fn managed_chrome_user_data_dir() -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(".socai/chrome-profile"))
 }
 
+/// Strip the credential-bearing parts of a hosted browser's connect URL,
+/// leaving only scheme + host. A remote `connect_url` is a live
+/// browser-control credential (the session token rides in it), so it must be
+/// redacted before reaching logs, status payloads, or error strings. Local
+/// endpoints are not passed through this — a `ws://127.0.0.1` devtools URL is
+/// useful in bug reports and reachable only from this machine.
+pub(crate) fn redact_remote_ws_url(url: &str) -> String {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (scheme, rest),
+        None => return "<redacted>".into(),
+    };
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|host| !host.is_empty());
+    match host {
+        // Userinfo (user:pass@host) would itself be a credential; drop it.
+        Some(host) => match host.rsplit_once('@') {
+            Some((_, bare)) => format!("{scheme}://{bare}/<redacted>"),
+            None => format!("{scheme}://{host}/<redacted>"),
+        },
+        None => "<redacted>".into(),
+    }
+}
+
 pub(crate) fn mark_managed_endpoint(mut endpoint: Endpoint, user_data_dir: &Path) -> Endpoint {
     endpoint.source = format!("managed_profile:{}", user_data_dir.display());
     endpoint.managed = true;

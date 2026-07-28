@@ -109,7 +109,9 @@ async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
 async fn try_connect_once(cdp: &Cdp, options: Option<ChromeConnectOptions>) -> anyhow::Result<()> {
     let OpenEndpoint { endpoint, owner } = open_endpoint(options).await?;
 
-    let inventory = connect_inventory(&endpoint).await?;
+    let inventory = connect_inventory(&endpoint)
+        .await
+        .map_err(|err| redact_endpoint_in_error(&endpoint, &owner, err))?;
     let monitor_task = spawn_target_poll_loop(cdp.clone(), inventory.browser_client.clone());
 
     {
@@ -205,6 +207,24 @@ async fn open_remote_endpoint() -> anyhow::Result<OpenEndpoint> {
             session_id: session.session_id,
         }),
     })
+}
+
+/// Rewrite a hosted browser's connect URL out of a connect failure. The
+/// websocket layer puts the URL it dialed into its error context, and
+/// `run_connect` sends that text to both tracing and the `Disconnected`
+/// reason — for a remote session that URL is a live browser-control
+/// credential. The chain is flattened so the sanitized text survives the
+/// outermost-message-only handling downstream.
+fn redact_endpoint_in_error(
+    endpoint: &Endpoint,
+    owner: &BrowserOwner,
+    err: anyhow::Error,
+) -> anyhow::Error {
+    if !matches!(owner, BrowserOwner::Remote(_)) {
+        return err;
+    }
+    let redacted = endpoint::redact_remote_ws_url(&endpoint.browser_ws_url);
+    anyhow::anyhow!(format!("{err:#}").replace(&endpoint.browser_ws_url, &redacted))
 }
 
 async fn open_existing_endpoint() -> anyhow::Result<OpenEndpoint> {

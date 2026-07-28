@@ -205,15 +205,26 @@ impl From<&CdpState> for StatusPayload {
                 targets,
                 owner,
                 ..
-            } => Self::Connected {
-                endpoint: endpoint.browser_ws_url.clone(),
-                browser_version: browser_version.clone(),
-                page_count: targets.values().filter(|t| t.r#type == "page").count(),
-                source: endpoint.source.clone(),
-                managed: endpoint.managed,
-                remote: matches!(owner, BrowserOwner::Remote(_)),
-                user_data_dir: endpoint.user_data_dir.clone(),
-            },
+            } => {
+                let remote = matches!(owner, BrowserOwner::Remote(_));
+                Self::Connected {
+                    // A hosted connect URL is a browser-control credential and
+                    // this payload crosses the Tauri IPC boundary on every
+                    // status change, so remote endpoints are redacted at the
+                    // source rather than merely hidden by the UI.
+                    endpoint: if remote {
+                        crate::cdp::endpoint::redact_remote_ws_url(&endpoint.browser_ws_url)
+                    } else {
+                        endpoint.browser_ws_url.clone()
+                    },
+                    browser_version: browser_version.clone(),
+                    page_count: targets.values().filter(|t| t.r#type == "page").count(),
+                    source: endpoint.source.clone(),
+                    managed: endpoint.managed,
+                    remote,
+                    user_data_dir: endpoint.user_data_dir.clone(),
+                }
+            }
         }
     }
 }
@@ -266,16 +277,22 @@ impl Cdp {
         }
     }
 
-    /// True when the current connection drives a remote hosted browser socai
-    /// minted via socai-server (as opposed to any local chrome).
-    pub async fn is_remote(&self) -> bool {
-        matches!(
-            &*self.state.lock().await,
+    /// The browser websocket plus whether it belongs to a remote hosted
+    /// browser, read under one lock. Page creation must learn both together:
+    /// deriving remote-ness in a second lookup could observe a different
+    /// connection if a disconnect/reconnect lands in between.
+    pub(crate) async fn browser_client_with_mode(&self) -> Option<(RawCdpClient, bool)> {
+        match &*self.state.lock().await {
             CdpState::Connected {
-                owner: BrowserOwner::Remote(_),
+                browser_client,
+                owner,
                 ..
-            }
-        )
+            } => Some((
+                browser_client.clone(),
+                matches!(owner, BrowserOwner::Remote(_)),
+            )),
+            _ => None,
+        }
     }
 
     pub(crate) async fn register_owned_target(&self, target_id: impl Into<String>) {
