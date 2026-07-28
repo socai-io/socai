@@ -14,11 +14,17 @@ use crate::cdp::raw_client::RawCdpClient;
 
 const MAX_ATTEMPTS: u8 = 3;
 const ATTEMPT_DELAY: Duration = Duration::from_millis(500);
+/// Wall-clock ceiling for a whole connect (every attempt, plus the delays
+/// between them). Must stay below `runtime::engine::CONNECT_TIMEOUT` so this
+/// task reaches a terminal state — releasing anything it acquired — before the
+/// waiter there stops polling. Nothing cancels this task when the waiter
+/// returns, so without the ceiling a late attempt could mint a hosted session
+/// for a caller that already reported a timeout.
+const CONNECT_BUDGET: Duration = Duration::from_secs(85);
 /// Ceiling for the browser-websocket handshake plus the two inventory
 /// commands. The handshake has no timeout of its own and each command can wait
-/// `raw_client::COMMAND_TIMEOUT`, so without this an endpoint that accepts a
-/// connection but never answers keeps the state in `Connecting` — blocking
-/// every later connect — and holds a minted hosted session that nobody uses.
+/// `raw_client::COMMAND_TIMEOUT`, so without this one unresponsive endpoint
+/// would swallow the whole `CONNECT_BUDGET` and leave no room to retry.
 const INVENTORY_TIMEOUT: Duration = Duration::from_secs(20);
 const TARGET_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const TARGET_POLL_FAILURES: u8 = 3;
@@ -98,20 +104,27 @@ async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
         }
     }
 
+    // One budget for all attempts, so this task always settles into a terminal
+    // state before the runtime's waiter stops polling. Per-phase timeouts alone
+    // could not promise that: their worst case multiplies by MAX_ATTEMPTS, and
+    // nothing cancels this task when the waiter returns — a late attempt would
+    // then mint a hosted session for a caller that already gave up.
+    let deadline = tokio::time::Instant::now() + CONNECT_BUDGET;
     for attempt in 1..=MAX_ATTEMPTS {
         if !begin_connect_attempt(&cdp, attempt, attempt == 1).await {
             return;
         }
-        match try_connect_once(&cdp, options.clone()).await {
-            Ok(ConnectAttempt::Connected) => return,
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, try_connect_once(&cdp, options.clone())).await {
+            Ok(Ok(ConnectAttempt::Connected)) => return,
             // Someone replaced the state while we were connecting (an explicit
             // disconnect). Leave their state alone and stop: another attempt
             // would undo the disconnect and re-mint a hosted session.
-            Ok(ConnectAttempt::Cancelled) => {
+            Ok(Ok(ConnectAttempt::Cancelled)) => {
                 debug!("connect attempt cancelled by an external state change");
                 return;
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 warn!(attempt, error = %err, "cdp connect attempt failed");
                 if attempt == MAX_ATTEMPTS {
                     transition_unconditional(
@@ -125,8 +138,30 @@ async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
                 }
                 tokio::time::sleep(ATTEMPT_DELAY).await;
             }
+            // Budget gone. Dropping the attempt future released whatever it had
+            // acquired, including a just-minted hosted session.
+            Err(_) => {
+                warn!(attempt, "cdp connect budget exhausted");
+                if !is_connected(&cdp).await {
+                    transition_unconditional(
+                        &cdp,
+                        CdpState::Disconnected {
+                            reason: format!(
+                                "browser did not connect within {}s",
+                                CONNECT_BUDGET.as_secs()
+                            ),
+                        },
+                    )
+                    .await;
+                }
+                return;
+            }
         }
     }
+}
+
+async fn is_connected(cdp: &Cdp) -> bool {
+    matches!(&*cdp.state().lock().await, CdpState::Connected { .. })
 }
 
 async fn try_connect_once(

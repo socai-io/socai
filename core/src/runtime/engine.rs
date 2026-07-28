@@ -18,6 +18,10 @@ use tokio::time::{sleep, Instant};
 
 use super::BrowserStatus;
 
+/// How long a caller waits for a connect. Keep this above
+/// `cdp::lifecycle::CONNECT_BUDGET` so the connect task always settles first:
+/// the waiter cannot cancel it, and a task still running past this point could
+/// acquire a browser (or mint a hosted session) nobody is waiting for.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Shared in-process runtime handle for one entrypoint. Tauri, TUI, and the

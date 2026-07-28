@@ -227,11 +227,10 @@ pub struct BrowserSessionInfo {
 }
 
 /// Browser-session requests get tighter budgets than the shared client's 120s
-/// cap. The CDP connect waiter gives up after 90s
-/// (`runtime::engine::CONNECT_TIMEOUT`) and the connect loop makes up to three
-/// attempts, so a stalled mint must fail fast enough that every attempt fits
-/// inside that window — otherwise the caller reports a timeout while detached
-/// attempts keep minting sessions nobody connects to.
+/// cap: a stalled mint should leave room for another attempt rather than
+/// swallowing the connect loop's whole budget. The guarantee that no session is
+/// minted after the caller gave up comes from `cdp::lifecycle::CONNECT_BUDGET`,
+/// which bounds the entire connect regardless of these per-phase values.
 const BROWSER_SESSION_CREATE_TIMEOUT: Duration = Duration::from_secs(25);
 /// Release is best-effort and runs detached from a drop; the server-side
 /// session timeout is the backstop, so it should never linger.
