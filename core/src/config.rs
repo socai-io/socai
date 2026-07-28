@@ -57,7 +57,7 @@ impl SocaiConfig {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(expand_tilde_path),
-            ChromeProfile::Existing => None,
+            ChromeProfile::Existing | ChromeProfile::Remote => None,
         };
         ChromeConnectOptions {
             profile,

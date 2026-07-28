@@ -220,6 +220,65 @@ pub async fn transcribe_audio_file(
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BrowserSessionInfo {
+    pub session_id: String,
+    pub connect_url: String,
+}
+
+/// Mint a remote hosted browser session via socai-server. The server holds
+/// all Browserbase credentials and authorizes the device token; the returned
+/// connect URL carries only a session-scoped token.
+///
+/// Errors are single-level messages (no `context` chains): the CDP connect
+/// loop surfaces only the outermost message as the disconnect reason.
+pub async fn create_browser_session() -> Result<BrowserSessionInfo> {
+    let base_url = configured_base_url()
+        .ok_or_else(|| anyhow::anyhow!("socai pro server URL is not configured"))?;
+    let creds = load_credentials().ok_or_else(|| {
+        anyhow::anyhow!("socai pro is not activated; run `socai pro activate <invite_code>`")
+    })?;
+    let client = http_client()?;
+    let response = bearer(
+        client.post(format!("{base_url}/v1/browser/sessions")),
+        &creds.device_token,
+    )
+    .send()
+    .await
+    .map_err(|err| anyhow::anyhow!("remote browser session request failed: {err}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "remote browser session request failed ({status}): {}",
+            short_error(&body)
+        );
+    }
+    response
+        .json()
+        .await
+        .map_err(|err| anyhow::anyhow!("remote browser session response was malformed: {err}"))
+}
+
+/// Best-effort early release of a remote browser session. The server-side
+/// session timeout is the backstop, so callers may ignore failures.
+pub async fn release_browser_session(session_id: &str) -> Result<()> {
+    let base_url = configured_base_url()
+        .ok_or_else(|| anyhow::anyhow!("socai pro server URL is not configured"))?;
+    let creds = load_credentials().ok_or_else(|| anyhow::anyhow!("socai pro is not activated"))?;
+    let client = http_client()?;
+    bearer(
+        client.post(format!(
+            "{base_url}/v1/browser/sessions/{session_id}/release"
+        )),
+        &creds.device_token,
+    )
+    .send()
+    .await?
+    .error_for_status()?;
+    Ok(())
+}
+
 /// Trim a provider error to something an agent can read. Raw DashScope task
 /// dumps run to kilobytes of nested JSON with signed URLs; the leading part
 /// carries the task id + failure code, which is all a transcript_error needs.

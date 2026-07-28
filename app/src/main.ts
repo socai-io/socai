@@ -20,6 +20,7 @@ export type Status =
       page_count: number;
       source?: string;
       managed?: boolean;
+      remote?: boolean;
       user_data_dir?: string | null;
     };
 
@@ -267,17 +268,18 @@ function renderConnectionDialog(connected: Extract<Status, { state: "connected" 
         </div>
         <div>
           <p class="t-eyebrow">${htmlEsc(t("chrome.source"))}</p>
-          <p class="t-mono">${htmlEsc(connected.managed ? t("chrome.sourceManaged") : t("chrome.sourceExisting"))}</p>
+          <p class="t-mono">${htmlEsc(connected.remote ? t("chrome.sourceRemote") : connected.managed ? t("chrome.sourceManaged") : t("chrome.sourceExisting"))}</p>
         </div>
         ${connected.user_data_dir ? `
         <div class="connection-meta-wide">
           <p class="t-eyebrow">${htmlEsc(t("chrome.profile"))}</p>
           <p class="t-mono connection-endpoint">${htmlEsc(connected.user_data_dir)}</p>
         </div>` : ""}
+        ${connected.remote ? "" : `
         <div class="connection-meta-wide">
           <p class="t-eyebrow">${htmlEsc(t("chrome.endpoint"))}</p>
           <p class="t-mono connection-endpoint">${htmlEsc(connected.endpoint)}</p>
-        </div>
+        </div>`}
       </div>
       <button id="chrome-disconnect" type="button" class="btn-ghost">${htmlEsc(t("chrome.disconnect"))}</button>
     </div>

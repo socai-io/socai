@@ -62,6 +62,12 @@ impl PageSession {
         &self.target_id
     }
 
+    /// True when this page lives in a remote hosted browser (socai pro
+    /// `chrome.profile remote`) rather than any local chrome.
+    pub async fn is_remote_browser(&self) -> bool {
+        self.owner.is_remote().await
+    }
+
     /// Attach a debug snapshot recorder. Captures begin on the next
     /// `evaluate_json`. Replacing or clearing it is cheap and lock-guarded.
     pub fn set_recorder(&self, recorder: Arc<SnapshotRecorder>) {

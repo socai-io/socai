@@ -54,6 +54,11 @@ they're in). When it returns `logged_in:true`, re-run the original tool once and
 continue. If it returns `logged_in:false`, remind the user and call
 `wait_for_login` again.
 
+**Exception — `remote_browser:true` on the result:** the session runs in socai's
+remote hosted browser and its login is operated by socai, not the user. Tell the
+user remote browsing is temporarily unavailable on socai's side and to try again
+later. Do NOT ask them to scan a QR and do NOT call `wait_for_login`.
+
 ## Tool Use
 
 ### `search` and `author_scan`

@@ -220,6 +220,7 @@ export namespace settingsMenu {
 
   function renderChromeGroup(shell: ShellState, c: DesktopConfig, d: SettingsDraft): string {
     const managed = d.chrome_source === "managed";
+    const remote = d.chrome_source === "remote";
     const detail = managed
       ? `
         <div class="settings-field">
@@ -238,16 +239,27 @@ export namespace settingsMenu {
           <p class="t-small subtle settings-field-hint">${esc(t("settings.profileHint"))}</p>
         </div>
       `
-      : renderEndpointField(shell);
-    // "existing browser" is the product default, so it leads the toggle.
+      : remote
+        ? `
+        <div class="settings-field">
+          <p class="t-small subtle settings-field-hint">${esc(t("settings.remoteHint"))}</p>
+        </div>
+      `
+        : renderEndpointField(shell);
+    // "existing browser" is the product default, so it leads the toggle. The
+    // remote option is pro-gated; keep it visible if it is already the
+    // configured source so the state stays legible (and escapable) even after
+    // a deactivation.
+    const showRemote = c.pro_activated || remote;
     return `
       <section class="settings-group">
         <p class="settings-group-label">${esc(t("settings.chrome"))}</p>
         <div class="settings-field">
           <span class="t-small settings-field-label">${esc(t("settings.source"))}</span>
           <div class="seg-toggle" role="group" aria-label="${esc(t("settings.source"))}">
-            <button type="button" class="seg-toggle__button" data-settings-source="existing" aria-pressed="${managed ? "false" : "true"}">${esc(t("settings.sourceExisting"))}</button>
+            <button type="button" class="seg-toggle__button" data-settings-source="existing" aria-pressed="${!managed && !remote ? "true" : "false"}">${esc(t("settings.sourceExisting"))}</button>
             <button type="button" class="seg-toggle__button" data-settings-source="managed" aria-pressed="${managed ? "true" : "false"}">${esc(t("settings.sourceManaged"))}</button>
+            ${showRemote ? `<button type="button" class="seg-toggle__button" data-settings-source="remote" aria-pressed="${remote ? "true" : "false"}">${esc(t("settings.sourceRemote"))}</button>` : ""}
           </div>
         </div>
         ${detail}

@@ -171,6 +171,7 @@ impl Default for SocaiRuntime {
 fn browser_status_matches_options(status: &StatusPayload, options: &ChromeConnectOptions) -> bool {
     let StatusPayload::Connected {
         managed,
+        remote,
         user_data_dir,
         ..
     } = status
@@ -179,7 +180,7 @@ fn browser_status_matches_options(status: &StatusPayload, options: &ChromeConnec
     };
 
     match options.profile {
-        ChromeProfile::Existing => !managed,
+        ChromeProfile::Existing => !managed && !remote,
         ChromeProfile::Managed => {
             if !managed {
                 return false;
@@ -192,6 +193,10 @@ fn browser_status_matches_options(status: &StatusPayload, options: &ChromeConnec
                 None => true,
             }
         }
+        // An explicit SOCAI_CDP_* override connected under `remote` reports
+        // `remote: false` (socai didn't mint it); that combination is a debug
+        // facility and this options-matching path currently has no callers.
+        ChromeProfile::Remote => *remote,
         ChromeProfile::Auto => true,
     }
 }

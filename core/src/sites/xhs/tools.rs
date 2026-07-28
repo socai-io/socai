@@ -904,6 +904,29 @@ fn attach_pro_skip_note(payload: &mut Value, skipped: bool) {
     }
 }
 
+/// Attached to a `login_required` result when the page lives in a remote
+/// hosted browser: the shared login there is socai-operated, so the local
+/// scan-the-QR protocol does not apply and the user cannot fix it.
+const REMOTE_LOGIN_NOTE: &str = "the hosted browser's shared login is unavailable — a \
+     socai-side issue, not something the user can fix. Tell the user remote browsing \
+     is temporarily unavailable and to try again later; do NOT ask them to scan a QR \
+     and do NOT call wait_for_login.";
+
+/// Mark a `reason: login_required` result as coming from a remote hosted
+/// browser so the agent reports a socai-side outage instead of starting the
+/// local login protocol. No-op for local browsers or other failure reasons.
+async fn annotate_remote_login_gate(page: &PageSession, value: &mut Value) {
+    if value.get("reason").and_then(Value::as_str) != Some("login_required")
+        || !page.is_remote_browser().await
+    {
+        return;
+    }
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("remote_browser".into(), Value::Bool(true));
+        obj.insert("note".into(), json!(REMOTE_LOGIN_NOTE));
+    }
+}
+
 fn media_for(
     ctx: &ToolContext,
     llm_provider: Option<Arc<dyn LlmProvider>>,
@@ -3090,11 +3113,13 @@ impl Tool for GetNotesTool {
         let targets = direct_note_refs(&input)?;
         let login = XhsPageRuntime::new(&self.page).login_gate(true).await?;
         if login == LoginGate::Required {
-            return Ok(json_result(&json!({
+            let mut payload = json!({
                 "ok": false,
                 "notes": [],
                 "reason": "login_required",
-            })));
+            });
+            annotate_remote_login_gate(&self.page, &mut payload).await;
+            return Ok(json_result(&payload));
         }
 
         let comment_count = get_i64(&input, "num_comments", TOP_COMMENTS_PER_NOTE).max(0);
@@ -3586,6 +3611,15 @@ impl Tool for WaitForLoginTool {
             return Ok(json_result(&json!({
                 "logged_in": true,
                 "message": "Already logged in. Re-run the original tool.",
+            })));
+        }
+        // A remote hosted browser has no window the user could scan a QR in;
+        // its shared login is socai-operated. Fail fast instead of polling.
+        if self.page.is_remote_browser().await {
+            return Ok(json_result(&json!({
+                "logged_in": false,
+                "remote_browser": true,
+                "message": REMOTE_LOGIN_NOTE,
             })));
         }
         // Bring the XHS login wall on screen so the user has a QR to scan.
@@ -4081,6 +4115,7 @@ impl Tool for SearchTool {
                     ARTIFACT_EXTRA_PREVIEW_CARD_PROPERTIES,
                 );
             }
+            annotate_remote_login_gate(&self.page, &mut value).await;
             return Ok(json_result(&value));
         }
 
@@ -4160,6 +4195,7 @@ impl Tool for SearchTool {
             // `reason` already summarizes the failure; keep the failed scan
             // compact too.
             lean_scan_payload(&mut payload);
+            annotate_remote_login_gate(&self.page, &mut payload).await;
             return Ok(json_result(&payload));
         }
 
@@ -4584,12 +4620,14 @@ impl Tool for AuthorScanTool {
                 .filter(|reason| !reason.is_empty())
                 .unwrap_or("open_profile_failed")
                 .to_string();
-            return Ok(json_result(&json!({
+            let mut payload = json!({
                 "ok": false,
                 "author_id": author_id,
                 "notes": [],
                 "reason": reason,
-            })));
+            });
+            annotate_remote_login_gate(&self.page, &mut payload).await;
+            return Ok(json_result(&payload));
         }
 
         let info = xhs.profile_info().await?;

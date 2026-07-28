@@ -20,6 +20,8 @@ pub enum ChromeProfile {
     Managed,
     /// Try managed first, then fall back to existing-browser discovery.
     Auto,
+    /// Drive a remote hosted browser minted via socai-server (socai pro).
+    Remote,
 }
 
 impl ChromeProfile {
@@ -28,8 +30,9 @@ impl ChromeProfile {
             "existing" => Ok(Self::Existing),
             "managed" => Ok(Self::Managed),
             "auto" => Ok(Self::Auto),
+            "remote" => Ok(Self::Remote),
             other => Err(anyhow::anyhow!(
-                "invalid chrome profile {other:?}; expected existing, managed, or auto"
+                "invalid chrome profile {other:?}; expected existing, managed, auto, or remote"
             )),
         }
     }
@@ -39,6 +42,7 @@ impl ChromeProfile {
             Self::Existing => "existing",
             Self::Managed => "managed",
             Self::Auto => "auto",
+            Self::Remote => "remote",
         }
     }
 }
@@ -107,14 +111,47 @@ pub enum CdpState {
         browser_version: String,
         targets: HashMap<String, TargetInfo>,
         monitor_task: tokio::task::AbortHandle,
-        /// Managed chrome process socai launched, if any. Held here so it is
-        /// killed on drop — disconnect, reconnect, or daemon shutdown all
-        /// replace this state and tear the browser down, mirroring the old
-        /// chromiumoxide `Browser` drop semantics. `None` when we attached to an
-        /// already-running browser (the user's existing profile, or a managed
-        /// profile a prior socai entrypoint launched and we merely reused).
-        chrome_process: Option<ChromeProcess>,
+        /// Browser resource socai owns for this connection. Held here so it is
+        /// torn down on drop — disconnect, reconnect, or daemon shutdown all
+        /// replace this state and release the browser, mirroring the old
+        /// chromiumoxide `Browser` drop semantics.
+        owner: BrowserOwner,
     },
+}
+
+/// What socai owns behind the current connection, torn down when the
+/// `Connected` state is replaced. The variant payloads exist for their `Drop`
+/// side effects (kill the launched chrome / release the minted session).
+pub enum BrowserOwner {
+    /// Attached to a browser socai does not own (the user's existing profile,
+    /// a reused managed chrome, or an explicit endpoint) — nothing to release.
+    None,
+    /// Managed chrome process socai launched; killed on drop.
+    Local(ChromeProcess),
+    /// Remote hosted browser session socai minted via socai-server; a
+    /// best-effort release fires on drop, with the server-side session
+    /// timeout as the backstop.
+    Remote(RemoteSession),
+}
+
+pub struct RemoteSession {
+    pub session_id: String,
+}
+
+impl Drop for RemoteSession {
+    fn drop(&mut self) {
+        let session_id = std::mem::take(&mut self.session_id);
+        if session_id.is_empty() {
+            return;
+        }
+        // Outside a tokio runtime (process teardown) the release is skipped;
+        // the server-side session timeout reaps it instead.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = crate::cloud::release_browser_session(&session_id).await;
+            });
+        }
+    }
 }
 
 impl CdpState {
@@ -148,6 +185,9 @@ pub enum StatusPayload {
         page_count: usize,
         source: String,
         managed: bool,
+        /// True when socai minted this connection's browser remotely via
+        /// socai-server (chrome.profile `remote`).
+        remote: bool,
         user_data_dir: Option<String>,
     },
 }
@@ -163,6 +203,7 @@ impl From<&CdpState> for StatusPayload {
                 endpoint,
                 browser_version,
                 targets,
+                owner,
                 ..
             } => Self::Connected {
                 endpoint: endpoint.browser_ws_url.clone(),
@@ -170,6 +211,7 @@ impl From<&CdpState> for StatusPayload {
                 page_count: targets.values().filter(|t| t.r#type == "page").count(),
                 source: endpoint.source.clone(),
                 managed: endpoint.managed,
+                remote: matches!(owner, BrowserOwner::Remote(_)),
                 user_data_dir: endpoint.user_data_dir.clone(),
             },
         }
@@ -222,6 +264,18 @@ impl Cdp {
             CdpState::Connected { browser_client, .. } => Some(browser_client.clone()),
             _ => None,
         }
+    }
+
+    /// True when the current connection drives a remote hosted browser socai
+    /// minted via socai-server (as opposed to any local chrome).
+    pub async fn is_remote(&self) -> bool {
+        matches!(
+            &*self.state.lock().await,
+            CdpState::Connected {
+                owner: BrowserOwner::Remote(_),
+                ..
+            }
+        )
     }
 
     pub(crate) async fn register_owned_target(&self, target_id: impl Into<String>) {

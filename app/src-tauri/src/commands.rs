@@ -1327,8 +1327,8 @@ async fn emit_timeline_payload(
 
 #[derive(serde::Serialize)]
 pub struct DesktopConfig {
-    /// Chrome profile mode: "managed" | "existing" | "auto". Falls back to the
-    /// product default ("existing") when the config key is unset.
+    /// Chrome profile mode: "managed" | "existing" | "auto" | "remote". Falls
+    /// back to the product default ("existing") when the config key is unset.
     chrome_source: String,
     /// Configured managed-profile directory, or "" when unset.
     chrome_profile_dir: String,

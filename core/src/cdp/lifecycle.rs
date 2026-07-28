@@ -5,11 +5,11 @@ use serde_json::{json, Value};
 use tracing::{debug, warn};
 
 use crate::cdp::connection::{
-    page_list_from, BrowserEvent, Cdp, CdpState, ChromeConnectOptions, ChromeProfile,
-    StatusPayload, TargetInfo,
+    page_list_from, BrowserEvent, BrowserOwner, Cdp, CdpState, ChromeConnectOptions, ChromeProfile,
+    RemoteSession, StatusPayload, TargetInfo,
 };
 use crate::cdp::endpoint::{self, Endpoint};
-use crate::cdp::launch::{self, ChromeProcess};
+use crate::cdp::launch;
 use crate::cdp::raw_client::RawCdpClient;
 
 const MAX_ATTEMPTS: u8 = 3;
@@ -23,12 +23,13 @@ struct ConnectInventory {
     browser_client: RawCdpClient,
 }
 
-/// A resolved remote-debugging endpoint plus, for managed mode, the chrome
-/// process socai launched. The process guard is threaded into the `Connected`
-/// state so it lives exactly as long as the connection.
+/// A resolved remote-debugging endpoint plus whatever browser resource socai
+/// owns behind it (a launched chrome process, a minted remote session, or
+/// nothing for plain attaches). The owner guard is threaded into the
+/// `Connected` state so it lives exactly as long as the connection.
 struct OpenEndpoint {
     endpoint: Endpoint,
-    chrome_process: Option<ChromeProcess>,
+    owner: BrowserOwner,
 }
 
 impl Cdp {
@@ -106,10 +107,7 @@ async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
 }
 
 async fn try_connect_once(cdp: &Cdp, options: Option<ChromeConnectOptions>) -> anyhow::Result<()> {
-    let OpenEndpoint {
-        endpoint,
-        chrome_process,
-    } = open_endpoint(options).await?;
+    let OpenEndpoint { endpoint, owner } = open_endpoint(options).await?;
 
     let inventory = connect_inventory(&endpoint).await?;
     let monitor_task = spawn_target_poll_loop(cdp.clone(), inventory.browser_client.clone());
@@ -119,8 +117,9 @@ async fn try_connect_once(cdp: &Cdp, options: Option<ChromeConnectOptions>) -> a
         let mut guard = state.lock().await;
         if !guard.is_connecting() {
             monitor_task.abort();
-            // Dropping `chrome_process` here kills a just-launched managed chrome
-            // if the connect was cancelled mid-flight.
+            // Dropping `owner` here kills a just-launched managed chrome (or
+            // releases a just-minted remote session) if the connect was
+            // cancelled mid-flight.
             return Err(anyhow::anyhow!("connect cancelled"));
         }
         *guard = CdpState::Connected {
@@ -129,7 +128,7 @@ async fn try_connect_once(cdp: &Cdp, options: Option<ChromeConnectOptions>) -> a
             browser_version: inventory.browser_version,
             targets: inventory.targets,
             monitor_task,
-            chrome_process,
+            owner,
         };
         let payload: StatusPayload = (&*guard).into();
         cdp.emit(BrowserEvent::StatusChanged(payload));
@@ -158,7 +157,7 @@ async fn open_endpoint(options: Option<ChromeConnectOptions>) -> anyhow::Result<
         if let Some(endpoint) = endpoint::resolve_explicit_endpoint(None, None).await? {
             return Ok(OpenEndpoint {
                 endpoint,
-                chrome_process: None,
+                owner: BrowserOwner::None,
             });
         }
     }
@@ -166,6 +165,7 @@ async fn open_endpoint(options: Option<ChromeConnectOptions>) -> anyhow::Result<
     match options.profile {
         ChromeProfile::Managed => open_managed_endpoint(&options).await,
         ChromeProfile::Existing => open_existing_endpoint().await,
+        ChromeProfile::Remote => open_remote_endpoint().await,
         ChromeProfile::Auto => match open_managed_endpoint(&options).await {
             Ok(open) => Ok(open),
             Err(managed_err) => {
@@ -180,6 +180,33 @@ async fn open_endpoint(options: Option<ChromeConnectOptions>) -> anyhow::Result<
     }
 }
 
+/// Mint a remote hosted browser session via socai-server and treat its
+/// connect URL as the endpoint. Gated on socai pro activation up front: the
+/// error becomes the `Disconnected` reason verbatim, and gating pre-mint
+/// avoids burning the connect retries on doomed server calls.
+async fn open_remote_endpoint() -> anyhow::Result<OpenEndpoint> {
+    if !crate::cloud::pro_activated() {
+        anyhow::bail!(
+            "socai remote browser requires socai pro — run `socai pro activate <invite_code>`, \
+             or switch back with `socai config set chrome.profile existing`."
+        );
+    }
+    let session = crate::cloud::create_browser_session().await?;
+    Ok(OpenEndpoint {
+        endpoint: Endpoint {
+            source: "remote".into(),
+            browser_ws_url: session.connect_url,
+            http_version_url: None,
+            version: None,
+            managed: false,
+            user_data_dir: None,
+        },
+        owner: BrowserOwner::Remote(RemoteSession {
+            session_id: session.session_id,
+        }),
+    })
+}
+
 async fn open_existing_endpoint() -> anyhow::Result<OpenEndpoint> {
     let endpoint = endpoint::discover_running_chrome_endpoint()
         .await?
@@ -192,7 +219,7 @@ async fn open_existing_endpoint() -> anyhow::Result<OpenEndpoint> {
         })?;
     Ok(OpenEndpoint {
         endpoint,
-        chrome_process: None,
+        owner: BrowserOwner::None,
     })
 }
 
@@ -212,7 +239,7 @@ async fn open_managed_endpoint(options: &ChromeConnectOptions) -> anyhow::Result
         if reachable(&endpoint).await {
             return Ok(OpenEndpoint {
                 endpoint,
-                chrome_process: None,
+                owner: BrowserOwner::None,
             });
         }
         warn!(
@@ -224,7 +251,7 @@ async fn open_managed_endpoint(options: &ChromeConnectOptions) -> anyhow::Result
     let (endpoint, chrome_process) = launch::launch_managed_chrome(&user_data_dir).await?;
     Ok(OpenEndpoint {
         endpoint,
-        chrome_process: Some(chrome_process),
+        owner: BrowserOwner::Local(chrome_process),
     })
 }
 
