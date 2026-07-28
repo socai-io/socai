@@ -1436,6 +1436,25 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .note-media__play svg { width: 12px; height: 12px; margin-left: 1.5px; }
 button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: scale(1.05); }
+.note-media__loading,
+.note-media__failed {
+  position: absolute; width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-pill); background: rgba(10, 10, 10, 0.55);
+  color: var(--ink-9); pointer-events: none;
+}
+.note-media__failed {
+  font-family: var(--font-mono); font-size: 13px; font-weight: 600;
+}
+.note-media__loading::after {
+  content: ""; width: 11px; height: 11px;
+  border: 1.5px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: note-media-spin 0.75s linear infinite;
+}
+@keyframes note-media-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .note-media__loading::after { animation-duration: 1.5s; }
+}
 /* inline playback (cards): a video overlays the poster in the same pillarbox
    box, so the card doesn't reflow on click. Absolutely positioned: an in-flow
    video's intrinsic size would join the sizing of the box it's supposed to
@@ -1817,4 +1836,3 @@ code {
   color: var(--fg-soft);
   cursor: not-allowed;
 }
-

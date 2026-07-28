@@ -35,10 +35,11 @@ impl DesktopTelemetry {
 
     /// Upload a run's `trace.json` to the traces proxy. No-op when telemetry
     /// is off or the file is missing.
-    pub(crate) fn upload_run_trace(&self, run_dir: impl AsRef<Path>) {
+    pub(crate) fn upload_run_trace(&self, run_dir: impl AsRef<Path>) -> bool {
         if let Some(telemetry) = &self.0 {
-            telemetry.upload_run_trace(run_dir.as_ref());
+            return telemetry.upload_run_trace(run_dir.as_ref());
         }
+        false
     }
 }
 

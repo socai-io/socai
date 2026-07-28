@@ -105,11 +105,19 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
   if (m.kind === "video") {
     const posterUrl = assetUrl(note, m.poster);
     const posterImg = posterUrl ? `<img class="note-media__img" src="${esc(posterUrl)}" alt="" loading="lazy" />` : "";
+    const loading = !m.src && m.status === "loading";
+    const loadingIndicator = loading
+      ? `<span class="note-media__loading" aria-hidden="true"></span>`
+      : "";
+    const failedIndicator = !m.src && m.status === "failed"
+      ? `<span class="note-media__failed" aria-hidden="true">!</span>`
+      : "";
+    const statusIndicator = loadingIndicator || failedIndicator;
     if (variant === "gallery") {
       const videoUrl = assetUrl(note, m.src);
       const inner = videoUrl
         ? `<video class="note-media__img" controls preload="metadata"${posterUrl ? ` poster="${esc(posterUrl)}"` : ""} src="${esc(videoUrl)}"></video>`
-        : `${posterImg}<span class="note-media__play">${IC.play()}</span>`;
+        : `${posterImg}${statusIndicator}`;
       return `<span class="note-media" data-kind="video">${inner}</span>`;
     }
     // With the file on disk the glyph is a real button and marks the whole
@@ -122,7 +130,7 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
       ? ""
       : videoUrl
         ? `<button type="button" class="note-media__play" data-note-play="${esc(videoUrl)}" aria-label="play video">${IC.play()}</button>`
-        : `<span class="note-media__play">${IC.play()}</span>`;
+        : statusIndicator;
     return `<span class="note-media note-media--pillarbox" data-kind="video"><span class="note-media__inner">${posterImg}${play}${m.dur && !decorative ? `<span class="note-media__dur">${esc(m.dur)}</span>` : ""}</span></span>`;
   }
   const url = assetUrl(note, m.src);

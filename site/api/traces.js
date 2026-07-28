@@ -58,13 +58,13 @@ export default async function handler(req, res) {
 
   try {
     await forwardToAxiom({ resourceSpans });
+    res.status(202).json({ ok: true });
   } catch (error) {
-    // Best-effort, same as events: the client has handed the trace off; proxy
-    // or Axiom outages must not create retry storms or leak backend details.
+    // Return a retryable failure to clients. They persist trace payloads
+    // locally, so an Axiom/proxy outage no longer turns a 202 into silent loss.
     console.error('trace forward failed', error);
+    res.status(502).json({ ok: false, error: 'trace_forward_failed' });
   }
-
-  res.status(202).json({ ok: true });
 }
 
 async function readJsonBody(req) {
@@ -139,8 +139,7 @@ function consumeRateLimit(key) {
 async function forwardToAxiom(payload) {
   const token = process.env.AXIOM_TRACES_TOKEN || process.env.AXIOM_TOKEN;
   if (!token) {
-    console.warn('AXIOM_TRACES_TOKEN is not configured; dropping trace');
-    return;
+    throw new Error('AXIOM_TRACES_TOKEN is not configured');
   }
 
   const dataset = process.env.AXIOM_TRACES_DATASET || DEFAULT_DATASET;

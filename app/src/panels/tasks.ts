@@ -157,6 +157,23 @@ export namespace agentPanel {
     if (selected) void loadTaskNotes(selected.task_id, shell);
   }
 
+  const backgroundMediaRefreshTimers = new Map<string, number>();
+
+  /** A background video finished after its tool (or whole agent run) returned.
+   *  Coalesce concurrent completions, then reload the matching task so its
+   *  poster-only card upgrades to a playable video without user action. */
+  export function handleBackgroundMediaUpdate(runDir: string, shell: ShellState): void {
+    const task = tasks.find((item) => item.run_dir === runDir);
+    if (!task) return;
+    const existing = backgroundMediaRefreshTimers.get(runDir);
+    if (existing !== undefined) window.clearTimeout(existing);
+    const timer = window.setTimeout(() => {
+      backgroundMediaRefreshTimers.delete(runDir);
+      void loadTaskNotes(task.task_id, shell);
+    }, 350);
+    backgroundMediaRefreshTimers.set(runDir, timer);
+  }
+
   // ── live notes while a task runs ─────────────────────────────────────
   // notes.json is written incrementally (one rewrite per note read), but no
   // event fires mid-tool-call — a scan is silent for minutes. Poll the archive

@@ -452,6 +452,7 @@ pub async fn agent_task_start(
         )
         .await;
     let task_id = snapshot.task_id.clone();
+    let background_media_generation = socai_core::media::begin_background_media_generation();
     let runtime = runtime.inner().clone();
     let telemetry = telemetry.inner().clone();
     let task_id_for_spawn = task_id.clone();
@@ -471,6 +472,7 @@ pub async fn agent_task_start(
             provider,
             model,
             run_dir,
+            background_media_generation,
             telemetry,
         )
         .await;
@@ -558,6 +560,7 @@ pub async fn agent_task_reply(
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
 
+    let background_media_generation = socai_core::media::begin_background_media_generation();
     let runtime = runtime.inner().clone();
     let telemetry = telemetry.inner().clone();
     let task_id_for_spawn = task_id.clone();
@@ -577,6 +580,7 @@ pub async fn agent_task_reply(
             provider,
             model,
             run_dir,
+            background_media_generation,
             telemetry,
         )
         .await;
@@ -710,6 +714,9 @@ pub async fn agent_task_cancel(
         .cancel(&task_id)
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    if changed {
+        socai_core::media::begin_background_media_generation();
+    }
     if let Some(handle) = abort_handle {
         handle.abort();
     }
@@ -720,13 +727,11 @@ pub async fn agent_task_cancel(
         let usage = snapshot.run_dir.as_deref().and_then(read_run_usage);
         if let Some(run_dir) = snapshot.run_dir.as_deref() {
             let _ = mark_agent_run_status(run_dir, "cancelled", None);
-            // The aborted run future's drop guard wrote trace.json with
-            // status "interrupted" (usually before we get here — the
-            // close_target await above yields to the runtime); rewrite it to
-            // "cancelled" and ship it. Cancelled runs are the ones users gave
-            // up on, so their spans matter most.
-            let _ = mark_run_trace_status(run_dir, "cancelled");
-            telemetry.upload_run_trace(run_dir);
+            let run_dir = PathBuf::from(run_dir);
+            let telemetry = telemetry.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                upload_terminal_run_trace(run_dir, "cancelled", &telemetry).await;
+            });
         }
         record_desktop_session(&snapshot, "[cancelled by user]", "cancelled");
         telemetry.capture(
@@ -770,6 +775,9 @@ pub async fn agent_task_delete(
     task_id: String,
 ) -> Result<(), String> {
     let snapshot = tasks.delete(&task_id).await?;
+    if let Some(run_dir) = snapshot.run_dir.as_deref() {
+        socai_core::media::cancel_background_media_for_run(run_dir);
+    }
     let mut dirs: Vec<String> = Vec::new();
     if let Some(session_dir) = &snapshot.session_dir {
         if let Ok(conversation) = Conversation::load(session_dir) {
@@ -782,29 +790,47 @@ pub async fn agent_task_delete(
     }
     dirs.sort();
     dirs.dedup();
-    for dir in &dirs {
-        if let Err(err) = std::fs::remove_dir_all(dir) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("failed to delete task artifacts at {dir}: {err}");
-            }
-        }
-    }
-    // XHS history caches absolute media paths into these run dirs; scrub them
-    // so cross-run dedupe re-downloads instead of resurrecting dead paths.
-    let run_dirs: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
-    let scrubbed = XhsHistoryStore::open_default().scrub_media_under(&run_dirs);
-    if scrubbed > 0 {
-        eprintln!("forgot cached media for {scrubbed} notes under deleted task {task_id}");
-    }
+    let terminal_status = snapshot.status.clone();
+    let trace_run_dir = snapshot.run_dir.as_deref().map(PathBuf::from);
     telemetry.capture(
         "socai_agent_task_delete",
         json!({
-            "task_id": task_id,
-            "provider": snapshot.provider,
-            "model": snapshot.model,
-            "status": snapshot.status,
+            "task_id": task_id.clone(),
+            "provider": snapshot.provider.clone(),
+            "model": snapshot.model.clone(),
+            "status": terminal_status.clone(),
         }),
     );
+
+    // Removing a history row should feel immediate. The filesystem cleanup is
+    // background work, and cancelled/interrupted traces get a chance to finish
+    // durable staging before their source run directory disappears.
+    let telemetry = telemetry.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        if matches!(terminal_status.as_str(), "cancelled" | "interrupted") {
+            if let Some(run_dir) = trace_run_dir.as_deref() {
+                wait_for_trace_staging(run_dir).await;
+                upload_terminal_run_trace(run_dir, &terminal_status, &telemetry).await;
+            }
+        }
+        let _ = tokio::task::spawn_blocking(move || {
+            for dir in &dirs {
+                if let Err(err) = std::fs::remove_dir_all(dir) {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        eprintln!("failed to delete task artifacts at {dir}: {err}");
+                    }
+                }
+            }
+            // XHS history caches absolute media paths into these run dirs; scrub
+            // them so cross-run dedupe re-downloads instead of resurrecting dead paths.
+            let run_dirs: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
+            let scrubbed = XhsHistoryStore::open_default().scrub_media_under(&run_dirs);
+            if scrubbed > 0 {
+                eprintln!("forgot cached media for {scrubbed} notes under deleted task {task_id}");
+            }
+        })
+        .await;
+    });
     Ok(())
 }
 
@@ -818,6 +844,7 @@ async fn run_agent_task_background(
     provider: Option<String>,
     model: Option<String>,
     run_dir: PathBuf,
+    background_media_generation: u64,
     telemetry: DesktopTelemetry,
 ) {
     let Some(_permit) = registry.acquire_run_permit().await else {
@@ -884,6 +911,7 @@ async fn run_agent_task_background(
         provider.as_deref(),
         model.as_deref(),
         Some(run_dir),
+        Some(background_media_generation),
         Some(registry.clone()),
         telemetry.clone(),
         format!("task · {}", title_safe(&task)),
@@ -989,6 +1017,58 @@ pub(crate) fn record_interrupted_run(snapshot: &AgentTaskSnapshot, message: &str
     );
 }
 
+/// Wait for an aborted agent future's trace drop guard, patch the precise
+/// terminal state, then stage the trace durably before the task can be deleted.
+/// AbortHandle::abort() only schedules cancellation; without this wait the
+/// telemetry worker can race `trace.json` creation and silently miss the run.
+pub(crate) async fn upload_terminal_run_trace(
+    run_dir: impl AsRef<std::path::Path>,
+    status: &str,
+    telemetry: &DesktopTelemetry,
+) -> bool {
+    const READY_RETRIES: usize = 40;
+    const READY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
+    let run_dir = run_dir.as_ref();
+    let staged_marker = run_dir.join(".trace-staged");
+    if staged_marker.is_file() {
+        return true;
+    }
+    for attempt in 0..READY_RETRIES {
+        match mark_run_trace_status(run_dir, status) {
+            Ok(()) => {
+                if telemetry.upload_run_trace(run_dir) {
+                    let _ = std::fs::write(staged_marker, b"");
+                    return true;
+                }
+                return false;
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && attempt + 1 < READY_RETRIES =>
+            {
+                tokio::time::sleep(READY_DELAY).await;
+            }
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+async fn wait_for_trace_staging(run_dir: &std::path::Path) {
+    const WAIT_RETRIES: usize = 50;
+    const WAIT_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
+    let marker = run_dir.join(".trace-staged");
+    for attempt in 0..WAIT_RETRIES {
+        if marker.is_file() {
+            return;
+        }
+        if attempt + 1 < WAIT_RETRIES {
+            tokio::time::sleep(WAIT_DELAY).await;
+        }
+    }
+}
+
 fn record_desktop_session(snapshot: &AgentTaskSnapshot, assistant: &str, status: &str) {
     let Some(session_dir) = snapshot.session_dir.as_deref() else {
         return;
@@ -1015,6 +1095,7 @@ async fn run_agent_task_on_shared_page(
     provider: Option<&str>,
     model: Option<&str>,
     run_dir: Option<PathBuf>,
+    background_media_generation: Option<u64>,
     registry: Option<AgentTaskRegistry>,
     telemetry: DesktopTelemetry,
     title_label: String,
@@ -1101,6 +1182,7 @@ async fn run_agent_task_on_shared_page(
             seed_messages,
             run_dir,
             session_id,
+            background_media_generation,
             ..AgentRunConfig::default()
         };
         let outcome = run_agent_with_tools(task, llm_provider, tools, config, tx).await;

@@ -75,6 +75,8 @@ export interface NoteMedia {
   src?: string; // downloaded file — absolute path, or media_dir-relative
   poster?: string; // video only — first-frame still (path)
   dur?: string; // video only — "0:48"
+  status?: "loading" | "failed"; // background video-file download state
+  error?: string; // local diagnostic; intentionally not rendered
   w?: number;
   h?: number;
 }
@@ -149,6 +151,11 @@ export interface AgentTaskEventPayload {
   model?: string;
   task?: string;
   target_id?: string | null;
+}
+
+interface BackgroundMediaEvent {
+  run_dir: string;
+  note_id: string;
 }
 
 export interface ShellState {
@@ -568,6 +575,9 @@ async function main(): Promise<void> {
       void agentPanel.loadTaskNotes(event.payload.task_id, shell());
       maybeRelaunchReadyUpdate();
     }
+  });
+  await listen<BackgroundMediaEvent>("agent_task:notes_updated", (event) => {
+    agentPanel.handleBackgroundMediaUpdate(event.payload.run_dir, shell());
   });
 
   let initialTasks: AgentTaskSnapshot[] = [];

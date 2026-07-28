@@ -79,7 +79,20 @@ pub fn run() {
             let tasks = app.state::<AgentTaskRegistry>().inner().clone();
             let telemetry = app.state::<DesktopTelemetry>().inner().clone();
             let handle = app.handle().clone();
+            let media_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
+                // A graceful app shutdown marks active tasks interrupted in
+                // tasks.json before this process starts. If its trace drop
+                // guard finished during shutdown, recover and upload it now.
+                for snapshot in tasks.list().await {
+                    if snapshot.status == "interrupted" {
+                        if let Some(run_dir) = snapshot.run_dir.as_deref() {
+                            commands::upload_terminal_run_trace(run_dir, "interrupted", &telemetry)
+                                .await;
+                        }
+                    }
+                }
+
                 let mut rx = runtime.subscribe_browser_events();
                 while let Ok(event) = rx.recv().await {
                     match event {
@@ -100,6 +113,14 @@ pub fn run() {
                                     &snapshot,
                                     "chrome tab was closed",
                                 );
+                                if let Some(run_dir) = snapshot.run_dir.as_deref() {
+                                    commands::upload_terminal_run_trace(
+                                        run_dir,
+                                        "interrupted",
+                                        &telemetry,
+                                    )
+                                    .await;
+                                }
                                 telemetry.capture(
                                     "socai_agent_task_end",
                                     json!({
@@ -128,6 +149,18 @@ pub fn run() {
                                 .await;
                             }
                         }
+                    }
+                }
+            });
+            tauri::async_runtime::spawn(async move {
+                let mut media_events = socai_core::media::subscribe_background_media_events();
+                loop {
+                    match media_events.recv().await {
+                        Ok(event) => {
+                            let _ = media_handle.emit("agent_task:notes_updated", event);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
             });

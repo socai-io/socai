@@ -34,8 +34,7 @@ use crate::agent::llm::{
     ToolSchema,
 };
 use crate::agent::memory::{
-    compact_messages_for_context, DEFAULT_COMPACT_AFTER_MESSAGES,
-    DEFAULT_KEEP_RECENT_MESSAGES,
+    compact_messages_for_context, DEFAULT_COMPACT_AFTER_MESSAGES, DEFAULT_KEEP_RECENT_MESSAGES,
 };
 use crate::agent::report::report_with_artifacts;
 use crate::agent::run_logging::{make_run_dir, AgentRunRecorder};
@@ -112,6 +111,8 @@ pub struct AgentOptions {
     pub seed_messages: Vec<Message>,
     /// Optional parent conversation identifier.
     pub session_id: Option<String>,
+    /// Optional user-turn generation for cancelable background media work.
+    pub background_media_generation: Option<u64>,
 }
 
 impl Default for AgentOptions {
@@ -126,6 +127,7 @@ impl Default for AgentOptions {
             keep_recent_messages: DEFAULT_KEEP_RECENT_MESSAGES,
             seed_messages: Vec::new(),
             session_id: None,
+            background_media_generation: None,
         }
     }
 }
@@ -182,7 +184,9 @@ pub async fn run_agent_with_events(
         options.seed_messages.len(),
     );
 
-    let mut ctx = ToolContext::new(&run_id, &run_dir).with_run_state(Arc::clone(&run_state));
+    let mut ctx = ToolContext::new(&run_id, &run_dir)
+        .with_run_state(Arc::clone(&run_state))
+        .with_background_media_generation(options.background_media_generation);
     for site in &options.enabled_sites {
         ctx.enable_site(site.clone());
     }

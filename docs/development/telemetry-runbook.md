@@ -142,6 +142,19 @@ The desktop app writes its own buffer under the app data dir:
 ~/.socai/app/telemetry/events.jsonl
 ```
 
+Desktop run traces are staged separately before upload:
+
+```text
+~/.socai/app/telemetry/pending-traces/*.json
+```
+
+A pending trace is removed only after `/v1/traces` acknowledges it. Proxy,
+network, or Axiom failures leave the file in place and the worker retries it
+periodically and after the next app start. This staging also prevents deleting
+a cancelled task from racing the trace worker's first read. Cancellation and
+history deletion return to the UI immediately; trace finalization, staging,
+upload, and artifact cleanup continue as invisible background work.
+
 Example inspection:
 
 ```bash

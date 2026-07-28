@@ -77,12 +77,16 @@ pub(crate) fn save_named_bytes(
     label: &str,
     filename: &str,
 ) -> Result<PathBuf> {
+    let path = named_file_path(base_dir, label, filename)?;
+    std::fs::write(&path, payload)?;
+    Ok(path)
+}
+
+pub(crate) fn named_file_path(base_dir: &Path, label: &str, filename: &str) -> Result<PathBuf> {
     let safe_label = sanitize_label(label, "media");
     let safe_filename = sanitize_filename(filename, "asset.bin");
     let dir = ensure_dir(&base_dir.join(&safe_label))?;
-    let path = dir.join(safe_filename);
-    std::fs::write(&path, payload)?;
-    Ok(path)
+    Ok(dir.join(safe_filename))
 }
 
 pub(crate) fn url_suffix(url: &str, fallback: &str) -> String {

@@ -15,7 +15,13 @@ use crate::agent::tool::{
 };
 use crate::agent::{Backend as LlmProvider, Tool, ToolContext, ToolResult};
 use crate::cdp::PageSession;
-use crate::media::{ocr_diagnostics, ocr_warm_up, timing_delta, MediaProcessor, TimingSnapshot};
+use crate::media::{
+    background_media_generation_is_current, background_media_run_is_cancelled,
+    background_video_download_semaphore, current_background_media_generation,
+    emit_background_media_event, ocr_diagnostics, ocr_warm_up, reserve_background_video_download,
+    subscribe_background_media_cancellation, timing_delta, wait_for_background_media_cancellation,
+    BackgroundMediaEvent, MediaProcessor, TimingSnapshot,
+};
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
@@ -28,8 +34,7 @@ use crate::sites::runner::{
 };
 use crate::sites::xhs::entities::{parse_posted_at_ms, parse_stat_count};
 use crate::sites::xhs::media_manifest::{
-    ensure_entity_note_id, fill_entity_from_card, search_media_manifest,
-    write_media_manifest_file,
+    ensure_entity_note_id, fill_entity_from_card, search_media_manifest, write_media_manifest_file,
 };
 use crate::sites::xhs::page::{LoginGate, XHS_SEARCH_FILTERS};
 use crate::sites::xhs::{
@@ -1129,6 +1134,11 @@ async fn scan_card_note(
     // video note's video file — an OCR-only run downloads just the poster —
     // and is the download requirement checked against cross-run history.
     download_media_requested: bool,
+    // Desktop macro scans return after downloading the poster and enqueue the
+    // full video separately. TUI/CLI downloads and transcription requests keep
+    // the file inline.
+    download_video_file_inline: bool,
+    background_video_downloads: bool,
     ocr: bool,
     transcribe_audio: bool,
     // When true, images are downloaded inline but OCR is left to the caller (run
@@ -1187,7 +1197,7 @@ async fn scan_card_note(
                 level: level.to_string(),
                 include_media,
                 download_media,
-                download_video_file: download_media_requested,
+                download_video_file: download_video_file_inline,
                 // Scans never transcribe inline: the caller runs cloud ASR in a
                 // background task (spawn_note_transcribe) so it overlaps the
                 // next note's read + download. The dedup check above still uses
@@ -1299,7 +1309,10 @@ async fn scan_card_note(
         // the desktop app can render it as a rich, locally-served card without
         // re-fetching. Recorded here — before the lean trim strips images/video
         // from the agent-facing payload — so the archive keeps the full note.
-        if let Some((note_id, record)) = build_note_record(&entry, ctx, level) {
+        if let Some((note_id, mut record)) = build_note_record(&entry, ctx, level) {
+            if background_video_downloads {
+                set_note_record_video_status(&mut record, Some("loading"), None);
+            }
             ctx.record_note(&note_id, record);
         }
     }
@@ -1910,6 +1923,268 @@ fn run_relative_path(path: &str, run_dir: &Path) -> String {
         .strip_prefix(run_dir)
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string())
+}
+
+fn set_note_record_video_status(record: &mut Value, status: Option<&str>, error: Option<&str>) {
+    let Some(items) = record.get_mut("media").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(video) = items
+        .iter_mut()
+        .find(|item| item.get("kind").and_then(Value::as_str) == Some("video"))
+        .and_then(Value::as_object_mut)
+    {
+        match status {
+            Some(status) => {
+                video.insert("status".into(), Value::String(status.into()));
+            }
+            None => {
+                video.remove("status");
+            }
+        }
+        match error {
+            Some(error) => {
+                video.insert("error".into(), Value::String(error.into()));
+            }
+            None => {
+                video.remove("error");
+            }
+        }
+    }
+}
+
+fn set_recorded_video_status(
+    ctx: &ToolContext,
+    note_id: &str,
+    status: Option<&str>,
+    error: Option<&str>,
+) -> bool {
+    ctx.update_recorded_note(note_id, |record| {
+        set_note_record_video_status(record, status, error);
+    })
+}
+
+fn emit_background_note_update(ctx: &ToolContext, note_id: &str) {
+    emit_background_media_event(BackgroundMediaEvent {
+        run_dir: ctx.run_dir.to_string_lossy().into_owned(),
+        note_id: note_id.to_string(),
+    });
+}
+
+/// Complete video files after a desktop macro has returned its poster-only note
+/// bundle. Downloads are process-wide bounded, survive the agent's final answer,
+/// and are canceled by the next desktop user-turn generation.
+fn spawn_background_video_downloads(
+    notes: &mut [Value],
+    media: &Option<MediaProcessor>,
+    history: &Arc<XhsHistoryStore>,
+    ctx: &ToolContext,
+    level: &str,
+    include_media: bool,
+) {
+    let Some(media) = media.clone() else {
+        return;
+    };
+    let generation = ctx
+        .background_media_generation
+        .unwrap_or_else(current_background_media_generation);
+    let run_dir = ctx.run_dir.to_string_lossy().into_owned();
+    if !background_media_generation_is_current(generation)
+        || background_media_run_is_cancelled(&run_dir)
+    {
+        return;
+    }
+
+    for entry in notes {
+        if entry.get("ok").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Some(entity) = entry.get_mut("entity").filter(|value| value.is_object()) else {
+            continue;
+        };
+        if entity.get("type").and_then(Value::as_str) != Some("video") {
+            continue;
+        }
+        let note_id = entity
+            .get("note_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if note_id.is_empty() {
+            continue;
+        }
+        let title = entity
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let referer = entity
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let Some(video) = entity.get_mut("video").filter(|value| value.is_object()) else {
+            continue;
+        };
+        if video
+            .get("local_path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| !path.trim().is_empty())
+        {
+            continue;
+        }
+        // A prior search in the same agent step may have completed this note's
+        // background download while the current search was still reading it.
+        // Re-check history at enqueue time (later than scan_card_note's cache
+        // check) and reuse that file instead of fetching the same video twice.
+        let completed_elsewhere = history
+            .get(&note_id)
+            .and_then(|entry| entry.entity)
+            .and_then(|entity| entity.get("video").cloned())
+            .and_then(|video| {
+                let path = video
+                    .get("local_path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())?;
+                std::fs::metadata(path)
+                    .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+                    .then(|| path.to_string())
+            });
+        if let Some(local_path) = completed_elsewhere {
+            if let Some(map) = video.as_object_mut() {
+                map.insert("local_path".into(), Value::String(local_path.clone()));
+            }
+            let src = run_relative_path(&local_path, &ctx.run_dir);
+            ctx.update_recorded_note(&note_id, |record| {
+                let Some(items) = record.get_mut("media").and_then(Value::as_array_mut) else {
+                    return;
+                };
+                if let Some(video) = items
+                    .iter_mut()
+                    .find(|item| item.get("kind").and_then(Value::as_str) == Some("video"))
+                    .and_then(Value::as_object_mut)
+                {
+                    video.insert("src".into(), Value::String(src));
+                    video.remove("status");
+                    video.remove("error");
+                }
+            });
+            continue;
+        }
+        if let Some(map) = video.as_object_mut() {
+            map.insert("background_download_pending".into(), Value::Bool(true));
+        }
+        set_recorded_video_status(ctx, &note_id, Some("loading"), None);
+        let Some(reservation) = reserve_background_video_download(generation, &run_dir, &note_id)
+        else {
+            continue;
+        };
+        let video = video.clone();
+        let mut entity = entity.clone();
+        let media = media.clone();
+        let history = history.clone();
+        let ctx = ctx.clone();
+        let level = level.to_string();
+        let run_dir = run_dir.clone();
+
+        tokio::spawn(async move {
+            let _reservation = reservation;
+            let mut cancellation = subscribe_background_media_cancellation();
+            let semaphore = background_video_download_semaphore();
+            let permit = tokio::select! {
+                permit = semaphore.acquire_owned() => match permit {
+                    Ok(permit) => permit,
+                    Err(_) => return,
+                },
+                _ = wait_for_background_media_cancellation(generation, &run_dir, &mut cancellation) => {
+                    if set_recorded_video_status(&ctx, &note_id, None, None) {
+                        emit_background_note_update(&ctx, &note_id);
+                    }
+                    return;
+                },
+            };
+            let download = media.download_video_file(&video, &note_id, &title, &referer);
+            let completed_video = tokio::select! {
+                video = download => video,
+                _ = wait_for_background_media_cancellation(generation, &run_dir, &mut cancellation) => {
+                    if set_recorded_video_status(&ctx, &note_id, None, None) {
+                        emit_background_note_update(&ctx, &note_id);
+                    }
+                    return;
+                },
+            };
+            drop(permit);
+            if !background_media_generation_is_current(generation)
+                || background_media_run_is_cancelled(&run_dir)
+            {
+                if set_recorded_video_status(&ctx, &note_id, None, None) {
+                    emit_background_note_update(&ctx, &note_id);
+                }
+                return;
+            }
+            let Some(local_path) = completed_video
+                .get("local_path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+            else {
+                let error = completed_video
+                    .get("download_error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("video download did not produce a local file");
+                if set_recorded_video_status(&ctx, &note_id, Some("failed"), Some(error)) {
+                    emit_background_note_update(&ctx, &note_id);
+                }
+                tracing::warn!(
+                    note_id,
+                    error,
+                    "background video download did not produce a local file"
+                );
+                return;
+            };
+
+            let mut completed_video = completed_video;
+            if let Some(map) = completed_video.as_object_mut() {
+                map.remove("background_download_pending");
+            }
+            if let Some(map) = entity.as_object_mut() {
+                map.insert("video".into(), completed_video);
+            }
+            history.record(&entity, &level, include_media);
+
+            let src = run_relative_path(&local_path, &ctx.run_dir);
+            let updated = ctx.update_recorded_note(&note_id, |record| {
+                let Some(map) = record.as_object_mut() else {
+                    return;
+                };
+                let media = map
+                    .entry("media")
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                let Some(items) = media.as_array_mut() else {
+                    return;
+                };
+                if let Some(video) = items
+                    .iter_mut()
+                    .find(|item| item.get("kind").and_then(Value::as_str) == Some("video"))
+                {
+                    if let Some(video) = video.as_object_mut() {
+                        video.insert("src".into(), Value::String(src.clone()));
+                        video.remove("status");
+                        video.remove("error");
+                    }
+                } else {
+                    items.insert(0, json!({ "kind": "video", "ratio": "9:16", "src": src }));
+                }
+                map.insert("saved".into(), Value::Bool(true));
+            });
+            if updated {
+                emit_background_note_update(&ctx, &note_id);
+            }
+        });
+    }
 }
 
 /// Seconds → the app's display duration, "M:SS".
@@ -2573,7 +2848,8 @@ async fn scan_direct_note(
     position: usize,
     comment_count: i64,
     download_media: bool,
-    download_media_requested: bool,
+    download_video_file_inline: bool,
+    background_video_downloads: bool,
     ocr: bool,
     defer_ocr: bool,
 ) -> Value {
@@ -2617,7 +2893,7 @@ async fn scan_direct_note(
                 level: "deep".to_string(),
                 include_media: false,
                 download_media,
-                download_video_file: download_media_requested,
+                download_video_file: download_video_file_inline,
                 ocr: ocr && !defer_ocr,
                 transcribe_audio: false,
                 settle_ms: 800,
@@ -2719,7 +2995,10 @@ async fn scan_direct_note(
         "ok": true,
         "entity": entity,
     });
-    if let Some((note_id, record)) = build_note_record(&entry, ctx, "deep") {
+    if let Some((note_id, mut record)) = build_note_record(&entry, ctx, "deep") {
+        if background_video_downloads {
+            set_note_record_video_status(&mut record, Some("loading"), None);
+        }
         ctx.record_note(&note_id, record);
     }
     if let Some(map) = entry.as_object_mut() {
@@ -2825,6 +3104,10 @@ impl Tool for GetNotesTool {
             || get_bool(&input, "download_media", false)
             || transcribe_audio;
         let download_media = ocr || download_media_requested;
+        let background_video_downloads = self.always_download_media
+            && ctx.background_media_generation.is_some()
+            && download_media_requested
+            && !transcribe_audio;
         if ocr {
             tokio::task::spawn_blocking(ocr_warm_up);
         }
@@ -2861,7 +3144,8 @@ impl Tool for GetNotesTool {
                 position,
                 comment_count,
                 download_media,
-                download_media_requested,
+                download_media_requested && !background_video_downloads,
+                background_video_downloads,
                 ocr,
                 ocr,
             )
@@ -2923,6 +3207,9 @@ impl Tool for GetNotesTool {
             false,
         )
         .await;
+        if background_video_downloads {
+            spawn_background_video_downloads(&mut notes, &media, &self.history, ctx, "deep", false);
+        }
         write_scan_perf(ctx, &notes, browse_ms, &ocr_timings, &note_perfs);
         if ocr {
             scan_progress.finish_ocr(notes.len());
@@ -3811,6 +4098,10 @@ impl Tool for SearchTool {
         // OCR still implies downloading what it reads (carousel images, video
         // posters) — but only an explicit request fetches video files.
         let download_media = ocr || download_media_requested;
+        let background_video_downloads = self.always_download_media
+            && ctx.background_media_generation.is_some()
+            && download_media_requested
+            && !transcribe_audio;
         // Warm the OCR engine off the critical path (model load + session init +
         // graph compile) so the first note's OCR doesn't pay it; overlaps the
         // search submit + first note open below.
@@ -3950,6 +4241,8 @@ impl Tool for SearchTool {
                 include_media,
                 download_media,
                 download_media_requested,
+                download_media_requested && !background_video_downloads,
+                background_video_downloads,
                 ocr,
                 transcribe_audio,
                 // Defer OCR to a background task when OCR is on, so the loop can
@@ -4013,6 +4306,16 @@ impl Tool for SearchTool {
             include_media,
         )
         .await;
+        if background_video_downloads {
+            spawn_background_video_downloads(
+                &mut notes,
+                &media,
+                &self.history,
+                ctx,
+                level,
+                include_media,
+            );
+        }
         // Write the scan perf record (per-note phase timing + OCR pipeline) to a
         // separate debug file; the JSON artifact stays LLM-facing.
         write_scan_perf(ctx, &notes, browse_ms, &ocr_timings, &note_perfs);
@@ -4239,8 +4542,7 @@ impl Tool for AuthorScanTool {
         // `preview=true, download_media=true` call would still spin up the media
         // pipeline and emit media metadata even though no note is opened.
         let ocr = self.always_ocr || get_bool(&input, "ocr", false);
-        let transcribe_audio = !preview
-            && get_bool(&input, "transcribe_audio", false);
+        let transcribe_audio = !preview && get_bool(&input, "transcribe_audio", false);
         // Explicit request: download everything, video files included. OCR
         // still implies downloading what it reads (carousel images, video
         // posters) — but only an explicit request fetches video files.
@@ -4249,6 +4551,10 @@ impl Tool for AuthorScanTool {
                 || get_bool(&input, "download_media", false)
                 || transcribe_audio);
         let download_media = !preview && (ocr || download_media_requested);
+        let background_video_downloads = self.always_download_media
+            && ctx.background_media_generation.is_some()
+            && download_media_requested
+            && !transcribe_audio;
         // Warm the OCR engine off the critical path; overlaps opening the profile
         // and collecting note cards below.
         if ocr {
@@ -4356,6 +4662,8 @@ impl Tool for AuthorScanTool {
                     false,
                     download_media,
                     download_media_requested,
+                    download_media_requested && !background_video_downloads,
+                    background_video_downloads,
                     ocr,
                     transcribe_audio,
                     ocr,
@@ -4413,6 +4721,16 @@ impl Tool for AuthorScanTool {
                 false,
             )
             .await;
+            if background_video_downloads {
+                spawn_background_video_downloads(
+                    &mut notes,
+                    &media,
+                    &self.history,
+                    ctx,
+                    "deep",
+                    false,
+                );
+            }
             write_scan_perf(ctx, &notes, browse_ms, &ocr_timings, &note_perfs);
             if ocr {
                 scan_progress.finish_ocr(notes.len());

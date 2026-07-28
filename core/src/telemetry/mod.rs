@@ -18,6 +18,11 @@ const TRACES_ENDPOINT: &str = "https://socai.io/v1/traces";
 const CHANNEL_CAPACITY: usize = 512;
 const REMOTE_BATCH_SIZE: usize = 25;
 const REMOTE_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
+const TRACE_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const TRACE_UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const TRACE_RETRY_BATCH_SIZE: usize = 5;
+const TRACE_FILE_READY_RETRIES: usize = 20;
+const TRACE_FILE_READY_DELAY: Duration = Duration::from_millis(50);
 
 /// Which socai surface is emitting telemetry. Carried verbatim into the `source`
 /// field of every event and used to decide which device context is meaningful
@@ -46,13 +51,16 @@ impl TelemetrySource {
 #[derive(Clone)]
 pub struct Telemetry {
     sender: mpsc::Sender<QueuedItem>,
+    pending_trace_dir: PathBuf,
 }
 
 #[derive(Debug)]
 enum QueuedItem {
     Event(QueuedEvent),
-    /// Path to a run's `trace.json`; the worker reads, enriches, and uploads it.
+    /// Path to a run's `trace.json` that was not ready when it was queued.
     TraceFile(PathBuf),
+    /// Durable, identity-free copy under telemetry/pending-traces.
+    PendingTrace(PathBuf),
 }
 
 #[derive(Debug)]
@@ -67,6 +75,7 @@ struct WorkerConfig {
     session_id: String,
     source: TelemetrySource,
     local_path: PathBuf,
+    pending_trace_dir: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +94,7 @@ impl Telemetry {
         let install_id = crate::identity::load_or_create_install_id(home);
         let session_id = new_session_id();
         let local_path = home.join("telemetry/events.jsonl");
+        let pending_trace_dir = home.join("telemetry/pending-traces");
 
         let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
         let config = WorkerConfig {
@@ -92,10 +102,14 @@ impl Telemetry {
             session_id,
             source,
             local_path,
+            pending_trace_dir: pending_trace_dir.clone(),
         };
         spawn_worker(receiver, config);
 
-        Self { sender }
+        Self {
+            sender,
+            pending_trace_dir,
+        }
     }
 
     pub fn capture(&self, name: impl Into<String>, properties: Value) {
@@ -105,13 +119,20 @@ impl Telemetry {
         }));
     }
 
-    /// Fire-and-forget upload of a run's `trace.json` (written by the run's
-    /// trace builder on finish or abort). Missing file — e.g. a run that
-    /// failed before the loop started — is a silent no-op.
-    pub fn upload_run_trace(&self, run_dir: &Path) {
-        let _ = self
-            .sender
-            .try_send(QueuedItem::TraceFile(run_dir.join("trace.json")));
+    /// Durably stage and asynchronously upload a run's `trace.json`.
+    ///
+    /// Staging happens before this method returns so deleting a completed or
+    /// cancelled task cannot race the telemetry worker's first file read. A
+    /// cancellation can call this just before the trace drop guard finishes;
+    /// that source path is retried briefly by the worker.
+    pub fn upload_run_trace(&self, run_dir: &Path) -> bool {
+        let source = run_dir.join("trace.json");
+        let (item, staged) = match stage_trace_file(&source, &self.pending_trace_dir) {
+            Ok(path) => (QueuedItem::PendingTrace(path), true),
+            Err(_) => (QueuedItem::TraceFile(source), false),
+        };
+        let _ = self.sender.try_send(item);
+        staged
     }
 }
 
@@ -142,10 +163,18 @@ fn spawn_worker(receiver: mpsc::Receiver<QueuedItem>, config: WorkerConfig) {
 }
 
 async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerConfig) {
-    let client = reqwest::Client::new();
+    let client = match reqwest::Client::builder()
+        .timeout(TRACE_UPLOAD_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return,
+    };
     let mut remote_batch: Vec<Value> = Vec::new();
     let mut flush_tick = tokio::time::interval(REMOTE_FLUSH_INTERVAL);
     flush_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut trace_retry_tick = tokio::time::interval(TRACE_RETRY_INTERVAL);
+    trace_retry_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -165,13 +194,21 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerCon
                             flush_remote(&client, &mut remote_batch).await;
                         }
                     }
-                    QueuedItem::TraceFile(path) => {
-                        upload_trace_file(&client, &config, &path).await;
+                    QueuedItem::TraceFile(source) => {
+                        if let Some(path) = stage_trace_file_when_ready(&source, &config.pending_trace_dir).await {
+                            upload_pending_trace(&client, &config, &path).await;
+                        }
+                    }
+                    QueuedItem::PendingTrace(path) => {
+                        upload_pending_trace(&client, &config, &path).await;
                     }
                 }
             }
             _ = flush_tick.tick() => {
                 flush_remote(&client, &mut remote_batch).await;
+            }
+            _ = trace_retry_tick.tick() => {
+                retry_pending_traces(&client, &config).await;
             }
         }
     }
@@ -179,10 +216,71 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerCon
     flush_remote(&client, &mut remote_batch).await;
 }
 
-/// Read a run's `trace.json`, append identity resource attributes, and POST it
-/// to the traces proxy. Best-effort at every step: a missing/invalid file or a
-/// failed upload is dropped silently, matching the events contract.
-async fn upload_trace_file(client: &reqwest::Client, config: &WorkerConfig, path: &Path) {
+fn stage_trace_file(source: &Path, pending_dir: &Path) -> std::io::Result<PathBuf> {
+    let bytes = std::fs::read(source)?;
+    let payload: Value = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+    let key = trace_spool_key(&payload)
+        .ok_or_else(|| std::io::Error::other("trace.json has no root trace/span id"))?;
+    std::fs::create_dir_all(pending_dir)?;
+    let destination = pending_dir.join(format!("{key}.json"));
+    let temporary = pending_dir.join(format!("{key}.{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temporary, bytes)?;
+    if destination.exists() {
+        let _ = std::fs::remove_file(&destination);
+    }
+    std::fs::rename(&temporary, &destination)?;
+    Ok(destination)
+}
+
+fn trace_spool_key(payload: &Value) -> Option<String> {
+    let root = payload
+        .pointer("/resourceSpans/0/scopeSpans/0/spans")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|span| span.get("parentSpanId").is_none())?;
+    let trace_id = root.get("traceId")?.as_str()?;
+    let span_id = root.get("spanId")?.as_str()?;
+    if trace_id.is_empty() || span_id.is_empty() {
+        return None;
+    }
+    Some(format!("{trace_id}-{span_id}"))
+}
+
+async fn stage_trace_file_when_ready(source: &Path, pending_dir: &Path) -> Option<PathBuf> {
+    for attempt in 0..TRACE_FILE_READY_RETRIES {
+        match stage_trace_file(source, pending_dir) {
+            Ok(path) => return Some(path),
+            Err(_) if attempt + 1 < TRACE_FILE_READY_RETRIES => {
+                tokio::time::sleep(TRACE_FILE_READY_DELAY).await;
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+async fn retry_pending_traces(client: &reqwest::Client, config: &WorkerConfig) {
+    let Ok(mut entries) = tokio::fs::read_dir(&config.pending_trace_dir).await else {
+        return;
+    };
+    let mut paths = Vec::new();
+    while paths.len() < TRACE_RETRY_BATCH_SIZE {
+        let Ok(Some(entry)) = entries.next_entry().await else {
+            break;
+        };
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            paths.push(path);
+        }
+    }
+    for path in paths {
+        upload_pending_trace(client, config, &path).await;
+    }
+}
+
+/// Append identity resource attributes and POST one durable pending trace.
+/// The spool file is removed only after the proxy acknowledges the handoff.
+async fn upload_pending_trace(client: &reqwest::Client, config: &WorkerConfig, path: &Path) {
     let Ok(bytes) = tokio::fs::read(path).await else {
         return;
     };
@@ -190,7 +288,12 @@ async fn upload_trace_file(client: &reqwest::Client, config: &WorkerConfig, path
         return;
     };
     enrich_trace_resource(&mut payload, config);
-    let _ = client.post(traces_endpoint()).json(&payload).send().await;
+    let Ok(response) = client.post(traces_endpoint()).json(&payload).send().await else {
+        return;
+    };
+    if response.status().is_success() {
+        let _ = tokio::fs::remove_file(path).await;
+    }
 }
 
 /// The on-disk trace stays identity-free so run dirs can be shared; the

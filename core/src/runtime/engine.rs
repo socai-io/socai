@@ -308,6 +308,7 @@ pub struct AgentRunConfig {
     /// Prior chat-level messages to continue an ongoing conversation from.
     pub seed_messages: Vec<Message>,
     pub session_id: Option<String>,
+    pub background_media_generation: Option<u64>,
 }
 
 impl Default for AgentRunConfig {
@@ -325,6 +326,7 @@ impl Default for AgentRunConfig {
             run_dir: None,
             seed_messages: Vec::new(),
             session_id: None,
+            background_media_generation: None,
         }
     }
 }
@@ -350,6 +352,7 @@ pub async fn run_agent_task(
         keep_recent_messages: config.keep_recent_messages,
         seed_messages: config.seed_messages,
         session_id: config.session_id,
+        background_media_generation: config.background_media_generation,
     };
     run_agent_with_events(task, llm_provider, tools, options, events_tx).await
 }

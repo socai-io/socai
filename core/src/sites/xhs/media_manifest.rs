@@ -189,12 +189,20 @@ fn video_manifest_entry(note_id: &str, video: &Value, run_dir: &Path) -> Value {
     let local_path = string_field_value(video, "local_path");
     let download_error = first_string_field(video, &["download_error", "save_error"]);
     let local_file = local_path_buf(run_dir, &local_path);
-    let (status, error) = download_status_and_error(
-        &local_path,
-        local_file.as_deref(),
-        &source_url,
-        download_error,
-    );
+    let pending = video
+        .get("background_download_pending")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let (status, error) = if pending {
+        ("pending", None)
+    } else {
+        download_status_and_error(
+            &local_path,
+            local_file.as_deref(),
+            &source_url,
+            download_error,
+        )
+    };
     let size_bytes = file_size(local_file.as_deref());
 
     json!({

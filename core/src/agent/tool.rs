@@ -144,6 +144,10 @@ pub struct ToolContext {
     pub run_dir: PathBuf,
     pub step: u32,
     pub active_tool_name: String,
+    /// Desktop user-turn generation used to cancel background media work when
+    /// the user submits another task or follow-up. `None` for hosts that do
+    /// not manage generations explicitly.
+    pub background_media_generation: Option<u64>,
     pub run_state: Option<Arc<RunState>>,
     tool_dir: Option<PathBuf>,
     pub enabled_sites: Arc<Mutex<BTreeSet<String>>>,
@@ -197,6 +201,7 @@ impl ToolContext {
             run_dir: run_dir.as_ref().to_path_buf(),
             step: 0,
             active_tool_name: String::new(),
+            background_media_generation: None,
             run_state: None,
             tool_dir: None,
             enabled_sites: Arc::new(Mutex::new(BTreeSet::new())),
@@ -210,6 +215,11 @@ impl ToolContext {
 
     pub fn with_progress_sender(mut self, progress: Option<ToolProgressSender>) -> Self {
         self.progress = progress;
+        self
+    }
+
+    pub fn with_background_media_generation(mut self, generation: Option<u64>) -> Self {
+        self.background_media_generation = generation;
         self
     }
 
@@ -326,6 +336,27 @@ impl ToolContext {
             // on-disk archive the desktop app reads is affected.
             tracing::warn!(error = %err, note_id, "failed to persist note archive");
         }
+    }
+
+    /// Atomically update an already-recorded note and persist the resulting
+    /// archive. Background media completion uses this instead of replacing a
+    /// stale whole-note snapshot while the agent may be recording other notes.
+    pub fn update_recorded_note(&self, note_id: &str, update: impl FnOnce(&mut Value)) -> bool {
+        if note_id.is_empty() {
+            return false;
+        }
+        let Ok(mut guard) = self.notes_seen.lock() else {
+            return false;
+        };
+        let Some((_, record)) = guard.iter_mut().find(|(id, _)| id == note_id) else {
+            return false;
+        };
+        update(record);
+        if let Err(err) = crate::agent::note_store::write_notes(&self.run_dir, &guard) {
+            tracing::warn!(error = %err, note_id, "failed to persist updated note archive");
+            return false;
+        }
+        true
     }
 
     pub fn with_run_state(mut self, run_state: Arc<RunState>) -> Self {

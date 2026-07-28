@@ -155,6 +155,68 @@ impl MediaProcessor {
         result
     }
 
+    /// Download only the playable file for a video whose poster has already
+    /// been fetched. This is the background companion to
+    /// `download_video_poster`: it streams into a stable note-local file and
+    /// preserves all poster/OCR fields on the input object.
+    pub async fn download_video_file(
+        &self,
+        video: &Value,
+        note_id: &str,
+        title: &str,
+        referer: &str,
+    ) -> Value {
+        let mut result = video.clone();
+        if !result.is_object() {
+            result = crate::media::common::empty_object();
+        }
+        let label = if !note_id.trim().is_empty() {
+            note_id
+        } else if !title.trim().is_empty() {
+            title
+        } else {
+            "video"
+        };
+        let source = downloadable_video_url(&result);
+        if source.is_empty() {
+            insert_string(
+                &mut result,
+                "download_error",
+                "downloadable video URL not found (blob: URLs cannot be downloaded)",
+            );
+            return result;
+        }
+
+        let suffix = url_suffix(&source, ".mp4");
+        let filename = format!("video{suffix}");
+        let t_file = Instant::now();
+        match self
+            .download_named_file_streaming_with_timeout(
+                &source,
+                referer,
+                label,
+                &filename,
+                Duration::from_secs(VIDEO_DOWNLOAD_TIMEOUT_S.max(self.config.request_timeout_s)),
+            )
+            .await
+        {
+            Ok(path) => {
+                if let Some(map) = result.as_object_mut() {
+                    map.remove("download_error");
+                }
+                insert_string(&mut result, "local_path", path.to_string_lossy());
+            }
+            Err(err) => insert_string(&mut result, "download_error", format!("{err:#}")),
+        }
+        if let Some(map) = result.as_object_mut() {
+            map.insert(
+                "download_ms".into(),
+                serde_json::json!(t_file.elapsed().as_millis() as u64),
+            );
+        }
+        result
+    }
+
     /// Transcribe an already-downloaded video file in place. The caller must
     /// have downloaded the video first and stored `local_path` on the object.
     pub async fn transcribe_downloaded_video(&self, video: &mut Value) {
