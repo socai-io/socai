@@ -96,6 +96,15 @@ impl Cdp {
 }
 
 async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
+    // Exactly one connect loop at a time. The state check below is a filter,
+    // not a claim: two callers (a UI connect button pressed twice, say) can
+    // both observe `Disconnected` before either transitions, and both would
+    // then open their own browser — two hosted sessions on a remote profile.
+    let connect_lock = cdp.connect_lock();
+    let Ok(_connect_guard) = connect_lock.try_lock() else {
+        debug!("connect already in progress; ignoring duplicate request");
+        return;
+    };
     {
         let state = cdp.state();
         let guard = state.lock().await;
@@ -393,6 +402,10 @@ async fn on_connection_lost(cdp: Cdp, reason: String) {
 /// asymmetry is what keeps an explicit `disconnect()` during the retry delay
 /// from being resurrected into a fresh connection (and, for a hosted profile,
 /// a fresh billed session).
+///
+/// `Connecting` can be trusted to be *our own* attempt because `run_connect`
+/// holds `Cdp::connect_lock` for the whole loop, so no second loop exists to
+/// have left it there.
 async fn begin_connect_attempt(cdp: &Cdp, attempt: u8, first: bool) -> bool {
     let state = cdp.state();
     let mut guard = state.lock().await;

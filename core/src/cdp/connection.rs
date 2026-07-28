@@ -239,6 +239,11 @@ pub struct Cdp {
     state: Arc<Mutex<CdpState>>,
     events: broadcast::Sender<BrowserEvent>,
     owned_targets: Arc<Mutex<HashSet<String>>>,
+    /// Held for the lifetime of a connect loop so only one runs at a time.
+    /// Reading the state cannot provide that on its own: two callers can both
+    /// observe `Disconnected` before either transitions, and each would then
+    /// acquire its own browser — for a hosted profile, its own billed session.
+    connect_lock: Arc<Mutex<()>>,
 }
 
 impl Cdp {
@@ -248,6 +253,7 @@ impl Cdp {
             state: Arc::new(Mutex::new(CdpState::initial())),
             events,
             owned_targets: Arc::new(Mutex::new(HashSet::new())),
+            connect_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -328,6 +334,10 @@ impl Cdp {
 
     pub(crate) fn state(&self) -> Arc<Mutex<CdpState>> {
         Arc::clone(&self.state)
+    }
+
+    pub(crate) fn connect_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.connect_lock)
     }
 
     pub(crate) fn emit(&self, event: BrowserEvent) {
