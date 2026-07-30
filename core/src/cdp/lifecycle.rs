@@ -38,6 +38,11 @@ const RELEASE_AWAIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// one release round trip) without letting a quit hang on a stalled
 /// handshake.
 const CONNECT_SETTLE_TIMEOUT: Duration = Duration::from_secs(8);
+/// Ceiling for the whole close-owned-tabs phase of `disconnect()`. Tab
+/// closes on a healthy browser take milliseconds; this only bites when the
+/// browser is wedged, where waiting out per-command timeouts would push the
+/// session release past the shutdown budget.
+const TARGET_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct ConnectInventory {
     targets: HashMap<String, TargetInfo>,
@@ -86,13 +91,29 @@ impl Cdp {
     }
 
     pub async fn disconnect(&self) {
-        // Close socai-owned page targets before dropping endpoint state. All
-        // target lifecycle is routed through the browser websocket so existing
-        // and managed Chrome share the same cleanup path.
-        let browser_client = self.browser_client().await;
-        for target_id in self.take_owned_targets().await {
-            if let Some(client) = browser_client.as_ref() {
-                let _ = close_target_via_browser_ws(client, &target_id).await;
+        // One teardown at a time, held across the release: a second
+        // disconnect (the idle reaper racing an app quit, say) must not
+        // return before the first caller's release has landed, or process
+        // exit aborts it. "disconnect returned" means "teardown finished".
+        let teardown_lock = self.teardown_lock();
+        let _teardown = teardown_lock.lock().await;
+        // Close socai-owned page targets before dropping endpoint state —
+        // but only for browsers that outlive this disconnect (existing and
+        // managed attach). A remote session's whole browser dies with the
+        // release, so tab cleanup there is dead work standing between
+        // shutdown and the release call. The phase is bounded as a whole:
+        // each close can stall up to `raw_client::COMMAND_TIMEOUT` against a
+        // wedged browser, and this path sits inside shutdown budgets (app
+        // quit, the daemon's SIGTERM kill grace).
+        let owned_targets = self.take_owned_targets().await;
+        if let Some((client, remote)) = self.browser_client_with_mode().await {
+            if !remote {
+                let _ = tokio::time::timeout(TARGET_CLOSE_TIMEOUT, async {
+                    for target_id in &owned_targets {
+                        let _ = close_target_via_browser_ws(&client, target_id).await;
+                    }
+                })
+                .await;
             }
         }
         let owner = transition_unconditional(
@@ -452,12 +473,25 @@ async fn on_connection_lost(cdp: Cdp, reason: String) {
     let _ = cdp.take_owned_targets().await;
     let state = cdp.state();
     let mut guard = state.lock().await;
-    if matches!(*guard, CdpState::Connected { .. }) {
-        *guard = CdpState::Disconnected { reason };
-        let payload: StatusPayload = (&*guard).into();
-        cdp.emit(BrowserEvent::StatusChanged(payload));
-        cdp.emit(BrowserEvent::TargetsChanged(Vec::new()));
+    if !matches!(*guard, CdpState::Connected { .. }) {
+        return;
     }
+    let owner = match &mut *guard {
+        CdpState::Connected { owner, .. } => std::mem::replace(owner, BrowserOwner::None),
+        _ => BrowserOwner::None,
+    };
+    *guard = CdpState::Disconnected { reason };
+    let payload: StatusPayload = (&*guard).into();
+    cdp.emit(BrowserEvent::StatusChanged(payload));
+    cdp.emit(BrowserEvent::TargetsChanged(Vec::new()));
+    drop(guard);
+    // Release awaited here too (state lock dropped first). The session behind
+    // a lost connection is usually already dead — the remote timeout is the
+    // common cause — but the explicit release records the end time on the
+    // server for accounting, and closes the hole where a loss lands moments
+    // before process exit and a Drop-spawned release would die with it. This
+    // runs in the target-poll task, so it is off every shutdown path.
+    release_owner_now(owner).await;
 }
 
 /// Move into `Connecting` for one attempt, returning whether the attempt may

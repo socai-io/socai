@@ -263,6 +263,11 @@ pub struct Cdp {
     /// observe `Disconnected` before either transitions, and each would then
     /// acquire its own browser — for a hosted profile, its own billed session.
     connect_lock: Arc<Mutex<()>>,
+    /// Serializes `disconnect()` end to end. Without it, a second disconnect
+    /// (the idle reaper racing an app quit, say) finds no owner in the state,
+    /// returns immediately, and lets process exit abort the first caller's
+    /// still-in-flight session release.
+    teardown_lock: Arc<Mutex<()>>,
 }
 
 impl Cdp {
@@ -273,6 +278,7 @@ impl Cdp {
             events,
             owned_targets: Arc::new(Mutex::new(HashSet::new())),
             connect_lock: Arc::new(Mutex::new(())),
+            teardown_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -369,6 +375,10 @@ impl Cdp {
 
     pub(crate) fn connect_lock(&self) -> Arc<Mutex<()>> {
         Arc::clone(&self.connect_lock)
+    }
+
+    pub(crate) fn teardown_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.teardown_lock)
     }
 
     pub(crate) fn emit(&self, event: BrowserEvent) {

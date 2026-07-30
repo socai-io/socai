@@ -224,6 +224,12 @@ pub async fn run_daemon() -> Result<()> {
     fs::write(&paths.pid, std::process::id().to_string()).await?;
 
     let runtime = SocaiRuntime::new();
+    // Kept outside the DaemonState mutex for the shutdown path below: a site
+    // command holds that mutex for its whole execution (minutes for e.g.
+    // wait-for-login), and shutdown must not queue behind it — the SIGTERM
+    // kill grace is 6 seconds. The handle is a cheap Arc-backed clone of the
+    // same runtime.
+    let runtime_for_shutdown = runtime.clone();
     let telemetry = Telemetry::new(&paths.home, TelemetrySource::CliDaemon);
     let state = Arc::new(Mutex::new(DaemonState {
         runtime,
@@ -263,7 +269,13 @@ pub async fn run_daemon() -> Result<()> {
     // after shutdown would yank the new daemon's endpoint from under it.
     cleanup_stale_ipc(&paths).await?;
     let _ = fs::remove_file(&paths.pid).await;
-    state.lock().await.shutdown().await?;
+    // Tear down directly on the runtime handle, not through the DaemonState
+    // mutex — an in-flight command may hold that mutex for minutes. Stopping
+    // means stopping: the browser is yanked from under any such command (it
+    // fails, the daemon exits), and the bounded remote-session release runs
+    // right away instead of after the command finishes.
+    let _ = runtime_for_shutdown.close_all_site_sessions().await;
+    runtime_for_shutdown.disconnect_browser().await;
     Ok(())
 }
 
@@ -558,11 +570,6 @@ impl DaemonState {
             .capture("socai_tool_call", Value::Object(props));
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
-        let _ = self.runtime.close_all_site_sessions().await;
-        self.runtime.disconnect_browser().await;
-        Ok(())
-    }
 }
 
 fn base_trace_props(
