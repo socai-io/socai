@@ -109,6 +109,7 @@ function renderConnectOverlay(status: Status): string {
         ${connecting ? "disabled" : ""}
       >${esc(connecting ? t("chrome.connectingCta") : t("chrome.connectCta"))}</button>
       <a
+        id="overlay-remote-debugging-help"
         class="connect-overlay-link t-small"
         href="https://socai.io/connect"
         target="_blank"

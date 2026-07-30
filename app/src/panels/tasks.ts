@@ -912,6 +912,17 @@ export namespace agentPanel {
     document.getElementById("overlay-chrome-connect")?.addEventListener("click", () => {
       invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
     });
+    // WKWebView marks target=_blank navigation as defaultPrevented before the
+    // document-level external-link delegate runs. Bind this help link directly
+    // so it reaches the same backend opener first; the global delegate then
+    // sees the prevented event and correctly avoids a duplicate open.
+    document.getElementById("overlay-remote-debugging-help")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      const href = (event.currentTarget as HTMLAnchorElement).getAttribute("href");
+      if (href) {
+        invoke("open_external", { url: href }).catch((e) => console.error("open_external failed:", e));
+      }
+    });
   }
 
   // Toggling `disabled` on every keystroke via a full shell.rerender() would
