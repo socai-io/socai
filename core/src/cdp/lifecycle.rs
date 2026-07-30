@@ -470,6 +470,13 @@ async fn connect_inventory(endpoint: &Endpoint) -> anyhow::Result<ConnectInvento
 }
 
 async fn on_connection_lost(cdp: Cdp, reason: String) {
+    // Same lock order as `disconnect()`: teardown lock before state lock. A
+    // shutdown racing this loss then either extracts the owner itself or
+    // blocks in disconnect() until this release has landed — without the
+    // lock it could observe an ownerless state, return early, and let
+    // process exit abort the release this task started.
+    let teardown_lock = cdp.teardown_lock();
+    let _teardown = teardown_lock.lock().await;
     let _ = cdp.take_owned_targets().await;
     let state = cdp.state();
     let mut guard = state.lock().await;

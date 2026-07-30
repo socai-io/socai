@@ -273,8 +273,11 @@ pub async fn run_daemon() -> Result<()> {
     // mutex — an in-flight command may hold that mutex for minutes. Stopping
     // means stopping: the browser is yanked from under any such command (it
     // fails, the daemon exits), and the bounded remote-session release runs
-    // right away instead of after the command finishes.
-    let _ = runtime_for_shutdown.close_all_site_sessions().await;
+    // right away instead of after the command finishes. disconnect() itself
+    // sweeps socai-owned tabs (bounded, and skipped for remote sessions
+    // whose browser dies with the release) — an extra page-close pass here
+    // could stall ~30s per command against a wedged browser and eat the
+    // SIGTERM kill grace before the release starts.
     runtime_for_shutdown.disconnect_browser().await;
     Ok(())
 }

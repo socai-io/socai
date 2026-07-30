@@ -180,7 +180,7 @@ impl SocaiRuntime {
                     idle_secs = REMOTE_IDLE_RELEASE.as_secs(),
                     "releasing idle remote browser session"
                 );
-                let _ = runtime.close_all_site_sessions().await;
+                runtime.drop_site_sessions().await;
                 runtime.disconnect_browser().await;
             }
         });
@@ -288,7 +288,7 @@ impl SocaiRuntime {
                     remaining_secs = remaining.as_secs(),
                     "remote browser session near timeout; re-minting before new work"
                 );
-                let _ = self.close_all_site_sessions().await;
+                self.drop_site_sessions().await;
                 self.disconnect_browser().await;
             }
         }
@@ -332,6 +332,17 @@ impl SocaiRuntime {
             }
         }
         Ok(count)
+    }
+
+    /// Drop the reusable site pages without issuing any CDP commands. For the
+    /// remote teardown paths (idle release, pre-run re-mint): the pages'
+    /// targets die with the browser anyway, and a `page.close()` against a
+    /// wedged remote websocket can stall far past the teardown budget — the
+    /// command channel send is unbounded and each command can then wait
+    /// `raw_client::COMMAND_TIMEOUT`. `disconnect()` sweeps owned-target
+    /// bookkeeping itself.
+    async fn drop_site_sessions(&self) {
+        self.site_pages.lock().await.clear();
     }
 }
 
