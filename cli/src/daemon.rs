@@ -233,6 +233,8 @@ pub async fn run_daemon() -> Result<()> {
     }));
     let stop = Arc::new(Notify::new());
     let mut idle_check = tokio::time::interval(Duration::from_secs(60));
+    let terminate = terminate_signal();
+    tokio::pin!(terminate);
 
     loop {
         tokio::select! {
@@ -251,6 +253,7 @@ pub async fn run_daemon() -> Result<()> {
                     break;
                 }
             }
+            _ = &mut terminate => break,
             _ = stop.notified() => break,
         }
     }
@@ -262,6 +265,28 @@ pub async fn run_daemon() -> Result<()> {
     let _ = fs::remove_file(&paths.pid).await;
     state.lock().await.shutdown().await?;
     Ok(())
+}
+
+/// Resolves when the daemon receives SIGTERM; pends forever on non-unix.
+/// `kill_stale_daemons` (and a plain `kill`) send SIGTERM expecting a graceful
+/// exit — without a handler the process dies before `shutdown()`, which for a
+/// remote browser session means no release and a session that runs out its
+/// full server-side timeout.
+async fn terminate_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        std::future::pending::<()>().await
+    }
 }
 
 pub async fn send_or_spawn(
@@ -465,6 +490,9 @@ impl DaemonState {
         progress: Option<ToolProgressSender>,
     ) -> Result<Value> {
         let started = Instant::now();
+        // Marks browser work in flight for the whole command, so the remote
+        // idle reaper never releases the session under a running tool.
+        let _activity = self.runtime.begin_activity();
         let result = async {
             let debug_snapshot = debug_snapshot_flag(&args);
             // Create the session tab blank and let the command navigate itself:

@@ -28,6 +28,10 @@ const CONNECT_BUDGET: Duration = Duration::from_secs(85);
 const INVENTORY_TIMEOUT: Duration = Duration::from_secs(20);
 const TARGET_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const TARGET_POLL_FAILURES: u8 = 3;
+/// Ceiling for the awaited remote-session release inside `disconnect()`. It
+/// bounds how long an app quit or `socai stop` can hang on a slow server;
+/// past it the server-side session timeout is the backstop.
+const RELEASE_AWAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct ConnectInventory {
     targets: HashMap<String, TargetInfo>,
@@ -85,13 +89,47 @@ impl Cdp {
                 let _ = close_target_via_browser_ws(client, &target_id).await;
             }
         }
-        transition_unconditional(
+        let owner = transition_unconditional(
             self,
             CdpState::Disconnected {
                 reason: "user_disconnected".into(),
             },
         )
         .await;
+        release_owner_now(owner).await;
+    }
+}
+
+/// Tear down the browser resource behind a connection, awaiting a remote
+/// session's release instead of leaving it to the fire-and-forget `Drop`.
+/// `disconnect()` callers (daemon shutdown, app quit, idle release) are
+/// exactly the moments the process may be about to exit — a spawned release
+/// would be aborted mid-flight and the session would linger until its
+/// server-side timeout, surfacing as a TIMED_OUT session on the bill.
+async fn release_owner_now(owner: BrowserOwner) {
+    let BrowserOwner::Remote(mut session) = owner else {
+        // `Local` drops here, killing the managed chrome as before.
+        return;
+    };
+    let Some(session_id) = session.take_session_id() else {
+        return;
+    };
+    match tokio::time::timeout(
+        RELEASE_AWAIT_TIMEOUT,
+        crate::cloud::release_browser_session(&session_id),
+    )
+    .await
+    {
+        Ok(Ok(())) => debug!(session_id, "remote browser session released"),
+        Ok(Err(err)) => warn!(
+            session_id,
+            error = %err,
+            "remote browser session release failed; server-side timeout will reap it"
+        ),
+        Err(_) => warn!(
+            session_id,
+            "remote browser session release timed out; server-side timeout will reap it"
+        ),
     }
 }
 
@@ -280,6 +318,10 @@ async fn open_remote_endpoint() -> anyhow::Result<OpenEndpoint> {
              or switch back with `socai config set chrome.profile existing`."
         );
     }
+    // Clock the deadline from before the mint request: the server starts the
+    // session's timeout when Browserbase creates it, so measuring from after
+    // the response would overstate the remaining budget by the round trip.
+    let minted_at = std::time::Instant::now();
     let session = crate::cloud::create_browser_session().await?;
     Ok(OpenEndpoint {
         endpoint: Endpoint {
@@ -292,6 +334,7 @@ async fn open_remote_endpoint() -> anyhow::Result<OpenEndpoint> {
         },
         owner: BrowserOwner::Remote(RemoteSession {
             session_id: session.session_id,
+            deadline: minted_at + Duration::from_secs(session.timeout_seconds),
         }),
     })
 }
@@ -423,18 +466,27 @@ async fn begin_connect_attempt(cdp: &Cdp, attempt: u8, first: bool) -> bool {
     true
 }
 
-async fn transition_unconditional(cdp: &Cdp, new: CdpState) {
+/// Swap the connection state and hand back whatever browser resource the old
+/// state owned. Most callers just drop the returned owner (its `Drop` is the
+/// teardown); `disconnect()` instead releases a remote session explicitly so
+/// it can await the HTTP call.
+async fn transition_unconditional(cdp: &Cdp, new: CdpState) -> BrowserOwner {
     let state = cdp.state();
     let mut guard = state.lock().await;
     let clear_targets = matches!(*guard, CdpState::Connected { .. })
         && matches!(new, CdpState::Disconnected { .. });
     abort_monitor_if_connected(&guard);
+    let owner = match &mut *guard {
+        CdpState::Connected { owner, .. } => std::mem::replace(owner, BrowserOwner::None),
+        _ => BrowserOwner::None,
+    };
     *guard = new;
     let payload: StatusPayload = (&*guard).into();
     cdp.emit(BrowserEvent::StatusChanged(payload));
     if clear_targets {
         cdp.emit(BrowserEvent::TargetsChanged(Vec::new()));
     }
+    owner
 }
 
 fn abort_monitor_if_connected(state: &CdpState) {

@@ -221,7 +221,10 @@ pub fn run() {
             // otherwise the tabs socai opened linger after the app is gone.
             // (Managed chrome is killed on drop regardless; this matters for the
             // attach-to-existing-browser case, where only socai's own tabs
-            // should be closed, not the whole browser.)
+            // should be closed, not the whole browser.) For a remote hosted
+            // browser, disconnect() also awaits the session release (bounded)
+            // — a fire-and-forget release would be aborted by the exit and the
+            // session would bill until its server-side timeout.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let runtime = app_handle.state::<SocaiRuntime>().inner().clone();
                 tauri::async_runtime::block_on(runtime.disconnect_browser());

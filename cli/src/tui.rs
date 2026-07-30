@@ -614,6 +614,9 @@ fn active_model(state: &AppState) -> Result<String> {
 }
 
 async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState) -> Result<()> {
+    // Held for the whole task — LLM thinking pauses between tool calls
+    // included — so the remote idle reaper only fires between tasks.
+    let _activity = runtime.begin_activity();
     let llm_provider = build_llm_provider(state.provider, state.model.as_deref()).await?;
     println!();
     println!("[socai] using {}", llm_provider.label());

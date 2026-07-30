@@ -24,6 +24,74 @@ use super::BrowserStatus;
 /// acquire a browser (or mint a hosted session) nobody is waiting for.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// How long a remote hosted session may sit connected with no work in flight
+/// before it is released. Remote sessions bill by the minute and die at a
+/// fixed server-side timeout anyway, so an idle one is pure cost: holding it
+/// only saves the few seconds a re-mint takes. Local/existing browsers are
+/// never touched by this — keeping them warm is free.
+const REMOTE_IDLE_RELEASE: Duration = Duration::from_secs(90);
+const REMOTE_IDLE_TICK: Duration = Duration::from_secs(15);
+
+/// Minimum remaining session lifetime worth starting new work on. A remote
+/// session's clock starts at mint, so one reused late would hand the run an
+/// invisible, shortened deadline; re-minting up front trades a few seconds of
+/// connect latency for not dying mid-run.
+const REMOTE_MIN_RUN_BUDGET: Duration = Duration::from_secs(300);
+
+/// Work-in-flight signal for the remote idle reaper. Guards are held by the
+/// entrypoints around browser-touching work (a daemon command, a whole agent
+/// task), so the reaper never releases a session under an active run — LLM
+/// thinking pauses between tool calls included.
+struct Activity {
+    in_flight: std::sync::atomic::AtomicUsize,
+    /// Bumped on every guard acquisition; the reaper re-reads it right before
+    /// releasing to shrink the check-to-act race with a just-started run.
+    generation: std::sync::atomic::AtomicU64,
+    last_done: std::sync::Mutex<std::time::Instant>,
+    reaper_started: std::sync::atomic::AtomicBool,
+}
+
+impl Activity {
+    fn new() -> Self {
+        Self {
+            in_flight: std::sync::atomic::AtomicUsize::new(0),
+            generation: std::sync::atomic::AtomicU64::new(0),
+            last_done: std::sync::Mutex::new(std::time::Instant::now()),
+            reaper_started: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    // A poisoned lock still holds a valid instant, so both accessors recover
+    // the guard instead of propagating a panic from an unrelated thread.
+    fn touch(&self) {
+        *self
+            .last_done
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = std::time::Instant::now();
+    }
+
+    fn idle_for(&self) -> Duration {
+        self.last_done
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .elapsed()
+    }
+}
+
+/// RAII marker for in-flight browser work; see [`SocaiRuntime::begin_activity`].
+pub struct ActivityGuard {
+    activity: Arc<Activity>,
+}
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        self.activity.touch();
+        self.activity
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Shared in-process runtime handle for one entrypoint. Tauri, TUI, and the
 /// CLI daemon each construct their own instance; the daemon is only an IPC
 /// wrapper around this same object graph.
@@ -31,6 +99,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 pub struct SocaiRuntime {
     cdp: Cdp,
     site_pages: Arc<Mutex<HashMap<String, Arc<PageSession>>>>,
+    activity: Arc<Activity>,
 }
 
 impl SocaiRuntime {
@@ -38,7 +107,75 @@ impl SocaiRuntime {
         Self {
             cdp: Cdp::new(),
             site_pages: Arc::new(Mutex::new(HashMap::new())),
+            activity: Arc::new(Activity::new()),
         }
+    }
+
+    /// Mark browser work as in flight until the returned guard drops. Every
+    /// entrypoint wraps its browser-touching unit of work in one of these —
+    /// the daemon around each site command, the app and TUI around a whole
+    /// agent task — so the remote idle reaper only counts true idle time.
+    pub fn begin_activity(&self) -> ActivityGuard {
+        self.activity
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.activity
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ActivityGuard {
+            activity: self.activity.clone(),
+        }
+    }
+
+    /// Lazily start the loop that releases an idle remote session. One task
+    /// per runtime, alive for the process; it is a no-op every tick unless a
+    /// socai-minted remote session is connected.
+    fn ensure_idle_reaper(&self) {
+        use std::sync::atomic::Ordering;
+        if self
+            .activity
+            .reaper_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // No runtime yet (sync construction path); the next async caller
+            // retries.
+            self.activity.reaper_started.store(false, Ordering::SeqCst);
+            return;
+        };
+        let runtime = self.clone();
+        handle.spawn(async move {
+            loop {
+                sleep(REMOTE_IDLE_TICK).await;
+                let activity = &runtime.activity;
+                if runtime.cdp.remote_session_deadline().await.is_none() {
+                    continue;
+                }
+                if activity.in_flight.load(Ordering::SeqCst) > 0
+                    || activity.idle_for() < REMOTE_IDLE_RELEASE
+                {
+                    continue;
+                }
+                // Re-read the generation right before acting: a run that
+                // started between the checks above and here bumps it, and we
+                // must not yank the session out from under that run.
+                let generation = activity.generation.load(Ordering::SeqCst);
+                let _ = runtime.close_all_site_sessions().await;
+                if activity.generation.load(Ordering::SeqCst) != generation
+                    || activity.in_flight.load(Ordering::SeqCst) > 0
+                {
+                    continue;
+                }
+                tracing::info!(
+                    idle_secs = REMOTE_IDLE_RELEASE.as_secs(),
+                    "releasing idle remote browser session"
+                );
+                runtime.disconnect_browser().await;
+            }
+        });
     }
 
     pub fn browser(&self) -> Cdp {
@@ -50,10 +187,18 @@ impl SocaiRuntime {
     }
 
     pub fn connect_browser(&self) {
+        // A fresh connect counts as activity: without the touch, a stale idle
+        // clock could reap a remote session seconds after the user asked for
+        // it. Both fns run inside an async runtime (cdp.connect spawns), so
+        // the reaper start never falls back.
+        self.activity.touch();
+        self.ensure_idle_reaper();
         self.cdp.connect();
     }
 
     pub fn connect_browser_with_options(&self, options: ChromeConnectOptions) {
+        self.activity.touch();
+        self.ensure_idle_reaper();
         self.cdp.connect_with_options(options);
     }
 
@@ -116,9 +261,25 @@ impl SocaiRuntime {
         if site_id.is_empty() {
             anyhow::bail!("site_id is empty");
         }
+        self.ensure_idle_reaper();
 
         if let Some(options) = options.as_ref() {
             if !browser_status_matches_options(&self.browser_status().await, options) {
+                let _ = self.close_all_site_sessions().await;
+                self.disconnect_browser().await;
+            }
+        }
+
+        // A remote session near its server-side end-of-life is re-minted
+        // before work starts on it rather than dying mid-run: release now,
+        // and the reconnect below mints a session with a full budget.
+        if let Some(deadline) = self.cdp.remote_session_deadline().await {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining < REMOTE_MIN_RUN_BUDGET {
+                tracing::info!(
+                    remaining_secs = remaining.as_secs(),
+                    "remote browser session near timeout; re-minting before new work"
+                );
                 let _ = self.close_all_site_sessions().await;
                 self.disconnect_browser().await;
             }

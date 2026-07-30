@@ -1135,6 +1135,9 @@ async fn run_agent_task_on_shared_page(
     ensure_llm_provider_configured_for(provider, model)?;
     let llm_provider = create_llm_provider_for(provider, model)?;
     let site = app_site()?;
+    // Held for the whole task — LLM thinking pauses between tool calls
+    // included — so the remote idle reaper only fires between tasks.
+    let _activity = runtime.begin_activity();
     // Reused across every task/reply for the life of the browser connection —
     // matches the TUI's ensure_site_page, so a follow-up continues on the
     // same tab instead of navigating a fresh one from scratch. The runtime

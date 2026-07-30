@@ -224,6 +224,14 @@ pub async fn transcribe_audio_file(
 pub struct BrowserSessionInfo {
     pub session_id: String,
     pub connect_url: String,
+    /// Server-side session lifetime; Browserbase hard-kills the session this
+    /// many seconds after mint. Defaulted for servers that predate the field.
+    #[serde(default = "default_browser_session_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_browser_session_timeout_seconds() -> u64 {
+    900
 }
 
 /// Browser-session requests get tighter budgets than the shared client's 120s
