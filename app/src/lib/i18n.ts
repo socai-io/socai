@@ -212,6 +212,14 @@ const messages = {
   "feishu.dialogAria": { en: "export to feishu", zh: "导出到飞书" },
   "feishu.title": { en: "export to feishu", zh: "导出到飞书" },
   "feishu.loadingAccounts": { en: "loading accounts…", zh: "正在加载飞书账户…" },
+  "feishu.accountLoadTimeout": {
+    en: "Loading Feishu accounts timed out. Please retry.",
+    zh: "读取飞书账户超时，请重试。",
+  },
+  "feishu.accountIdentityTimeout": {
+    en: "Loading Feishu account details timed out.",
+    zh: "读取飞书账户信息超时。",
+  },
   "feishu.account": { en: "choose account", zh: "选择账户" },
   "feishu.unknownAccount": { en: "connected account", zh: "已连接账户" },
   "feishu.noAccount": { en: "no connected account", zh: "尚未连接账户" },
@@ -231,6 +239,10 @@ const messages = {
   },
   "feishu.exporting": { en: "creating document…", zh: "正在创建飞书文档…" },
   "feishu.loadingGroups": { en: "loading groups…", zh: "正在加载群聊…" },
+  "feishu.chatLoadTimeout": {
+    en: "Loading Feishu groups timed out. Document export is still available.",
+    zh: "读取飞书群聊超时，仍可导出到文档。",
+  },
   "feishu.noGroups": { en: "no joined groups found.", zh: "没有找到已加入的群聊。" },
   "feishu.chooseGroup": { en: "choose a group", zh: "选择群聊" },
   "feishu.send": { en: "send", zh: "发送" },

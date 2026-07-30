@@ -677,6 +677,14 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex-direction: column;
 }
 
+.workspace-stack {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  overflow: hidden;
+}
 .workspace-main {
   flex: 1;
   min-width: 0;
@@ -684,6 +692,12 @@ body.has-paper > * { position: relative; z-index: 1; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.workspace-overlay-root {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  pointer-events: none;
 }
 @media (max-width: 760px) {
   .sidebar, .topbar-left { flex-basis: 220px; width: 220px; }
@@ -789,20 +803,22 @@ body.has-paper > * { position: relative; z-index: 1; }
 
 /* the universal confirm dialog — centered alertdialog on a dimmed scrim */
 .modal-scrim {
-  position: fixed;
+  position: absolute;
   inset: 0;
-  z-index: 80;
   display: grid;
   place-items: center;
   background: rgba(0, 0, 0, 0.32);
   padding: var(--sp-5);
+  pointer-events: auto;
 }
 .confirm-dialog {
   width: min(340px, 100%);
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
   padding: var(--sp-5);
+  overflow: auto;
   background: var(--surface);
   border: var(--hairline);
   border-radius: var(--r-4);

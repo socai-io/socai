@@ -210,7 +210,10 @@ function render(): void {
       </header>
       <div class="body">
         ${sidebarOpen ? agentPanel.renderSidebar() : ""}
-        <main class="workspace-main">${agentPanel.renderWorkspace(state)}</main>
+        <div class="workspace-stack">
+          <main class="workspace-main">${agentPanel.renderWorkspace(state)}</main>
+          ${agentPanel.renderWorkspaceOverlays()}
+        </div>
       </div>
     </div>
   `;

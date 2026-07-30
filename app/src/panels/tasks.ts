@@ -680,24 +680,30 @@ export namespace agentPanel {
 
   // The main pane: the centered new-task compose (hero + chat composer,
   // masked by the connect overlay while chrome is down), or the selected
-  // task's conversation with the same composer in "reply" mode. The
-  // delete-confirm dialog (a fixed overlay) rides along with either.
+  // task's conversation with the same composer in "reply" mode.
   export function renderWorkspace(shell: ShellState): string {
-    const deleteRequest = tasks.find((task) => task.task_id === deleteRequestTaskId);
-    const dialog = deleteRequest ? renderConfirmDeleteDialog(deleteRequest) : "";
-    const feishuDialog = renderFeishuConnector(tasks);
     const task = view === "compose" ? null : selectedTask() ?? null;
-    if (!task) return `${renderComposePane(newComposer(shell))}${dialog}${feishuDialog}`;
+    if (!task) return renderComposePane(newComposer(shell));
     // Point the note UI at this task's archive; the thread's card groups and
     // answer citations resolve refs against it, and so does the viewer.
     setNoteRegistry(task.notes, task.run_dir);
     const running = task.status === "running" || task.status === "queued";
-    return `${renderConversation({
+    return renderConversation({
       task,
       running,
       isActivityOpen: (turnIndex, defaultOpen) => isActivityOpen(task.task_id, turnIndex, defaultOpen),
       composer: replyComposer(shell, running),
-    })}${dialog}${feishuDialog}`;
+    });
+  }
+
+  // Dialogs live in a sibling layer above the right-side task view, rather
+  // than inside its clipped content tree. This keeps their centering relative
+  // to the workspace (not the whole window/sidebar) without relying on WebKit
+  // fixed-position behavior under an overflow:hidden ancestor.
+  export function renderWorkspaceOverlays(): string {
+    const deleteRequest = tasks.find((task) => task.task_id === deleteRequestTaskId);
+    const dialog = deleteRequest ? renderConfirmDeleteDialog(deleteRequest) : "";
+    return `<div class="workspace-overlay-root">${dialog}${renderFeishuConnector(tasks)}</div>`;
   }
 
   function newComposer(shell: ShellState): ComposerProps {

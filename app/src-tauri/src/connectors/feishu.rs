@@ -83,6 +83,13 @@ pub struct FeishuAccount {
     active: bool,
 }
 
+#[derive(Serialize)]
+pub struct FeishuAccountIdentity {
+    profile: String,
+    avatar_url: Option<String>,
+    tenant_key: Option<String>,
+}
+
 #[derive(Clone, Serialize)]
 struct FeishuConnectEvent {
     stage: &'static str,
@@ -127,18 +134,63 @@ pub async fn feishu_status(
 
 #[tauri::command]
 pub async fn feishu_accounts(app: AppHandle) -> Result<Vec<FeishuAccount>, String> {
-    let mut accounts = list_accounts(&app).await?;
-    for account in &mut accounts {
-        if !account.connected {
-            continue;
-        }
-        if let Some((avatar_url, tenant_key)) = read_account_identity(&app, &account.profile).await
-        {
-            account.avatar_url = avatar_url;
-            account.tenant_key = tenant_key;
-        }
+    list_accounts(&app).await
+}
+
+#[tauri::command]
+pub async fn feishu_account_identity(
+    app: AppHandle,
+    profile: String,
+) -> Result<FeishuAccountIdentity, String> {
+    let (avatar_url, tenant_key) = read_account_identity(&app, &profile).await?;
+    Ok(FeishuAccountIdentity {
+        profile,
+        avatar_url,
+        tenant_key,
+    })
+}
+
+#[tauri::command]
+pub async fn feishu_report_failure(
+    tasks: State<'_, AgentTaskRegistry>,
+    telemetry: State<'_, DesktopTelemetry>,
+    task_id: String,
+    destination: String,
+    stage: String,
+    duration_ms: u64,
+    error: String,
+) -> Result<(), String> {
+    if !matches!(destination.as_str(), "setup" | "document" | "chat") {
+        return Err("unknown Feishu failure destination".into());
     }
-    Ok(accounts)
+    if !matches!(
+        stage.as_str(),
+        "load_accounts"
+            | "select_account"
+            | "connect_account"
+            | "reconnect_account"
+            | "disconnect_account"
+            | "prepare_document"
+            | "open_document"
+            | "load_chats"
+    ) {
+        return Err("unknown Feishu failure stage".into());
+    }
+    let run_id = tasks.get(&task_id).await.and_then(|task| task.run_id);
+    let error = short_error(&format!("[{stage}] {}", short_error(&error)));
+    telemetry.capture(
+        "socai_feishu_export",
+        json!({
+            "task_id": task_id,
+            "run_id": run_id,
+            "destination": destination,
+            "stage": stage,
+            "outcome": "failed",
+            "duration_ms": duration_ms,
+            "error": error,
+        }),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -515,12 +567,18 @@ fn capture_export_result<T>(
         Ok(_) => ("completed", None),
         Err(error) => ("failed", Some(short_error(error))),
     };
+    let stage = match destination {
+        "document" => "export_document",
+        "chat" => "send_chat",
+        _ => "unknown",
+    };
     telemetry.capture(
         "socai_feishu_export",
         json!({
             "task_id": task_id,
             "run_id": run_id,
             "destination": destination,
+            "stage": stage,
             "outcome": outcome,
             "duration_ms": u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
             "error": error,
@@ -605,7 +663,14 @@ async fn wait_for_user_identity(app: &AppHandle, profile: &str) -> FeishuStatus 
 }
 
 async fn list_accounts(app: &AppHandle) -> Result<Vec<FeishuAccount>, String> {
-    let output = run_cli(app, vec!["profile".into(), "list".into()], None).await?;
+    let output = run_cli_bounded(
+        app,
+        vec!["profile".into(), "list".into()],
+        None,
+        Duration::from_secs(5),
+        "读取飞书账户超时，请重试",
+    )
+    .await?;
     if !output.success {
         let combined = format!("{}\n{}", output.stdout, output.stderr);
         if combined.contains("not configured") || combined.contains("no active profile") {
@@ -1030,8 +1095,8 @@ fn validated_user_authorization_url(candidate: &str) -> Option<String> {
 async fn read_account_identity(
     app: &AppHandle,
     profile: &str,
-) -> Option<(Option<String>, Option<String>)> {
-    let output = run_cli(
+) -> Result<(Option<String>, Option<String>), String> {
+    let output = run_cli_bounded(
         app,
         vec![
             "--profile".into(),
@@ -1043,13 +1108,14 @@ async fn read_account_identity(
             "user".into(),
         ],
         None,
+        Duration::from_secs(8),
+        "读取飞书账户信息超时",
     )
-    .await
-    .ok()?;
+    .await?;
     if !output.success {
-        return None;
+        return Err(cli_error_message(&output));
     }
-    let value = parse_json(&output.stdout)?;
+    let value = parse_json(&output.stdout).ok_or_else(|| cli_error_message(&output))?;
     let data = cli_data(&value);
     let avatar_url = data
         .get("avatar_thumb")
@@ -1060,7 +1126,7 @@ async fn read_account_identity(
         .get("tenant_key")
         .and_then(Value::as_str)
         .map(str::to_string);
-    Some((avatar_url, tenant_key))
+    Ok((avatar_url, tenant_key))
 }
 
 fn encoded_app_addons() -> Result<String, String> {
@@ -1157,6 +1223,23 @@ async fn run_cli(
     args: Vec<String>,
     current_dir: Option<&Path>,
 ) -> Result<CliOutput, String> {
+    run_cli_bounded(
+        app,
+        args,
+        current_dir,
+        Duration::from_secs(60),
+        "飞书 CLI 执行超时，请重试",
+    )
+    .await
+}
+
+async fn run_cli_bounded(
+    app: &AppHandle,
+    args: Vec<String>,
+    current_dir: Option<&Path>,
+    timeout: Duration,
+    timeout_message: &str,
+) -> Result<CliOutput, String> {
     let mut command = app
         .shell()
         .sidecar("lark-cli")
@@ -1165,14 +1248,48 @@ async fn run_cli(
     if let Some(dir) = current_dir {
         command = command.current_dir(dir);
     }
-    let output = command
-        .output()
-        .await
-        .map_err(|error| format!("飞书 CLI 执行失败：{error}"))?;
+    let (mut events, child) = command
+        .spawn()
+        .map_err(|error| format!("无法启动飞书 CLI：{error}"))?;
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut exit_code = None;
+
+    loop {
+        let event = tokio::select! {
+            event = events.recv() => event,
+            _ = &mut deadline => {
+                let _ = child.kill();
+                return Err(timeout_message.into());
+            }
+        };
+        let Some(event) = event else {
+            break;
+        };
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                stdout.push_str(&String::from_utf8_lossy(&bytes));
+                stdout.push('\n');
+            }
+            CommandEvent::Stderr(bytes) => {
+                stderr.push_str(&String::from_utf8_lossy(&bytes));
+                stderr.push('\n');
+            }
+            CommandEvent::Error(error) => stderr.push_str(&error),
+            CommandEvent::Terminated(payload) => {
+                exit_code = payload.code;
+                break;
+            }
+            _ => {}
+        }
+    }
+
     Ok(CliOutput {
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        success: exit_code == Some(0),
+        stdout,
+        stderr,
     })
 }
 

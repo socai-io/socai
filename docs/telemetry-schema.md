@@ -168,7 +168,7 @@ and model in use are captured on `socai_agent_task_start`.
 | `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
 | `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `steps`, token/cache usage, estimated cost breakdown, `duration_ms`, `error` |
 | `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error`, `query_text`, `query_len`, `metadata`, `note_id_present` |
-| `socai_feishu_export` | A Feishu document export or group send completes or fails | `task_id`, `run_id`, `destination`, `outcome`, `duration_ms`, `error` |
+| `socai_feishu_export` | A Feishu export completes/fails, including user-visible setup failures before the native export command starts | `task_id`, `run_id`, `destination`, optional `stage`, `outcome`, `duration_ms`, `error` |
 
 Desktop field semantics:
 
@@ -194,13 +194,15 @@ Desktop field semantics:
 | `task_len` | number | Agent prompt length in Unicode scalar values. |
 | `task_text` | string | Full agent prompt. Always sent on desktop; see privacy boundaries. |
 | `turn` / `sequence` | number | Position of a tool call within the run. |
-| `destination` | string | Feishu export target: `document` or `chat`. |
+| `destination` | string | Feishu export target: `document`, `chat`, or `setup` for failures before a destination can be used. |
+| `stage` | string | Feishu operation stage, such as `load_accounts`, `connect_account`, `prepare_document`, `export_document`, `load_chats`, or `send_chat`. |
 
 For `socai_feishu_export`, `outcome` is `completed` or `failed`. The event is
-emitted at the native command boundary, so it records the result of the Feishu
-operation rather than only the frontend button click. `run_id` links the action
-back to the agent turn shown in the trace viewer. It does not include the
-exported content, document URL/ID, chat ID, or Feishu account/profile.
+emitted at the native command boundary for document/group operations. A
+user-visible failure before that boundary is also emitted through a dedicated
+Tauri reporting command with a bounded `stage` allowlist. `run_id` links both
+forms back to the agent turn shown in the trace viewer. Neither form includes
+the exported content, document URL/ID, chat ID, or Feishu account/profile.
 
 `socai_tool_call` mirrors the CLI tool trace's argument summary: the tool's
 `query` argument is lifted to `query_text` + `query_len`, a `note_id` argument

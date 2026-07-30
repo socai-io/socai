@@ -201,6 +201,8 @@ pub fn run() {
             commands::pro_activate,
             connectors::feishu::feishu_status,
             connectors::feishu::feishu_accounts,
+            connectors::feishu::feishu_account_identity,
+            connectors::feishu::feishu_report_failure,
             connectors::feishu::feishu_select_account,
             connectors::feishu::feishu_disconnect_account,
             connectors::feishu::feishu_connect,

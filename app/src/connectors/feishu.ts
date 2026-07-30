@@ -27,6 +27,11 @@ type FeishuAccount = {
   connected: boolean;
   active: boolean;
 };
+type FeishuAccountIdentity = {
+  profile: string;
+  avatar_url?: string | null;
+  tenant_key?: string | null;
+};
 type FeishuDocument = { document_id: string; url: string; title: string };
 type FeishuChat = { chat_id: string; name: string; description?: string | null };
 type FeishuConnectEvent = {
@@ -35,6 +40,16 @@ type FeishuConnectEvent = {
   url?: string | null;
 };
 type Destination = "document" | "group";
+type FeishuFailureDestination = "setup" | "document" | "chat";
+type FeishuFailureStage =
+  | "load_accounts"
+  | "select_account"
+  | "connect_account"
+  | "reconnect_account"
+  | "disconnect_account"
+  | "prepare_document"
+  | "open_document"
+  | "load_chats";
 type FeishuPhase =
   | "closed"
   | "loading_accounts"
@@ -64,11 +79,15 @@ let chatError = "";
 let errorMessage = "";
 let connectMessage = "";
 let eventsBound = false;
+let escapeBound = false;
 let operation = 0;
 
 const CONNECT_ACCOUNT_VALUE = "__connect_account__";
 const CHAT_STORAGE_KEY = "socai-feishu-last-chat";
 const PROFILE_STORAGE_KEY = "socai-feishu-profile";
+const ACCOUNT_LOAD_TIMEOUT_MS = 10_000;
+const ACCOUNT_IDENTITY_TIMEOUT_MS = 8_000;
+const CHAT_LOAD_TIMEOUT_MS = 15_000;
 
 export function renderFeishuConnector(tasks: ConnectorTask[]): string {
   if (phase === "closed") return "";
@@ -119,6 +138,7 @@ export function bindFeishuConnector(
   resolveAnswer: AnswerResolver,
 ): void {
   bindConnectEvents(shell);
+  bindEscapeKey(shell);
   document.querySelectorAll<HTMLButtonElement>("[data-feishu-export]").forEach((button) => {
     button.addEventListener("click", () => {
       const selectedTaskId = button.dataset.feishuExport;
@@ -132,7 +152,7 @@ export function bindFeishuConnector(
     button.addEventListener("click", () => closeDialog(shell));
   });
   document.querySelector<HTMLElement>("[data-feishu-scrim]")?.addEventListener("click", (event) => {
-    if (event.target === event.currentTarget && !isBusy()) closeDialog(shell);
+    if (event.target === event.currentTarget && canDismiss()) closeDialog(shell);
   });
   document.querySelector<HTMLSelectElement>("[data-feishu-account]")?.addEventListener("change", (event) => {
     const select = event.currentTarget as HTMLSelectElement;
@@ -307,6 +327,16 @@ function renderProgress(message: string): string {
   `;
 }
 
+function bindEscapeKey(shell: ShellState): void {
+  if (escapeBound) return;
+  escapeBound = true;
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || phase === "closed" || !canDismiss()) return;
+    event.preventDefault();
+    closeDialog(shell);
+  });
+}
+
 function bindConnectEvents(shell: ShellState): void {
   if (eventsBound) return;
   eventsBound = true;
@@ -323,6 +353,54 @@ function bindConnectEvents(shell: ShellState): void {
   }).catch((error) => {
     console.error("feishu event listener failed:", error);
     eventsBound = false;
+  });
+}
+
+function invokeWithTimeout<T>(
+  command: string,
+  args: Record<string, unknown> | undefined,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(timeoutMessage), timeoutMs);
+    invoke<T>(command, args).then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function loadAccountList(): Promise<FeishuAccount[]> {
+  return invokeWithTimeout(
+    "feishu_accounts",
+    undefined,
+    ACCOUNT_LOAD_TIMEOUT_MS,
+    t("feishu.accountLoadTimeout"),
+  );
+}
+
+function reportFeishuFailure(
+  stage: FeishuFailureStage,
+  destination: FeishuFailureDestination,
+  startedAt: number,
+  error: unknown,
+): void {
+  if (!taskId) return;
+  void invoke("feishu_report_failure", {
+    taskId,
+    destination,
+    stage,
+    durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    error: `${error}`,
+  }).catch((reportError) => {
+    console.error("failed to report Feishu failure:", reportError);
   });
 }
 
@@ -348,11 +426,12 @@ async function openDialog(
 
 async function loadAccounts(shell: ShellState): Promise<void> {
   const currentOperation = ++operation;
+  const startedAt = performance.now();
   phase = "loading_accounts";
   errorMessage = "";
   shell.rerender();
   try {
-    accounts = await invoke<FeishuAccount[]>("feishu_accounts");
+    accounts = await loadAccountList();
     if (currentOperation !== operation) return;
     const remembered = localStorage.getItem(PROFILE_STORAGE_KEY) ?? "";
     const preferred =
@@ -362,9 +441,11 @@ async function loadAccounts(shell: ShellState): Promise<void> {
     selectedProfile = preferred?.profile ?? "";
     phase = "choose";
     shell.rerender();
+    void enrichAccountIdentities(shell, currentOperation);
     await refreshChats(shell, currentOperation);
   } catch (error) {
     if (currentOperation !== operation) return;
+    reportFeishuFailure("load_accounts", "setup", startedAt, error);
     errorMessage = `${error}`;
     phase = "error";
   } finally {
@@ -372,8 +453,43 @@ async function loadAccounts(shell: ShellState): Promise<void> {
   }
 }
 
+async function enrichAccountIdentities(
+  shell: ShellState,
+  currentOperation: number,
+): Promise<void> {
+  const profiles = accounts.filter((account) => account.connected).map((account) => account.profile);
+  const identities = await Promise.all(
+    profiles.map(async (profile) => {
+      try {
+        return await invokeWithTimeout<FeishuAccountIdentity>(
+          "feishu_account_identity",
+          { profile },
+          ACCOUNT_IDENTITY_TIMEOUT_MS,
+          t("feishu.accountIdentityTimeout"),
+        );
+      } catch {
+        // Avatar and tenant metadata are optional decoration. Keep the usable
+        // account list visible when identity enrichment is slow or unavailable.
+        return null;
+      }
+    }),
+  );
+  if (currentOperation !== operation) return;
+  const byProfile = new Map(
+    identities
+      .filter((identity): identity is FeishuAccountIdentity => identity !== null)
+      .map((identity) => [identity.profile, identity]),
+  );
+  accounts = accounts.map((account) => {
+    const identity = byProfile.get(account.profile);
+    return identity ? { ...account, ...identity } : account;
+  });
+  shell.rerender();
+}
+
 async function selectAccount(shell: ShellState, profile: string): Promise<void> {
   const currentOperation = ++operation;
+  const startedAt = performance.now();
   selectedProfile = profile;
   phase = "loading_accounts";
   shell.rerender();
@@ -390,6 +506,7 @@ async function selectAccount(shell: ShellState, profile: string): Promise<void> 
     await refreshChats(shell, currentOperation);
   } catch (error) {
     if (currentOperation !== operation) return;
+    reportFeishuFailure("select_account", "setup", startedAt, error);
     errorMessage = `${error}`;
     phase = "error";
   } finally {
@@ -399,6 +516,7 @@ async function selectAccount(shell: ShellState, profile: string): Promise<void> 
 
 async function connectNewAccount(shell: ShellState): Promise<void> {
   const currentOperation = ++operation;
+  const startedAt = performance.now();
   phase = "connecting";
   connectMessage = t("feishu.creatingApp");
   errorMessage = "";
@@ -411,16 +529,18 @@ async function connectNewAccount(shell: ShellState): Promise<void> {
     if (currentOperation !== operation) return;
     selectedProfile = status.profile;
     localStorage.setItem(PROFILE_STORAGE_KEY, selectedProfile);
-    accounts = await invoke<FeishuAccount[]>("feishu_accounts");
+    accounts = await loadAccountList();
     if (currentOperation !== operation) return;
     destination = null;
     documentResult = null;
     chats = [];
     phase = "choose";
     shell.rerender();
+    void enrichAccountIdentities(shell, currentOperation);
     await refreshChats(shell, currentOperation);
   } catch (error) {
     if (currentOperation !== operation) return;
+    reportFeishuFailure("connect_account", "setup", startedAt, error);
     errorMessage = `${error}`;
     phase = "error";
   } finally {
@@ -431,6 +551,7 @@ async function connectNewAccount(shell: ShellState): Promise<void> {
 async function reconnectAccount(shell: ShellState): Promise<void> {
   if (!selectedProfile) return;
   const currentOperation = ++operation;
+  const startedAt = performance.now();
   phase = "connecting";
   connectMessage = t("feishu.authorizing");
   errorMessage = "";
@@ -443,16 +564,18 @@ async function reconnectAccount(shell: ShellState): Promise<void> {
     if (currentOperation !== operation) return;
     selectedProfile = status.profile;
     localStorage.setItem(PROFILE_STORAGE_KEY, selectedProfile);
-    accounts = await invoke<FeishuAccount[]>("feishu_accounts");
+    accounts = await loadAccountList();
     if (currentOperation !== operation) return;
     destination = null;
     documentResult = null;
     chats = [];
     phase = "choose";
     shell.rerender();
+    void enrichAccountIdentities(shell, currentOperation);
     await refreshChats(shell, currentOperation);
   } catch (error) {
     if (currentOperation !== operation) return;
+    reportFeishuFailure("reconnect_account", "setup", startedAt, error);
     errorMessage = `${error}`;
     phase = "error";
   } finally {
@@ -463,12 +586,13 @@ async function reconnectAccount(shell: ShellState): Promise<void> {
 async function disconnectAccount(shell: ShellState): Promise<void> {
   if (!selectedProfile) return;
   const currentOperation = ++operation;
+  const startedAt = performance.now();
   phase = "disconnecting";
   shell.rerender();
   try {
     await invoke("feishu_disconnect_account", { profile: selectedProfile });
     if (currentOperation !== operation) return;
-    accounts = await invoke<FeishuAccount[]>("feishu_accounts");
+    accounts = await loadAccountList();
     if (currentOperation !== operation) return;
     const preferred = accounts.find((account) => account.active) ?? accounts[0];
     selectedProfile = preferred?.profile ?? "";
@@ -483,9 +607,11 @@ async function disconnectAccount(shell: ShellState): Promise<void> {
     chatsLoading = false;
     phase = "choose";
     shell.rerender();
+    void enrichAccountIdentities(shell, currentOperation);
     await refreshChats(shell, currentOperation);
   } catch (error) {
     if (currentOperation !== operation) return;
+    reportFeishuFailure("disconnect_account", "setup", startedAt, error);
     errorMessage = `${error}`;
     phase = "error";
   } finally {
@@ -519,7 +645,7 @@ async function ensureConnected(currentOperation: number): Promise<string> {
   selectedProfile = profile;
   localStorage.setItem(PROFILE_STORAGE_KEY, profile);
   if (reconnected) {
-    accounts = await invoke<FeishuAccount[]>("feishu_accounts");
+    accounts = await loadAccountList();
     if (currentOperation !== operation) throw new Error("cancelled");
   }
   return profile;
@@ -528,6 +654,10 @@ async function ensureConnected(currentOperation: number): Promise<string> {
 async function createDocument(shell: ShellState): Promise<void> {
   if (!taskId || !answerContent) return;
   const currentOperation = ++operation;
+  const startedAt = performance.now();
+  let nativeCommandStarted = false;
+  let documentCreated = false;
+  let openStartedAt = startedAt;
   destination = "document";
   documentResult = null;
   errorMessage = "";
@@ -541,17 +671,25 @@ async function createDocument(shell: ShellState): Promise<void> {
     if (currentOperation !== operation) return;
     phase = "exporting";
     shell.rerender();
+    nativeCommandStarted = true;
     documentResult = await invoke<FeishuDocument>("feishu_export_task", {
       taskId,
       profile,
       content: answerContent,
     });
+    documentCreated = true;
     if (currentOperation !== operation) return;
     phase = "ready";
     shell.rerender();
+    openStartedAt = performance.now();
     await invoke("open_external", { url: documentResult.url });
   } catch (error) {
     if (currentOperation !== operation || `${error}` === "Error: cancelled") return;
+    if (!nativeCommandStarted) {
+      reportFeishuFailure("prepare_document", "document", startedAt, error);
+    } else if (documentCreated) {
+      reportFeishuFailure("open_document", "document", openStartedAt, error);
+    }
     errorMessage = `${error}`;
     phase = "error";
     shell.rerender();
@@ -592,17 +730,22 @@ async function refreshChats(shell: ShellState, currentOperation: number): Promis
     return;
   }
   chatsLoading = true;
+  const startedAt = performance.now();
   chats = [];
   chatError = "";
   shell.rerender();
   try {
-    const result = await invoke<FeishuChat[]>("feishu_list_chats", {
-      profile: selectedProfile,
-    });
+    const result = await invokeWithTimeout<FeishuChat[]>(
+      "feishu_list_chats",
+      { profile: selectedProfile },
+      CHAT_LOAD_TIMEOUT_MS,
+      t("feishu.chatLoadTimeout"),
+    );
     if (currentOperation !== operation) return;
     chats = result;
   } catch (error) {
     if (currentOperation !== operation) return;
+    reportFeishuFailure("load_chats", "chat", startedAt, error);
     chatError = `${error}`;
   } finally {
     if (currentOperation === operation) {
@@ -620,6 +763,10 @@ function isBusy(): boolean {
     "sending",
     "disconnecting",
   ].includes(phase);
+}
+
+function canDismiss(): boolean {
+  return phase === "loading_accounts" || !isBusy();
 }
 
 function closeDialog(shell: ShellState): void {
