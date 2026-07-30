@@ -129,9 +129,15 @@ impl Cdp {
         // observes the swap at its next checkpoint and releases what it
         // acquired (awaited, see `try_connect_once`); waiting on the connect
         // lock keeps quit-path callers alive long enough for that release to
-        // land. Bounded: deep in a stalled handshake the next checkpoint can
-        // be ~INVENTORY_TIMEOUT away, and a quit must not hang that long —
-        // the server-side session timeout backstops that residual window.
+        // land. Bounded, which leaves two accepted residuals when the bound
+        // expires with the attempt still running — a handshake stalled up to
+        // ~INVENTORY_TIMEOUT before its next checkpoint, or the attempt's own
+        // bounded release still in the air. In both, process exit cancels the
+        // attempt, its still-armed owner falls back to the Drop-spawned
+        // release (dead on exit), and the server-side session timeout is the
+        // backstop. Closing them would need release ownership to outlive the
+        // connect task (a parked-owner handoff) — machinery disproportionate
+        // to a seconds-wide window behind that backstop.
         let _ = tokio::time::timeout(CONNECT_SETTLE_TIMEOUT, self.connect_lock().lock()).await;
     }
 }
@@ -147,15 +153,24 @@ async fn release_owner_now(owner: BrowserOwner) {
         // `Local` drops here, killing the managed chrome as before.
         return;
     };
-    let Some(session_id) = session.take_session_id() else {
+    if session.session_id.is_empty() {
         return;
-    };
-    match tokio::time::timeout(
+    }
+    // Clone the id instead of taking it up front: some callers run inside
+    // the connect attempt's budget timeout, and a take-first release
+    // cancelled mid-flight would drop a *disarmed* `RemoteSession` — losing
+    // even the Drop-spawned backstop. With the id left armed, cancellation
+    // falls back to `Drop`; the disarm below runs only once the await has
+    // actually completed (success or definitive failure, where the
+    // server-side session timeout takes over).
+    let session_id = session.session_id.clone();
+    let outcome = tokio::time::timeout(
         RELEASE_AWAIT_TIMEOUT,
         crate::cloud::release_browser_session(&session_id),
     )
-    .await
-    {
+    .await;
+    let _ = session.take_session_id();
+    match outcome {
         Ok(Ok(())) => debug!(session_id, "remote browser session released"),
         Ok(Err(err)) => warn!(
             session_id,
