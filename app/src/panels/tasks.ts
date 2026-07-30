@@ -59,6 +59,9 @@ export namespace agentPanel {
   let tasks: AgentTaskView[] = [];
   let pendingEvents = new Map<string, AgentTaskEventPayload[]>();
   let selectedTaskId: string | null = null;
+  // Full shell renders replace the sidebar DOM. Keep its viewport stable when
+  // selecting a task (and across any other render) instead of jumping to top.
+  let sidebarScrollTop = 0;
   // Confirm-first delete: every affordance (row ×, conversation-head button)
   // opens the centered dialog by setting this; the delete only runs on confirm.
   let deleteRequestTaskId: string | null = null;
@@ -734,6 +737,7 @@ export namespace agentPanel {
   }
 
   export function bind(shell: ShellState): void {
+    restoreSidebarScroll();
     bindFeishuConnector(shell, (taskId, turnIndex) => {
       const task = tasks.find((item) => item.task_id === taskId);
       return task ? answerTextForTurn(task, turnIndex) : null;
@@ -816,6 +820,17 @@ export namespace agentPanel {
     if (selected && (selected.status === "running" || selected.status === "queued")) {
       updateLiveStrip(selected);
     }
+  }
+
+  // A shell render rebuilds the left rail, so restore the task list's previous
+  // viewport and keep recording it for the next render.
+  function restoreSidebarScroll(): void {
+    const list = document.querySelector<HTMLDivElement>(".sidebar-list");
+    if (!list) return;
+    list.scrollTop = sidebarScrollTop;
+    list.addEventListener("scroll", () => {
+      sidebarScrollTop = list.scrollTop;
+    });
   }
 
   // Put the freshly rebuilt event stream back where the user left it: at the
