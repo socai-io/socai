@@ -934,13 +934,16 @@ pub async fn kill_lingering_helpers() -> usize {
     for pid in &pids {
         signal_pid(*pid, false);
     }
-    // Wait for graceful exits before escalating. SIGTERM now routes daemons
-    // through shutdown(), which awaits the remote-session release (bounded at
-    // ~5s in the core) — so the grace window must outlast that bound, or the
-    // SIGKILL would land mid-release and the session would run out its full
-    // server-side timeout. Healthy daemons exit in well under a second, so
-    // the poll usually ends on its first iterations.
-    const KILL_GRACE: Duration = Duration::from_secs(6);
+    // Wait for graceful exits before escalating. SIGTERM routes daemons
+    // through browser teardown, whose worst-case chain is bounded in the
+    // core: owned-tab close (≤5s, local browsers only) + awaited remote
+    // release (≤5s) + the connect-settle wait for a mid-flight connect
+    // attempt (≤8s) ≈ 18s. The grace must outlast that whole chain — a
+    // SIGKILL landing inside it recreates the timed-out-session leak this
+    // teardown exists to prevent. Healthy daemons exit in well under a
+    // second, so the poll usually ends on its first iterations; the full
+    // wait is only ever paid for genuinely wedged processes.
+    const KILL_GRACE: Duration = Duration::from_secs(20);
     const KILL_POLL: Duration = Duration::from_millis(200);
     let deadline = Instant::now() + KILL_GRACE;
     while Instant::now() < deadline {
