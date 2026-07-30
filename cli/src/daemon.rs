@@ -492,7 +492,7 @@ impl DaemonState {
         let started = Instant::now();
         // Marks browser work in flight for the whole command, so the remote
         // idle reaper never releases the session under a running tool.
-        let _activity = self.runtime.begin_activity();
+        let _activity = self.runtime.begin_activity().await;
         let result = async {
             let debug_snapshot = debug_snapshot_flag(&args);
             // Create the session tab blank and let the command navigate itself:
@@ -924,12 +924,41 @@ pub async fn kill_lingering_helpers() -> usize {
     for pid in &pids {
         signal_pid(*pid, false);
     }
-    // Give them a moment to exit on SIGTERM, then SIGKILL any holdouts.
-    sleep(Duration::from_millis(400)).await;
+    // Wait for graceful exits before escalating. SIGTERM now routes daemons
+    // through shutdown(), which awaits the remote-session release (bounded at
+    // ~5s in the core) — so the grace window must outlast that bound, or the
+    // SIGKILL would land mid-release and the session would run out its full
+    // server-side timeout. Healthy daemons exit in well under a second, so
+    // the poll usually ends on its first iterations.
+    const KILL_GRACE: Duration = Duration::from_secs(6);
+    const KILL_POLL: Duration = Duration::from_millis(200);
+    let deadline = Instant::now() + KILL_GRACE;
+    while Instant::now() < deadline {
+        if pids.iter().all(|pid| !pid_alive(*pid)) {
+            return pids.len();
+        }
+        sleep(KILL_POLL).await;
+    }
     for pid in &pids {
-        signal_pid(*pid, true);
+        if pid_alive(*pid) {
+            signal_pid(*pid, true);
+        }
     }
     pids.len()
+}
+
+/// Whether a process still exists, probed with the null signal.
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    // Safe FFI: kill() with signal 0 checks existence without delivering
+    // anything. EPERM would also mean "exists", but socai daemons run as the
+    // caller's own user, so a plain success check suffices.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: u32) -> bool {
+    false
 }
 
 /// PIDs of running `socai __daemon` processes (excluding the caller).

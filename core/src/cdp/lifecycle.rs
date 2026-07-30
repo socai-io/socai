@@ -32,6 +32,12 @@ const TARGET_POLL_FAILURES: u8 = 3;
 /// bounds how long an app quit or `socai stop` can hang on a slow server;
 /// past it the server-side session timeout is the backstop.
 const RELEASE_AWAIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Ceiling for `disconnect()` waiting on an in-flight connect attempt to
+/// observe the cancellation and release whatever it minted. Sized to cover
+/// the common case (attempt at or near its post-inventory checkpoint, plus
+/// one release round trip) without letting a quit hang on a stalled
+/// handshake.
+const CONNECT_SETTLE_TIMEOUT: Duration = Duration::from_secs(8);
 
 struct ConnectInventory {
     targets: HashMap<String, TargetInfo>,
@@ -97,6 +103,15 @@ impl Cdp {
         )
         .await;
         release_owner_now(owner).await;
+        // A connect attempt may be mid-flight holding a freshly minted remote
+        // session that is not yet in the state swapped above. The attempt
+        // observes the swap at its next checkpoint and releases what it
+        // acquired (awaited, see `try_connect_once`); waiting on the connect
+        // lock keeps quit-path callers alive long enough for that release to
+        // land. Bounded: deep in a stalled handshake the next checkpoint can
+        // be ~INVENTORY_TIMEOUT away, and a quit must not hang that long —
+        // the server-side session timeout backstops that residual window.
+        let _ = tokio::time::timeout(CONNECT_SETTLE_TIMEOUT, self.connect_lock().lock()).await;
     }
 }
 
@@ -237,10 +252,16 @@ async fn try_connect_once(
         let mut guard = state.lock().await;
         if !guard.is_connecting() {
             monitor_task.abort();
-            // Dropping `owner` here kills a just-launched managed chrome (or
-            // releases a just-minted remote session) if the connect was
-            // cancelled mid-flight. Reported as an outcome, not an error, so
-            // the caller stops instead of retrying over the new state.
+            drop(guard);
+            // The connect was cancelled mid-flight by an explicit
+            // disconnect — often the app-quit path, where a Drop-spawned
+            // release would die with the process. Release what this attempt
+            // acquired awaited (state lock dropped first: the release is an
+            // HTTP round trip and must not stall status readers); the
+            // disconnect() caller waits on the connect lock for exactly this
+            // to finish. Reported as an outcome, not an error, so the caller
+            // stops instead of retrying over the new state.
+            release_owner_now(owner).await;
             return Ok(ConnectAttempt::Cancelled);
         }
         *guard = CdpState::Connected {

@@ -43,10 +43,13 @@ const REMOTE_MIN_RUN_BUDGET: Duration = Duration::from_secs(300);
 /// task), so the reaper never releases a session under an active run — LLM
 /// thinking pauses between tool calls included.
 struct Activity {
-    in_flight: std::sync::atomic::AtomicUsize,
-    /// Bumped on every guard acquisition; the reaper re-reads it right before
-    /// releasing to shrink the check-to-act race with a just-started run.
-    generation: std::sync::atomic::AtomicU64,
+    /// Admission gate between runs and teardown. In-flight work holds the
+    /// read side; the reaper only tears down under `try_write`, which
+    /// succeeds exactly when no work is in flight. This makes "a run cannot
+    /// have its session released from under it" true by construction: a run
+    /// arriving mid-teardown blocks in `begin_activity` for the few seconds
+    /// teardown takes, then reconnects through `ensure_site_page`.
+    gate: Arc<tokio::sync::RwLock<()>>,
     last_done: std::sync::Mutex<std::time::Instant>,
     reaper_started: std::sync::atomic::AtomicBool,
 }
@@ -54,8 +57,7 @@ struct Activity {
 impl Activity {
     fn new() -> Self {
         Self {
-            in_flight: std::sync::atomic::AtomicUsize::new(0),
-            generation: std::sync::atomic::AtomicU64::new(0),
+            gate: Arc::new(tokio::sync::RwLock::new(())),
             last_done: std::sync::Mutex::new(std::time::Instant::now()),
             reaper_started: std::sync::atomic::AtomicBool::new(false),
         }
@@ -81,14 +83,15 @@ impl Activity {
 /// RAII marker for in-flight browser work; see [`SocaiRuntime::begin_activity`].
 pub struct ActivityGuard {
     activity: Arc<Activity>,
+    /// Read permit on the teardown gate. Dropped after `Drop::drop` stamps
+    /// the idle clock, so the reaper can never observe "gate free" with a
+    /// stale `last_done`.
+    _permit: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 
 impl Drop for ActivityGuard {
     fn drop(&mut self) {
         self.activity.touch();
-        self.activity
-            .in_flight
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -115,15 +118,13 @@ impl SocaiRuntime {
     /// entrypoint wraps its browser-touching unit of work in one of these —
     /// the daemon around each site command, the app and TUI around a whole
     /// agent task — so the remote idle reaper only counts true idle time.
-    pub fn begin_activity(&self) -> ActivityGuard {
-        self.activity
-            .in_flight
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.activity
-            .generation
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    /// Blocks only while an idle teardown is mid-flight (a few seconds), in
+    /// which case the caller proceeds onto a fresh connection.
+    pub async fn begin_activity(&self) -> ActivityGuard {
+        let permit = self.activity.gate.clone().read_owned().await;
         ActivityGuard {
             activity: self.activity.clone(),
+            _permit: permit,
         }
     }
 
@@ -148,31 +149,38 @@ impl SocaiRuntime {
         };
         let runtime = self.clone();
         handle.spawn(async move {
+            // Tracks which session the idle window applies to. A connect can
+            // eat most of its 85s budget before succeeding, so the idle clock
+            // restarts when a new session's deadline first appears — without
+            // that, a slow connect could be reaped seconds after becoming
+            // usable.
+            let mut watched_deadline = None;
             loop {
                 sleep(REMOTE_IDLE_TICK).await;
                 let activity = &runtime.activity;
-                if runtime.cdp.remote_session_deadline().await.is_none() {
+                let Some(deadline) = runtime.cdp.remote_session_deadline().await else {
+                    watched_deadline = None;
+                    continue;
+                };
+                if watched_deadline != Some(deadline) {
+                    watched_deadline = Some(deadline);
+                    activity.touch();
                     continue;
                 }
-                if activity.in_flight.load(Ordering::SeqCst) > 0
-                    || activity.idle_for() < REMOTE_IDLE_RELEASE
-                {
+                if activity.idle_for() < REMOTE_IDLE_RELEASE {
                     continue;
                 }
-                // Re-read the generation right before acting: a run that
-                // started between the checks above and here bumps it, and we
-                // must not yank the session out from under that run.
-                let generation = activity.generation.load(Ordering::SeqCst);
-                let _ = runtime.close_all_site_sessions().await;
-                if activity.generation.load(Ordering::SeqCst) != generation
-                    || activity.in_flight.load(Ordering::SeqCst) > 0
-                {
+                // The write side admits teardown only while no run holds a
+                // read permit; a run arriving after this point waits in
+                // begin_activity until teardown finishes, then reconnects.
+                let Ok(_teardown) = activity.gate.clone().try_write_owned() else {
                     continue;
-                }
+                };
                 tracing::info!(
                     idle_secs = REMOTE_IDLE_RELEASE.as_secs(),
                     "releasing idle remote browser session"
                 );
+                let _ = runtime.close_all_site_sessions().await;
                 runtime.disconnect_browser().await;
             }
         });

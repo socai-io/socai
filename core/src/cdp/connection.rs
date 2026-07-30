@@ -129,9 +129,10 @@ pub enum BrowserOwner {
     None,
     /// Managed chrome process socai launched; killed on drop.
     Local(ChromeProcess),
-    /// Remote hosted browser session socai minted via socai-server; a
-    /// best-effort release fires on drop, with the server-side session
-    /// timeout as the backstop.
+    /// Remote hosted browser session socai minted via socai-server. Released
+    /// awaited on the disconnect/cancel paths (see `release_owner_now`);
+    /// `Drop` spawns a best-effort release for the remaining state swaps,
+    /// with the server-side session timeout as the final backstop.
     Remote(RemoteSession),
 }
 
