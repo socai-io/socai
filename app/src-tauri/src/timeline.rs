@@ -452,7 +452,7 @@ pub(crate) fn user_label(name: &str) -> String {
         "scroll_in_note" => "scrolled note",
         "collect_carousel_images" => "collected carousel images",
         "extract_profile" => "read author profile",
-        "wait_for_rate_limit" => "waiting for xiaohongshu cooldown",
+        "wait_for_rate_limit" => "waiting for xiaohongshu's rate limit",
         "page_state" => "checked page state",
         _ => return name.replace('_', " "),
     }
