@@ -119,6 +119,18 @@ pub fn summarize_tool_result(value: &Value) -> Map<String, Value> {
     if let Some(truncated) = find_bool(data, "page_ocr_truncated") {
         props.insert("page_ocr_truncated".into(), json!(truncated));
     }
+    if let Some(detected) = find_bool(data, "rate_limit_detected") {
+        props.insert("rate_limit_detected".into(), json!(detected));
+    }
+    if let Some(marker) = find_string(data, "rate_limit_marker") {
+        props.insert("rate_limit_marker".into(), json!(marker));
+    }
+    if let Some(tool) = find_string(data, "recovery_tool") {
+        props.insert("recovery_tool".into(), json!(tool));
+    }
+    if let Some(waited_seconds) = find_u64(data, "waited_seconds") {
+        props.insert("waited_seconds".into(), json!(waited_seconds));
+    }
     if let Some(error) = find_string(data, "page_ocr_error") {
         props.insert(
             "page_ocr_error".into(),
@@ -176,6 +188,17 @@ fn find_bool(value: &Value, key: &str) -> Option<bool> {
             .and_then(Value::as_bool)
             .or_else(|| map.values().find_map(|value| find_bool(value, key))),
         Value::Array(items) => items.iter().find_map(|value| find_bool(value, key)),
+        _ => None,
+    }
+}
+
+fn find_u64(value: &Value, key: &str) -> Option<u64> {
+    match value {
+        Value::Object(map) => map
+            .get(key)
+            .and_then(Value::as_u64)
+            .or_else(|| map.values().find_map(|value| find_u64(value, key))),
+        Value::Array(items) => items.iter().find_map(|value| find_u64(value, key)),
         _ => None,
     }
 }
@@ -276,6 +299,9 @@ mod tests {
                 "page_ocr_text": page_ocr,
                 "page_ocr_region": "center_70_percent",
                 "page_ocr_truncated": true,
+                "rate_limit_detected": true,
+                "rate_limit_marker": "300013",
+                "recovery_tool": "wait_for_rate_limit",
                 "cards": [{}, {}],
                 "search": { "cards": [{}, {}, {}] },
                 "selected_cards": [{}],
@@ -293,7 +319,10 @@ mod tests {
         assert_eq!(props.get("notes_count"), Some(&json!(3)));
         assert_eq!(props.get("notes_skipped_count"), Some(&json!(2)));
         assert_eq!(props.get("has_run_dir"), Some(&json!(true)));
-        assert_eq!(props.get("failure_reason"), Some(&json!("not_profile_page")));
+        assert_eq!(
+            props.get("failure_reason"),
+            Some(&json!("not_profile_page"))
+        );
         assert_eq!(props.get("page_error"), Some(&json!("not_profile_page")));
         assert_eq!(
             props.get("page_url"),
@@ -311,6 +340,12 @@ mod tests {
             Some(&json!("center_70_percent"))
         );
         assert_eq!(props.get("page_ocr_truncated"), Some(&json!(true)));
+        assert_eq!(props.get("rate_limit_detected"), Some(&json!(true)));
+        assert_eq!(props.get("rate_limit_marker"), Some(&json!("300013")));
+        assert_eq!(
+            props.get("recovery_tool"),
+            Some(&json!("wait_for_rate_limit"))
+        );
         assert!(!props.contains_key("body"));
         assert!(!props.contains_key("comments"));
     }

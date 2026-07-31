@@ -39,7 +39,23 @@ blank/404/app-only detail pages, or copy such as "帖子不见了" / "内容无�
 "page unavailable", do not loop the same macro with identical inputs. Treat it
 as a platform/session/rate-limit blocker: use whatever evidence was collected,
 try at most one narrower or slower query/profile path if it materially changes
-the route, and otherwise explain the blocker to the user.
+the route, and otherwise explain the blocker to the user. The structured
+`reason:"rate_limited"` case is the exception: follow the cooldown protocol
+below instead of changing routes or retrying immediately.
+
+## Rate-Limit Recovery
+
+Unexpected XHS pages are checked with OCR over the center of the viewport. If
+that OCR sees `访问频繁` or error code `300013`, the macro returns
+`{ok:false, reason:"rate_limited", recovery_tool:"wait_for_rate_limit"}` and
+stops opening more notes.
+
+**On `reason:"rate_limited"`, do NOT immediately retry any XHS tool.** Call
+`wait_for_rate_limit`; it remains visible as the current agent step while it
+waits for a random 5-6 minute cooldown. After it returns, retry the original
+tool once. If that retry again returns `reason:"rate_limited"`, call
+`wait_for_rate_limit` again before the next single retry. Repeat this
+wait-then-one-retry cycle until the original tool succeeds or the user cancels.
 
 ## Login Detection
 

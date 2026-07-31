@@ -158,6 +158,10 @@ Current metadata keys:
 | `page_ocr_region` | string | OCR crop identifier; currently `center_70_percent`. |
 | `page_ocr_truncated` | boolean | Whether the recognized page text exceeded 200 characters. |
 | `page_ocr_error` | string | Best-effort screenshot/OCR failure detail when no page text could be produced. |
+| `rate_limit_detected` | boolean | Whether page OCR recognized an XHS frequent-access blocker. |
+| `rate_limit_marker` | string | Matched OCR marker (`访问频繁` or `300013`). |
+| `recovery_tool` | string | Agent tool recommended for the recognized blocker; currently `wait_for_rate_limit`. |
+| `waited_seconds` | integer | Actual randomized cooldown duration returned by a wait tool. |
 | `proxy_version` | number | Added by the proxy. Current value: `1`. |
 
 ## Desktop events

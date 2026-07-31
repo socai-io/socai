@@ -21,6 +21,9 @@ const DIAGNOSTIC_FIELDS: &[&str] = &[
     "page_ocr_error",
     "page_error",
     "page_url",
+    "rate_limit_detected",
+    "rate_limit_marker",
+    "recovery_tool",
 ];
 
 /// Attach or promote a failure diagnostic exactly once. Low-level failures
@@ -32,6 +35,7 @@ pub(super) async fn attach(page: &PageSession, result: &mut Value) {
     }
     if let Some(existing) = diagnostic_fields(result) {
         merge(result, Value::Object(existing));
+        classify_rate_limit(result);
         return;
     }
     if result.get("url").is_none() {
@@ -40,12 +44,14 @@ pub(super) async fn attach(page: &PageSession, result: &mut Value) {
         }
     }
     merge(result, capture(page).await);
+    classify_rate_limit(result);
 }
 
 /// Copy a nested diagnostic from `source` onto a different result object.
 pub(super) fn copy(target: &mut Value, source: &Value) {
     if let Some(diagnostic) = diagnostic_fields(source) {
         merge(target, Value::Object(diagnostic));
+        classify_rate_limit(target);
     }
 }
 
@@ -55,6 +61,7 @@ pub(super) fn promote(value: &mut Value) {
         return;
     };
     merge(value, Value::Object(diagnostic));
+    classify_rate_limit(value);
 }
 
 async fn capture(page: &PageSession) -> Value {
@@ -73,6 +80,11 @@ async fn capture(page: &PageSession) -> Value {
     match recognized {
         Ok(Ok(text)) => {
             let trimmed = text.trim();
+            if let Some(marker) = detect_rate_limit_marker(trimmed) {
+                diagnostic["rate_limit_detected"] = json!(true);
+                diagnostic["rate_limit_marker"] = json!(marker);
+                diagnostic["recovery_tool"] = json!("wait_for_rate_limit");
+            }
             diagnostic["page_ocr_truncated"] = json!(trimmed.chars().count() > OCR_MAX_CHARS);
             diagnostic["page_ocr_text"] = json!(truncate(trimmed));
         }
@@ -108,20 +120,38 @@ fn diagnostic_fields(value: &Value) -> Option<Map<String, Value>> {
                         .collect(),
                 );
             }
-            map.values().find_map(diagnostic_fields)
+            preferred_diagnostic(map.values())
         }
-        Value::Array(items) => items.iter().find_map(diagnostic_fields),
+        Value::Array(items) => preferred_diagnostic(items.iter()),
         _ => None,
     }
+}
+
+fn preferred_diagnostic<'a>(values: impl Iterator<Item = &'a Value>) -> Option<Map<String, Value>> {
+    let mut fallback = None;
+    for value in values {
+        let Some(diagnostic) = diagnostic_fields(value) else {
+            continue;
+        };
+        if diagnostic
+            .get("rate_limit_detected")
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            return Some(diagnostic);
+        }
+        fallback.get_or_insert(diagnostic);
+    }
+    fallback
 }
 
 fn failure_is_login(value: &Value) -> bool {
     match value {
         Value::Object(map) => {
             map.get("login_required").and_then(Value::as_bool) == Some(true)
-                || ["reason", "error"].iter().any(|key| {
-                    map.get(*key).and_then(Value::as_str) == Some("login_required")
-                })
+                || ["reason", "error"]
+                    .iter()
+                    .any(|key| map.get(*key).and_then(Value::as_str) == Some("login_required"))
                 || map.values().any(failure_is_login)
         }
         Value::Array(items) => items.iter().any(failure_is_login),
@@ -145,8 +175,42 @@ fn merge(target: &mut Value, diagnostic: Value) {
         target.insert("page_url".into(), page_url);
     }
     if let Some(page_error) = page_error {
-        target.insert("page_error".into(), page_error);
+        target.entry("page_error").or_insert(page_error);
     }
+}
+
+fn detect_rate_limit_marker(text: &str) -> Option<&'static str> {
+    let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+    if digits.contains("300013") {
+        return Some("300013");
+    }
+    let compact: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+    compact.contains("访问频繁").then_some("访问频繁")
+}
+
+fn classify_rate_limit(value: &mut Value) {
+    let marker = value
+        .get("rate_limit_marker")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("page_ocr_text")
+                .and_then(Value::as_str)
+                .and_then(detect_rate_limit_marker)
+                .map(str::to_string)
+        });
+    let Some(marker) = marker else {
+        return;
+    };
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    map.insert("ok".into(), json!(false));
+    map.insert("reason".into(), json!("rate_limited"));
+    map.insert("rate_limit_detected".into(), json!(true));
+    map.insert("rate_limit_marker".into(), json!(marker));
+    map.insert("recovery_tool".into(), json!("wait_for_rate_limit"));
 }
 
 fn ocr_center(screenshot: Vec<u8>, percent: u32) -> Result<String> {

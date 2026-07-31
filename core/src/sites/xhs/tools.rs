@@ -126,6 +126,7 @@ pub fn xhs_tools_with_llm_provider(
             pro,
         }),
         Arc::new(WaitForLoginTool { page: page.clone() }),
+        Arc::new(WaitForRateLimitTool),
         Arc::new(PageStateTool { page }),
     ]
 }
@@ -164,6 +165,7 @@ pub fn xhs_macro_tools_with_llm_provider(
             pro,
         }),
         Arc::new(WaitForLoginTool { page }),
+        Arc::new(WaitForRateLimitTool),
     ]
 }
 
@@ -1145,6 +1147,16 @@ impl ScanProgress {
 /// difference between those macros is where the cards come from, not how each
 /// note is read. Returns the per-note entry; the caller pushes it and closes
 /// the modal.
+fn recovery_blocker(value: &Value) -> Option<&'static str> {
+    ["reason", "error"]
+        .iter()
+        .find_map(|key| match value.get(*key).and_then(Value::as_str) {
+            Some("rate_limited") => Some("rate_limited"),
+            Some("login_required") => Some("login_required"),
+            _ => None,
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn scan_card_note(
     xhs: &XhsPageRuntime<'_>,
@@ -1289,6 +1301,16 @@ async fn scan_card_note(
             entry
         }
     };
+
+    // A rate-limit/login page is a session-level blocker, not a missing note.
+    // Avoid loading comments or touching history; the outer scan loop will stop
+    // after preserving this entry for the agent and telemetry.
+    if recovery_blocker(&entry).is_some() {
+        if let Some(map) = entry.as_object_mut() {
+            map.insert("scan_perf".into(), Value::Object(scan_perf));
+        }
+        return entry;
+    }
 
     // Pull comments separately after the body read: the list hydrates slower
     // than the body, and reaching `comment_count` may require scrolling the
@@ -3204,10 +3226,7 @@ impl Tool for GetNotesTool {
                 ocr,
             )
             .await;
-            let login_lost = entry
-                .get("error")
-                .and_then(Value::as_str)
-                .is_some_and(|reason| reason == "login_required");
+            let blocker = recovery_blocker(&entry);
             notes.push(entry);
             let idx = notes.len() - 1;
             if ocr {
@@ -3241,8 +3260,8 @@ impl Tool for GetNotesTool {
                 0,
                 total_ms,
             ));
-            if login_lost {
-                stop_reason = "login_required".to_string();
+            if let Some(blocker) = blocker {
+                stop_reason = blocker.to_string();
                 break;
             }
         }
@@ -3308,8 +3327,8 @@ impl Tool for GetNotesTool {
             payload["reason"] = json!(stop_reason);
         }
         promote_page_diagnostic(&mut payload);
-        // Mid-scan login loss surfaces as a top-level `reason` too; mark it
-        // for remote browsers the same way the pre-flight gate is marked.
+        // Mid-scan blockers surface as a top-level `reason` too; mark login
+        // loss for remote browsers the same way the pre-flight gate is marked.
         annotate_remote_login_gate(&self.page, &mut payload);
         if let Some((count, path, error)) = media_manifest_metadata {
             payload["media_manifest_count"] = json!(count);
@@ -3681,6 +3700,55 @@ impl Tool for WaitForLoginTool {
             }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
+    }
+}
+
+/// wait_for_rate_limit — visible cooldown after OCR recognizes XHS's frequent
+/// access page. The duration is intentionally chosen inside the tool so agent
+/// retries cannot accidentally settle into a fixed interval.
+pub struct WaitForRateLimitTool;
+
+const RATE_LIMIT_WAIT_MIN_SECS: u64 = 300;
+const RATE_LIMIT_WAIT_MAX_SECS: u64 = 360;
+
+fn random_rate_limit_wait_seconds() -> u64 {
+    let uuid = uuid::Uuid::new_v4();
+    let mut seed = [0_u8; 8];
+    seed.copy_from_slice(&uuid.as_bytes()[..8]);
+    let span = RATE_LIMIT_WAIT_MAX_SECS - RATE_LIMIT_WAIT_MIN_SECS + 1;
+    RATE_LIMIT_WAIT_MIN_SECS + u64::from_le_bytes(seed) % span
+}
+
+#[async_trait]
+impl Tool for WaitForRateLimitTool {
+    fn name(&self) -> &str {
+        "wait_for_rate_limit"
+    }
+
+    fn description(&self) -> &str {
+        "Recover from Xiaohongshu rate limiting: after a tool returns \
+         `reason:rate_limited`, call this instead of immediately retrying. It \
+         visibly waits for a random 5-6 minute cooldown, then tells you to \
+         retry the original tool once. If that retry is still rate-limited, \
+         call this tool again."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let waited_seconds = random_rate_limit_wait_seconds();
+        tokio::time::sleep(std::time::Duration::from_secs(waited_seconds)).await;
+        Ok(json_result(&json!({
+            "rate_limit_wait_complete": true,
+            "waited_seconds": waited_seconds,
+            "message": "Cooldown finished. Re-run the original tool once. If it still returns reason:rate_limited, call wait_for_rate_limit again before another retry.",
+        })))
     }
 }
 
@@ -4310,6 +4378,7 @@ impl Tool for SearchTool {
         // Wall-clock markers so the perf file can show how much OCR overlapped
         // the browse loop (the pipeline benefit) vs. spilled past it.
         let browse_t0 = std::time::Instant::now();
+        let mut stop_reason = String::new();
 
         while notes.len() < want {
             let cards = xhs.extract_search_cards().await?;
@@ -4362,6 +4431,7 @@ impl Tool for SearchTool {
                 ocr,
             )
             .await;
+            let blocker = recovery_blocker(&entry);
             notes.push(entry);
             let idx = notes.len() - 1;
             if ocr {
@@ -4398,6 +4468,10 @@ impl Tool for SearchTool {
                 close_ms,
                 total_ms,
             ));
+            if let Some(blocker) = blocker {
+                stop_reason = blocker.to_string();
+                break;
+            }
         }
 
         scan_progress.finish_reading(notes.len());
@@ -4468,7 +4542,8 @@ impl Tool for SearchTool {
         };
 
         let mut payload = json!({
-            "ok": search.get("ok").and_then(Value::as_bool).unwrap_or(false),
+            "ok": search.get("ok").and_then(Value::as_bool).unwrap_or(false)
+                && stop_reason.is_empty(),
             "query": query,
             "search": search,
             "notes": notes,
@@ -4485,6 +4560,9 @@ impl Tool for SearchTool {
                 "media": media_timing,
             }
         });
+        if !stop_reason.is_empty() {
+            payload["reason"] = json!(stop_reason);
+        }
         promote_page_diagnostic(&mut payload);
         // Even the artifact keeps only the compact filter summary (changed +
         // active values); the raw panel readback with click coordinates is
@@ -4747,6 +4825,7 @@ impl Tool for AuthorScanTool {
         // By default open each collected note and read body + top comments;
         // `preview` returns the cards only and skips this.
         let mut notes: Vec<Value> = Vec::new();
+        let mut stop_reason = String::new();
         if !preview {
             // OCR and cloud ASR run in the background so they overlap the next
             // note's read + download; tasks are joined after the loop.
@@ -4785,6 +4864,7 @@ impl Tool for AuthorScanTool {
                     ocr,
                 )
                 .await;
+                let blocker = recovery_blocker(&entry);
                 notes.push(entry);
                 let idx = notes.len() - 1;
                 if ocr {
@@ -4822,6 +4902,10 @@ impl Tool for AuthorScanTool {
                     close_ms,
                     total_ms,
                 ));
+                if let Some(blocker) = blocker {
+                    stop_reason = blocker.to_string();
+                    break;
+                }
             }
             scan_progress.finish_reading(notes.len());
             let browse_ms = browse_t0.elapsed().as_millis() as u64;
@@ -4906,7 +4990,7 @@ impl Tool for AuthorScanTool {
         };
 
         let mut payload = json!({
-            "ok": true,
+            "ok": stop_reason.is_empty(),
             "author_id": author_id,
             "profile": profile_value,
             "notes": notes,
@@ -4921,6 +5005,9 @@ impl Tool for AuthorScanTool {
             },
             "timing": { "media": media_timing },
         });
+        if !stop_reason.is_empty() {
+            payload["reason"] = json!(stop_reason);
+        }
         promote_page_diagnostic(&mut payload);
 
         // Scan perf is written to `stats/scan.json` (see above), not the artifact.
