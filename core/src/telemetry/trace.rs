@@ -16,7 +16,8 @@
 //! (`gen_ai.*`) — Axiom promotes those to first-class trace columns — with
 //! socai-specific context under `socai.*`. Tool args go through
 //! `summarize_tool_args` (query text gated by `SOCAI_TELEMETRY_QUERY_TEXT`)
-//! and tool output through the count-only `summarize_tool_result`.
+//! and tool output through `summarize_tool_result` (counts plus bounded
+//! unexpected-page OCR diagnostics).
 //!
 //! Chat content rides on the `chat` spans (gated by
 //! `SOCAI_TELEMETRY_CHAT_TEXT`): `gen_ai.input.messages` carries only the

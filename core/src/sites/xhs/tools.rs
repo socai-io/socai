@@ -37,6 +37,9 @@ use crate::sites::xhs::media_manifest::{
     ensure_entity_note_id, fill_entity_from_card, search_media_manifest, write_media_manifest_file,
 };
 use crate::sites::xhs::page::{LoginGate, XHS_SEARCH_FILTERS};
+use crate::sites::xhs::page_diagnostics::{
+    copy as copy_page_diagnostic, promote as promote_page_diagnostic,
+};
 use crate::sites::xhs::{
     ReadNoteOptions, XhsAuthorProfile, XhsHistoryStore, XhsNoteCard, XhsPageRuntime, XHS_HOME_URL,
 };
@@ -1271,15 +1274,20 @@ async fn scan_card_note(
                         map.insert("open".into(), open.clone());
                     }
                 }
+                copy_page_diagnostic(&mut entry, &payload);
             }
             entry
         }
-        Err(e) => json!({
-            "source_position": card.position,
-            "ok": false,
-            "entity": card,
-            "error": format!("{e:#}"),
-        }),
+        Err(e) => {
+            let mut entry = json!({
+                "source_position": card.position,
+                "ok": false,
+                "entity": card,
+                "error": format!("{e:#}"),
+            });
+            xhs.attach_page_failure_diagnostic(&mut entry).await;
+            entry
+        }
     };
 
     // Pull comments separately after the body read: the list hydrates slower
@@ -2885,13 +2893,15 @@ async fn scan_direct_note(
     let open = match open {
         Ok(value) => value,
         Err(err) => {
-            return json!({
+            let mut result = json!({
                 "source_position": position,
                 "ok": false,
                 "entity": { "note_id": target.note_id },
                 "error": format!("{err:#}"),
                 "scan_perf": perf,
             });
+            xhs.attach_page_failure_diagnostic(&mut result).await;
+            return result;
         }
     };
     if !open.get("ok").and_then(Value::as_bool).unwrap_or(false) {
@@ -2934,7 +2944,7 @@ async fn scan_direct_note(
     let mut entity = match extracted {
         Ok(note) => serde_json::to_value(note).unwrap_or(Value::Null),
         Err(err) => {
-            return json!({
+            let mut result = json!({
                 "source_position": position,
                 "ok": false,
                 "entity": { "note_id": target.note_id, "url": open.get("url").cloned().unwrap_or(Value::Null) },
@@ -2942,6 +2952,8 @@ async fn scan_direct_note(
                 "open": open,
                 "scan_perf": perf,
             });
+            xhs.attach_page_failure_diagnostic(&mut result).await;
+            return result;
         }
     };
 
@@ -2950,7 +2962,7 @@ async fn scan_direct_note(
         .and_then(Value::as_str)
         .unwrap_or_default();
     if actual_id != target.note_id {
-        return json!({
+        let mut result = json!({
             "source_position": position,
             "ok": false,
             "entity": entity,
@@ -2958,6 +2970,8 @@ async fn scan_direct_note(
             "open": open,
             "scan_perf": perf,
         });
+        xhs.attach_page_failure_diagnostic(&mut result).await;
+        return result;
     }
     let has_detail = ["title", "author", "content"].iter().any(|key| {
         entity
@@ -2970,7 +2984,7 @@ async fn scan_direct_note(
         .is_some_and(|count| count > 0)
         || entity.get("type").and_then(Value::as_str) == Some("video");
     if !has_detail {
-        return json!({
+        let mut result = json!({
             "source_position": position,
             "ok": false,
             "entity": entity,
@@ -2978,6 +2992,8 @@ async fn scan_direct_note(
             "open": open,
             "scan_perf": perf,
         });
+        xhs.attach_page_failure_diagnostic(&mut result).await;
+        return result;
     }
 
     if comment_count > 0 {
@@ -3111,7 +3127,20 @@ impl Tool for GetNotesTool {
     async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         let pro_skipped = !self.pro && strip_pro_input(&mut input);
         let targets = direct_note_refs(&input)?;
-        let login = XhsPageRuntime::new(&self.page).login_gate(true).await?;
+        let gate = XhsPageRuntime::new(&self.page);
+        let login = match gate.login_gate(true).await {
+            Ok(login) => login,
+            Err(err) => {
+                let mut payload = json!({
+                    "ok": false,
+                    "notes": [],
+                    "reason": "page_access_failed",
+                    "error": format!("{err:#}"),
+                });
+                gate.attach_page_failure_diagnostic(&mut payload).await;
+                return Ok(json_result(&payload));
+            }
+        };
         if login == LoginGate::Required {
             let mut payload = json!({
                 "ok": false,
@@ -3278,6 +3307,7 @@ impl Tool for GetNotesTool {
         if !stop_reason.is_empty() {
             payload["reason"] = json!(stop_reason);
         }
+        promote_page_diagnostic(&mut payload);
         // Mid-scan login loss surfaces as a top-level `reason` too; mark it
         // for remote browsers the same way the pre-flight gate is marked.
         annotate_remote_login_gate(&self.page, &mut payload);
@@ -3850,8 +3880,23 @@ impl Tool for ExtractProfileTool {
         let max_notes = get_i64(&input, "max_notes", 20);
         let scroll_rounds = get_i64(&input, "scroll_rounds", 6);
         let xhs = XhsPageRuntime::new(&self.page);
-        let profile = xhs.extract_profile(max_notes, scroll_rounds).await?;
-        Ok(json_result(&profile.to_value()))
+        match xhs.extract_profile(max_notes, scroll_rounds).await {
+            Ok(profile) => Ok(json_result(&profile.to_value())),
+            Err(err) => {
+                let rendered = format!("{err:#}");
+                let mut result = json!({
+                    "ok": false,
+                    "reason": if rendered.contains("not a profile page") {
+                        "not_profile_page"
+                    } else {
+                        "extract_profile_failed"
+                    },
+                    "error": rendered,
+                });
+                xhs.attach_page_failure_diagnostic(&mut result).await;
+                Ok(json_result(&result))
+            }
+        }
     }
 }
 
@@ -4025,9 +4070,24 @@ impl Tool for SearchTool {
                 tokio::task::spawn_blocking(ocr_warm_up);
             }
             let xhs = XhsPageRuntime::new(&self.page);
-            let mut value = xhs
+            let mut value = match xhs
                 .search_notes(&query, filters.as_ref(), SEARCH_WAIT_SECONDS, num_notes)
-                .await?;
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    let mut result = json!({
+                        "ok": false,
+                        "query": query.clone(),
+                        "reason": "search_failed",
+                        "error": format!("{err:#}"),
+                        "cards": [],
+                    });
+                    xhs.attach_page_failure_diagnostic(&mut result).await;
+                    result
+                }
+            };
+            promote_page_diagnostic(&mut value);
             if let Some(cards) = value.get_mut("cards") {
                 self.history.annotate_cards(cards);
             }
@@ -4164,9 +4224,21 @@ impl Tool for SearchTool {
 
         // Filters are applied after the initial search below, so don't pass
         // them here.
-        let search = xhs
+        let search = match xhs
             .search_notes(&query, None, SEARCH_WAIT_SECONDS, None)
-            .await?;
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                let mut result = json!({
+                    "ok": false,
+                    "reason": "search_failed",
+                    "error": format!("{err:#}"),
+                });
+                xhs.attach_page_failure_diagnostic(&mut result).await;
+                result
+            }
+        };
 
         // If the search never landed on a results page (search box not found,
         // login required, …) bail before the browse loop. Otherwise
@@ -4195,6 +4267,7 @@ impl Tool for SearchTool {
                     "ocr": ocr,
                 },
             });
+            promote_page_diagnostic(&mut payload);
             // `reason` already summarizes the failure; keep the failed scan
             // compact too.
             lean_scan_payload(&mut payload);
@@ -4412,6 +4485,7 @@ impl Tool for SearchTool {
                 "media": media_timing,
             }
         });
+        promote_page_diagnostic(&mut payload);
         // Even the artifact keeps only the compact filter summary (changed +
         // active values); the raw panel readback with click coordinates is
         // never persisted.
@@ -4629,6 +4703,7 @@ impl Tool for AuthorScanTool {
                 "notes": [],
                 "reason": reason,
             });
+            copy_page_diagnostic(&mut payload, &open);
             annotate_remote_login_gate(&self.page, &mut payload);
             return Ok(json_result(&payload));
         }
@@ -4846,6 +4921,7 @@ impl Tool for AuthorScanTool {
             },
             "timing": { "media": media_timing },
         });
+        promote_page_diagnostic(&mut payload);
 
         // Scan perf is written to `stats/scan.json` (see above), not the artifact.
 

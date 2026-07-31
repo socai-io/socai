@@ -1282,8 +1282,9 @@ fn pump_agent_task_events(
                     // Same shared summarizer the CLI daemon uses: the search
                     // query is lifted into query_text/query_len (gated by
                     // query_text_enabled) and every other arg folds into
-                    // metadata; result counts are extracted from the output.
-                    // Tool OUTPUT text (note bodies) is never included.
+                    // metadata; result counts and bounded unexpected-page OCR
+                    // diagnostics are extracted from the output. Note bodies
+                    // and comments are never included.
                     props.extend(summarize_tool_args(input, query_text_enabled()));
                     props.extend(summarize_tool_result(content));
                     telemetry.capture("socai_tool_call", Value::Object(props));

@@ -245,6 +245,10 @@ impl<'a> XhsPageRuntime<'a> {
         self.expect_object("pageState", None).await
     }
 
+    pub(crate) async fn attach_page_failure_diagnostic(&self, result: &mut Value) {
+        super::page_diagnostics::attach(self.page, result).await;
+    }
+
     pub async fn search_notes(
         &self,
         query: &str,
@@ -296,7 +300,7 @@ impl<'a> XhsPageRuntime<'a> {
         if let Some(state) = submit.get_mut("state").and_then(Value::as_object_mut) {
             state.remove("url_keyword");
         }
-        Ok(json!({
+        let mut result = json!({
             "ok": ok,
             "query": keyword,
             "submit": submit,
@@ -305,17 +309,19 @@ impl<'a> XhsPageRuntime<'a> {
             "count": cards.len(),
             "cards": cards,
             "reason": if ok { "" } else { submit.get("error").and_then(Value::as_str).unwrap_or("search_submit_failed") },
-        }))
+        });
+        if !ok {
+            self.attach_page_failure_diagnostic(&mut result).await;
+        }
+        Ok(result)
     }
 
     pub async fn submit_search(&self, query: &str, wait_seconds: f64) -> Result<Value> {
-        let loc = self.expect_object("searchInput", None).await?;
+        let mut loc = self.expect_object("searchInput", None).await?;
         if !script_ok(&loc) {
-            return Ok(json!({
-                "ok": false,
-                "strategy": "search_input_unavailable",
-                "error": loc.get("error").and_then(Value::as_str).unwrap_or_default(),
-            }));
+            loc["strategy"] = json!("search_input_unavailable");
+            self.attach_page_failure_diagnostic(&mut loc).await;
+            return Ok(loc);
         }
 
         if let Some(input) = loc.get("input") {
@@ -352,7 +358,7 @@ impl<'a> XhsPageRuntime<'a> {
                 .expect_object("setSearchInput", Some(&json!({ "query": query })))
                 .await?;
             if !script_ok(&set_result) {
-                return Ok(json!({
+                let mut result = json!({
                     "ok": false,
                     "strategy": "set_search_input_failed",
                     "state": set_result,
@@ -360,7 +366,9 @@ impl<'a> XhsPageRuntime<'a> {
                         .get("error")
                         .and_then(Value::as_str)
                         .unwrap_or("Search input did not accept the requested keyword"),
-                }));
+                });
+                self.attach_page_failure_diagnostic(&mut result).await;
+                return Ok(result);
             }
         }
 
@@ -400,7 +408,7 @@ impl<'a> XhsPageRuntime<'a> {
             }
         }
 
-        Ok(json!({
+        let mut result = json!({
             "ok": false,
             "strategy": "manual_submit_failed",
             "state": state,
@@ -410,7 +418,9 @@ impl<'a> XhsPageRuntime<'a> {
             } else {
                 "Search did not transition to a valid Xiaohongshu result page"
             },
-        }))
+        });
+        self.attach_page_failure_diagnostic(&mut result).await;
+        Ok(result)
     }
 
     pub async fn wait_for_search_transition(&self, query: &str, timeout_s: f64) -> Result<Value> {
@@ -515,9 +525,16 @@ impl<'a> XhsPageRuntime<'a> {
         wait_seconds: f64,
     ) -> Result<Value> {
         let cards = self.extract_search_cards().await?;
-        let selected = select_card(&cards, note_id, index).ok_or_else(|| {
-            anyhow::anyhow!("Could not resolve note target from current search cards.")
-        })?;
+        let Some(selected) = select_card(&cards, note_id, index) else {
+            let mut result = json!({
+                "ok": false,
+                "url": self.current_url().await?,
+                "strategy": "card_lookup_failed",
+                "error": "card_not_found",
+            });
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
+        };
 
         let mut click_arg = Map::new();
         if !selected.note_id.is_empty() {
@@ -533,14 +550,21 @@ impl<'a> XhsPageRuntime<'a> {
             .expect_object("clickCard", Some(&Value::Object(click_arg.clone())))
             .await?;
         if !script_ok(&target) {
-            anyhow::bail!(
-                "Could not locate card to click for note {}: {}",
-                selected.note_id,
-                target
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-            );
+            let error = target
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("card_not_found")
+                .to_string();
+            let mut result = json!({
+                "ok": false,
+                "target": selected,
+                "url": self.current_url().await?,
+                "state": target,
+                "strategy": "card_lookup_failed",
+                "error": error,
+            });
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
         }
 
         self.set_last_note_id(String::new());
@@ -598,18 +622,26 @@ impl<'a> XhsPageRuntime<'a> {
             }
         }
 
-        Ok(json!({
+        let login_required = opened
+            .get("login_required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut result = json!({
             "ok": false,
             "target": selected,
             "url": self.current_url().await?,
             "state": opened,
             "strategy": "card_click_failed",
-            "error": if opened.get("login_required").and_then(Value::as_bool).unwrap_or(false) {
+            "error": if login_required {
                 "login_required"
             } else {
                 "Note overlay did not open after card-click attempts; site may be throttling or layout changed"
             },
-        }))
+        });
+        if !login_required {
+            self.attach_page_failure_diagnostic(&mut result).await;
+        }
+        Ok(result)
     }
 
     pub async fn close_note(&self, wait_seconds: f64) -> Result<Value> {
@@ -680,13 +712,15 @@ impl<'a> XhsPageRuntime<'a> {
             }
         }
 
-        Ok(json!({
+        let mut result = json!({
             "ok": false,
             "strategy": "close_failed",
             "state": state,
             "url": self.current_url().await?,
             "error": "Note modal did not close after Escape, JS-dispatch Escape, and close-button attempts",
-        }))
+        });
+        self.attach_page_failure_diagnostic(&mut result).await;
+        Ok(result)
     }
 
     pub async fn read_note(
@@ -756,9 +790,15 @@ impl<'a> XhsPageRuntime<'a> {
                 perf.insert("open_strategy".into(), json!(strategy));
             }
             if !script_ok(&opened) {
-                return Ok(
-                    json!({ "ok": false, "open": opened, "error": opened.get("error").and_then(Value::as_str).unwrap_or("open_failed"), "perf": perf }),
-                );
+                let error = opened
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("open_failed")
+                    .to_string();
+                let mut result =
+                    json!({ "ok": false, "open": opened, "error": error, "perf": perf });
+                self.attach_page_failure_diagnostic(&mut result).await;
+                return Ok(result);
             }
             if options.poster_url_fallback.trim().is_empty() {
                 if let Some(cover_url) = opened
@@ -792,13 +832,15 @@ impl<'a> XhsPageRuntime<'a> {
             // breaks every subsequent open in a topic scan. Report a soft
             // failure; the caller closes the overlay and moves on intact.
             let _ = options;
-            return Ok(json!({
+            let mut result = json!({
                 "ok": false,
                 "entity": note,
                 "open": open,
                 "error": format!("stale_note: expected {note_id}, got {}", note.note_id),
                 "perf": perf,
-            }));
+            });
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
         }
         Ok(json!({ "ok": true, "entity": note, "open": open, "perf": perf }))
     }
@@ -994,7 +1036,9 @@ impl<'a> XhsPageRuntime<'a> {
         let initial_raw = self.open_search_filter_panel(wait_seconds).await?;
         if !script_ok(&initial_raw) {
             self.close_search_filter_panel(None).await?;
-            return Ok(initial_raw);
+            let mut result = initial_raw;
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
         }
         let initial_filters = canonical_filter_state(&initial_raw);
         let mut changed_filters = false;
@@ -1002,13 +1046,15 @@ impl<'a> XhsPageRuntime<'a> {
             let Some(option) = search_filter_option(&initial_filters, group_key, label) else {
                 self.close_search_filter_panel(Some(&initial_filters))
                     .await?;
-                return Ok(json!({
+                let mut result = json!({
                     "ok": false,
                     "error": "filter_option_not_found",
                     "group": group_key,
                     "label": label,
                     "filters": initial_filters,
-                }));
+                });
+                self.attach_page_failure_diagnostic(&mut result).await;
+                return Ok(result);
             };
             if option
                 .get("active")
@@ -1026,7 +1072,9 @@ impl<'a> XhsPageRuntime<'a> {
         let final_raw = self.expect_object("searchFilters", None).await?;
         if !script_ok(&final_raw) {
             self.close_search_filter_panel(None).await?;
-            return Ok(final_raw);
+            let mut result = final_raw;
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
         }
         let final_filters = canonical_filter_state(&final_raw);
         self.close_search_filter_panel(Some(&final_filters)).await?;
@@ -1046,17 +1094,21 @@ impl<'a> XhsPageRuntime<'a> {
         let current_raw = self.open_search_filter_panel(wait_seconds).await?;
         if !script_ok(&current_raw) {
             self.close_search_filter_panel(None).await?;
-            return Ok(current_raw);
+            let mut result = current_raw;
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
         }
         let current = canonical_filter_state(&current_raw);
 
         let Some(target) = current.get("reset").filter(|value| !value.is_null()) else {
             self.close_search_filter_panel(Some(&current)).await?;
-            return Ok(json!({
+            let mut result = json!({
                 "ok": false,
                 "error": "filter_reset_not_found",
                 "filters": current,
-            }));
+            });
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
         };
         let x = number(target, "x");
         let y = number(target, "y");
@@ -1259,7 +1311,15 @@ impl<'a> XhsPageRuntime<'a> {
             .append_pair("xsec_token", xsec_token)
             .append_pair("xsec_source", "pc_search");
         self.set_last_note_id(String::new());
-        self.page.navigate_with_timeout(url.as_str(), 60.0).await?;
+        if let Err(err) = self.page.navigate_with_timeout(url.as_str(), 60.0).await {
+            let mut result = json!({
+                "ok": false,
+                "reason": "navigation_failed",
+                "error": format!("{err:#}"),
+            });
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
+        }
 
         let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.max(1.0));
         let mut state = self.expect_object("pageState", None).await?;
@@ -1281,7 +1341,7 @@ impl<'a> XhsPageRuntime<'a> {
             .get("login_required")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        Ok(json!({
+        let mut result = json!({
             "ok": kind == "note_detail" && !login,
             "url": self.current_url().await?,
             "reason": if login {
@@ -1291,7 +1351,11 @@ impl<'a> XhsPageRuntime<'a> {
             } else {
                 "not_note_detail"
             },
-        }))
+        });
+        if kind != "note_detail" && !login {
+            self.attach_page_failure_diagnostic(&mut result).await;
+        }
+        Ok(result)
     }
 
     /// Navigate directly to an author's profile page by id and wait for the
@@ -1307,15 +1371,35 @@ impl<'a> XhsPageRuntime<'a> {
         // Pre-flight login gate before navigating to the profile: bail fast with
         // `login_required` rather than loading the profile only to hit the wall.
         // (The wait loop below still catches a session that expires mid-scan.)
-        if self.login_gate(true).await? == LoginGate::Required {
-            return Ok(json!({
-                "ok": false,
-                "url": self.current_url().await?,
-                "reason": "login_required",
-            }));
+        match self.login_gate(true).await {
+            Ok(LoginGate::Required) => {
+                return Ok(json!({
+                    "ok": false,
+                    "url": self.current_url().await?,
+                    "reason": "login_required",
+                }));
+            }
+            Ok(LoginGate::LoggedIn) => {}
+            Err(err) => {
+                let mut result = json!({
+                    "ok": false,
+                    "reason": "page_access_failed",
+                    "error": format!("{err:#}"),
+                });
+                self.attach_page_failure_diagnostic(&mut result).await;
+                return Ok(result);
+            }
         }
         let url = format!("https://www.xiaohongshu.com/user/profile/{id}");
-        self.page.navigate_with_timeout(&url, 60.0).await?;
+        if let Err(err) = self.page.navigate_with_timeout(&url, 60.0).await {
+            let mut result = json!({
+                "ok": false,
+                "reason": "navigation_failed",
+                "error": format!("{err:#}"),
+            });
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
+        }
 
         let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.max(1.0));
         let mut state = self.expect_object("pageState", None).await?;
@@ -1337,7 +1421,7 @@ impl<'a> XhsPageRuntime<'a> {
             .get("login_required")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        Ok(json!({
+        let mut result = json!({
             "ok": kind == "profile_page",
             "url": self.current_url().await?,
             "reason": if kind == "profile_page" {
@@ -1347,7 +1431,11 @@ impl<'a> XhsPageRuntime<'a> {
             } else {
                 "not_profile_page"
             },
-        }))
+        });
+        if kind != "profile_page" && !login {
+            self.attach_page_failure_diagnostic(&mut result).await;
+        }
+        Ok(result)
     }
 
     /// Collect note cards from the current profile page, scrolling the window

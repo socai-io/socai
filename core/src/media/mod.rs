@@ -28,6 +28,7 @@ pub(crate) use self::background::{
 };
 pub use self::common::{MediaConfig, MediaUnavailable};
 pub use self::ocr::diagnostics as ocr_diagnostics;
+pub(crate) use self::ocr::ocr_images_bytes;
 pub use self::ocr::warm_up as ocr_warm_up;
 pub use self::processor::MediaProcessor;
 pub use self::timing::{timing_delta, TimingRecord, TimingSnapshot};

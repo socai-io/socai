@@ -151,6 +151,13 @@ Current metadata keys:
 | `notes_count` | number | Count of note result entries when present. |
 | `notes_skipped_count` | number | Count of notes marked skipped when present. |
 | `has_run_dir` | boolean | Whether the command returned a run directory. |
+| `failure_reason` | string | Semantic failure reason when a tool returns `ok=false`. |
+| `page_error` | string | Error or reason associated with the unexpected page/control diagnostic, for example `not_profile_page` or `search_input_not_found`. |
+| `page_url` | string | Unexpected page URL without query or fragment, so access failures can be identified without reporting XHS tokens. |
+| `page_ocr_text` | string | Secret-redacted OCR from the center 70% when XHS has an unexpected page state or a required page control is missing, capped at 200 Unicode characters. |
+| `page_ocr_region` | string | OCR crop identifier; currently `center_70_percent`. |
+| `page_ocr_truncated` | boolean | Whether the recognized page text exceeded 200 characters. |
+| `page_ocr_error` | string | Best-effort screenshot/OCR failure detail when no page text could be produced. |
 | `proxy_version` | number | Added by the proxy. Current value: `1`. |
 
 ## Desktop events
@@ -167,7 +174,7 @@ and model in use are captured on `socai_agent_task_start`.
 | `socai_browser_connect` | User connects Chrome | — |
 | `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
 | `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `steps`, token/cache usage, estimated cost breakdown, `duration_ms`, `error` |
-| `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error`, `query_text`, `query_len`, `metadata`, `note_id_present` |
+| `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error`, query/result summaries, and bounded unexpected-page diagnostics when present |
 | `socai_feishu_export` | A Feishu export completes/fails, including user-visible setup failures before the native export command starts | `task_id`, `run_id`, `destination`, optional `stage`, `outcome`, `duration_ms`, `error` |
 
 Desktop field semantics:
@@ -208,8 +215,11 @@ the exported content, document URL/ID, chat ID, or Feishu account/profile.
 `query` argument is lifted to `query_text` + `query_len`, a `note_id` argument
 collapses to a `note_id_present` boolean (the raw id is not sent), and any other
 scalar arguments go under `metadata` — with the `tab_label` arg renamed to `tab`
-and empty strings dropped, matching the CLI. The tool's **output** (note bodies,
-comments, scraped content) is never included — only the arguments.
+and empty strings dropped, matching the CLI. Note bodies, comments, and normal
+scraped content are never included. The sole output-text exception is a
+secret-redacted, 200-character OCR excerpt from the center 70% of the viewport
+when XHS lands on an unexpected page or a required page control cannot be
+found; this is accompanied by the page URL with its query and fragment removed.
 
 Unlike the CLI's `query_text`, **the desktop has no opt-out for `task_text`**: it
 is sent whenever desktop telemetry is enabled. `SOCAI_TELEMETRY=off` is the only

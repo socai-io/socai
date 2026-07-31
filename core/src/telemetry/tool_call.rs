@@ -6,13 +6,15 @@
 
 use serde_json::{json, Map, Value};
 
+const PAGE_OCR_MAX_CHARS: usize = 200;
+
 /// Summarize a tool call's input arguments. The search `query` is the one gated
 /// arg: its character length is always reported, but the raw text only when
 /// `include_query_text` is on. Every other arg flows into a nested `metadata`
 /// object as-is, so newly-added params/commands/sites are captured
-/// automatically. Only the arguments are summarized here — tool OUTPUT (note
-/// bodies, comments) is never included; see [`summarize_tool_result`] for the
-/// safe, count-only output summary.
+/// automatically. Only the arguments are summarized here — ordinary tool
+/// output (note bodies, comments) is never included; see
+/// [`summarize_tool_result`] for bounded failure-page OCR diagnostics.
 pub fn summarize_tool_args(args: &Value, include_query_text: bool) -> Map<String, Value> {
     let mut props = Map::new();
     let Some(obj) = args.as_object() else {
@@ -68,10 +70,10 @@ fn meaningful_metadata_value(value: &Value) -> Option<Value> {
     }
 }
 
-/// Extract safe, count-only metrics from a tool call's output. Reports the size
-/// of well-known result collections plus a couple of presence flags — never the
-/// note bodies, comments, or any free text. The value may be the raw tool result
-/// or wrapped in a `data` envelope (CLI daemon); both shapes are handled.
+/// Extract safe metrics from a tool call's output. Reports collection sizes and
+/// presence flags, plus the explicitly bounded unexpected-page OCR diagnostic;
+/// note bodies and comments are never copied. The value may be the raw tool
+/// result or wrapped in a `data` envelope (CLI daemon); both shapes are handled.
 pub fn summarize_tool_result(value: &Value) -> Map<String, Value> {
     let mut props = Map::new();
     let data = value.get("data").unwrap_or(value);
@@ -102,7 +104,80 @@ pub fn summarize_tool_result(value: &Value) -> Map<String, Value> {
     if value.get("run_dir").is_some() {
         props.insert("has_run_dir".into(), json!(true));
     }
+    if let Some(text) = find_string(data, "page_ocr_text") {
+        props.insert(
+            "page_ocr_text".into(),
+            json!(super::trace::redact_secrets(text)
+                .chars()
+                .take(PAGE_OCR_MAX_CHARS)
+                .collect::<String>()),
+        );
+    }
+    if let Some(region) = find_string(data, "page_ocr_region") {
+        props.insert("page_ocr_region".into(), json!(region));
+    }
+    if let Some(truncated) = find_bool(data, "page_ocr_truncated") {
+        props.insert("page_ocr_truncated".into(), json!(truncated));
+    }
+    if let Some(error) = find_string(data, "page_ocr_error") {
+        props.insert(
+            "page_ocr_error".into(),
+            json!(super::trace::redact_secrets(error)
+                .chars()
+                .take(PAGE_OCR_MAX_CHARS)
+                .collect::<String>()),
+        );
+    }
+    if let Some(error) = find_string(data, "page_error") {
+        props.insert(
+            "page_error".into(),
+            json!(super::trace::redact_secrets(error)
+                .chars()
+                .take(240)
+                .collect::<String>()),
+        );
+    }
+    if let Some(url) = find_string(data, "page_url") {
+        let path_only = url.split(['?', '#']).next().unwrap_or(url);
+        props.insert(
+            "page_url".into(),
+            json!(super::trace::redact_secrets(path_only)
+                .chars()
+                .take(500)
+                .collect::<String>()),
+        );
+    }
+    if data.get("ok").and_then(Value::as_bool) == Some(false) {
+        if let Some(reason) = data.get("reason").and_then(Value::as_str) {
+            props.insert(
+                "failure_reason".into(),
+                json!(reason.chars().take(120).collect::<String>()),
+            );
+        }
+    }
     props
+}
+
+fn find_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    match value {
+        Value::Object(map) => map
+            .get(key)
+            .and_then(Value::as_str)
+            .or_else(|| map.values().find_map(|value| find_string(value, key))),
+        Value::Array(items) => items.iter().find_map(|value| find_string(value, key)),
+        _ => None,
+    }
+}
+
+fn find_bool(value: &Value, key: &str) -> Option<bool> {
+    match value {
+        Value::Object(map) => map
+            .get(key)
+            .and_then(Value::as_bool)
+            .or_else(|| map.values().find_map(|value| find_bool(value, key))),
+        Value::Array(items) => items.iter().find_map(|value| find_bool(value, key)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -190,10 +265,17 @@ mod tests {
 
     #[test]
     fn result_summary_extracts_safe_counts_without_copying_text() {
+        let page_ocr = "限".repeat(PAGE_OCR_MAX_CHARS + 1);
         let props = summarize_tool_result(&json!({
             "run_dir": "/tmp/socai-run",
             "data": {
-                "ok": true,
+                "ok": false,
+                "reason": "not_profile_page",
+                "page_error": "not_profile_page",
+                "page_url": "https://www.xiaohongshu.com/explore/abc?xsec_token=secret",
+                "page_ocr_text": page_ocr,
+                "page_ocr_region": "center_70_percent",
+                "page_ocr_truncated": true,
                 "cards": [{}, {}],
                 "search": { "cards": [{}, {}, {}] },
                 "selected_cards": [{}],
@@ -204,13 +286,31 @@ mod tests {
                 ]
             }
         }));
-        assert_eq!(props.get("result_ok"), Some(&json!(true)));
+        assert_eq!(props.get("result_ok"), Some(&json!(false)));
         assert_eq!(props.get("cards_count"), Some(&json!(2)));
         assert_eq!(props.get("search_cards_count"), Some(&json!(3)));
         assert_eq!(props.get("selected_cards_count"), Some(&json!(1)));
         assert_eq!(props.get("notes_count"), Some(&json!(3)));
         assert_eq!(props.get("notes_skipped_count"), Some(&json!(2)));
         assert_eq!(props.get("has_run_dir"), Some(&json!(true)));
+        assert_eq!(props.get("failure_reason"), Some(&json!("not_profile_page")));
+        assert_eq!(props.get("page_error"), Some(&json!("not_profile_page")));
+        assert_eq!(
+            props.get("page_url"),
+            Some(&json!("https://www.xiaohongshu.com/explore/abc"))
+        );
+        assert_eq!(
+            props
+                .get("page_ocr_text")
+                .and_then(Value::as_str)
+                .map(|text| text.chars().count()),
+            Some(PAGE_OCR_MAX_CHARS)
+        );
+        assert_eq!(
+            props.get("page_ocr_region"),
+            Some(&json!("center_70_percent"))
+        );
+        assert_eq!(props.get("page_ocr_truncated"), Some(&json!(true)));
         assert!(!props.contains_key("body"));
         assert!(!props.contains_key("comments"));
     }
