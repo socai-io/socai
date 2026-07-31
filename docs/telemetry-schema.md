@@ -315,6 +315,9 @@ pipeline for reading what an agent actually did:
   one provider call.
 - root span — `socai.task_text` (capped at 8,000 chars) plus run status and step
   count.
+- trace resource — `socai.pro_activated`, a boolean snapshot taken at upload
+  time that records whether Socai Pro is activated. No account identifier or
+  device token is included.
 
 Never uploaded, regardless of settings: image bytes/screenshots, Anthropic
 thinking signatures, encrypted reasoning items, and browser cookies/session

@@ -316,6 +316,10 @@ fn enrich_trace_resource(payload: &mut Value, config: &WorkerConfig) {
     ] {
         attributes.push(json!({ "key": key, "value": { "stringValue": value } }));
     }
+    attributes.push(json!({
+        "key": "socai.pro_activated",
+        "value": { "boolValue": crate::cloud::pro_activated() },
+    }));
 }
 
 /// `SOCAI_TRACES_ENDPOINT` overrides the production proxy for local testing
