@@ -1855,6 +1855,10 @@ fn parse_note(body: &Value) -> XhsNote {
         content_source: s("content_source"),
         hashtags,
         date: s("date"),
+        date_edited: body
+            .get("date_edited")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         location: s("location"),
         ip_location: s("ip_location"),
         likes: s("likes"),

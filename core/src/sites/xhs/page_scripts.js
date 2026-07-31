@@ -626,11 +626,23 @@ const SocaiXhsPageScripts = (() => {
   // posts ("刚刚", "5分钟前", "11小时前", "今天 13:31", "昨天 13:31", "前天",
   // "5天前"). The previous extractor only matched the absolute forms, so any
   // relative date came back empty. Resolve relative dates against now so the
-  // field is comparable downstream; fall back to the trimmed raw text rather
-  // than emptying the field on anything unrecognized.
+  // field is comparable downstream; fall back to the cleaned text (edit
+  // prefix / territory tail stripped) rather than emptying the field on
+  // anything unrecognized.
   function normalizeXhsDate(value) {
-    const t = norm(value);
+    let t = norm(value);
     if (!t) return '';
+    // Edited notes show "编辑于 3天前 北京" — the prefix defeats the
+    // start-anchored relative patterns below, so strip it (callers that care
+    // read the edit marker separately via isEditedDate). Then drop a trailing
+    // territory token, mirroring extractIpLocation's tail heuristic — that
+    // function keeps reading the original text, not this cleaned core.
+    t = t.replace(/^编辑于\s*/, '');
+    const tokens = t.split(/\s+/);
+    const tail = tokens.length > 1 ? tokens[tokens.length - 1] : '';
+    if (/^\D{1,10}$/.test(tail) && !/[前刚今昨于:]/.test(tail)) {
+      t = tokens.slice(0, -1).join(' ');
+    }
     // Absolute token wins (scoped to the short `.date` text, so this can't grab
     // a "13-15" fragment from the note body). Pass it through unchanged.
     const abs = t.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}/);
@@ -655,6 +667,13 @@ const SocaiXhsPageScripts = (() => {
     const dm = t.match(/^(\d+)\s*天前/);
     if (dm) return fmt(daysAgo(parseInt(dm[1], 10)));
     return t;
+  }
+
+  // "编辑于 …" in the `.date` bar means the note shows its last-edited date,
+  // not the original publish date. Surfaced as `date_edited` so downstream
+  // consumers don't have to infer it from a string prefix.
+  function isEditedDate(value) {
+    return /^编辑于/.test(norm(value));
   }
 
   // The author's IP territory ("广东") as shown on the note detail. The note's
@@ -987,6 +1006,7 @@ const SocaiXhsPageScripts = (() => {
       content,
       content_source: contentSource,
       date,
+      date_edited: isEditedDate(dateText),
       location: locationText,
       ip_location: ipLocation,
       likes: likes === '赞' ? '' : likes,
@@ -1164,7 +1184,9 @@ const SocaiXhsPageScripts = (() => {
       text: content,
       likes,
       like_count: parseCount(likes),
-      time,
+      // Comment times reuse the note-date normalizer: "10小时前北京" (glued
+      // territory, no space) becomes a resolvable date token.
+      time: normalizeXhsDate(time),
       is_author_reply: /作者|博主|楼主/.test(badge),
       is_pinned: /置顶/.test(top),
       reply_count: subs.length,

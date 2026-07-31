@@ -2316,6 +2316,9 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     "author_id",
     "content",
     "date",
+    // Only present (true) when `date` is the note's last-edited date rather
+    // than its publish date, so unedited notes pay nothing for it.
+    "date_edited",
     "likes",
     "favorites",
     "comments_count",

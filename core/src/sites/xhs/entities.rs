@@ -21,6 +21,11 @@ pub struct XhsNote {
     pub content_source: String,
     pub hashtags: Vec<String>,
     pub date: String,
+    /// True when the note's date bar showed "编辑于 …" — [`Self::date`] is
+    /// then the last-edited date, not the original publish date. Omitted from
+    /// the wire shape when false so older artifacts stay byte-identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub date_edited: bool,
     /// Note POI / geo-tag label (the place the author tagged on the note).
     /// Distinct from [`Self::ip_location`], the author's IP territory.
     pub location: String,
@@ -216,6 +221,7 @@ impl Default for XhsNote {
             content_source: String::new(),
             hashtags: Vec::new(),
             date: String::new(),
+            date_edited: false,
             location: String::new(),
             ip_location: String::new(),
             likes: String::new(),
