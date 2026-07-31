@@ -1167,6 +1167,11 @@ impl<'a> XhsPageRuntime<'a> {
             },
             bio: string_field(&info, "bio"),
             ip_location: string_field(&info, "ip_location"),
+            verified: info
+                .get("verified")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            verification: string_field(&info, "verification"),
             followers: string_field(&info, "followers"),
             following: string_field(&info, "following"),
             likes_and_collections: string_field(&info, "likes_and_collections"),

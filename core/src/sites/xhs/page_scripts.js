@@ -1031,6 +1031,38 @@ const SocaiXhsPageScripts = (() => {
     };
   }
 
+  // Official-verification (认证) status of the profile being viewed. The page
+  // state carries only a numeric type (`user.userPageData.verifyInfo
+  // .redOfficialVerifyType`: 1 = personal red-V, 2 = enterprise); the desktop
+  // DOM renders just the matching badge icon (sprite symbol `red` / `company`)
+  // next to the display name, no text label. Prefer state, fall back to the
+  // icon, and derive the human-readable label from the type.
+  function profileVerification() {
+    let type = 0;
+    let label = '';
+    try {
+      const user = unwrapStateValue((window.__INITIAL_STATE__ || {}).user) || {};
+      const pageData = unwrapStateValue(user.userPageData) || {};
+      const info = unwrapStateValue(pageData.verifyInfo) || {};
+      type = Number(unwrapStateValue(info.redOfficialVerifyType)) || 0;
+      label = ['redOfficialVerifyContent', 'verifyContent']
+        .map((key) => norm(String(unwrapStateValue(info[key]) || '')))
+        .find(Boolean) || '';
+    } catch (e) {}
+    if (!type && !label) {
+      // Scoped to the header's name row so verify badges elsewhere on the
+      // page (e.g. recommended-user chips) can't false-positive.
+      const use = $('.user-name .verify-icon use');
+      const ref = use ? String(use.getAttribute('xlink:href') || use.getAttribute('href') || '') : '';
+      if (use) type = /company/i.test(ref) ? 2 : 1;
+    }
+    const verified = type > 0 || !!label;
+    if (verified && !label) {
+      label = type === 2 ? '企业认证' : type === 1 ? '个人认证' : '官方认证';
+    }
+    return { verified, verification: label };
+  }
+
   function profileInfo() {
     const displayName = firstVisibleText(
       ['.user-name', '.profile-name', '.nickname', '.name', 'h1'],
@@ -1044,6 +1076,7 @@ const SocaiXhsPageScripts = (() => {
       const re = new RegExp(`([0-9.,万wWkK+]+)\\s*(?:${label})`);
       return (body.match(re) || [])[1] || '';
     };
+    const verification = profileVerification();
     return {
       ok: true,
       display_name: displayName,
@@ -1051,6 +1084,8 @@ const SocaiXhsPageScripts = (() => {
       profile_url: location.href,
       bio,
       ip_location: ipLocation,
+      verified: verification.verified,
+      verification: verification.verification,
       followers: statText('粉丝'),
       following: statText('关注'),
       likes_and_collections: statText('获赞与收藏|获赞|赞与收藏'),

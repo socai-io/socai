@@ -60,6 +60,11 @@ pub struct XhsAuthorProfile {
     pub profile_url: String,
     pub bio: String,
     pub ip_location: String,
+    /// Official-verification (认证) badge on the profile header: `verified`
+    /// flags it, `verification` carries the label ("企业认证" / "个人认证").
+    /// Both stay off the wire for regular accounts.
+    pub verified: bool,
+    pub verification: String,
     pub followers: String,
     pub following: String,
     pub likes_and_collections: String,
@@ -76,6 +81,14 @@ impl XhsAuthorProfile {
         map.insert("url".into(), json!(normalize_url(&self.profile_url)));
         map.insert("bio".into(), json!(self.bio));
         map.insert("ip_location".into(), json!(self.ip_location));
+        // Official verification is the exception to always-emit: absent for
+        // regular accounts so existing author payloads keep their shape.
+        if self.verified {
+            map.insert("verified".into(), json!(true));
+        }
+        if !self.verification.is_empty() {
+            map.insert("verification".into(), json!(self.verification));
+        }
         // Counts are kept as the raw displayed strings ("1.2万"); the parsed
         // `*_value` integers were redundant, so they're no longer emitted.
         map.insert("followers".into(), json!(self.followers));

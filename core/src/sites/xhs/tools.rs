@@ -4504,6 +4504,7 @@ impl Tool for AuthorScanTool {
     fn description(&self) -> &str {
         "Xiaohongshu author/creator scan: open an author's profile page by id → \
          read the author header (display name, xhs id, bio, IP location, \
+         official-verification/认证 status when present, \
          follower/following/liked-&-collected counts) → collect their note \
          summary cards in page order (pass `num_notes` to scroll the grid for \
          more, omit for just the first screen) → open each collected note and \
@@ -4660,6 +4661,11 @@ impl Tool for AuthorScanTool {
             profile_url,
             bio: get_str(&info, "bio").unwrap_or("").to_string(),
             ip_location: get_str(&info, "ip_location").unwrap_or("").to_string(),
+            verified: info
+                .get("verified")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            verification: get_str(&info, "verification").unwrap_or("").to_string(),
             followers: get_str(&info, "followers").unwrap_or("").to_string(),
             following: get_str(&info, "following").unwrap_or("").to_string(),
             likes_and_collections: get_str(&info, "likes_and_collections")
