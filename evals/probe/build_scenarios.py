@@ -17,8 +17,8 @@ emits probe scenarios under scenarios/:
   shape agents see today.
 - `bloc1_trap` additionally removes the fresh official 换线 notice from the
   result, simulating the realistic failure world where search ranking sampled
-  only the stale official notice. Correct behavior then requires a second hop
-  (author_scan of the official account, or a recency-sorted re-search).
+  only the stale official notice. Correct behavior then requires the
+  verification hop: author_scan of the official account.
 
 Scenarios embed no secrets; they do embed public XHS note content and xsec URL
 tokens from the local run dirs, so scenarios/ stays untracked (see ../.gitignore).

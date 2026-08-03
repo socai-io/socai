@@ -6,9 +6,9 @@ these are lab tools for iterating on prompts/tools before shipping them.
 ## probe/ — single-step decision probe
 
 **Question it answers:** after a default-ranked `search` result, does the agent
-perform a verification hop (an `author_scan` of the official account, or a
-recency-sorted re-search) before answering a question that has an
-authoritative owner — e.g. "bloc1 攀岩馆上一次换线是什么时候"?
+perform the verification hop — an `author_scan` of the official account —
+before answering a question that has an authoritative owner — e.g.
+"bloc1 攀岩馆上一次换线是什么时候"?
 
 **Why this design:** search ranking is relevance-based, not recency-based. In
 the recorded runs (2026-07-30) the official account's *stale* January 换线
@@ -64,10 +64,12 @@ are gitignored (they embed public XHS note content and short-lived xsec tokens
 from local recordings).
 
 **Reading the table:** `scan✓` = author_scan with the correct official
-author_id; `recency` = re-search with `sort=最新`/`publish_time` (acceptable
-verification); `plain` = plain re-search (spends a step without fixing the
-sampling bias); `direct` = answered from the sample (`stale!` = with the stale
-date — the incident this guards against).
+author_id — the only action that counts as verification; `recency` = re-search
+with `sort=最新`/`publish_time` (tracked, but not verification: the policy
+keeps XHS's default relevance ranking and handles stale no-official-source
+evidence with an explicit date caveat instead); `plain` = plain re-search
+(spends a step without fixing the sampling bias); `direct` = answered from the
+sample (`stale!` = with the stale date — the incident this guards against).
 
 **Known limits:** single-step only — it scores the *decision*, not whether the
 follow-up produces the right final answer (that needs the full-loop fixture

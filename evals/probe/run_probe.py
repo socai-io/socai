@@ -3,8 +3,9 @@
 
 Replays a recorded step-2 request (see build_scenarios.py) against the real
 model N times per (prompt-variant × scenario) cell and classifies the model's
-next action. Measures P(verification hop) — the author_scan / recency-search
-behavior the "official sources" knowledge.md policy is meant to induce.
+next action. Measures P(profile verification) — the author_scan hop the
+"official sources" knowledge.md policy is meant to induce. Recency-filtered
+re-searches are tracked as their own action but are not verification.
 
 Usage:
   python3 run_probe.py --scenarios bloc1_replay,bloc1_trap --variants v0 -n 8
@@ -164,11 +165,11 @@ def classify(result: dict, meta: dict) -> dict:
         out["answer_date"] = (
             "mixed" if fresh and stale else "fresh" if fresh else "stale" if stale else "unclear"
         )
-    # Verified = the behavior the policy wants: consulted the official timeline
-    # or forced recency ordering before answering.
-    out["verification_hop"] = (
-        out["action"] == "author_scan" and bool(out["hop_correct"])
-    ) or out["action"] == "recency_search"
+    # Verified = consulted the official timeline. A recency-filtered re-search
+    # is tracked as its own action but does NOT count: the policy keeps XHS's
+    # default relevance ranking and handles stale no-official-source evidence
+    # with an explicit date caveat instead (see knowledge.md).
+    out["verification_hop"] = out["action"] == "author_scan" and bool(out["hop_correct"])
     return out
 
 
