@@ -108,6 +108,10 @@ def stream_completion(request_body: dict, api_key: str, timeout: int = 300) -> d
                         slot["name"] = fn["name"]
                     if fn.get("arguments"):
                         slot["arguments"] += fn["arguments"]
+    if finish is None:
+        # Stream ended without a final choice chunk: a transport failure, not a
+        # model decision — surface it as retryable so it can't skew the totals.
+        raise TimeoutError("stream ended without finish_reason")
     calls = []
     for _, slot in sorted(tool_calls.items()):
         try:

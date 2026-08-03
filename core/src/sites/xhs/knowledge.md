@@ -122,8 +122,9 @@ soft ads/content farms when a note looks suspicious or representative.
 
 Shared options (same meaning for both):
 
-- `num_notes=N` — how many notes to collect (default 10); raise only when the
-  question needs broader evidence.
+- `num_notes=N` — how many notes to collect. `search` defaults to 10;
+  `author_scan` defaults to the first unscrolled screen of the profile grid.
+  Raise it only when the question needs broader evidence.
 - `num_comments=N` — how many comments to load per note (default 5; replies
   count toward N). Use the default unless the question is about the discussion itself.
   N ≤ 12 usually loads without extra scrolling, larger values add scroll/expand rounds 
