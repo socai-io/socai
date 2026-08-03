@@ -159,7 +159,9 @@ def classify(result: dict, meta: dict) -> dict:
     elif calls:
         out["action"] = calls[0]["name"]
     else:
-        text = result["content"]
+        # Strip as-of framing ("截至今天/截至2026-07-30, …") before matching:
+        # the anchor date used as framing must not read as a fresh event claim.
+        text = re.sub(r"截至[^，。；\n]{0,20}", "", result["content"])
         fresh = any(re.search(p, text) for p in meta["fresh_patterns"])
         stale = any(re.search(p, text) for p in meta["stale_patterns"])
         out["answer_date"] = (

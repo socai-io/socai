@@ -103,7 +103,10 @@ via the verified/认证 header fields, and it reveals announcements that search
 ranking missed. It reads only the first screen of the grid unless you pass
 `num_notes` — raise it when the newest matching note isn't in that first
 screen. A stale-looking official notice in search results means "check the
-profile", never "nothing newer exists".
+profile", never "nothing newer exists". The one exception: when the sample
+already contains the official account's own announcement and its date is
+current for what is being asked, answer from it directly — the hop is for
+official evidence that is stale, conflicting, or missing from the sample.
 
 If no official account surfaces for such a question, keep the default search
 ranking — that relevance ordering is what XHS search is good at; do not

@@ -32,9 +32,11 @@ known post-recording tool edits; new tool edits need a patch rule in
 - `bloc1_trap` — the fresh official notice removed: the realistic world where
   ranking sampled only the stale notice. A direct answer here is the failure
   mode this whole effort targets; passing requires the hop.
-- `col_replay` — the lucky case (fresh official notice at #1). Measures
-  over-triggering cost: v1 should not turn easy cases into extra hops that
-  add latency for nothing (a hop is *acceptable* here, just not required).
+- `col_replay` — the lucky case (fresh official notice at #1). Exercises the
+  policy's fresh-official exception: when the official account's own current
+  announcement already tops the sample, answering directly is the intended
+  behavior and a hop is unnecessary latency (still scored as verified if it
+  happens — it's not wrong, just not required).
 
 **Variants:**
 
