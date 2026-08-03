@@ -44,14 +44,16 @@ re-splices the current knowledge.md and toolset into the recorded prompt):
 Once the official-sources policy lands in knowledge.md itself (2026-08-01, this
 branch), a regenerated `v0` already contains it and `run_probe.py --variants v1`
 exits loudly because the old paragraph no longer exists — that's the drift
-guard working. From then on, `v0` is the new baseline; add `v2`… files and a
-matching replacement rule for the next iteration.
+guard working. From then on, `v0` is the new baseline and `v1` applies only to
+archived pre-policy fixtures; its variant file stays as the verbatim record of
+the tested wording. Add `v2`… files and a matching replacement rule for the
+next iteration.
 
 **Run:**
 
 ```bash
 python3 probe/build_scenarios.py
-python3 probe/run_probe.py --scenarios bloc1_replay,bloc1_trap,col_replay --variants v0,v1 -n 8
+python3 probe/run_probe.py --scenarios bloc1_replay,bloc1_trap,col_replay --variants v0 -n 8
 ```
 
 Qwen API key is read from `~/.socai/auth.json`; raw per-trial responses land in

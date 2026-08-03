@@ -97,11 +97,13 @@ When the question concerns something its subject announces or decides itself —
 schedules, route changes (换线), prices, opening hours, events, rules,
 openings/closures — and an account that looks like the subject's official
 account appears in the results, do not answer from the search sample alone.
-Run `author_scan` on that author_id: the profile is the account's complete,
-newest-first timeline, it confirms official status via the verified/认证
-header fields, and it reveals announcements that search ranking missed. A
-stale-looking official notice in search results means "check the profile",
-never "nothing newer exists".
+Run `author_scan` on that author_id: the profile lists the account's notes
+newest-first (pinned 置顶 notes may sit on top), it confirms official status
+via the verified/认证 header fields, and it reveals announcements that search
+ranking missed. It reads only the first screen of the grid unless you pass
+`num_notes` — raise it when the newest matching note isn't in that first
+screen. A stale-looking official notice in search results means "check the
+profile", never "nothing newer exists".
 
 If no official account surfaces for such a question, triangulate recency from
 dated user posts or re-run `search` with `filters={"sort":"最新"}`.

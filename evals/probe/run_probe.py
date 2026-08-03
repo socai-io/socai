@@ -7,8 +7,12 @@ next action. Measures P(verification hop) — the author_scan / recency-search
 behavior the "official sources" knowledge.md policy is meant to induce.
 
 Usage:
-  python3 run_probe.py --scenarios bloc1_replay,bloc1_trap --variants v0,v1 -n 8
+  python3 run_probe.py --scenarios bloc1_replay,bloc1_trap --variants v0 -n 8
   python3 run_probe.py --dry-run          # build requests, print cells, no API calls
+
+`v1` applies only to fixtures generated before the official-sources policy
+landed in knowledge.md; on current fixtures it exits via the drift guard
+(see evals/README.md).
 
 The Qwen API key is read from ~/.socai/auth.json (qwen.api_key) and never
 printed. Raw responses land in results/<stamp>/ for audit.
@@ -130,7 +134,9 @@ def classify(result: dict, meta: dict) -> dict:
         out["hop_correct"] = scan["arguments"].get("author_id") == meta["official_author_id"]
     elif search:
         filters = search["arguments"].get("filters") or {}
-        recency = filters.get("sort") == "最新" or bool(filters.get("publish_time"))
+        # publish_time="不限" means no time restriction — only a real window
+        # counts as forcing recency.
+        recency = filters.get("sort") == "最新" or filters.get("publish_time") not in (None, "", "不限")
         out["action"] = "recency_search" if recency else "plain_search"
     elif names:
         out["action"] = names[0]
@@ -152,7 +158,7 @@ def classify(result: dict, meta: dict) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenarios", default="bloc1_replay,bloc1_trap")
-    ap.add_argument("--variants", default="v0,v1")
+    ap.add_argument("--variants", default="v0")
     ap.add_argument("-n", "--trials", type=int, default=8)
     ap.add_argument("--concurrency", type=int, default=3)
     ap.add_argument("--dry-run", action="store_true")
