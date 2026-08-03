@@ -3,6 +3,23 @@
   "providers": {
     "anthropic": [
       {
+        "id": "claude-opus-5",
+        "display_name": "Claude Opus 5",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 5,
+              "output_per_million": 25,
+              "cache_read_per_million": 0.5,
+              "cache_write_per_million": 6.25
+            }
+          ]
+        }
+      },
+      {
         "id": "claude-sonnet-5",
         "display_name": "Claude Sonnet 5",
         "source": "pi-ai",
@@ -466,23 +483,6 @@
         }
       },
       {
-        "id": "gpt-5.2-codex",
-        "display_name": "GPT-5.2 Codex",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 1.75,
-              "output_per_million": 14,
-              "cache_read_per_million": 0.175,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
         "id": "gpt-5.2-chat-latest",
         "display_name": "GPT-5.2 Chat",
         "source": "pi-ai",
@@ -517,74 +517,6 @@
         }
       },
       {
-        "id": "gpt-5.1-codex-max",
-        "display_name": "GPT-5.1 Codex Max",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 1.25,
-              "output_per_million": 10,
-              "cache_read_per_million": 0.125,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "gpt-5.1-codex-mini",
-        "display_name": "GPT-5.1 Codex mini",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.25,
-              "output_per_million": 2,
-              "cache_read_per_million": 0.025,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "gpt-5.1-codex",
-        "display_name": "GPT-5.1 Codex",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 1.25,
-              "output_per_million": 10,
-              "cache_read_per_million": 0.125,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "gpt-5.1-chat-latest",
-        "display_name": "GPT-5.1 Chat",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 1.25,
-              "output_per_million": 10,
-              "cache_read_per_million": 0.125,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
         "id": "gpt-5.1",
         "display_name": "GPT-5.1",
         "source": "pi-ai",
@@ -613,23 +545,6 @@
               "input_per_million": 15,
               "output_per_million": 120,
               "cache_read_per_million": 0,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "gpt-5-codex",
-        "display_name": "GPT-5-Codex",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 1.25,
-              "output_per_million": 10,
-              "cache_read_per_million": 0.125,
               "cache_write_per_million": 0
             }
           ]
