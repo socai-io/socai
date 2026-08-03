@@ -13,10 +13,8 @@ Usage:
   python3 run_probe.py -n 3               # quick smoke
   python3 run_probe.py --dry-run          # build requests, no API calls
 
-`--variants` remains only for prompt-iteration experiments (comparing a
-candidate wording against the current prompt); `v1` applies solely to fixtures
-generated before the official-sources policy landed (drift guard — see
-evals/README.md).
+To test a candidate prompt wording, edit core/src/sites/xhs/knowledge.md,
+rebuild scenarios, and rerun — git is the variant switch.
 
 The Qwen API key comes from $DASHSCOPE_API_KEY / $QWEN_API_KEY (CI) or
 ~/.socai/auth.json (local), and is never printed. Raw responses land in results/<stamp>/ for audit.
@@ -45,16 +43,6 @@ BASE_URL = os.environ.get(
     "https://dashscope.aliyuncs.com/compatible-mode/v1",
 ).rstrip("/") + "/chat/completions"
 
-# The paragraph V1 replaces — current knowledge.md's author_scan guidance
-# ("skip this extra step for routine searches"). Matched exactly so drift
-# fails loudly instead of silently testing the wrong baseline.
-OLD_PARAGRAPH = """For deep, complex topic research only, consider `author_scan` when a search
-finds a high-quality, suspicious, or representative note. A quick profile check
-can distinguish firsthand expertise from soft ads/content farms, uncover related
-notes, reveal the author's recurring style and so on. Skip this extra step for routine
-searches."""
-
-
 def load_api_key() -> str:
     key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or ""
     if not key:
@@ -66,17 +54,6 @@ def load_api_key() -> str:
     if not key:
         sys.exit("no qwen api key: set DASHSCOPE_API_KEY (CI) or configure ~/.socai/auth.json")
     return key
-
-
-def apply_variant(system_text: str, variant: str) -> str:
-    if variant == "v0":
-        return system_text
-    if variant == "v1":
-        if OLD_PARAGRAPH not in system_text:
-            sys.exit("v1: baseline author_scan paragraph not found in system prompt (knowledge.md drifted?)")
-        replacement = (HERE / "variants" / "v1_official_sources.md").read_text().strip()
-        return system_text.replace(OLD_PARAGRAPH, replacement)
-    sys.exit(f"unknown variant {variant}")
 
 
 def stream_completion(request_body: dict, api_key: str, timeout: int = 300) -> dict:
@@ -201,30 +178,19 @@ def classify(result: dict, meta: dict) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenarios", default="bloc1_replay,bloc1_trap,col_replay")
-    ap.add_argument("--variants", default="v0")
     ap.add_argument("-n", "--trials", type=int, default=8)
     ap.add_argument("--concurrency", type=int, default=3)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    scenarios = {}
+    cells = []
     for name in args.scenarios.split(","):
         payload = json.loads((HERE / "scenarios" / f"{name}.json").read_text())
-        scenarios[name] = payload
-    variants = args.variants.split(",")
+        cells.append((name, payload["request"], payload["meta"]))
 
-    cells = []
-    for variant in variants:
-        for scenario, payload in scenarios.items():
-            request = json.loads(json.dumps(payload["request"]))  # deep copy
-            request["messages"][0]["content"] = apply_variant(
-                request["messages"][0]["content"], variant
-            )
-            cells.append((variant, scenario, request, payload["meta"]))
-
-    for variant, scenario, request, _ in cells:
+    for scenario, request, _ in cells:
         print(
-            f"cell {variant}×{scenario}: system {len(request['messages'][0]['content'])} chars, "
+            f"case {scenario}: system {len(request['messages'][0]['content'])} chars, "
             f"{len(request['tools'])} tools, model {request['model']}"
         )
     if args.dry_run:
@@ -238,7 +204,7 @@ def main() -> None:
     lock = threading.Lock()
     rows = []
 
-    def run_trial(variant, scenario, request, meta, trial):
+    def run_trial(scenario, request, meta, trial):
         last_err = None
         for attempt in range(3):
             try:
@@ -247,7 +213,6 @@ def main() -> None:
                 elapsed = time.time() - t0
                 verdict = classify(result, meta)
                 record = {
-                    "variant": variant,
                     "scenario": scenario,
                     "trial": trial,
                     "elapsed_s": round(elapsed, 1),
@@ -256,14 +221,14 @@ def main() -> None:
                     "usage": result["usage"],
                     "content_head": result["content"][:300],
                 }
-                raw_path = out_dir / f"{variant}_{scenario}_{trial:02d}.json"
+                raw_path = out_dir / f"{scenario}_{trial:02d}.json"
                 raw_path.write_text(json.dumps(
                     {"record": record, "content": result["content"], "reasoning": result["reasoning"]},
                     ensure_ascii=False, indent=1))
                 with lock:
                     rows.append(record)
                     print(
-                        f"  {variant}×{scenario} #{trial}: {verdict['action']}"
+                        f"  {scenario} #{trial}: {verdict['action']}"
                         + (f" (author_id ok={verdict['hop_correct']})" if verdict["action"] == "author_scan" else "")
                         + (f" answer={verdict['answer_date']}" if verdict["action"] == "direct_answer" else "")
                         + f" [{elapsed:.0f}s]"
@@ -281,16 +246,16 @@ def main() -> None:
                     except Exception:
                         pass
                 with lock:
-                    print(f"  {variant}×{scenario} #{trial}: retry after {type(e).__name__} {detail}")
+                    print(f"  {scenario} #{trial}: retry after {type(e).__name__} {detail}")
                 if attempt < 2:
                     time.sleep(10 * (attempt + 1))
         with lock:
-            rows.append({"variant": variant, "scenario": scenario, "trial": trial,
+            rows.append({"scenario": scenario, "trial": trial,
                          "action": "error", "error": str(last_err)})
 
     jobs = [
-        (variant, scenario, request, meta, trial)
-        for variant, scenario, request, meta in cells
+        (scenario, request, meta, trial)
+        for scenario, request, meta in cells
         for trial in range(args.trials)
     ]
     with cf.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
@@ -298,7 +263,7 @@ def main() -> None:
 
     summary = {}
     for row in rows:
-        key = f"{row['variant']}×{row['scenario']}"
+        key = row['scenario']
         cell = summary.setdefault(key, {"n": 0, "author_scan": 0, "hop_correct": 0,
                                         "recency_search": 0, "plain_search": 0,
                                         "direct_answer": 0, "answer_stale": 0,
@@ -340,22 +305,22 @@ def main() -> None:
         return toks
 
     failures = []
-    for variant, scenario, _, meta in cells:
+    for scenario, _, meta in cells:
         expect = meta.get("expect")
         if not expect:
             continue
-        sel = [r for r in rows if r["variant"] == variant and r["scenario"] == scenario]
+        sel = [r for r in rows if r["scenario"] == scenario]
         passed = sum(1 for r in sel if trial_outcome_tokens(r) & set(expect["pass"]))
         need = float(expect.get("min_pass_rate", 0.75))
         ok = bool(sel) and passed / len(sel) >= need
         if not ok:
-            failures.append(f"{variant}×{scenario}")
+            failures.append(scenario)
         print(
-            f"{'PASS' if ok else 'FAIL'} {variant}×{scenario}: {passed}/{len(sel)} trials took an "
+            f"{'PASS' if ok else 'FAIL'} {scenario}: {passed}/{len(sel)} trials took an "
             f"expected action ({' or '.join(expect['pass'])}; gate ≥{need:.0%})"
         )
 
-    header = f"{'cell':26} {'n':>2} {'scan✓':>6} {'scan✗':>6} {'recency':>8} {'plain':>6} {'direct':>7} {'stale!':>7} {'err':>4}"
+    header = f"{'case':26} {'n':>2} {'scan✓':>6} {'scan✗':>6} {'recency':>8} {'plain':>6} {'direct':>7} {'stale!':>7} {'err':>4}"
     print(header)
     for key, cell in sorted(summary.items()):
         print(

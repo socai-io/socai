@@ -1,0 +1,323 @@
+{
+ "recorded_date": "2026-07-30",
+ "task": "bloc1 攀岩馆上一次换线是什么时候",
+ "search_reasoning": "The user is asking about when \"bloc1 攀岩馆\" (a climbing gym) last changed their routes/lines. Let me search for this on Xiaohongshu.",
+ "search_call": {
+  "num_notes": 10,
+  "query": "bloc1 攀岩馆 换线"
+ },
+ "cassette": {
+  "artifact": {
+   "extra_note_properties": [
+    "hashtags",
+    "images (index, url, ocr_text, ocr_ms)",
+    "image_count",
+    "video",
+    "type",
+    "author_url",
+    "location",
+    "content_source",
+    "top_comments (full objects: text, author, likes, time, sub_comments[])"
+   ],
+   "note": "Full untrimmed results. Look up a note by note_id for the fields trimmed below.",
+   "path": "/Users/user/.socai/runs/20260730_104110_xhs_bloc1_攀岩馆上一次换线是什么时候/turn-01_bloc1_攀岩馆上一次换线是什么时候/tools/step-001-call-01-search/artifacts/001_xhs_search_bloc1_攀岩馆_换线.json"
+  },
+  "media_manifest_count": 49,
+  "media_manifest_path": "/Users/user/.socai/runs/20260730_104110_xhs_bloc1_攀岩馆上一次换线是什么时候/turn-01_bloc1_攀岩馆上一次换线是什么时候/tools/step-001-call-01-search/media_manifest.json",
+  "notes": [
+   {
+    "entity": {
+     "author": "Bloc1 Climbing",
+     "author_id": "681c1223000000000e0126f9",
+     "comments_count": "5",
+     "content": "本期我们邀请了 7位风格多元的定线员，为大家打造丰富有趣的攀爬路线。\n\n💜营业时间调整提醒\n2月1日（本周日） 营业至 18:00，请合理安排时间。 尚未完成恩怨线路的岩友，抓紧周五黑练和周末最后的机会！💪\n\n闭馆换线安排\n2月2日、3日（周一、周二） 闭馆换线，暂停营业。\n2月4日（周三） 起恢复正常营业，全新线路正式上线！\n本次会是什么风格的好线，期待一下吧～\n\n#北京攀岩 #在一块儿不止攀岩 #攀岩 #抱石",
+     "date": "01-28",
+     "favorites": "6",
+     "likes": "66",
+     "note_id": "697b0717000000002202266a",
+     "ocr_text": [
+      "BLOC1\n龍浪优真\nJMSCA 认证 C级路线定线员\n自2013年以来有超过10年以上的经验\nLead Japan Tour 官方定线员\n(2019/2020/2021)\nBLOC1\n本期线路\n定线员\n定线员档案\n原日本国家队教练\nIFSC国际定线员\nACC亚洲首席定线员\nJMSCA A级定线员\nJSPO高级体育攀岩教练\n木村伸介",
+      "BLOC1\n阿劲\n浩石运动攀岩定线员\nBLOC1\n本期线路\n定线员档案\n定线员\n2025年全国攀岩联赛-高碑店主定线员\n2024年第二届全国攀岩冠军赛主定线员\n2023年全国青少年攀岩锦标赛主定线员\n2021年国家攀岩队东京奥运备战定线员\n2019年国际攀联公开赛-广州定线员\n阿豪\n国家级攀岩定线员\n中国登山协会定线员师资\n浩石运动攀岩教练"
+     ],
+     "title": "🪜Bloc1换线通知",
+     "top_comments": [
+      {
+       "replies": [
+        "够劲儿！"
+       ],
+       "text": "阿劲果然不需要任何title加持"
+      },
+      {
+       "replies": [
+        "期待新线"
+       ],
+       "text": "期待"
+      },
+      "请问下次换线是什么时候"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/697b0717000000002202266a?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "亚运村二龙三凤",
+     "author_id": "5ac3461411be1046df01fe70",
+     "comments_count": "4",
+     "content": "吭哧瘪肚卡在换线前艰难毕业～\n#上墙吧攀岩人 #在一块儿不止攀岩 #室内抱石 #攀岩 #丫够燥的 #bloc1岩馆\n@Bloc1 Climbing",
+     "date": "07-22",
+     "favorites": "5",
+     "likes": "47",
+     "note_id": "6a60ebae0000000011007011",
+     "ocr_text": [
+      "请勿高空筑第\nt达z"
+     ],
+     "title": "BLOC 1 新旧V3 27条合集",
+     "top_comments": [
+      {
+       "replies": [
+        "巨喜欢这个tag 哈哈哈哈"
+       ],
+       "text": "丫够燥的！"
+      },
+      {
+       "replies": [
+        "谢谢领导的肯定"
+       ],
+       "text": "爬得不错！再接再厉！"
+      }
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a60ebae0000000011007011?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "文文J",
+     "author_id": "5e0953e8000000000100530b",
+     "comments_count": "6",
+     "content": "今天赶去Bloc1，通告说18点开始换线。\n想再最后摸一把恩怨线。\n谁知，一到朋友就惊呼，线已拆。\n早就刷到，世界冠军Sohta的活动上，他托举一位岩友。\n有四个搭子给我爬过beta，都在30秒以内就上了。\n伤心，上不去就是上不去。没劲儿看再多beta也没用。\n别人都发7月V2完攀，我就发唯一没完攀。\n\n#攀岩 #上墙的攀岩人 #bloc1岩馆\n#攀岩新力量",
+     "date": "编辑于 2天前 北京",
+     "favorites": "",
+     "likes": "8",
+     "note_id": "6a67748f00000000110041f7",
+     "ocr_text": [
+      "没有世界冠军的托举\n就是上不去\nBeta是别人的\n无力是自己的\n在哪里跌倒\n就在哪里跪下\n小红书"
+     ],
+     "title": "攀岩｜有的线注定是BE",
+     "top_comments": [
+      {
+       "replies": [
+        "哈哈哈哈哈有你的画外音"
+       ],
+       "text": "刷到你了哈哈哈"
+      },
+      {
+       "replies": [
+        "别提了，眼泪落在岩点上"
+       ],
+       "text": "太心酸了吧"
+      },
+      "这个感觉是不是直接回手掏会简单一点？动态发力一下"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a67748f00000000110041f7?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "Lesiii",
+     "author_id": "612f1b91000000001f0368a8",
+     "comments_count": "12",
+     "content": "终于换新线了！\n一晚上没睡着太兴奋了\n下午两点准时到达两个小时就把v2毕业了！\n到处都是人人人人人\n估计门口有200双鞋吧\n但是新线真的好好玩🎄\n\n#平安夜 #节日气氛组已就位 #圣诞节 #bloc1岩馆 #北京攀岩 #上墙的攀岩人 #上墙吧攀岩人 #圣诞",
+     "date": "2025-12-24",
+     "favorites": "1",
+     "likes": "43",
+     "note_id": "694bf655000000001e007f04",
+     "ocr_text": [
+      "Mery\nChristmas",
+      ""
+     ],
+     "title": "在bloc1过平安夜也太幸福了吧",
+     "top_comments": [
+      {
+       "replies": [
+        "嘿嘿居然刷到了！！ 玩得开心就好！！！"
+       ],
+       "text": "ohhhhh姐妹！！我是昨天的🎄！笑死哈哈哈哈哈哈哈感谢你为我留下了珍贵的影像资料！！"
+      },
+      {
+       "replies": [
+        "妈耶我也是双向奔赴了"
+       ],
+       "text": "姐妹你那天太米了 一直忍不住偷看！！"
+      },
+      "好美丽的ootd！"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/694bf655000000001e007f04?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "Bloc1 Climbing",
+     "author_id": "681c1223000000000e0126f9",
+     "comments_count": "",
+     "content": "来啦，周二周三闭馆换线哦\n\n#北京攀岩 #bloc1岩馆",
+     "date": "07-26",
+     "favorites": "",
+     "likes": "8",
+     "note_id": "6a65d768000000000101f9c4",
+     "ocr_text": [
+      "BLOC1\n07.27 18:00闭馆拆线\n07.28全天闭馆换线\n07.29全天闭馆换线\n07.30 10:00正常营业\nBLOC1"
+     ],
+     "title": "Bloc1 换线通知🔩",
+     "top_comments": [],
+     "url": "https://www.xiaohongshu.com/explore/6a65d768000000000101f9c4?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "kikoko今天爬墙了吗",
+     "author_id": "5b45ad464eacab301aaf54ad",
+     "comments_count": "10",
+     "content": "昨天试线的时候真的很喜欢这条线中间那步倒重心的动作\n但是结束真的不敢大发力出手\n今天还是跟Yumaさん商量了一个“大サービス”换了一个更大的好脚点\n以为脚点大了会勇敢大发力 并没有\n但都わざわざ为我改了还不过太丢人了 硬扛并脚侧身出手了\n新线很考验技巧哦\n这个月可以多多来磕 多多进步\n#上墙吧攀岩人 #攀岩 #我的运动日常 #抱石 #bloc1岩馆",
+     "date": "07-29",
+     "favorites": "",
+     "likes": "22",
+     "note_id": "6a6a287f000000000301ec54",
+     "ocr_text": [
+      "争取来的脚点"
+     ],
+     "title": "完攀喜欢的线 不靠勇敢出手 靠勇敢开口",
+     "top_comments": [
+      {
+       "replies": [
+        "太tm好了！"
+       ],
+       "text": "太厉害了！你有没有想过当运动员？"
+      },
+      {
+       "replies": [
+        "对 挺多适合你的！来了给你精选好线！"
+       ],
+       "text": "新线嘛？这次不能再错过"
+      },
+      "让我看看怎么个事！"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a6a287f000000000301ec54?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "Lesiii",
+     "author_id": "612f1b91000000001f0368a8",
+     "comments_count": "5",
+     "content": "Bloc1换线日记\n这批线太有趣了\n试线已经爽爬两天\n好朋友说每次换线的破坏感和创造感都会让人上头\n我只能举双手同意\n\n#北京攀岩 #室内抱石 #bloc1岩馆 #攀岩 #夏天 #只为几个瞬间",
+     "date": "04-23",
+     "favorites": "",
+     "likes": "30",
+     "note_id": "69e9f1090000000012012804",
+     "ocr_text": [
+      "",
+      "单"
+     ],
+     "title": "最近在努力发光",
+     "top_comments": [
+      {
+       "replies": [
+        "明知故问是吧"
+       ],
+       "text": "什么时候出 v2 合集"
+      },
+      "帅帅的",
+      "干就完了！",
+      "冲！！！！"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/69e9f1090000000012012804?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "墙上飞",
+     "author_id": "5be3f097939e4f00012bb1d4",
+     "comments_count": "23",
+     "content": "本周换线不多，更新已标红，留言区随时更新\n周四晚上bloc 1约爬，有加入的吗\n#生活需要分享欲 #攀岩 #上墙吧攀岩人 #climbing #室内抱石 @运动薯",
+     "date": "02-23",
+     "favorites": "18",
+     "likes": "49",
+     "note_id": "699cfbd10000000016008e37",
+     "ocr_text": [
+      "北京攀岩馆换线及活动安排\n2026/2/24-2026/3/2\n岩馆\n换线安排\n免费公开课\n其他活动\nMellowω\n2/9-2/10难度区换线\n周二 20:00 V1-V2\n前台领券停车费免2小时\n周六日、10:00-22:00\n周四20:00难度公开课\n周二-周四10:00-23:00\n周五21:00黑练\n周五10:00-24:00\nCamp4(将台路)\n2/1-2/2 闭馆换线\n周五19:00后老带新免费\nt\n工作日11:00-23:00\n周一至五10:00-15:00门\n节假日10:00-21:00\n票80元/人\n物美购物停车优惠\nCamp4(三里屯)\n2/24-2/25 三层，部分难度，\n會\n周一至五10:00-15:00门\nt\n10:00-24:00\nhighball 换线\n票100元/人\nt\nCOL(来广营)\n2/23 20:00-2/24全天B区\n周四19:30 V1-V2\n前台领取停车优惠\n10:00-22:00\n换线\n周五10:00-24:00\nCOB鸟巢店\n1/2520:00-1/26全天攀石\n无\n10:00-22:00\n区换线\n周五10:00-24:00\nCOG首钢店\n2/8-2/9抱石区换线\n周三19:30V1-V2\n10:00-22:00\n(climb on gym 报名)\n香蕉上地店\n3/118:00-3/318: 00闭\n周三 20:00V1-V2\n周末免费停车两小时(前\n10:00-23:00\n馆换线\n(香蕉攀岩报名）\n台领券)\nK)\n1/26-3/27(春节除外)每周\n一至周五会员可免费带新\n人两次\n香蕉768\n1/1118:00-1/1318:00全\n无\n大学生闲时门票￥76.8\n周一-周五12:00-23:00\n馆闭馆换线\n1/26-3/27(春节除外)每周\n周六日10:00-22:00\n一至周五会员可免费带新\n人两次。",
+      "北京攀岩馆换线及活动安排\n2026/2/24-2026/3/2\n岩馆\n换线安排\n免费公开课\n其他活动\n北顶奥森\n1/18 19:00-1/2118:00 =\n周二19:30新手公开课\n奥森门口免费接送\n周一14:00-22:00\n层抱石区换线\n周二-周日10:00-22:002\n1/19-1/2318:00 B1抱石、\n顶绳、自保区换线\n青山魏公村\n2/2-2/319:00闭馆换线\n注册商场会员地下停\n七\n10:00-22:00\n车优惠。\nBloc1ω\n2/2-2/3闭馆换线\nt\n10:00-22:00\n青藤攀岩\n2/2-2/318:00攀石区换线\n10:00-22:003\n2/24 18:00-2/26 12:00难\n度自保区，先锋区换线\n飞猫（纪家庙)\n2/818:00-2/1111:00闭馆\n11:00-23:00\n比赛换线\nx)\nedge一直攀岩(新开业)\n2/2319:00-2/25 全天全馆\n周一-周五 12:00-23:00\n换线（不闭馆）\n周末/节假日10:00-22:00\n日坛攀岩馆（新开业)\n2/9-2/12 不闭馆换线\n前台可获取地下停车\n(10:00-23:00)\n优惠。\n周二定更，春节快乐，马年上V8！"
+     ],
+     "title": "勤快的岩馆已开始换线！北京攀岩馆换线安排",
+     "top_comments": [
+      {
+       "replies": [
+        "来面基，我在"
+       ],
+       "text": "周四b1"
+      },
+      {
+       "replies": [
+        "谢谢"
+       ],
+       "text": "还是菲姐最勤劳"
+      },
+      "整理太给力了，在京攀岩人有个做这方面内容的博主真是捡到宝了"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/699cfbd10000000016008e37?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "大耳樂",
+     "author_id": "5a9e477511be10266200b772",
+     "comments_count": "21",
+     "content": "怎么这帮跑步人爬墙也这么厉害啊？！\n\n真没想到这么快攀岩的风就吹到了跑圈儿\n好奇妙和跑步的朋友们这次相约是Bloc1\n平时横向移动的大家\n第一次竖向移动没想到一个个都很厉害\n喜欢爬墙也喜欢跑步\n互相跨界的感觉太开心了🥳\n\nBloc1最近换线了v2杀手已经又去训练两次了！\n没想到居然推出了跑者专属福利\n现在起到6月30日\n发帖➕#runtobloc1\n向前台出示手表或app跑步数据\n大于等于5km即可免费兑换一杯饮品哦～\n\n#上墙吧攀岩人 #好好好这么玩是吧 #你别说你还真别说 #别搞我心态 #GatherGo #爬墙 #攀岩 #抱石 #抱石女孩 #officeh #runtobloc1",
+     "date": "05-12",
+     "favorites": "9",
+     "likes": "104",
+     "note_id": "69f6cbcd000000003703774f",
+     "ocr_text": [
+      "Othetos\nofficeh°\nGathaGo BLO(\nx5",
+      "Jgt\n四t\nCcor\n@d\nen\nBGs\noffice h°\nGathafto BLO1开"
+     ],
+     "title": "不是，我想请问一下…",
+     "top_comments": [
+      {
+       "replies": [
+        "（冷酷"
+       ],
+       "text": "冷面杀手"
+      },
+      {
+       "replies": [
+        "哈哈哈哈哈憋坏呢！一个个爬的这么好！！压力很大"
+       ],
+       "text": "咋生气了呢"
+      },
+      "嘿！收到🫡"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/69f6cbcd000000003703774f?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "慢慢-北京攀岩教学",
+     "author_id": "5c97e565000000001201721e",
+     "comments_count": "",
+     "content": "顺序：\n从横移热身墙开始\n依次往里！\n\n#攀岩教学\n#北京攀岩\n#攀岩入门\n#攀岩新手\n#室内抱石\n#bloc1攀岩\n#bloc1v2合集\n#上墙吧攀岩人\n#北京攀岩私教\n#北京攀岩女教练",
+     "date": "07-03",
+     "favorites": "38",
+     "likes": "52",
+     "note_id": "6a477a2c0000000008002453",
+     "ocr_text": [
+      "Bloc1V2全集"
+     ],
+     "title": "Bloc1新线！V2全集看这里！",
+     "top_comments": [],
+     "url": "https://www.xiaohongshu.com/explore/6a477a2c0000000008002453?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   }
+  ],
+  "query": "bloc1 攀岩馆 换线"
+ }
+}

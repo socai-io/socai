@@ -1,0 +1,291 @@
+[
+ {
+  "function": {
+   "description": "Read one or more Xiaohongshu notes directly from note_id + xsec_token pairs. Use tokens returned by search or author_scan when you need to revisit specific notes without repeating the search/profile click flow. Opens one full-screen detail route per item and returns body + top comments; latency scales with the number of notes.",
+   "name": "get_notes",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "download_media": {
+      "default": false,
+      "description": "Download note images/videos into the run dir and include local paths.",
+      "type": "boolean"
+     },
+     "notes": {
+      "description": "Note locators previously returned by search or author_scan.",
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "note_id": {
+         "type": "string"
+        },
+        "xsec_token": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "note_id",
+        "xsec_token"
+       ],
+       "type": "object"
+      },
+      "maxItems": 20,
+      "minItems": 1,
+      "type": "array"
+     },
+     "num_comments": {
+      "default": 8,
+      "description": "Comments to load per note; replies count toward the total. 0 skips comments.",
+      "minimum": 0,
+      "type": "integer"
+     },
+     "ocr": {
+      "default": false,
+      "description": "Run local OCR on every carousel image, or a video note's cover.",
+      "type": "boolean"
+     },
+     "transcribe_audio": {
+      "default": false,
+      "description": "For video notes, download the video and transcribe audio through socai pro.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "notes"
+    ],
+    "type": "object"
+   }
+  },
+  "type": "function"
+ },
+ {
+  "function": {
+   "description": "Xiaohongshu search — the single XHS search tool. Default (full scan): search → optional search filters → collect up to `num_notes` cards in page order (scrolling only if the first page is too small) → open each note and read its body + top comments → return one compact bundle (search results + selected cards + note bodies + comments). Pass `download_media=true` to download note images/videos into the run dir, include local paths, and emit a stable media_manifest_path. Pass `ocr=true` to OCR each opened note locally (PP-OCRv6 small) — every carousel image, or a video note's cover — and attach a per-note ocr_text; it downloads what it reads, but video files still require download_media. Pass `preview=true` for a fast cards-only pass that returns result cards (titles/likes/covers) without opening any note. Defaults to 10 notes; pass a larger `num_notes` to scan more (each note is opened, so latency scales with it). Prefer this for XHS topic/keyword research. Do not repeat the same search unless the previous one was clearly insufficient.",
+   "name": "search",
+   "parameters": {
+    "properties": {
+     "download_media": {
+      "default": false,
+      "description": "Download note images/videos into the command run_dir, include local_path fields in returned notes, and write a stable media_manifest.json surfaced by media_manifest_path. Ignored in preview mode.",
+      "type": "boolean"
+     },
+     "filters": {
+      "additionalProperties": false,
+      "description": "Search filter selections by group key.",
+      "minProperties": 1,
+      "properties": {
+       "distance": {
+        "enum": [
+         "不限",
+         "同城",
+         "附近"
+        ],
+        "type": "string"
+       },
+       "note_type": {
+        "enum": [
+         "不限",
+         "视频",
+         "图文"
+        ],
+        "type": "string"
+       },
+       "publish_time": {
+        "enum": [
+         "不限",
+         "一天内",
+         "一周内",
+         "半年内"
+        ],
+        "type": "string"
+       },
+       "search_scope": {
+        "enum": [
+         "不限",
+         "已看过",
+         "未看过",
+         "已关注"
+        ],
+        "type": "string"
+       },
+       "sort": {
+        "enum": [
+         "综合",
+         "最新",
+         "最多点赞",
+         "最多评论",
+         "最多收藏"
+        ],
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "num_comments": {
+      "default": 5,
+      "description": "Comments to load per note. Scrolls the comment area and expands reply threads to reach this many; replies count toward the total. Higher values add latency per note. Ignored in preview mode.",
+      "minimum": 0,
+      "type": "integer"
+     },
+     "num_notes": {
+      "default": 10,
+      "description": "Number of notes to read (body + top comments each). The first results page is used directly; only if it holds fewer than this does the feed scroll for more. Each note is opened, so latency scales with this. In preview mode, the number of cards to collect by scrolling.",
+      "minimum": 1,
+      "type": "integer"
+     },
+     "ocr": {
+      "default": false,
+      "description": "Run local OCR (PP-OCRv6 small). Full scan: OCR each opened note — every carousel image, or a video note's cover — downloading what it reads (video files still require download_media); returned notes expose OCR for at most their first two cover-first images. Preview: OCR each card's cover image and attach its ocr_text. Full per-image ocr_text/ocr_ms and OCR diagnostics are kept in the artifact.",
+      "type": "boolean"
+     },
+     "preview": {
+      "default": false,
+      "description": "Fast cards-only mode: return result cards (titles/likes/covers) without opening notes or reading bodies/comments. Off by default (full scan).",
+      "type": "boolean"
+     },
+     "query": {
+      "type": "string"
+     },
+     "transcribe_audio": {
+      "default": false,
+      "description": "For opened video notes, download the video file and transcribe audio through socai pro. Ignored in preview mode.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "type": "object"
+   }
+  },
+  "type": "function"
+ },
+ {
+  "function": {
+   "description": "Xiaohongshu author/creator scan: open an author's profile page by id → read the author header (display name, xhs id, bio, IP location, official-verification/认证 status when present, follower/following/liked-&-collected counts) → collect their note summary cards in page order (pass `num_notes` to scroll the grid for more, omit for just the first screen) → open each collected note and read its body + top comments (like `search`; latency scales with the card count). Pass `ocr=true` to OCR each opened note locally (PP-OCRv6 small) — every carousel image, or a video note's cover — and attach a per-note ocr_text; it downloads what it reads, but video files still require download_media. Pass `preview=true` for a fast cards-only pass that returns the note cards (titles/likes/covers) without opening any note. Use this for creator research — it's like `search` but scoped to one author instead of a query.",
+   "name": "author_scan",
+   "parameters": {
+    "properties": {
+     "author_id": {
+      "description": "Xiaohongshu user id — the trailing segment of /user/profile/<id>.",
+      "type": "string"
+     },
+     "download_media": {
+      "default": false,
+      "description": "Download each note's images/videos into the run dir, include local_path fields, and emit a stable media_manifest_path. Ignored in preview mode.",
+      "type": "boolean"
+     },
+     "num_comments": {
+      "default": 5,
+      "description": "Comments to load per note. Scrolls the comment area and expands reply threads to reach this many; replies count toward the total. Higher values add latency per note. Ignored in preview mode.",
+      "minimum": 0,
+      "type": "integer"
+     },
+     "num_notes": {
+      "description": "Collect at least this many note cards, scrolling the profile grid (lazy-loaded). Omit for the first screen only.",
+      "minimum": 1,
+      "type": "integer"
+     },
+     "ocr": {
+      "default": false,
+      "description": "Run local OCR (PP-OCRv6 small) on each opened note — every carousel image, or a video note's cover — retaining per-image ocr_text in the artifact and returning at most the first two cover-first image texts per note. Downloads what it reads on its own; video files still require download_media. In preview mode, OCRs each note card's cover instead.",
+      "type": "boolean"
+     },
+     "preview": {
+      "default": false,
+      "description": "Fast cards-only mode: return the note cards (titles/likes/covers) without opening notes or reading bodies/comments. Off by default (full scan: each note opened for its body + top comments).",
+      "type": "boolean"
+     },
+     "transcribe_audio": {
+      "default": false,
+      "description": "For opened video notes, download the video file and transcribe audio through socai pro. Ignored in preview mode.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "author_id"
+    ],
+    "type": "object"
+   }
+  },
+  "type": "function"
+ },
+ {
+  "function": {
+   "description": "Recover from a login wall: after a tool returns `reason:login_required`, call this (don't retry) to open the login page and block until the user signs in. Returns `logged_in:true` when done, else `logged_in:false` on timeout. See the login protocol in the instructions.",
+   "name": "wait_for_login",
+   "parameters": {
+    "properties": {
+     "timeout_seconds": {
+      "description": "Seconds to wait before returning (default 180, max 600).",
+      "type": "integer"
+     }
+    },
+    "type": "object"
+   }
+  },
+  "type": "function"
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "wait_for_rate_limit",
+   "description": "Recover from Xiaohongshu rate limiting: after a tool returns `reason:rate_limited`, call this instead of immediately retrying. It visibly waits for a random 5-6 minute cooldown, then tells you to retry the original tool once. If that retry is still rate-limited, call this tool again.",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "function": {
+   "description": "Read a local file under socai's data directories (run artifacts, session records — paths outside them are rejected). Text files return their contents (optionally a line window via `offset`/`limit`); image files (png/jpg/webp/gif) are returned as an image you can actually see — use this to inspect screenshot or note-media artifacts from earlier run dirs. For plain text you may also just use `bash` (cat/sed), but images must go through this tool.",
+   "name": "read_file",
+   "parameters": {
+    "properties": {
+     "limit": {
+      "description": "Max lines to return for text files.",
+      "type": "integer"
+     },
+     "offset": {
+      "description": "1-based start line for text files.",
+      "type": "integer"
+     },
+     "path": {
+      "description": "File path (absolute, relative to cwd, or ~/...).",
+      "type": "string"
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "type": "object"
+   }
+  },
+  "type": "function"
+ },
+ {
+  "function": {
+   "description": "Run a shell command via `sh -c` and return its stdout/stderr and exit code. Working directory is the current run dir. Confined to socai's data directories — commands referencing paths outside them are rejected. Use this to write output files (e.g. printf/tee), list and grep run artifacts, mkdir, etc. within those directories.",
+   "name": "bash",
+   "parameters": {
+    "properties": {
+     "command": {
+      "description": "Shell command to run via `sh -c`.",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "description": "Optional timeout in milliseconds (default 120000).",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "command"
+    ],
+    "type": "object"
+   }
+  },
+  "type": "function"
+ }
+]

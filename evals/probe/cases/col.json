@@ -1,0 +1,271 @@
+{
+ "recorded_date": "2026-07-30",
+ "task": "COL 攀岩馆最近一次换线是什么时候？",
+ "search_reasoning": "The user is asking about when \"COL 攀岩馆\" (COL Climbing Gym) last changed their routes/lines (换线). This is a specific question about a climbing gym's route setting schedule. I should search for this on Xiaohongshu.",
+ "search_call": {
+  "num_comments": 5,
+  "num_notes": 10,
+  "query": "COL攀岩馆 换线"
+ },
+ "cassette": {
+  "artifact": {
+   "extra_note_properties": [
+    "hashtags",
+    "images (index, url, ocr_text, ocr_ms)",
+    "image_count",
+    "video",
+    "type",
+    "author_url",
+    "location",
+    "content_source",
+    "top_comments (full objects: text, author, likes, time, sub_comments[])"
+   ],
+   "note": "Full untrimmed results. Look up a note by note_id for the fields trimmed below.",
+   "path": "/Users/user/.socai/runs/20260730_104536_xhs_COL_攀岩馆最近一次换线是什么时候/turn-01_COL_攀岩馆最近一次换线是什么时候/tools/step-001-call-01-search/artifacts/001_xhs_search_COL攀岩馆_换线.json"
+  },
+  "media_manifest_count": 21,
+  "media_manifest_path": "/Users/user/.socai/runs/20260730_104536_xhs_COL_攀岩馆最近一次换线是什么时候/turn-01_COL_攀岩馆最近一次换线是什么时候/tools/step-001-call-01-search/media_manifest.json",
+  "notes": [
+   {
+    "entity": {
+     "author": "Climb On Gym攀岩",
+     "author_id": "60ce095a00000000010077b5",
+     "comments_count": "1",
+     "content": "下周（7月27日-8月2日日）\nClimb On Gym又要大换线啦！🧗🏻‍♀️\n请大家查收本次换线时间安排不要跑空嗷\n\n本次特邀4位日本定线员\n五月女美元、小西大介、泷浪优真和柴田晃一\n以及ClimbOn定线团队8位定线员一起定线\n记得来爬嗷🙆🏻‍♂️\n\n📆COL来广营店将在7月31日（周五）17:00开放营业，同时会有CO青少年月赛举办\n20:00恢复正常营业，营业到24:00\n快点来当第一波爬新线的人吧🧗\n\nClimb On Gym\n\n有什么期待也可以在评论区告诉我们\n等大家评论🧏🏻‍♀️\n\n#col #攀岩 #上墙吧攀岩人 #cog #攀岩馆 #换线通知 #攀岩日常 #攀岩日记 #攀岩新手 #攀岩抱石",
+     "date": "编辑于 3天前 北京",
+     "favorites": "1",
+     "likes": "10",
+     "note_id": "6a65dce5000000000301d6e1",
+     "ocr_text": [
+      "换线通知7月\nClimbOnGym\nJul-Aug\n场馆周一周二周三\n周四\n周五\n7.27\n7.28\n7.29\n7.3o\n7.31\nCOB\n7.27(周一)攀石定线,难度开放\n7.28(周二)18:00难度拆线，攀石开放\n北投店\n7.29(周三)难度定线,攀石开放\nCOX\nGC0\n7.27(周一)18:00拆线\n7.28(周二)攀石定线\n首钢店\n(难度区域正常开放)\nCOL\n7.29(周三)19:00拆线\n7.30(周四)攀石定线\n来广营店\n7.31(周五)攀石定线,17:00比赛\n*COL7.31(周五)17:00-20:00为青少年月赛，比赛结束后恢复正常营业,营业至24:00。\n本次特邀定线员：\n五月女美元、小西大介、泷浪优真、柴田晃\nClimb on\nGYM"
+     ],
+     "title": "7月换线通知",
+     "top_comments": [
+      "荟聚店啥前儿开"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a65dce5000000000301d6e1?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "墙上飞",
+     "author_id": "5be3f097939e4f00012bb1d4",
+     "comments_count": "6",
+     "content": "北京新馆真的越来越多啦\n#生活需要分享欲 #攀岩 #上墙吧攀岩人 #climbing #室内抱石 #攀岩新力量 #100条线路攀岩日记 #极限运动体验",
+     "date": "07-21",
+     "favorites": "35",
+     "likes": "44",
+     "note_id": "6a5ea809000000000101dd56",
+     "ocr_text": [
+      "北京攀岩馆换线及活动安排\n2026/7/21-2026/7/27.\n岩馆\n换线安排\n免费公开课\n其他活动\nMellow\n6/29攀石CD区，部分先锋\n周二20:00V1-V2\n前台领券停车费免2小时\n周六日~10:00-22:00\n顶绳区、比赛墙部分换线(不\n周四20:00难度公开课\n七\n周二-周四10:00-23:00\n闭馆)。\n周五21:00黑练\n周五 10:00-24:00\nCamp4(将台路)\n7/24 全馆闭馆换线\n周五19:00后老带新免费\n工作日11:00-23:00\n周一至五10:00-15:00门\n节假日10:00-21:00。\n票80元/人\n物美购物停车优惠\nCamp4(三里屯)\n7/13 三层,难度换线\n周一至五10:00-15:00门\n10:00-24:00\n7/20难度分区换线\n票100元/人。\n7/27 二层、难度换线\nCOL（来广营）\n7/2919:00-7/31 20:00闭\n周四19:30 V1-V2。\n周一、周末10:00-22:00.\n馆换线\n周二至五10:00-24:00。\nCOB 鸟巢店\n7/26 20:00-7/27全天攀石\n无。\n书\n周末10:00-22:00\n区换线\n周三、五10:00-24:00\n7/28 18:00-7/29 20:00难\n周一二四10:00-23:00。\n度换线\nCOG首钢店\n7/2718:00-7/28全天攀石\n周三19:30V1-V2\n周三除外10:00-22:00\n区换线\n(climb on gym报名)\n周三10:00-24:00。\n香蕉上地店\n7/12-7/13闭馆换线\n周三20:00 V1-V2\n周末兔费停车两小时(前\n10:00-23:00\n(香蕉攀岩报名)\n台领券)。\n2\n2\nW3\n香蕉768\n(停业，预计8月12 日重新\n无。\n大学生闲时门票￥76.8\n周—-周五 12:00-23:00\n开业，地址改为小月河)。\n周六日10:00-22:00。",
+      "北京攀岩馆新馆开业情况\n2026/7/21-2026/7/27\n岩馆\n换线安排\n免费公开课\n其他活动\n超级秀场樊岩(成寿寺)\n7/6L墙换线\n前台领2小时停车券。\n周一-周五11:00-22:00\n周六日10:00-21:30\n超级秀场樊岩(欢乐谷）\n7/7全天一层抱石换线\n10:00-22:00\n一起攀岩(中关村)\n7/1410:00-18:00 主岩壁、slab\n周二-周五 10:00-23:00\n换线。\n周六-周一10:00-22:00\nvOne\n7/1-7/2闭馆定线\n周一 19:30 V1-\n前台领停车优惠\n10:00-22:00\nV2公开课\n2\n岩时大屯店\nt\n2\n周一-周五12:00-22:00\n周六日10:00-21:00\nZo0攀岩馆\n即将开业。\n山迈攀岩\n7月20日正式营业\n10:00-22:00\n此山攀岩\nt\n即将开业\n超级奥攀\n暂时免费停车。\nφ\n7/18正式营业。"
+     ],
+     "title": "北京攀岩馆换线及新馆开业情况（每周一更）",
+     "top_comments": [
+      {
+       "replies": [
+        "确实有这个问题，一般开商场里的会稳妥些"
+       ],
+       "text": "北京攀岩馆宠物友好的越来越多，作为重度过敏患者能去的馆越来越少，跪求不让猫狗进的北京岩馆信息推荐"
+      },
+      "青藤攀岩 🟢攀石区换线时间： 2026年7月21日（周二）-22日（周三） 🟢北京青藤7月青少年攀岩比赛： 2026年7月22日（周三）18:00-22:00 🟢攀石区开放时间： 2026年7月23日（周四）10:00 🟢重点提示：换线期间不闭馆，难度区正常开放。",
+      "北顶奥森快讯来咯✨ 7月24日（本周五）B1抱石B区会进行局部定线。 同时当日有企业团建活动，下午攀爬区域人流会相对集中，建议大家错峰出行，18:00之后到馆，场地更宽松，攀爬体验更佳～感谢理解与配合，祝大家攀爬顺利！"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a5ea809000000000101dd56?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "Climb On Gym攀岩",
+     "author_id": "60ce095a00000000010077b5",
+     "comments_count": "",
+     "content": "小小比赛，快来拿捏！\n\n🗻 🔥【COL夏季赛】开始招募！\n首届夏季赛 · 赛事指南发布~\n✅ 赛程概括\n- 专属攀岩爱好者的比赛（非高水平）\n- 6.28周六 10:30-13:30（现场签到10:00）\n-预赛8条线路，节奏拉满\n-决赛3条线路，激情PK\n🚨 赛事详情请搜索Climb On Gym公众号 参与报名~\n--------------------------------------------\nCOL（来广营）换线计划\n🪨换线区域：A区（紫色岩壁）🛠拆线：06月22日（本周日晚8点）\n🪜定线：06月23日（下周一全天）\n🪨换线区域：B区（黑色岩壁）🛠拆线：06月26日（下周四晚8点）\n🪜定线：06月27日（下周五全天）\n定线新线路开放攀爬时间，请点击推文查看~\n🌟大家还有哪条线要磕？抓紧机会啦~🌟",
+     "date": "2025-06-17",
+     "favorites": "",
+     "likes": "11",
+     "note_id": "68524d08000000001101d3a8",
+     "title": "COL夏季赛火热🔥招募中+换线通告",
+     "top_comments": [],
+     "url": "https://www.xiaohongshu.com/explore/68524d08000000001101d3a8?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "每天都姓胡女士（爬墙版）",
+     "author_id": "5ad3506411be103258eb05fc",
+     "comments_count": "1",
+     "content": "换线前第三次来COL，这条V3就一把过！\n这次还完攀了好几条V3且基本上全都能上一半\n整个人的步伐和姿态比前两次来稳了太多\n再也不会手脚颤颤巍巍了\n身体对于重心和手脚的挪动已经有了一定的章法和属于自己的肌肉记忆\n瓶颈期果然需要改变思路基本功扎实太重要了\n#上墙吧攀岩人 #攀岩 #100条线路攀岩日记 #室内抱石 #日常训练 #又菜又爱玩儿 #一点点进步 #攀岩协调动态 #运动的快乐没有门槛 #不死就往死里练",
+     "date": "07-27",
+     "favorites": "",
+     "likes": "9",
+     "note_id": "6a676c2f000000001d00c925",
+     "ocr_text": [
+      "兴\nB\nmond\nKAILAS\nE8R.BL8R\n4289N\n本人的一小步\n攀岩的一大步鸣鸣鸣\n两周基本功没有白练\n小3"
+     ],
+     "title": "这两周有在不同的馆打磨动作基础和胆量",
+     "top_comments": [
+      "太优秀了"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a676c2f000000001d00c925?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "17ALKAKO一起攀岩 崇文门",
+     "author_id": "67cc3f9d000000000e01c088",
+     "comments_count": "6",
+     "content": "一起攀岩·不闭馆换线公告\n——————\n换线区域：C-Wall\n换线时间：\n6.30 周二【10:00～18:00】\n拆线时间：\n6.29 周一【21:00】\n——————\n换线区域18:00后开放攀爬，请大家合理安排到场时间。#17ALKAKO一起攀岩 #上墙吧攀岩人 #新手友好",
+     "date": "06-28",
+     "favorites": "",
+     "likes": "9",
+     "note_id": "6a41e872000000000803ebff",
+     "ocr_text": [
+      "17ALIAIO\n不闭馆换线公告\n换线时间\n换线区域：\n2026\n. C-Wall\n06/30(周二)\n10:00 - 18:00\n换线日18:0o后开放攀爬\n请各位岩友,会员朋友们合理安排入场时间\n06/29(周一\n21:00开始拆线",
+      ""
+     ],
+     "title": "",
+     "top_comments": [
+      {
+       "replies": [
+        "cwall 上周没换的区域 应该是进门右手边 二号洞对面吧"
+       ],
+       "text": "崇文门吗，上周不是刚换了吗"
+      },
+      {
+       "replies": [
+        "开放哒"
+       ],
+       "text": "不换线地区开放爬吗"
+      },
+      "崇文门店吗[回招呼]"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a41e872000000000803ebff?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "Climb On Gym攀岩",
+     "author_id": "60ce095a00000000010077b5",
+     "comments_count": "1",
+     "content": "夏季赛结束啦\n但线路还在墙上嗷🧗\n\n那些差一点的、没完成的线路还在COL\n距离下次换线还有将近一个月🙆🏻‍♀️\n有些线可以再来爬一爬，争取全部通关！\n\n#上墙吧攀岩人 #cog #攀岩 #攀岩比赛 #col #攀岩日常 #攀岩日记 #攀岩抱石",
+     "date": "07-02",
+     "favorites": "2",
+     "likes": "33",
+     "note_id": "6a465c4b000000001702e7a4",
+     "ocr_text": [
+      "COL 2026\n夏赛回顾\nBO\nClimb On\nFYM"
+     ],
+     "title": "COL夏季赛回顾🧗🏻‍♂️",
+     "top_comments": [
+      "看到我了"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a465c4b000000001702e7a4?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "文文&乔治",
+     "author_id": "601a079b00000000010075f1",
+     "comments_count": "",
+     "content": "",
+     "date": "04-07",
+     "favorites": "",
+     "likes": "5",
+     "note_id": "69d4eef00000000023014749",
+     "ocr_text": [
+      "O",
+      ""
+     ],
+     "title": "克莱攀岩今天换新线了！",
+     "top_comments": [],
+     "url": "https://www.xiaohongshu.com/explore/69d4eef00000000023014749?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "墙上飞",
+     "author_id": "5be3f097939e4f00012bb1d4",
+     "comments_count": "1",
+     "content": "COG 攀岩馆已移步至COL ，大家不要跑空哦#生活需要分享欲 #上墙吧攀岩人 #攀岩女孩 #攀岩 #线下活动 #室内抱石 #运动万粉助力计划 @运动shu@运动薯",
+     "date": "2025-05-26",
+     "favorites": "13",
+     "likes": "32",
+     "note_id": "68351718000000000f033974",
+     "ocr_text": [
+      "北京攀岩馆换线及活动安排\n2025/5/27-6/2.\n岩馆\n换线安排\n免费公开课（刷门票)\n其他活动\n岩时攀登中心\n5/8-5/9攀石区定线\n周一闭馆\n5/19-5/23 难度区定线\n周二-周五12:00-22:30\n周六日10:00-21:00\n岩时大望路\n5/6-5/7 闭馆换线（抱石区)\n周二20:00 VO-V1\n周一。\n5/11-5/15 难度自保区换\n周五20:00 V1-V2\n闭馆\n线\n周二-周五10:00-22:00\n5/19貝保区补线\n周六日10:00-21:00\n岩时管庄\n5/5 闭馆换线（全区)\n周三 20:00 V1-V2\n现磨咖啡免费，周\n周一-周四12:00-22:00\n五黑练能量棒免费\n周五12:00-24:00\n周六日10:00-21:00\n岩时回龙观\n5/14攀石区\n5/21-6/31 发貝赛\n周一闭馆\n5/30 难度区比赛定线\n新线视频集赞得手\n周二-周五12:00-22:00\n提袋。\n周六日09:00-21:00\n浩石顺义店\n5/20 18:00-5/21 19:00\n疯狂星期三活动：\n营业时间调整\n攀石区换线\n每周三有机会抽取\n周一至五12:00-22:00.\n免费门票\n周六日10:00-21:00\n5/21-6/31 发貝赛\n新线视频集赞得手\n提袋\n浩石久隆店\n5/16攀石区1/2换线\n周一会员半价，女\n周一至四：11:00-22:00\n5/25-5/26 19:00攀石区\n士半价:￥75\n周五:11:00-24:00\n换线\n周末/节假日:10:00-21:00\n6/4-6/618:00 难度换线\n问山攀岩\n4/27-4/30难度区小斜壁\n周二19:50 V1-V2\n周一10:00-22:00\n换线\n周二-周四10:00-23:00\n5/18-5/22 18:00抱石CD\n周五周六 10:00-22:00\n区换线\n周日 10:00-21:00",
+      "北京攀岩馆换线及活动安排\n2025/5/27-6/2.\n4\n岩馆\n换线安排\n免费公开课（刷门票)\n其他活动\nMellow.\n5/26-5/27 18:30抱石AB\n周二 20:00V1-V2\n前台领券停车费免2小时\n周六日~10:00-22:00\n区，比赛墙，难度自保区，\n周四20:00难度公开课\n6/2 密云白河野裝招募\n周二-周四10:00-23:00\n顶绳先锋区部分线路\n周五21:00黑练\n6/111：00-19:30儿童节\n周五 10:00-24:00\n市集。\nCamp4（将台路)\n5/12攀石区换线\n周二 19:30 VO-V1\n周五19:00后老带新免费\n工作日11:00-23:00\n下次换线 6/9.\n周三 19:30V2\n周一至五10:00-15:00门\n节假日10:00-21:00\n周四19:30V3\n票70元/人\n5.31-6.2白河野攀报名\nCamp4 (三里屯)\n5/6 二层换线\n周二19:30 V0-V1\n周一至五10:00-15:00门\n10:00-24:00\n5/19三层换线\n周三 12:30 V2-V3\n票100元/人\n5/26 难度，highball 换线\n周四19:30 V2-V3\n5/19-5/31打卡520双人\n周五12:30 V0-V1。\n线领及哀力，送蜜月卡\n5.31-6.2白河野攀报名\nCOL (来广营）\n5/29 黑色岩壁换线\n10:00-22:00.\nCOB鸟巢店\n4/27-4/28攀石区换线\n10:00-22:00\n5/25-5/26 全馆换线\n周五10:00-24:00\nCOG 首钢店\n5/30抱石区换线\n周三 19:30V1-V2\n10:00-22:00\n(climb on gym 报名)。\n香蕉上地店\n5/18-5/2018:00全馆闭\n周三20:00V1-V2\n周末免费停车两小时(前\n10:00-23:00\n馆换线\n(香蕉攀岩报名）。\n台领券)。\n香蕉768\n5/11-5/13全馆换线\n无\n大学生闲时门票¥76.8\n周一-周五12:00-23:00\nt\n周六日10:00-22:00\n先锋攀岩\n5/14-5/16 AB 区及比赛墙\n周一19:30新人课\n周一半价：¥79\n10:00-22:00\n换线\n周三 19:30V3-V4.\n周五会员带新朋友免费\n周五10:00-24:00\n(会员群接龙报名)。\n小程序领2小时停车券\n飞猫攀岩\n6/2 18:00-6/4 19:00闭\n周四20:00 V2\n5/26-5/30悬挂穿衣挑战\n11:00-23:00\n馆换线\n周四营业至24:00\n周六日10:00-22:00"
+     ],
+     "title": "北京攀岩馆换线及活动（5.27-6.2）",
+     "top_comments": [],
+     "url": "https://www.xiaohongshu.com/explore/68351718000000000f033974?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "小熊猫饼干👀",
+     "author_id": "5ed6f8d9000000000100763c",
+     "comments_count": "18",
+     "content": "有在Movement Mountain View攀岩的人吗？刚入坑想看看有没有搭子下班之后想去附近攀岩的。\n\n#加州湾区 #攀岩 #找塔子 #mountainview  #paloalto  #南湾 #湾区",
+     "date": "07-21",
+     "favorites": "2",
+     "likes": "2",
+     "note_id": "6a5fa34e000000000c033c00",
+     "ocr_text": [
+      "66\n有Movement\nMountain View\n攀岩的人吗？",
+      ""
+     ],
+     "title": "Movement Mountain View攀岩",
+     "top_comments": [
+      {
+       "replies": [
+        "😲你们去哪个馆？"
+       ],
+       "text": "南湾攀岩搭子群"
+      },
+      {
+       "replies": [
+        "7点？ 我体重120"
+       ],
+       "text": "准备啥时候去呀，你体重多少"
+      },
+      "？怎么不找我"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a5fa34e000000000c033c00?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   },
+   {
+    "entity": {
+     "author": "一闪一闪小星星🌟",
+     "author_id": "5c812fba0000000011019c74",
+     "comments_count": "11",
+     "content": "念叨了很久的攀岩，今天终于去了哈哈哈\n直接在movement官网报名了一节体验课（第一次课是免费的哟，free code请见图8）\n整体感受不错，有专门的工作人员进行讲解指导，可能因为是周中，场馆人数也不算多，总体来说值得推荐，是一次新的尝试！\n#上墙吧攀岩人 #湾区生活 #攀岩 #室内抱石",
+     "date": "05-28",
+     "favorites": "23",
+     "likes": "75",
+     "note_id": "6a18ddc70000000008003412",
+     "ocr_text": [
+      "O\n5.intro",
+      "O"
+     ],
+     "title": "🧗湾区攀岩初体验",
+     "top_comments": [
+      {
+       "replies": [
+        "好哇好哇！"
+       ],
+       "text": "哇塞好近的岩馆 下次来Belmont找我！姐在这附近哈哈哈"
+      },
+      "哇哦，棒",
+      "穿短裤会不会磨破膝盖呀？",
+      "天呐宝你来阳谷县了，我就在这😂照片可爱！你多高啊？",
+      "人间小姐姐",
+      "可以约约攀岩吗！",
+      "好可爱"
+     ],
+     "url": "https://www.xiaohongshu.com/explore/6a18ddc70000000008003412?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed"
+    }
+   }
+  ],
+  "query": "COL攀岩馆 换线"
+ }
+}

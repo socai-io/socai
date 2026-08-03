@@ -1,0 +1,6 @@
+{
+ "enable_thinking": true,
+ "max_tokens": 16000,
+ "model": "qwen3.7-max",
+ "tool_choice": "auto"
+}

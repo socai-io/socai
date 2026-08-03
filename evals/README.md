@@ -20,18 +20,21 @@ account when the cassette lacks the fresh official notice.
 the recorded runs (2026-07-30) the official account's *stale* January 换线
 notice ranked #1 while the fresh 07-26 notice ranked #5; an answer straight
 from the sample is correct only by luck. The probe replays the **exact
-production step-2 request** captured in the run dir (`llm/002.request.json`) —
-real system prompt, real tool schemas, real tool-result serialization — swaps
-in a prompt variant, and samples the model's next action N times. It isolates
-the one decision that matters at ~¥0.25/trial with no browser, no XHS contact,
-and no anti-bot risk.
+production step-2 request** as captured in the run dir (`llm/002.request.json`)
+— real tool schemas, real tool-result serialization, with the current
+knowledge.md spliced into the system prompt — and samples the model's next
+action N times. It isolates the one decision that matters at ~¥0.25/trial with
+no browser, no XHS contact, and no anti-bot risk.
 
-**Scenarios** (built by `build_scenarios.py` from the checked-in cassettes in
-`probe/recordings/` — sanitized captures of real production requests, so the
-benchmark runs anywhere including CI; regenerate after knowledge.md or toolset
-changes — the builder re-splices the current knowledge.md and patches the
-recorded tools array for known post-recording tool edits; new tool edits need
-a patch rule in `build_scenarios.py` or a re-recorded run):
+**Layout:** a checked-in case (`probe/cases/<name>.json`) holds only what is
+specific to the situation — the user prompt, the search call the agent issued,
+and the cassette (recorded search result), plus its recorded date. Everything
+identical across cases lives once in `probe/shared/` (system-prompt scaffold
+with placeholders, tool schemas, request params), captured from a real
+production request at import time. `build_scenarios.py` assembles runnable
+scenarios by filling the scaffold with the repo's **current** knowledge.md —
+regenerate after any prompt or toolset change (after a tools.rs change,
+refresh `shared/` by re-importing a run recorded with the new binary):
 
 - `bloc1_replay` — the result set as recorded (stale official #1, fresh
   official #5). Both a verification hop and a fresh direct answer count as
@@ -45,20 +48,10 @@ a patch rule in `build_scenarios.py` or a re-recorded run):
   behavior and a hop is unnecessary latency (still scored as verified if it
   happens — it's not wrong, just not required).
 
-**Variants (prompt-iteration experiments only — not part of the benchmark):**
-
-- `v0` — current prod prompt (knowledge.md as in the repo now).
-- `v1` — replaces knowledge.md's "for deep, complex topic research only …
-  skip this extra step for routine searches" paragraph with the
-  official-sources policy in `variants/v1_official_sources.md`.
-
-Once the official-sources policy lands in knowledge.md itself (2026-08-01, this
-branch), a regenerated `v0` already contains it and `run_probe.py --variants v1`
-exits loudly because the old paragraph no longer exists — that's the drift
-guard working. From then on, `v0` is the new baseline and `v1` applies only to
-archived pre-policy fixtures; its variant file stays as the verbatim record of
-the tested wording. Add `v2`… files and a matching replacement rule for the
-next iteration.
+**Testing a candidate prompt wording:** edit `core/src/sites/xhs/knowledge.md`
+on a branch, rebuild scenarios, rerun the benchmark — git is the variant
+switch. (The original v0-vs-v1 experiment that produced this policy is
+preserved in PR #244 and its report artifact.)
 
 **Run:**
 
@@ -72,8 +65,8 @@ python3 probe/run_probe.py            # full benchmark, n=8 per case, gated
 Qwen API key: `$DASHSCOPE_API_KEY` / `$QWEN_API_KEY` (CI) or
 `~/.socai/auth.json` (local). Raw per-trial responses land in
 `probe/results/<stamp>/` with a `summary.json`. Generated `scenarios/` and
-`results/` are gitignored; the checked-in source of truth is
-`probe/recordings/` (home paths and xsec tokens scrubbed at import time —
+`results/` are gitignored; the checked-in sources of truth are `probe/cases/`
+and `probe/shared/` (home paths and xsec tokens scrubbed at import time —
 note content itself is public XHS material).
 
 **CI:** `.github/workflows/agent-benchmark.yml` runs the gated benchmark on
@@ -87,7 +80,7 @@ endpoint, set `DASHSCOPE_BASE_URL` to the intl endpoint with an intl key.
 1. Reproduce the situation in the app/CLI so a run dir exists
    (`~/.socai/runs/<run>/turn-*/llm/002.request.json`).
 2. `python3 probe/build_scenarios.py --import <turn-dir> --name <case>` —
-   writes the sanitized `recordings/<case>.request.json`.
+   writes the sanitized `cases/<case>.json` and refreshes `shared/`.
 3. Add a scenarios-dict entry in `build_scenarios.py` with `meta` (official
    author, date patterns) and an `expect` block (expected actions +
    `min_pass_rate`).
