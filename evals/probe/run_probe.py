@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Decision-probe runner: does the agent perform a profile check?
+"""Decision benchmark / smoke test for the XHS agent policy.
 
-Replays a recorded step-2 request (see build_scenarios.py) against the real
-model N times per (prompt-variant × scenario) cell and classifies the model's
-next action. Measures P(profile verification) — the author_scan hop the
-"official sources" knowledge.md policy is meant to induce. Recency-filtered
-re-searches are tracked as their own action but are not verification.
+Each case pairs a real user search prompt with a cassette — the recorded
+search-tool response from a production run (see build_scenarios.py) — and
+declares its expected next action(s) in an `expect` block. The runner replays
+the exact step-2 request against the CURRENT system prompt N times per case,
+classifies each sampled action, and gates every case on its expected-action
+pass rate. Exit code 1 when any case fails — usable as a pre-release smoke.
 
 Usage:
-  python3 run_probe.py --scenarios bloc1_replay,bloc1_trap --variants v0 -n 8
-  python3 run_probe.py --dry-run          # build requests, print cells, no API calls
+  python3 run_probe.py                    # full benchmark: all cases, n=8
+  python3 run_probe.py -n 3               # quick smoke
+  python3 run_probe.py --dry-run          # build requests, no API calls
 
-`v1` applies only to fixtures generated before the official-sources policy
-landed in knowledge.md; on current fixtures it exits via the drift guard
-(see evals/README.md).
+`--variants` remains only for prompt-iteration experiments (comparing a
+candidate wording against the current prompt); `v1` applies solely to fixtures
+generated before the official-sources policy landed (drift guard — see
+evals/README.md).
 
 The Qwen API key is read from ~/.socai/auth.json (qwen.api_key) and never
 printed. Raw responses land in results/<stamp>/ for audit.
@@ -186,7 +189,7 @@ def classify(result: dict, meta: dict) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--scenarios", default="bloc1_replay,bloc1_trap")
+    ap.add_argument("--scenarios", default="bloc1_replay,bloc1_trap,col_replay")
     ap.add_argument("--variants", default="v0")
     ap.add_argument("-n", "--trials", type=int, default=8)
     ap.add_argument("--concurrency", type=int, default=3)
@@ -314,6 +317,33 @@ def main() -> None:
     )
     print(f"\nresults -> {out_dir}")
     print(f"approx cost (uncached upper bound): ¥{total_cost:.2f}")
+    # Expectation gate: each case declares the outcomes that count as correct.
+    def trial_outcome_tokens(r):
+        toks = set()
+        if r.get("action") == "author_scan" and r.get("hop_correct"):
+            toks.add("author_scan_official")
+        if r.get("action") == "direct_answer" and r.get("answer_date") in ("fresh", "mixed"):
+            toks.add("direct_fresh")
+        if r.get("action") == "recency_search":
+            toks.add("recency_search")
+        return toks
+
+    failures = []
+    for variant, scenario, _, meta in cells:
+        expect = meta.get("expect")
+        if not expect:
+            continue
+        sel = [r for r in rows if r["variant"] == variant and r["scenario"] == scenario]
+        passed = sum(1 for r in sel if trial_outcome_tokens(r) & set(expect["pass"]))
+        need = float(expect.get("min_pass_rate", 0.75))
+        ok = bool(sel) and passed / len(sel) >= need
+        if not ok:
+            failures.append(f"{variant}×{scenario}")
+        print(
+            f"{'PASS' if ok else 'FAIL'} {variant}×{scenario}: {passed}/{len(sel)} trials took an "
+            f"expected action ({' or '.join(expect['pass'])}; gate ≥{need:.0%})"
+        )
+
     header = f"{'cell':26} {'n':>2} {'scan✓':>6} {'scan✗':>6} {'recency':>8} {'plain':>6} {'direct':>7} {'stale!':>7} {'err':>4}"
     print(header)
     for key, cell in sorted(summary.items()):
@@ -322,6 +352,8 @@ def main() -> None:
             f"{cell['author_scan'] - cell['hop_correct']:>6} {cell['recency_search']:>8} "
             f"{cell['plain_search']:>6} {cell['direct_answer']:>7} {cell['answer_stale']:>7} {cell['error']:>4}"
         )
+    if failures:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

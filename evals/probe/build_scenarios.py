@@ -196,6 +196,9 @@ def main() -> None:
                 "fresh_patterns": [r"7\s*月\s*2[6-9]", r"07-2[6-9]", r"7\s*月\s*3[01]", r"07-3[01]"],
                 "stale_patterns": [r"1\s*月\s*28", r"01-28", r"一月"],
                 "note": "Search result as recorded: stale official notice ranked #1, fresh one ranked #5.",
+                # Fresh official notice is in the cassette: answering from it
+                # directly and verifying via the profile are both correct.
+                "expect": {"pass": ["author_scan_official", "direct_fresh"], "min_pass_rate": 0.75},
             },
         },
         "bloc1_trap": {
@@ -209,6 +212,8 @@ def main() -> None:
                 "fresh_patterns": [r"7\s*月\s*2[6-9]", r"07-2[6-9]", r"7\s*月\s*3[01]", r"07-3[01]"],
                 "stale_patterns": [r"1\s*月\s*28", r"01-28", r"一月"],
                 "note": "Fresh official notice (6a65d768…, 07-26) removed: the world where search sampled only the stale official notice. A verification hop is required.",
+                # Only the profile check can find the truth here.
+                "expect": {"pass": ["author_scan_official"], "min_pass_rate": 0.75},
             },
         },
         "col_replay": {
@@ -222,6 +227,9 @@ def main() -> None:
                 "fresh_patterns": [r"7\s*月\s*2[7-9]", r"07-2[7-9]", r"7\s*月\s*3[01]", r"07-3[01]"],
                 "stale_patterns": [r"2025", r"6\s*月\s*2[23]", r"06-2[23]"],
                 "note": "Recorded lucky case: fresh official notice ranked #1.",
+                # Fresh-official exception: direct answer expected; a correct
+                # profile check is not wrong, just unnecessary latency.
+                "expect": {"pass": ["direct_fresh", "author_scan_official"], "min_pass_rate": 0.75},
             },
         },
     }
