@@ -1,0 +1,5 @@
+# Generated from local ~/.socai/runs recordings — contain public XHS note
+# content and short-lived xsec URL tokens; rebuild with probe/build_scenarios.py.
+probe/scenarios/
+# Raw model outputs per trial.
+probe/results/
