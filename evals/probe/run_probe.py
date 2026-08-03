@@ -137,7 +137,13 @@ def classify(result: dict, meta: dict) -> dict:
         # publish_time="不限" means no time restriction — only a real window
         # counts as forcing recency.
         recency = filters.get("sort") == "最新" or filters.get("publish_time") not in (None, "", "不限")
-        out["action"] = "recency_search" if recency else "plain_search"
+        # A recency search only verifies this scenario if it's about the
+        # subject — an unrelated recency search must not inflate pass rates.
+        # Older scenario files without query_terms keep the permissive scoring.
+        query = str(search["arguments"].get("query", ""))
+        terms = meta.get("query_terms") or []
+        on_topic = not terms or any(t.lower() in query.lower() for t in terms)
+        out["action"] = "recency_search" if (recency and on_topic) else "plain_search"
     elif names:
         out["action"] = names[0]
     else:

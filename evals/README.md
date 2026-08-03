@@ -22,7 +22,9 @@ and no anti-bot risk.
 
 **Scenarios** (built by `build_scenarios.py` from local `~/.socai/runs/`
 recordings; regenerate after knowledge.md or toolset changes — the builder
-re-splices the current knowledge.md and toolset into the recorded prompt):
+re-splices the current knowledge.md and patches the recorded tools array for
+known post-recording tool edits; new tool edits need a patch rule in
+`build_scenarios.py` or a re-recorded run):
 
 - `bloc1_replay` — the result set as recorded (stale official #1, fresh
   official #5). Both a verification hop and a fresh direct answer count as

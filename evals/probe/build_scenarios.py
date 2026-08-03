@@ -6,9 +6,11 @@ run — the exact request the model saw right after the `search` tool result —
 emits probe scenarios under scenarios/:
 
 - The system prompt's knowledge slice is re-spliced from the repo's CURRENT
-  core/src/sites/xhs/knowledge.md, and the tools array is updated to the current
-  prod toolset (author_scan's 认证 clause from PR #243, wait_for_rate_limit from
-  PR #241), so the probe tests today's prod baseline, not the recorded version.
+  core/src/sites/xhs/knowledge.md, and the recorded tools array is patched for
+  the known post-recording changes (author_scan's 认证 clause from PR #243,
+  wait_for_rate_limit from PR #241). Other tool descriptions are used exactly
+  as recorded — if a later PR edits one, add a patch rule here (the
+  AUTHOR_SCAN_OLD assert below is the pattern), or re-record the run.
 - Note/comment dates in the tool result are re-normalized the way PR #243 now
   emits them (编辑于 prefix and territory tails stripped, relatives resolved
   against the run date, `date_edited` flag added), so fixtures match the data
@@ -186,6 +188,7 @@ def main() -> None:
                 "task": "bloc1 攀岩馆上一次换线是什么时候",
                 "official_author_id": "681c1223000000000e0126f9",
                 "official_author_name": "Bloc1 Climbing",
+                "query_terms": ["bloc1", "bloc 1"],
                 "anchor_date": anchor.isoformat(),
                 # 换线 window 7-27..7-30; the fresh official notice is dated 07-26.
                 "fresh_patterns": [r"7\s*月\s*2[6-9]", r"07-2[6-9]", r"7\s*月\s*3[01]", r"07-3[01]", r"今天"],
@@ -199,6 +202,7 @@ def main() -> None:
                 "task": "bloc1 攀岩馆上一次换线是什么时候",
                 "official_author_id": "681c1223000000000e0126f9",
                 "official_author_name": "Bloc1 Climbing",
+                "query_terms": ["bloc1", "bloc 1"],
                 "anchor_date": anchor.isoformat(),
                 "fresh_patterns": [r"7\s*月\s*2[6-9]", r"07-2[6-9]", r"7\s*月\s*3[01]", r"07-3[01]", r"今天"],
                 "stale_patterns": [r"1\s*月\s*28", r"01-28", r"一月"],
@@ -211,6 +215,7 @@ def main() -> None:
                 "task": "COL 攀岩馆最近一次换线是什么时候？",
                 "official_author_id": "60ce095a00000000010077b5",
                 "official_author_name": "Climb On Gym攀岩",
+                "query_terms": ["col", "climb on"],
                 "anchor_date": anchor.isoformat(),
                 "fresh_patterns": [r"7\s*月\s*2[7-9]", r"07-2[7-9]", r"7\s*月\s*3[01]", r"07-3[01]", r"本周", r"今晚|今天"],
                 "stale_patterns": [r"2025", r"6\s*月\s*2[23]", r"06-2[23]"],
