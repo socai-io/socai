@@ -125,27 +125,38 @@ def stream_completion(request_body: dict, api_key: str, timeout: int = 300) -> d
 
 def classify(result: dict, meta: dict) -> dict:
     calls = result["tool_calls"]
-    names = [c["name"] for c in calls]
     out = {"action": "direct_answer", "hop_correct": None, "answer_date": None}
-    scan = next((c for c in calls if c["name"] == "author_scan"), None)
-    search = next((c for c in calls if c["name"] == "search"), None)
-    if scan:
-        out["action"] = "author_scan"
-        out["hop_correct"] = scan["arguments"].get("author_id") == meta["official_author_id"]
-    elif search:
-        filters = search["arguments"].get("filters") or {}
+    scans = [c for c in calls if c["name"] == "author_scan"]
+    searches = [c for c in calls if c["name"] == "search"]
+
+    def search_is_recency(call):
+        filters = call["arguments"].get("filters") or {}
         # publish_time="不限" means no time restriction — only a real window
-        # counts as forcing recency.
+        # counts as forcing recency. And a recency search only verifies this
+        # scenario if it's about the subject — an unrelated recency search must
+        # not inflate pass rates. Older scenario files without query_terms keep
+        # the permissive scoring.
         recency = filters.get("sort") == "最新" or filters.get("publish_time") not in (None, "", "不限")
-        # A recency search only verifies this scenario if it's about the
-        # subject — an unrelated recency search must not inflate pass rates.
-        # Older scenario files without query_terms keep the permissive scoring.
-        query = str(search["arguments"].get("query", ""))
+        query = str(call["arguments"].get("query", ""))
         terms = meta.get("query_terms") or []
-        on_topic = not terms or any(t.lower() in query.lower() for t in terms)
-        out["action"] = "recency_search" if (recency and on_topic) else "plain_search"
-    elif names:
-        out["action"] = names[0]
+        return recency and (not terms or any(t.lower() in query.lower() for t in terms))
+
+    # The prompt allows two tool calls per step, so score the BEST verification
+    # across all calls: correct scan > on-topic recency search > wrong scan >
+    # plain search > other tools.
+    correct_scan = next(
+        (c for c in scans if c["arguments"].get("author_id") == meta["official_author_id"]), None
+    )
+    recency_search = next((c for c in searches if search_is_recency(c)), None)
+    if correct_scan or (scans and not recency_search):
+        out["action"] = "author_scan"
+        out["hop_correct"] = correct_scan is not None
+    elif recency_search:
+        out["action"] = "recency_search"
+    elif searches:
+        out["action"] = "plain_search"
+    elif calls:
+        out["action"] = calls[0]["name"]
     else:
         text = result["content"]
         fresh = any(re.search(p, text) for p in meta["fresh_patterns"])
