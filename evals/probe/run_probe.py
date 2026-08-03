@@ -29,6 +29,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import http.client
 import urllib.request
 import urllib.error
 
@@ -142,9 +143,13 @@ def classify(result: dict, meta: dict) -> dict:
         # not inflate pass rates. Older scenario files without query_terms keep
         # the permissive scoring.
         recency = filters.get("sort") == "最新" or filters.get("publish_time") not in (None, "", "不限")
-        query = str(call["arguments"].get("query", ""))
+        query = str(call["arguments"].get("query", "")).lower()
         terms = meta.get("query_terms") or []
-        return recency and (not terms or any(t.lower() in query.lower() for t in terms))
+        # Alphanumeric-boundary match: "col" must not match "collection"/"color".
+        # CJK neighbors ("col攀岩馆") still match — the guard is ASCII-only.
+        def on_topic(term):
+            return re.search(rf"(?<![a-z0-9]){re.escape(term.lower())}(?![a-z0-9])", query)
+        return recency and (not terms or any(on_topic(t) for t in terms))
 
     # The prompt allows two tool calls per step, so score the BEST verification
     # across all calls: correct scan > on-topic recency search > wrong scan >
@@ -250,7 +255,10 @@ def main() -> None:
                         + f" [{elapsed:.0f}s]"
                     )
                 return
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
+            # OSError covers URLError/HTTPError/timeouts; HTTPException covers
+            # read-phase failures like IncompleteRead — a mid-stream disconnect
+            # must retry, not abort the whole pool.map.
+            except (OSError, http.client.HTTPException, json.JSONDecodeError) as e:
                 last_err = e
                 detail = ""
                 if isinstance(e, urllib.error.HTTPError):
@@ -260,7 +268,8 @@ def main() -> None:
                         pass
                 with lock:
                     print(f"  {variant}×{scenario} #{trial}: retry after {type(e).__name__} {detail}")
-                time.sleep(10 * (attempt + 1))
+                if attempt < 2:
+                    time.sleep(10 * (attempt + 1))
         with lock:
             rows.append({"variant": variant, "scenario": scenario, "trial": trial,
                          "action": "error", "error": str(last_err)})
