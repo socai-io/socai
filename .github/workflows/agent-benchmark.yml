@@ -1,0 +1,44 @@
+name: agent-benchmark
+
+# Decision benchmark for the XHS agent policy (evals/probe): replays checked-in
+# cassettes against the current knowledge.md and gates each case on its
+# expected action. Costs real LLM calls (~¥6 per full run), so it triggers only
+# on changes that can shift agent decisions, or manually.
+on:
+  pull_request:
+    paths:
+      - "core/src/sites/xhs/knowledge.md"
+      - "core/src/sites/xhs/tools.rs"
+      - "evals/**"
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: "Trials per case"
+        default: "8"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run decision benchmark
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+        run: |
+          if [ -z "$DASHSCOPE_API_KEY" ]; then
+            echo "::warning::DASHSCOPE_API_KEY secret not available (fork PR?) — skipping benchmark"
+            exit 0
+          fi
+          python3 evals/probe/build_scenarios.py
+          python3 evals/probe/run_probe.py -n "${{ github.event.inputs.trials || 8 }}"
+      - name: Upload raw trial results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-results
+          path: evals/probe/results/
+          if-no-files-found: ignore

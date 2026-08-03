@@ -18,8 +18,8 @@ candidate wording against the current prompt); `v1` applies solely to fixtures
 generated before the official-sources policy landed (drift guard — see
 evals/README.md).
 
-The Qwen API key is read from ~/.socai/auth.json (qwen.api_key) and never
-printed. Raw responses land in results/<stamp>/ for audit.
+The Qwen API key comes from $DASHSCOPE_API_KEY / $QWEN_API_KEY (CI) or
+~/.socai/auth.json (local), and is never printed. Raw responses land in results/<stamp>/ for audit.
 """
 
 import argparse
@@ -33,11 +33,17 @@ from datetime import datetime
 from pathlib import Path
 
 import http.client
+import os
 import urllib.request
 import urllib.error
 
 HERE = Path(__file__).resolve().parent
-BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+# Override for CI or the international endpoint (dashscope-intl) if the
+# mainland endpoint is unreachable from the runner.
+BASE_URL = os.environ.get(
+    "DASHSCOPE_BASE_URL",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+).rstrip("/") + "/chat/completions"
 
 # The paragraph V1 replaces — current knowledge.md's author_scan guidance
 # ("skip this extra step for routine searches"). Matched exactly so drift
@@ -50,10 +56,15 @@ searches."""
 
 
 def load_api_key() -> str:
-    auth = json.loads((Path.home() / ".socai" / "auth.json").read_text())
-    key = (auth.get("qwen") or {}).get("api_key", "")
+    key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or ""
     if not key:
-        sys.exit("no qwen api key in ~/.socai/auth.json")
+        try:
+            auth = json.loads((Path.home() / ".socai" / "auth.json").read_text())
+        except OSError:
+            auth = {}
+        key = (auth.get("qwen") or {}).get("api_key", "")
+    if not key:
+        sys.exit("no qwen api key: set DASHSCOPE_API_KEY (CI) or configure ~/.socai/auth.json")
     return key
 
 

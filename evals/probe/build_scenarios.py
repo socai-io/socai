@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build decision-probe scenarios from recorded socai runs.
+"""Build benchmark scenarios from checked-in cassette recordings.
 
-Reads the raw step-2 LLM request (`llm/002.request.json`) of a recorded app-agent
-run — the exact request the model saw right after the `search` tool result — and
-emits probe scenarios under scenarios/:
+Reads sanitized recordings under recordings/ — each wraps the raw step-2 LLM
+request (`llm/002.request.json`) a production app-agent run captured, i.e. the
+exact request the model saw right after the `search` tool result — and emits
+runnable scenarios under scenarios/:
 
 - The system prompt's knowledge slice is re-spliced from the repo's CURRENT
   core/src/sites/xhs/knowledge.md, and the recorded tools array is patched for
@@ -20,8 +21,17 @@ emits probe scenarios under scenarios/:
   only the stale official notice. Correct behavior then requires the
   verification hop: author_scan of the official account.
 
-Scenarios embed no secrets; they do embed public XHS note content and xsec URL
-tokens from the local run dirs, so scenarios/ stays untracked (see ../.gitignore).
+Recordings are checked in (they carry public XHS note content; home-directory
+paths and xsec URL tokens are scrubbed at import time), so the benchmark runs
+anywhere, including CI. Generated scenarios/ stay untracked — they bake in the
+current prompt and must be rebuilt per checkout.
+
+Contributing a new case:
+  1. Reproduce the situation in the app/CLI so a run dir exists under
+     ~/.socai/runs/<run>/turn-*/llm/002.request.json.
+  2. python3 build_scenarios.py --import <turn-dir> --name <case> [--date YYYY-MM-DD]
+     (writes the sanitized recordings/<case>.request.json)
+  3. Add a scenarios-dict entry below with meta + an `expect` block.
 """
 
 import copy
@@ -33,18 +43,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-RUNS = Path.home() / ".socai" / "runs"
-
-BLOC1_RUN = (
-    RUNS
-    / "20260730_104110_xhs_bloc1_攀岩馆上一次换线是什么时候"
-    / "turn-01_bloc1_攀岩馆上一次换线是什么时候"
-)
-COL_RUN = (
-    RUNS
-    / "20260730_104536_xhs_COL_攀岩馆最近一次换线是什么时候"
-    / "turn-01_COL_攀岩馆最近一次换线是什么时候"
-)
+RECORDINGS = HERE / "recordings"
 
 KNOWLEDGE_START = "# Xiaohongshu Macro-Agent Knowledge"
 CITING_START = "## Citing notes in the final answer"
@@ -141,8 +140,33 @@ def splice_current_prompt(system_text: str) -> str:
     return spliced
 
 
-def current_prod_request(run_dir: Path, anchor: date) -> dict:
-    request = json.loads((run_dir / "llm" / "002.request.json").read_text())
+def sanitize_recording_text(text: str) -> str:
+    """Scrub machine-local and session-bound bytes before a recording is
+    checked in: the recording user's home directory and xsec page tokens.
+    Neither influences the probed decision."""
+    text = text.replace(str(Path.home()), "/Users/user")
+    return re.sub(r"xsec_token=[A-Za-z0-9%_.=\-]+", "xsec_token=REDACTED", text)
+
+
+def import_recording(turn_dir: Path, name: str, recorded_date: str) -> Path:
+    raw = (turn_dir / "llm" / "002.request.json").read_text()
+    scrubbed = sanitize_recording_text(raw)
+    request = json.loads(scrubbed)  # validate post-scrub
+    RECORDINGS.mkdir(parents=True, exist_ok=True)
+    out = RECORDINGS / f"{name}.request.json"
+    out.write_text(json.dumps(
+        {"recorded_date": recorded_date, "request": request}, ensure_ascii=False, indent=1
+    ))
+    return out
+
+
+def load_recording(name: str) -> tuple[dict, date]:
+    wrapper = json.loads((RECORDINGS / f"{name}.request.json").read_text())
+    return wrapper["request"], date.fromisoformat(wrapper["recorded_date"])
+
+
+def current_prod_request(name: str) -> dict:
+    request, anchor = load_recording(name)
     request["messages"][0]["content"] = splice_current_prompt(request["messages"][0]["content"])
 
     tools = request["tools"]
@@ -178,11 +202,33 @@ def drop_note(request: dict, note_id_prefix: str) -> None:
 
 
 def main() -> None:
-    anchor = date(2026, 7, 30)  # both runs were recorded on 2026-07-30
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--import", dest="import_dir", metavar="TURN_DIR",
+                    help="Import a run's llm/002.request.json as a sanitized recording")
+    ap.add_argument("--name", help="Recording name for --import")
+    ap.add_argument("--date", dest="recorded_date",
+                    help="Recording date YYYY-MM-DD (default: parsed from the run dir name)")
+    args = ap.parse_args()
+    if args.import_dir:
+        if not args.name:
+            sys.exit("--import requires --name")
+        turn_dir = Path(args.import_dir).expanduser()
+        recorded = args.recorded_date
+        if not recorded:
+            m = re.search(r"(20\d{6})_", turn_dir.parent.name + "_")
+            if not m:
+                sys.exit("cannot parse date from run dir name; pass --date YYYY-MM-DD")
+            recorded = f"{m.group(1)[:4]}-{m.group(1)[4:6]}-{m.group(1)[6:8]}"
+        out_path = import_recording(turn_dir, args.name, recorded)
+        print(f"imported -> {out_path.relative_to(REPO)} (recorded {recorded})")
+        return
+
     out = HERE / "scenarios"
     out.mkdir(parents=True, exist_ok=True)
 
-    bloc1 = current_prod_request(BLOC1_RUN, anchor)
+    anchor = load_recording("bloc1")[1]  # kept in meta for scorer date context
+    bloc1 = current_prod_request("bloc1")
     scenarios = {
         "bloc1_replay": {
             "request": bloc1,
@@ -217,7 +263,7 @@ def main() -> None:
             },
         },
         "col_replay": {
-            "request": current_prod_request(COL_RUN, anchor),
+            "request": current_prod_request("col"),
             "meta": {
                 "task": "COL 攀岩馆最近一次换线是什么时候？",
                 "official_author_id": "60ce095a00000000010077b5",

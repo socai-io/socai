@@ -1,7 +1,8 @@
 # evals
 
-Experiment harnesses for socai's agent behavior. Nothing here runs in CI yet;
-these are lab tools for iterating on prompts/tools before shipping them.
+Benchmarks and experiment harnesses for socai's agent behavior. The decision
+benchmark runs in CI (`.github/workflows/agent-benchmark.yml`) on changes that
+can shift agent decisions.
 
 ## probe/ — decision benchmark (cassette smoke test)
 
@@ -25,11 +26,12 @@ in a prompt variant, and samples the model's next action N times. It isolates
 the one decision that matters at ~¥0.25/trial with no browser, no XHS contact,
 and no anti-bot risk.
 
-**Scenarios** (built by `build_scenarios.py` from local `~/.socai/runs/`
-recordings; regenerate after knowledge.md or toolset changes — the builder
-re-splices the current knowledge.md and patches the recorded tools array for
-known post-recording tool edits; new tool edits need a patch rule in
-`build_scenarios.py` or a re-recorded run):
+**Scenarios** (built by `build_scenarios.py` from the checked-in cassettes in
+`probe/recordings/` — sanitized captures of real production requests, so the
+benchmark runs anywhere including CI; regenerate after knowledge.md or toolset
+changes — the builder re-splices the current knowledge.md and patches the
+recorded tools array for known post-recording tool edits; new tool edits need
+a patch rule in `build_scenarios.py` or a re-recorded run):
 
 - `bloc1_replay` — the result set as recorded (stale official #1, fresh
   official #5). Both a verification hop and a fresh direct answer count as
@@ -67,10 +69,28 @@ python3 probe/run_probe.py            # full benchmark, n=8 per case, gated
 
 `-n 3` for a quick smoke; `--dry-run` builds requests without API calls.
 
-Qwen API key is read from `~/.socai/auth.json`; raw per-trial responses land in
-`probe/results/<stamp>/` with a `summary.json`. Scenario fixtures and results
-are gitignored (they embed public XHS note content and short-lived xsec tokens
-from local recordings).
+Qwen API key: `$DASHSCOPE_API_KEY` / `$QWEN_API_KEY` (CI) or
+`~/.socai/auth.json` (local). Raw per-trial responses land in
+`probe/results/<stamp>/` with a `summary.json`. Generated `scenarios/` and
+`results/` are gitignored; the checked-in source of truth is
+`probe/recordings/` (home paths and xsec tokens scrubbed at import time —
+note content itself is public XHS material).
+
+**CI:** `.github/workflows/agent-benchmark.yml` runs the gated benchmark on
+PRs touching `knowledge.md` / `tools.rs` / `evals/**` and on manual dispatch.
+It needs the `DASHSCOPE_API_KEY` repo secret; without it (e.g. fork PRs) the
+job skips with a warning. If GitHub runners can't reach the mainland
+endpoint, set `DASHSCOPE_BASE_URL` to the intl endpoint with an intl key.
+
+**Contributing a case:**
+
+1. Reproduce the situation in the app/CLI so a run dir exists
+   (`~/.socai/runs/<run>/turn-*/llm/002.request.json`).
+2. `python3 probe/build_scenarios.py --import <turn-dir> --name <case>` —
+   writes the sanitized `recordings/<case>.request.json`.
+3. Add a scenarios-dict entry in `build_scenarios.py` with `meta` (official
+   author, date patterns) and an `expect` block (expected actions +
+   `min_pass_rate`).
 
 **Reading the table:** `scan✓` = author_scan with the correct official
 author_id — the only action that counts as verification; `recency` = re-search
