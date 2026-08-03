@@ -150,8 +150,10 @@ def current_prod_request(run_dir: Path, anchor: date) -> dict:
     for tool in tools:
         if tool["function"]["name"] == "author_scan":
             desc = tool["function"]["description"]
+            if AUTHOR_SCAN_NEW in desc:
+                continue  # recorded post-#243 — already current, nothing to patch
             if AUTHOR_SCAN_OLD not in desc:
-                sys.exit("author_scan description drifted; update AUTHOR_SCAN_OLD")
+                sys.exit("author_scan description drifted; update AUTHOR_SCAN_OLD/NEW")
             tool["function"]["description"] = desc.replace(AUTHOR_SCAN_OLD, AUTHOR_SCAN_NEW)
     if "wait_for_rate_limit" not in names:
         # Keep tool order aligned with xhs_macro_tools_with_llm_provider: the
