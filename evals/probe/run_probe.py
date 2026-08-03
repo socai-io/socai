@@ -162,10 +162,19 @@ def classify(result: dict, meta: dict) -> dict:
         # Strip as-of framing ("截至今天/截至2026-07-30, …") before matching:
         # the anchor date used as framing must not read as a fresh event claim.
         text = re.sub(r"截至[^，。；\n]{0,20}", "", result["content"])
-        fresh = any(re.search(p, text) for p in meta["fresh_patterns"])
-        stale = any(re.search(p, text) for p in meta["stale_patterns"])
+        # Answers lead with their conclusion, so the EARLIEST match decides:
+        # "最近一次换线是1月28日…（7月的通知是…）" is stale even though a fresh
+        # date appears later, and a fresh conclusion that recaps January
+        # history stays fresh.
+        def first_pos(patterns):
+            hits = [m.start() for m in (re.search(p, text) for p in patterns) if m]
+            return min(hits) if hits else None
+        fresh_pos = first_pos(meta["fresh_patterns"])
+        stale_pos = first_pos(meta["stale_patterns"])
         out["answer_date"] = (
-            "mixed" if fresh and stale else "fresh" if fresh else "stale" if stale else "unclear"
+            "fresh" if fresh_pos is not None and (stale_pos is None or fresh_pos < stale_pos)
+            else "stale" if stale_pos is not None
+            else "unclear"
         )
     # Verified = consulted the official timeline. A recency-filtered re-search
     # is tracked as its own action but does NOT count: the policy keeps XHS's
@@ -298,7 +307,7 @@ def main() -> None:
         toks = set()
         if r.get("action") == "author_scan" and r.get("hop_correct"):
             toks.add("author_scan_official")
-        if r.get("action") == "direct_answer" and r.get("answer_date") in ("fresh", "mixed"):
+        if r.get("action") == "direct_answer" and r.get("answer_date") == "fresh":
             toks.add("direct_fresh")
         if r.get("action") == "recency_search":
             toks.add("recency_search")

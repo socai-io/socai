@@ -164,10 +164,31 @@ def scaffold_from_system(system_text: str) -> str:
     )
 
 
+def redact_token_fields(node):
+    """Recursively redact xsec_token VALUES wherever they appear as fields —
+    the URL-form regex in sanitize_text misses tokens serialized as tool-call
+    arguments (e.g. get_notes args in multi-turn history)."""
+    if isinstance(node, dict):
+        return {
+            k: ("REDACTED" if k == "xsec_token" and isinstance(v, str) else redact_token_fields(v))
+            for k, v in node.items()
+        }
+    if isinstance(node, list):
+        return [redact_token_fields(v) for v in node]
+    return node
+
+
 def import_recording(turn_dir: Path, name: str, recorded_date: str) -> None:
     raw = (turn_dir / "llm" / "002.request.json").read_text()
     request = json.loads(sanitize_text(raw))
     messages = request["messages"]
+    roles = [m.get("role") for m in messages]
+    if roles != ["system", "user", "assistant", "tool"]:
+        sys.exit(
+            f"importer expects a fresh single-turn run ([system, user, assistant, tool]), got {roles}. "
+            "Record the case as a NEW conversation (first turn), not a follow-up — earlier-turn "
+            "history would drag unrelated content into the checked-in cassette."
+        )
     assistant = messages[2]
     search_tc = next(tc for tc in assistant["tool_calls"] if tc["function"]["name"] == "search")
 
@@ -180,7 +201,9 @@ def import_recording(turn_dir: Path, name: str, recorded_date: str) -> None:
         "cassette": json.loads(messages[3]["content"]),
     }
     case_path = CASES / f"{name}.json"
-    case_path.write_text(json.dumps(case, ensure_ascii=False, indent=1))
+    # Field-form tokens live inside the parsed cassette/args (the URL-form
+    # regex can't see them), so redact on the final parsed structure.
+    case_path.write_text(json.dumps(redact_token_fields(case), ensure_ascii=False, indent=1))
 
     # Refresh the shared environment from this recording (latest import wins —
     # keep shared/ in sync with the current agent by importing from a run made
