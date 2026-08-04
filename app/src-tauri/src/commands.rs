@@ -5,9 +5,9 @@ use anyhow::Result;
 use serde_json::{json, Map, Value};
 use socai_core::agent::{
     catalog_models_for, configured_default_model_for, configured_default_provider,
-    desktop_agent_tools, make_run_dir, mark_agent_run_status, provider_credential_kind,
-    resolve_provider, save_default_model, AgentEvent, Conversation, CredentialKind,
-    ModelCatalogEntry, Provider, TokenUsage,
+    desktop_agent_tools, load_api_key, make_run_dir, mark_agent_run_status,
+    provider_credential_kind, resolve_provider, save_default_model, AgentEvent, Conversation,
+    CredentialKind, ModelCatalogEntry, Provider, TokenUsage,
 };
 use socai_core::runtime::{
     create_llm_provider_for_task, ensure_llm_provider_configured_for,
@@ -220,7 +220,7 @@ pub async fn agent_save_api_key(provider: String, api_key: String) -> Result<(),
     let provider_enum = Provider::from_name(provider.trim())
         .ok_or_else(|| format!("unknown provider: {provider}"))?;
     if provider_enum == Provider::Socai {
-        return Err("socai cloud uses your signed-in account, not an API key".into());
+        return Err("socai agent uses your signed-in account, not an API key".into());
     }
     socai_core::agent::save_api_key(provider_enum, api_key.trim())
         .map(|_| ())
@@ -256,6 +256,15 @@ pub async fn agent_list_models() -> Result<Vec<Value>, String> {
             Some(CredentialKind::CodexOAuth) => Some("codex_oauth"),
             None => None,
         };
+        let credential_preview =
+            if cfg.provider != Provider::Socai && credential_kind == Some(CredentialKind::ApiKey) {
+                load_api_key(cfg.provider).map(|key| {
+                    let prefix = key.chars().take(8).collect::<String>();
+                    format!("{prefix}…")
+                })
+            } else {
+                None
+            };
         let selected_model = if cfg.provider == Provider::Socai {
             // The hosted model is a server concern. Keep an opaque value in
             // desktop state even when SOCAI_MODEL is set for BYOK providers.
@@ -303,6 +312,7 @@ pub async fn agent_list_models() -> Result<Vec<Value>, String> {
                 "selected_model": selected_model,
                 "has_key": credential_kind.is_some(),
                 "credential_kind": credential_kind_label,
+                "credential_preview": credential_preview.clone(),
                 "is_default": is_default,
                 "recommended": model.recommended,
                 "source": model.source,
@@ -1524,6 +1534,42 @@ pub async fn auth_logout() -> Result<(), String> {
 #[tauri::command]
 pub async fn billing_wallet() -> Result<socai_core::cloud::WalletBalance, String> {
     socai_core::cloud::wallet_balance()
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn billing_plan() -> Result<socai_core::cloud::PaymentPlan, String> {
+    socai_core::cloud::payment_plan()
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn billing_create_wechat_order(
+    plan_id: String,
+    request_id: String,
+) -> Result<socai_core::cloud::PaymentOrder, String> {
+    socai_core::cloud::create_wechat_order(&plan_id, &request_id)
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn billing_create_alipay_order(
+    plan_id: String,
+    request_id: String,
+) -> Result<socai_core::cloud::PaymentOrder, String> {
+    socai_core::cloud::create_alipay_order(&plan_id, &request_id)
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
+pub async fn billing_order_status(
+    order_id: String,
+) -> Result<socai_core::cloud::PaymentOrder, String> {
+    socai_core::cloud::payment_order(&order_id)
         .await
         .map_err(|err| format!("{err:#}"))
 }

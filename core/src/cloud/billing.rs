@@ -9,6 +9,34 @@ pub struct WalletBalance {
     pub balance_points: i64,
     pub points_per_cny: i64,
     pub starter_points: i64,
+    pub active_until: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentPlan {
+    pub enabled: bool,
+    pub wechat_enabled: bool,
+    pub alipay_enabled: bool,
+    pub plan_id: String,
+    pub name: String,
+    pub amount_fen: i64,
+    pub points: i64,
+    pub duration_days: i64,
+    pub auto_renews: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentOrder {
+    pub order_id: String,
+    pub status: String,
+    pub code_url: Option<String>,
+    pub payment_url: Option<String>,
+    pub amount_fen: i64,
+    pub points: i64,
+    pub duration_days: i64,
+    pub expires_at: Option<String>,
+    pub paid_at: Option<String>,
+    pub active_until: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,7 +63,7 @@ fn authenticated_request(method: reqwest::Method, path: &str) -> Result<reqwest:
         .ok_or_else(|| anyhow::anyhow!("socai service URL is not configured"))?;
     let credentials = load_credentials()
         .filter(|creds| !creds.user_id.trim().is_empty() && !creds.device_token.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("sign in to use socai cloud"))?;
+        .ok_or_else(|| anyhow::anyhow!("sign in to use socai agent"))?;
     Ok(http_client()?
         .request(method, format!("{base_url}{path}"))
         .bearer_auth(credentials.device_token))
@@ -47,6 +75,59 @@ pub async fn wallet_balance() -> Result<WalletBalance> {
         .await
         .context("failed to load point balance")?;
     Ok(require_success(response, "point balance")
+        .await?
+        .json()
+        .await?)
+}
+
+pub async fn payment_plan() -> Result<PaymentPlan> {
+    let response = authenticated_request(reqwest::Method::GET, "/v1/billing/plan")?
+        .send()
+        .await
+        .context("failed to load payment plan")?;
+    Ok(require_success(response, "payment plan")
+        .await?
+        .json()
+        .await?)
+}
+
+pub async fn create_wechat_order(plan_id: &str, request_id: &str) -> Result<PaymentOrder> {
+    let response = authenticated_request(reqwest::Method::POST, "/v1/billing/wechat/orders")?
+        .json(&json!({"plan_id": plan_id, "request_id": request_id}))
+        .send()
+        .await
+        .context("failed to create WeChat Pay order")?;
+    Ok(require_success(response, "WeChat Pay order")
+        .await?
+        .json()
+        .await?)
+}
+
+pub async fn create_alipay_order(plan_id: &str, request_id: &str) -> Result<PaymentOrder> {
+    let response = authenticated_request(reqwest::Method::POST, "/v1/billing/alipay/orders")?
+        .json(&json!({"plan_id": plan_id, "request_id": request_id}))
+        .send()
+        .await
+        .context("failed to create Alipay order")?;
+    Ok(require_success(response, "Alipay order")
+        .await?
+        .json()
+        .await?)
+}
+
+pub async fn payment_order(order_id: &str) -> Result<PaymentOrder> {
+    if !order_id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        anyhow::bail!("invalid payment order id");
+    }
+    let path = format!("/v1/billing/orders/{order_id}");
+    let response = authenticated_request(reqwest::Method::GET, &path)?
+        .send()
+        .await
+        .context("failed to load payment order")?;
+    Ok(require_success(response, "payment order")
         .await?
         .json()
         .await?)

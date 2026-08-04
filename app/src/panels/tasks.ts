@@ -413,6 +413,18 @@ export namespace agentPanel {
     return true;
   }
 
+  export function currentModelLabel(): string {
+    const selected = selectedModel();
+    if (!selected) return t("agent.label");
+    return selected.provider === "socai"
+      ? providerDisplayLabel(selected)
+      : modelDisplayLabel(selected);
+  }
+
+  export function renderAccountConfig(): string {
+    return `<div class="agent-account-config">${renderConfigContent()}</div>`;
+  }
+
   function renderAgentBadge(): string {
     const selected = selectedModel();
     const expanded = configOpen || selectedNeedsKey() ? "true" : "false";
@@ -429,6 +441,14 @@ export namespace agentPanel {
   }
 
   function renderConfigPopover(): string {
+    return `
+      <div class="topbar-popover agent-config-popover" role="dialog" aria-label="${esc(t("agent.configurationAria"))}">
+        ${renderConfigContent()}
+      </div>
+    `;
+  }
+
+  function renderConfigContent(): string {
     const selected = selectedModel();
     const disabled = savingKey || submittingTask;
     const activeProvider = modelProvider || selected?.provider || providerSummaries()[0]?.provider || "";
@@ -472,40 +492,30 @@ export namespace agentPanel {
       .join("");
 
     return `
-      <div class="topbar-popover agent-config-popover" role="dialog" aria-label="${esc(t("agent.configurationAria"))}">
-        <section class="agent-config-field">
-          <p class="t-eyebrow agent-config-title">${esc(t("agent.provider"))}</p>
-          <div class="agent-model-list agent-provider-list" role="listbox" aria-label="${esc(t("agent.selectProviderAria"))}">
-            ${providerOptions || `<p class="t-small subtle agent-picker-empty">${esc(t("common.loading"))}</p>`}
-          </div>
-        </section>
-        ${renderCredentialSection(activeModel)}
-        ${activeProvider === "socai" ? "" : `<section class="agent-config-field">
-          <label class="t-eyebrow agent-config-title" for="agent-model-select">${esc(t("agent.modelVersion"))}</label>
-          <select
-            id="agent-model-select"
-            class="input-field agent-model-select"
-            data-provider="${esc(activeProvider)}"
-            aria-label="${esc(t("agent.selectModelAria"))}"
-            ${disabled || modelRows.length === 0 ? "disabled" : ""}
-          >
-            ${modelOptions}
-          </select>
-        </section>`}
-      </div>
+      <section class="agent-config-field">
+        <div class="agent-model-list agent-provider-list" role="listbox" aria-label="${esc(t("agent.selectProviderAria"))}">
+          ${providerOptions || `<p class="t-small subtle agent-picker-empty">${esc(t("common.loading"))}</p>`}
+        </div>
+      </section>
+      ${renderCredentialSection(activeModel)}
+      ${activeProvider === "socai" ? "" : `<section class="agent-config-field">
+        <label class="t-eyebrow agent-config-title" for="agent-model-select">${esc(t("agent.modelVersion"))}</label>
+        <select
+          id="agent-model-select"
+          class="input-field agent-model-select"
+          data-provider="${esc(activeProvider)}"
+          aria-label="${esc(t("agent.selectModelAria"))}"
+          ${disabled || modelRows.length === 0 ? "disabled" : ""}
+        >
+          ${modelOptions}
+        </select>
+      </section>`}
     `;
   }
 
   function renderCredentialSection(selected: ModelInfo | undefined): string {
     if (!selected) return "";
-    if (selected.provider === "socai") {
-      return `
-        <div class="agent-config-key agent-config-key-ready">
-          <p class="t-eyebrow agent-config-title">${esc(t("agent.apiKey"))}</p>
-          <p class="t-small subtle">${esc(t("agent.managedByAccount"))}</p>
-        </div>
-      `;
-    }
+    if (selected.provider === "socai") return "";
     if (selected.has_key && !editingKey) return renderCredentialConfigured(selected);
     return renderHeaderKeyEntry(selected);
   }
@@ -517,7 +527,9 @@ export namespace agentPanel {
         <p class="t-small subtle">${esc(
           selected.credential_kind === "codex_oauth"
             ? t("agent.chatgptConnected")
-            : t("agent.credentialConfigured", { provider: providerDisplayLabel(selected) }),
+            : t("agent.credentialPreview", {
+                preview: selected.credential_preview || t("agent.apiKey"),
+              }),
         )}</p>
         <div class="agent-config-actions">
           <button id="agent-header-key-edit" type="button" class="btn-ghost btn-compact" ${savingKey || submittingTask ? "disabled" : ""}>

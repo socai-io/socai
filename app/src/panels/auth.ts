@@ -25,6 +25,7 @@ interface WalletBalance {
   balance_points: number;
   points_per_cny: number;
   starter_points: number;
+  active_until: string | null;
 }
 
 type AuthPhase = "loading" | "idle" | "sending" | "verifying" | "logging_out";
@@ -47,9 +48,14 @@ export namespace authMenu {
   let retryAt = 0;
   let error = "";
   let countdownTimer: number | null = null;
+  let expiryTimer: number | null = null;
+  let rerender: (() => void) | null = null;
   let wallet: WalletBalance | null = null;
   let walletUnavailable = false;
-  let rechargingPoints: number | null = null;
+  let loginExpanded = false;
+  let byokExpanded = false;
+  let modelExpanded = false;
+  let upgradeExpanded = false;
 
   export async function loadSession(): Promise<void> {
     phase = "loading";
@@ -70,11 +76,13 @@ export namespace authMenu {
     if (!session.logged_in) {
       wallet = null;
       walletUnavailable = false;
+      stopExpiryTimer();
       return;
     }
     try {
       wallet = await invoke<WalletBalance>("billing_wallet");
       walletUnavailable = false;
+      scheduleExpiryRefresh();
     } catch (err) {
       console.error("billing_wallet failed:", err);
       wallet = null;
@@ -86,15 +94,27 @@ export namespace authMenu {
     return open;
   }
 
+  export function isLoggedIn(): boolean {
+    return session.logged_in;
+  }
+
   export function closePopover(): boolean {
     if (!open) return false;
     open = false;
+    byokExpanded = false;
+    modelExpanded = false;
+    if (!challenge) loginExpanded = false;
     stopCountdown();
     return true;
   }
 
-  export function render(): string {
-    const label = session.logged_in ? maskPhone(session.phone) : t("auth.login");
+  export function render(
+    modelLabel: string,
+    modelConfigContent = "",
+    subscriptionContent = "",
+  ): string {
+    const accountLabel = session.logged_in ? maskPhone(session.phone) : t("auth.loggedOut");
+    const label = `${modelLabel} · ${accountLabel}`;
     const dot = session.logged_in ? "badge-dot-ink" : "badge-dot-hollow";
     return `
       <div class="auth-menu">
@@ -104,59 +124,92 @@ export namespace authMenu {
           class="badge badge-button auth-chip"
           aria-label="${esc(session.logged_in ? t("auth.accountAria") : t("auth.loginAria"))}"
           aria-expanded="${open ? "true" : "false"}"
-        ><i class="badge-dot ${dot}" aria-hidden="true"></i>${esc(label)}</button>
-        ${open ? renderPopover() : ""}
+        ><i class="badge-dot ${dot}" aria-hidden="true"></i><span class="badge-text">${esc(label)}</span></button>
+        ${open ? renderPopover(modelLabel, modelConfigContent, subscriptionContent) : ""}
       </div>
     `;
   }
 
-  function renderPopover(): string {
+  function renderPopover(
+    modelLabel: string,
+    modelConfigContent: string,
+    subscriptionContent: string,
+  ): string {
     if (phase === "loading") {
       return `<div class="topbar-popover auth-popover" role="dialog" aria-label="${esc(t("auth.title"))}"><p class="t-small subtle auth-copy">${esc(t("common.loading"))}</p></div>`;
     }
     return `
       <div class="topbar-popover auth-popover" role="dialog" aria-label="${esc(t("auth.title"))}">
-        ${session.logged_in ? renderAccount() : challenge ? renderCodeForm() : renderPhoneForm()}
+        ${session.logged_in
+          ? renderAccount(modelLabel, modelConfigContent, subscriptionContent)
+          : renderSignedOut(modelConfigContent)}
         ${error ? `<p class="t-small result-error auth-error" role="alert">${esc(error)}</p>` : ""}
       </div>
     `;
   }
 
-  function renderAccount(): string {
+  function renderSignedOut(modelConfigContent: string): string {
     return `
-      <div class="auth-heading">
-        <div>
-          <p class="settings-group-label">${esc(t("auth.account"))}</p>
-          <p class="t-small subtle auth-copy">${esc(t("auth.accountHint"))}</p>
+      <section class="auth-choice">
+        <div class="auth-choice-copy">
+          <p class="t-small subtle">${esc(t("auth.loginAgentHint"))}</p>
         </div>
+        <button id="auth-start-login" type="button" class="btn-primary btn-compact" aria-expanded="${loginExpanded || challenge ? "true" : "false"}">${esc(t("auth.login"))}</button>
+      </section>
+      ${loginExpanded || challenge ? `<div class="auth-expanded-panel">${challenge ? renderCodeForm() : renderPhoneForm()}</div>` : ""}
+      <section class="auth-byok">
+        <button id="auth-byok-toggle" type="button" class="auth-disclosure" aria-expanded="${byokExpanded ? "true" : "false"}">
+          <span>${esc(t("auth.useOwnApiKey"))}</span>
+          <span class="auth-disclosure-mark" aria-hidden="true">${byokExpanded ? "−" : "+"}</span>
+        </button>
+        ${byokExpanded ? `<div class="auth-expanded-panel">${modelConfigContent}</div>` : ""}
+      </section>
+    `;
+  }
+
+  function renderAccount(
+    modelLabel: string,
+    modelConfigContent: string,
+    subscriptionContent: string,
+  ): string {
+    const activeUntil = activeUntilDate();
+    return `
+      <div class="auth-account-summary">
+        <span class="t-mono">${esc(formatPhone(session.phone))}</span>
         <span class="badge"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${esc(t("auth.loggedIn"))}</span>
       </div>
-      <div class="auth-account-row">
-        <span class="t-small subtle">${esc(t("auth.phone"))}</span>
-        <span class="t-mono">${esc(formatPhone(session.phone))}</span>
+      <div class="auth-balance-summary">
+        <span class="t-small subtle">${esc(t("billing.remaining"))}</span>
+        <span class="t-h2 auth-wallet-points">${wallet
+          ? esc(t("billing.points", { points: wallet.balance_points }))
+          : esc(walletUnavailable ? t("billing.unavailable") : t("common.loading"))}</span>
       </div>
-      <div class="auth-wallet">
-        <div class="auth-wallet-balance">
-          <div>
-            <p class="t-eyebrow">${esc(t("billing.balance"))}</p>
-            <p class="t-h2 auth-wallet-points">${wallet
-              ? esc(t("billing.points", { points: wallet.balance_points }))
-              : esc(walletUnavailable ? t("billing.unavailable") : t("common.loading"))}</p>
-          </div>
+      <section class="auth-byok auth-model-picker">
+        <button id="auth-model-toggle" type="button" class="auth-disclosure" aria-expanded="${modelExpanded ? "true" : "false"}">
+          <span>${esc(t("agent.label"))}</span>
+          <span class="auth-disclosure-value">${esc(modelLabel)}</span>
+          <span class="auth-disclosure-mark" aria-hidden="true">${modelExpanded ? "−" : "+"}</span>
+        </button>
+        ${modelExpanded ? `<div class="auth-expanded-panel">${modelConfigContent}</div>` : ""}
+      </section>
+      ${activeUntil ? `
+        <div class="auth-pro-status">
+          <span class="badge"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>Pro</span>
+          <span class="t-small subtle">${esc(t("billing.activeUntil", { date: formatDate(activeUntil) }))}</span>
         </div>
-        <p class="t-small subtle auth-copy">${esc(t("billing.rechargeHint"))}</p>
-        <div class="auth-recharge-options">
-          ${[50, 100, 300].map((points) => `
-            <button
-              type="button"
-              class="btn-ghost btn-compact"
-              data-recharge-points="${points}"
-              ${rechargingPoints !== null ? "disabled" : ""}
-            >${rechargingPoints === points ? esc(t("billing.recharging")) : esc(t("billing.points", { points }))}</button>
-          `).join("")}
-        </div>
+        <button id="auth-upgrade" type="button" class="btn-primary auth-full-button" aria-expanded="${upgradeExpanded ? "true" : "false"}">${esc(t("subscription.renewPro"))}</button>
+      ` : `
+        <button id="auth-upgrade" type="button" class="btn-primary auth-full-button" aria-expanded="${upgradeExpanded ? "true" : "false"}">${esc(t("subscription.upgradePro"))}</button>
+        <ul class="auth-pro-benefits t-small">
+          <li>${esc(t("subscription.proPoints"))}</li>
+          <li>${esc(t("subscription.proXhs"))}</li>
+          <li>${esc(t("subscription.proTranscript"))}</li>
+        </ul>
+      `}
+      ${upgradeExpanded ? `<section class="auth-upgrade-panel" aria-label="${esc(t("subscription.upgradePro"))}">${subscriptionContent}</section>` : ""}
+      <div class="auth-session-actions">
+        <button id="auth-logout" type="button" class="auth-text-button" ${phase === "logging_out" ? "disabled" : ""}>${esc(phase === "logging_out" ? t("auth.loggingOut") : t("auth.logout"))}</button>
       </div>
-      <button id="auth-logout" type="button" class="btn-ghost auth-full-button" ${phase === "logging_out" ? "disabled" : ""}>${esc(phase === "logging_out" ? t("auth.loggingOut") : t("auth.logout"))}</button>
     `;
   }
 
@@ -164,10 +217,8 @@ export namespace authMenu {
     return `
       <div>
         <p class="settings-group-label">${esc(t("auth.loginTitle"))}</p>
-        <p class="t-small subtle auth-copy">${esc(t("auth.loginHint"))}</p>
       </div>
       <form id="auth-phone-form" class="auth-form">
-        <label class="t-small settings-field-label" for="auth-phone">${esc(t("auth.phone"))}</label>
         <div class="auth-phone-row">
           <span class="auth-country-code t-mono">+86</span>
           <input
@@ -176,6 +227,7 @@ export namespace authMenu {
             type="tel"
             inputmode="numeric"
             autocomplete="tel-national"
+            aria-label="${esc(t("auth.phone"))}"
             maxlength="13"
             placeholder="138 0000 0000"
             value="${esc(displayNationalPhone(phone))}"
@@ -195,13 +247,13 @@ export namespace authMenu {
         <p class="t-small subtle auth-copy">${esc(t("auth.codeSent", { phone: formatPhone(phone) }))}</p>
       </div>
       <form id="auth-code-form" class="auth-form">
-        <label class="t-small settings-field-label" for="auth-code">${esc(t("auth.code"))}</label>
         <input
           id="auth-code"
           class="input-field auth-input auth-code-input"
           type="text"
           inputmode="numeric"
           autocomplete="one-time-code"
+          aria-label="${esc(t("auth.code"))}"
           maxlength="6"
           placeholder="000000"
           value="${esc(code)}"
@@ -221,6 +273,7 @@ export namespace authMenu {
     onOpen: () => void,
     onSessionChanged: () => Promise<void>,
   ): void {
+    rerender = shell.rerender;
     document.getElementById("auth-toggle")?.addEventListener("click", () => {
       const opening = !open;
       if (opening) onOpen();
@@ -235,17 +288,35 @@ export namespace authMenu {
     if (!open) return;
 
     if (session.logged_in) {
-      document.querySelectorAll<HTMLButtonElement>("[data-recharge-points]").forEach((button) => {
-        button.addEventListener("click", () => {
-          const points = Number(button.dataset.rechargePoints);
-          if (Number.isFinite(points)) void mockRecharge(points, shell);
-        });
+      document.getElementById("auth-model-toggle")?.addEventListener("click", () => {
+        modelExpanded = !modelExpanded;
+        upgradeExpanded = false;
+        error = "";
+        shell.rerender();
+      });
+      document.getElementById("auth-upgrade")?.addEventListener("click", () => {
+        upgradeExpanded = !upgradeExpanded;
+        modelExpanded = false;
+        shell.rerender();
       });
       document.getElementById("auth-logout")?.addEventListener("click", () => {
         void logout(shell, onSessionChanged);
       });
       return;
     }
+
+    document.getElementById("auth-start-login")?.addEventListener("click", () => {
+      loginExpanded = true;
+      byokExpanded = false;
+      error = "";
+      shell.rerender();
+    });
+    document.getElementById("auth-byok-toggle")?.addEventListener("click", () => {
+      byokExpanded = !byokExpanded;
+      if (byokExpanded && !challenge) loginExpanded = false;
+      error = "";
+      shell.rerender();
+    });
 
     const phoneInput = document.getElementById("auth-phone") as HTMLInputElement | null;
     phoneInput?.addEventListener("input", () => {
@@ -269,6 +340,7 @@ export namespace authMenu {
     });
     document.getElementById("auth-change-phone")?.addEventListener("click", () => {
       challenge = null;
+      loginExpanded = true;
       code = "";
       error = "";
       retryAt = 0;
@@ -323,6 +395,11 @@ export namespace authMenu {
       challenge = null;
       code = "";
       retryAt = 0;
+      loginExpanded = false;
+      byokExpanded = false;
+      modelExpanded = false;
+      upgradeExpanded = false;
+      stopExpiryTimer();
       stopCountdown();
       await refreshWallet();
       await onSessionChanged();
@@ -350,30 +427,13 @@ export namespace authMenu {
       session = EMPTY_SESSION;
       wallet = null;
       walletUnavailable = false;
+      loginExpanded = false;
+      byokExpanded = false;
+      modelExpanded = false;
+      upgradeExpanded = false;
+      stopExpiryTimer();
       phase = "idle";
       await onSessionChanged();
-      shell.rerender();
-    }
-  }
-
-  async function mockRecharge(points: number, shell: ShellState): Promise<void> {
-    if (rechargingPoints !== null) return;
-    rechargingPoints = points;
-    error = "";
-    shell.rerender();
-    try {
-      const requestId = typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      wallet = await invoke<WalletBalance>("billing_mock_recharge", {
-        points,
-        requestId,
-      });
-    } catch (err) {
-      console.error("billing_mock_recharge failed:", err);
-      error = friendlyError(err);
-    } finally {
-      rechargingPoints = null;
       shell.rerender();
     }
   }
@@ -397,6 +457,39 @@ export namespace authMenu {
   function stopCountdown(): void {
     if (countdownTimer !== null) window.clearInterval(countdownTimer);
     countdownTimer = null;
+  }
+
+  function scheduleExpiryRefresh(): void {
+    stopExpiryTimer();
+    const activeUntil = activeUntilDate();
+    if (!activeUntil) return;
+    const remaining = activeUntil.getTime() - Date.now();
+    if (remaining <= 0) return;
+    const delay = Math.min(remaining + 250, 2_147_483_647);
+    expiryTimer = window.setTimeout(() => {
+      expiryTimer = null;
+      void refreshWallet().then(() => rerender?.());
+    }, delay);
+  }
+
+  function stopExpiryTimer(): void {
+    if (expiryTimer !== null) window.clearTimeout(expiryTimer);
+    expiryTimer = null;
+  }
+
+  function activeUntilDate(): Date | null {
+    if (!wallet?.active_until) return null;
+    const date = new Date(wallet.active_until);
+    if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) return null;
+    return date;
+  }
+
+  function formatDate(value: Date): string {
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(value);
   }
 
   function retrySeconds(): number {

@@ -10,6 +10,7 @@ import { applyLanguageToDocument, formatTabs, t } from "./lib/i18n";
 import { authMenu } from "./panels/auth";
 import { agentPanel } from "./panels/tasks";
 import { settingsMenu } from "./panels/settings";
+import { subscriptionMenu } from "./panels/subscription";
 
 export type Status =
   | { state: "disconnected"; reason: string }
@@ -36,6 +37,7 @@ export interface ModelInfo {
   selected_model?: string;
   has_key: boolean;
   credential_kind?: "api_key" | "codex_oauth" | null;
+  credential_preview?: string | null;
   is_default?: boolean;
   recommended?: boolean;
   source?: string | null;
@@ -206,9 +208,12 @@ function render(): void {
           <div class="status-capsule" role="group" aria-label="${htmlEsc(t("status.capsuleAria"))}">
             ${connectionStatusBar()}
             <span class="status-capsule__divider" aria-hidden="true"></span>
-            ${agentPanel.renderHeader()}
+            ${authMenu.render(
+              agentPanel.currentModelLabel(),
+              agentPanel.renderAccountConfig(),
+              subscriptionMenu.render(),
+            )}
           </div>
-          ${authMenu.render()}
           ${settingsMenu.render(state)}
         </div>
       </header>
@@ -227,12 +232,21 @@ function render(): void {
   agentPanel.bindHeader(state);
   authMenu.bind(
     state,
-    () => { settingsMenu.closePopover(); },
+    () => {
+      settingsMenu.closePopover();
+    },
     async () => {
-      await Promise.all([settingsMenu.loadConfig(), agentPanel.refreshModels()]);
+      await Promise.all([
+        settingsMenu.loadConfig(),
+        agentPanel.refreshModels(),
+        subscriptionMenu.refresh(authMenu.isLoggedIn()),
+      ]);
     },
   );
-  settingsMenu.bind(state, () => { authMenu.closePopover(); });
+  subscriptionMenu.bind(state, authMenu.refreshWallet);
+  settingsMenu.bind(state, () => {
+    authMenu.closePopover();
+  });
   agentPanel.bind(state);
 }
 
@@ -509,9 +523,6 @@ function bindGlobalDismiss(): void {
       connectionDetailsOpen = false;
       changed = true;
     }
-    if (!eventPathHasClass(event, "agent-status") && agentPanel.closeHeaderConfig()) {
-      changed = true;
-    }
     if (settingsMenu.isOpen() && !eventPathHasClass(event, "settings-menu") && settingsMenu.closePopover()) {
       changed = true;
     }
@@ -624,6 +635,7 @@ async function main(): Promise<void> {
     console.error("getVersion failed:", e);
   }
   await Promise.all([settingsMenu.loadConfig(), authMenu.loadSession()]);
+  await subscriptionMenu.refresh(authMenu.isLoggedIn());
   render();
   bindGlobalDismiss();
   bindExternalLinks();

@@ -64,8 +64,8 @@ const messages = {
   },
 
   "status.capsuleAria": {
-    en: "chrome and agent status",
-    zh: "chrome 与智能体状态",
+    en: "chrome, model, and account status",
+    zh: "chrome、模型与账号状态",
   },
 
   "sidebar.collapseAria": { en: "collapse sidebar", zh: "收起侧边栏" },
@@ -86,10 +86,11 @@ const messages = {
   "auth.loginAria": { en: "sign in to socai", zh: "登录 socai" },
   "auth.accountAria": { en: "open account menu", zh: "打开账号菜单" },
   "auth.loginTitle": { en: "sign in with phone", zh: "手机号登录" },
-  "auth.loginHint": {
-    en: "use a mainland China phone number to receive a verification code.",
-    zh: "使用中国大陆手机号接收验证码。",
+  "auth.loginAgentHint": {
+    en: "sign in to use the agent",
+    zh: "登录后直接使用 agent",
   },
+  "auth.useOwnApiKey": { en: "or use your own api key", zh: "或自己输入 API key" },
   "auth.phone": { en: "phone", zh: "手机号" },
   "auth.sendCode": { en: "send code", zh: "获取验证码" },
   "auth.sending": { en: "sending…", zh: "发送中…" },
@@ -109,6 +110,7 @@ const messages = {
     zh: "此账号已在当前设备登录。",
   },
   "auth.loggedIn": { en: "signed in", zh: "已登录" },
+  "auth.loggedOut": { en: "signed out", zh: "未登录" },
   "auth.logout": { en: "sign out", zh: "退出登录" },
   "auth.loggingOut": { en: "signing out…", zh: "退出中…" },
   "auth.invalidPhone": {
@@ -144,14 +146,78 @@ const messages = {
   },
 
   "billing.balance": { en: "point balance", zh: "点数余额" },
+  "billing.remaining": { en: "points remaining", zh: "剩余点数" },
   "billing.points": { en: "{points} points", zh: "{points} 点" },
   "billing.pointsUsed": { en: "{points} points used", zh: "消耗 {points} 点" },
   "billing.unavailable": { en: "unavailable", zh: "暂不可用" },
+  "billing.activeUntil": { en: "active until {date}", zh: "有效期至 {date}" },
   "billing.rechargeHint": {
     en: "mock recharge for the MVP; points are added immediately.",
     zh: "MVP 暂用 mock 充值，点击后点数立即到账。",
   },
   "billing.recharging": { en: "adding…", zh: "充值中…" },
+
+  "subscription.label": { en: "subscribe", zh: "订阅" },
+  "subscription.aria": { en: "open subscription", zh: "打开订阅" },
+  "subscription.upgradePro": { en: "upgrade to pro", zh: "升级到 Pro" },
+  "subscription.renewPro": { en: "renew pro", zh: "续订 Pro" },
+  "subscription.proPoints": { en: "500 points", zh: "500 点数" },
+  "subscription.proXhs": { en: "use xiaohongshu without signing in", zh: "免登录小红书" },
+  "subscription.proTranscript": { en: "extract video transcripts", zh: "获取视频文字稿" },
+  "subscription.active": { en: "subscribed", zh: "已订阅" },
+  "subscription.inactive": { en: "not subscribed", zh: "未订阅" },
+  "subscription.loginHint": {
+    en: "sign in with your phone number before subscribing.",
+    zh: "请先使用手机号登录，再开通订阅。",
+  },
+  "subscription.login": { en: "sign in to continue", zh: "登录后继续" },
+  "subscription.loadFailed": {
+    en: "could not load the subscription plan.",
+    zh: "暂时无法加载订阅方案。",
+  },
+  "subscription.unavailable": {
+    en: "Payment is not available yet.",
+    zh: "支付尚未开放。",
+  },
+  "subscription.duration": { en: "access", zh: "有效期" },
+  "subscription.days": { en: "{days} days", zh: "{days} 天" },
+  "subscription.renewal": { en: "renewal", zh: "续费方式" },
+  "subscription.noAutoRenew": { en: "manual", zh: "到期不自动续费" },
+  "subscription.planHint": {
+    en: "Includes hosted AI access with no API key setup. Your own API key remains available in settings.",
+    zh: "包含免配置 API Key 的云端模型用量；你仍可在设置中使用自己的 API Key。",
+  },
+  "subscription.wechatPay": { en: "pay with WeChat", zh: "微信扫码支付" },
+  "subscription.alipay": { en: "pay with Alipay", zh: "支付宝支付" },
+  "subscription.alipayOpened": {
+    en: "Alipay checkout opened in your browser. Complete payment there, then return to socai.",
+    zh: "已在浏览器打开支付宝收银台。完成支付后请返回 socai。",
+  },
+  "subscription.openAlipay": {
+    en: "open Alipay checkout again",
+    zh: "重新打开支付宝收银台",
+  },
+  "subscription.awaitingPayment": { en: "awaiting payment", zh: "等待支付" },
+  "subscription.qrAria": { en: "WeChat Pay QR code", zh: "微信支付二维码" },
+  "subscription.scanHint": {
+    en: "scan with WeChat on your phone. Payment is confirmed automatically.",
+    zh: "请使用手机微信扫码，支付成功后会自动确认。",
+  },
+  "subscription.expires": { en: "QR code expires at {time}.", zh: "二维码将在 {time} 失效。" },
+  "subscription.success": { en: "subscription active", zh: "订阅已开通" },
+  "subscription.successHint": {
+    en: "{points} points added. Access is active until {date}.",
+    zh: "已到账 {points} 点，有效期至 {date}。",
+  },
+  "subscription.done": { en: "done", zh: "完成" },
+  "subscription.orderExpired": {
+    en: "this payment QR code expired. create a new one to continue.",
+    zh: "支付二维码已失效，请重新发起支付。",
+  },
+  "subscription.paymentFailed": {
+    en: "payment could not be started. try again shortly.",
+    zh: "暂时无法发起支付，请稍后重试。",
+  },
 
   "settings.aria": { en: "settings", zh: "设置" },
   "settings.title": { en: "settings", zh: "设置" },
@@ -213,23 +279,18 @@ const messages = {
   "agent.configurationAria": { en: "agent configuration", zh: "智能体设置" },
   "agent.selectModelAria": { en: "select agent model", zh: "选择智能体模型" },
   "agent.selectProviderAria": {
-    en: "select agent provider",
-    zh: "选择智能体服务商",
+    en: "select model source",
+    zh: "选择模型来源",
   },
-  "agent.provider": { en: "provider", zh: "服务商" },
   "agent.apiKey": { en: "api key", zh: "api key" },
-  "agent.credentialConfigured": {
-    en: "{provider} api key configured.",
-    zh: "{provider} api key 已配置。",
+  "agent.credentialPreview": {
+    en: "configured {preview}",
+    zh: "已配置 {preview}",
   },
-  "agent.managedByAccount": {
-    en: "the model is managed by socai cloud. no API key needed.",
-    zh: "模型由 socai 云端管理，无需填写 API key。",
-  },
-  "agent.managedModel": { en: "managed in cloud", zh: "云端管理" },
+  "agent.managedModel": { en: "no api key", zh: "无需 API key" },
   "agent.chatgptConnected": {
-    en: "chatgpt subscription connected.",
-    zh: "chatgpt 订阅已连接。",
+    en: "chatgpt connected",
+    zh: "已连接 chatgpt",
   },
   "agent.updateCredential": { en: "update api key", zh: "更新 api key" },
   "agent.replaceCredential": {

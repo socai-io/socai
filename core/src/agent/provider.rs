@@ -187,7 +187,7 @@ pub enum CredentialKind {
 pub static PROVIDERS: &[ProviderConfig] = &[
     ProviderConfig {
         provider: Provider::Socai,
-        display_name: "socai cloud",
+        display_name: "socai agent",
         // Opaque by design: the server owns the concrete hosted model and may
         // change it without requiring a desktop release.
         default_model: "managed",

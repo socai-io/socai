@@ -2,8 +2,8 @@
 
 mod asr;
 mod auth;
-mod browser;
 mod billing;
+mod browser;
 
 pub use asr::{transcribe_audio_file, CloudAsrResult};
 pub use auth::{
@@ -13,6 +13,8 @@ pub use auth::{
     SmsChallengeResponse,
 };
 pub use billing::{
-    mock_recharge, settle_llm_task, wallet_balance, LlmSettlement, RechargeReceipt, WalletBalance,
+    create_alipay_order, create_wechat_order, mock_recharge, payment_order, payment_plan,
+    settle_llm_task, wallet_balance, LlmSettlement, PaymentOrder, PaymentPlan, RechargeReceipt,
+    WalletBalance,
 };
 pub use browser::{create_browser_session, release_browser_session, BrowserSessionInfo};

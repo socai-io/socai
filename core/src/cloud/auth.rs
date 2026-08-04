@@ -9,6 +9,8 @@ use crate::config;
 
 const AUTH_KEY: &str = "socai_pro";
 const LEGACY_AUTH_KEY: &str = "socai_cloud";
+const LEGACY_PRO_BASE_URL: &str = "http://47.94.86.171";
+const PRODUCTION_BASE_URL: &str = "https://api.socai.work";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AuthSession {
@@ -251,7 +253,7 @@ pub fn llm_gateway_config() -> Result<LlmGatewayConfig> {
         .ok_or_else(|| anyhow::anyhow!("socai service URL is not configured"))?;
     let credentials = load_credentials()
         .filter(|creds| !creds.user_id.trim().is_empty() && !creds.device_token.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("sign in to use socai cloud"))?;
+        .ok_or_else(|| anyhow::anyhow!("sign in to use socai agent"))?;
     Ok(LlmGatewayConfig {
         base_url,
         device_token: credentials.device_token,
@@ -352,7 +354,7 @@ pub(super) async fn require_success(
 
 pub(super) fn configured_base_url() -> Option<String> {
     if let Some(value) = env_base_url() {
-        return Some(value);
+        return Some(migrate_legacy_base_url(value, false));
     }
     let config = config::load_config().ok()?;
     let configured = config
@@ -362,7 +364,21 @@ pub(super) fn configured_base_url() -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_string());
-    configured.or_else(compiled_base_url)
+    configured
+        .map(|value| migrate_legacy_base_url(value, true))
+        .or_else(|| compiled_base_url().map(|value| migrate_legacy_base_url(value, false)))
+}
+
+fn migrate_legacy_base_url(value: String, persist: bool) -> String {
+    if value != LEGACY_PRO_BASE_URL {
+        return value;
+    }
+    if persist {
+        if let Err(err) = config::set_config_key("cloud.base_url", PRODUCTION_BASE_URL) {
+            tracing::warn!(error = %err, "failed to migrate legacy cloud.base_url");
+        }
+    }
+    PRODUCTION_BASE_URL.to_string()
 }
 
 fn normalize_base_url(value: &str) -> Result<String> {
