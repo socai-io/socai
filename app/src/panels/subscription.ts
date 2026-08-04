@@ -106,7 +106,9 @@ export namespace subscriptionMenu {
         <p class="t-h2 subscription-price">${esc(formatCny(plan.amount_fen))}</p>
       </div>
       <div class="subscription-plan-details">
-        <div><span class="t-small subtle">${esc(t("subscription.duration"))}</span><span class="t-mono">${esc(t("subscription.days", { days: plan.duration_days }))}</span></div>
+        <div><span class="t-small">${esc(plan.duration_days === 30
+          ? t("subscription.oneMonth")
+          : t("subscription.days", { days: plan.duration_days }))}</span></div>
       </div>
       <div class="subscription-payment-options">
         ${plan.wechat_enabled ? `<button id="subscription-buy-wechat" type="button" class="btn-primary subscription-full-button">${esc(t("subscription.wechatPay"))}</button>` : ""}

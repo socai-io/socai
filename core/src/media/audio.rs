@@ -39,6 +39,7 @@ impl MediaProcessor {
             &aac,
             duration_s,
             Duration::from_secs(self.config.asr_timeout_s.max(60)),
+            self.billing_task_id.as_deref(),
         )
         .await?;
         self.timing.record(

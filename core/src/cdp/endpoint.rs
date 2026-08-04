@@ -124,27 +124,24 @@ pub async fn wait_for_existing_chrome_endpoint(
 }
 
 /// Open the chrome://inspect remote-debugging page in the user's default
-/// chrome for the existing-browser attach flow. Best-effort; failures
-/// are swallowed so setup UX still degrades gracefully to printed instructions.
-pub fn open_remote_debugging_page() {
+/// chrome for the existing-browser attach flow.
+pub fn open_remote_debugging_page() -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open")
-            .args(["-a", "Google Chrome", INSPECT_URL])
-            .status();
-    }
+    let status = std::process::Command::new("open")
+        .args(["-a", "Google Chrome", INSPECT_URL])
+        .status()?;
     #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open")
-            .arg(INSPECT_URL)
-            .status();
-    }
+    let status = std::process::Command::new("xdg-open")
+        .arg(INSPECT_URL)
+        .status()?;
     #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", INSPECT_URL])
-            .status();
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "start", "", INSPECT_URL])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("chrome could not open the remote debugging page");
     }
+    Ok(())
 }
 
 async fn endpoint_from_http_url(url: &str, source: &str) -> anyhow::Result<Endpoint> {

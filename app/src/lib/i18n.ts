@@ -52,6 +52,10 @@ const messages = {
     en: "connect chrome to start",
     zh: "连接 chrome 后开始",
   },
+  "chrome.setupTitle": {
+    en: "connect agent to chrome",
+    zh: "帮Agent连接到Chrome",
+  },
   "chrome.connectCta": { en: "connect chrome →", zh: "连接 chrome →" },
   "chrome.connectingCta": { en: "connecting…", zh: "连接中…" },
   "chrome.remoteAutoReconnect": {
@@ -59,8 +63,43 @@ const messages = {
     zh: "云端浏览器未连接 — 发送时会自动重连。",
   },
   "chrome.remoteDebuggingHelp": {
-    en: "how do i enable remote debugging? ↗",
-    zh: "如何启用远程调试？↗",
+    en: "open chrome remote debugging ↗",
+    zh: "打开 chrome 远程调试 ↗",
+  },
+  "chrome.setupEnableTitle": {
+    en: "enable remote debugging and check the box",
+    zh: "开启远程调试，在方框里打钩",
+  },
+  "chrome.setupAllowTitle": {
+    en: "click Allow in chrome",
+    zh: "在 chrome 弹窗中点击 Allow",
+  },
+  "chrome.setupOpenSettings": {
+    en: "open chrome settings ↗",
+    zh: "打开 chrome 设置 ↗",
+  },
+  "chrome.setupConnect": { en: "connect chrome", zh: "连接 chrome" },
+  "chrome.setupWaiting": { en: "waiting", zh: "等待操作" },
+  "chrome.setupDone": { en: "done", zh: "已完成" },
+  "chrome.setupDetecting": {
+    en: "waiting for remote debugging…",
+    zh: "正在等待开启远程调试…",
+  },
+  "chrome.setupWaitingAllow": {
+    en: "detected — waiting for Allow…",
+    zh: "已检测到，等待点击 Allow…",
+  },
+  "chrome.setupReady": {
+    en: "remote debugging enabled",
+    zh: "远程调试已开启",
+  },
+  "chrome.setupEnableImageAlt": {
+    en: "allow remote debugging setting in chrome",
+    zh: "chrome 开启远程调试设置",
+  },
+  "chrome.setupAllowImageAlt": {
+    en: "chrome remote debugging Allow dialog",
+    zh: "chrome 远程调试 Allow 弹窗",
   },
 
   "status.capsuleAria": {
@@ -87,8 +126,8 @@ const messages = {
   "auth.accountAria": { en: "open account menu", zh: "打开账号菜单" },
   "auth.loginTitle": { en: "sign in with phone", zh: "手机号登录" },
   "auth.loginAgentHint": {
-    en: "sign in to use the agent",
-    zh: "登录后直接使用 agent",
+    en: "sign in to get 50 points of agent credit",
+    zh: "登录后获赠50点 agent额度",
   },
   "auth.useOwnApiKey": { en: "or use your own api key", zh: "或自己输入 API key" },
   "auth.phone": { en: "phone", zh: "手机号" },
@@ -181,6 +220,7 @@ const messages = {
   },
   "subscription.duration": { en: "access", zh: "有效期" },
   "subscription.days": { en: "{days} days", zh: "{days} 天" },
+  "subscription.oneMonth": { en: "one-month subscription", zh: "订阅一个月" },
   "subscription.renewal": { en: "renewal", zh: "续费方式" },
   "subscription.noAutoRenew": { en: "manual", zh: "到期不自动续费" },
   "subscription.planHint": {
@@ -231,21 +271,18 @@ const messages = {
     en: "where run reports, traces, and screenshots are saved.",
     zh: "运行报告、轨迹和截图的保存位置。",
   },
-  "settings.pro": { en: "pro", zh: "pro" },
   "settings.inviteCode": { en: "invite code", zh: "邀请码" },
-  "settings.activate": { en: "activate", zh: "激活" },
-  "settings.proActivated": { en: "activated", zh: "已激活" },
-  "settings.proNotActivated": { en: "not activated", zh: "未激活" },
-  "settings.proHint": {
-    en: "required for video transcripts and future pro features.",
-    zh: "视频帖子提取音频，等其他 pro 功能。",
-  },
+  "settings.enter": { en: "enter", zh: "输入" },
+  "settings.loginForInvite": { en: "sign in first", zh: "请先登录" },
+  "settings.inviteRequired": { en: "enter an invite code", zh: "请输入邀请码" },
+  "settings.inviteInvalid": { en: "invite code could not be verified", zh: "邀请码验证失败" },
   "settings.browse": { en: "browse…", zh: "浏览…" },
   "settings.chrome": { en: "chrome", zh: "chrome" },
   "settings.source": { en: "source", zh: "来源" },
   "settings.sourceManaged": { en: "isolated profile", zh: "独立配置文件" },
   "settings.sourceExisting": { en: "existing browser", zh: "现有浏览器" },
   "settings.sourceRemote": { en: "remote (beta)", zh: "远程（beta）" },
+  "settings.sourceRemotePro": { en: "remote (Pro)", zh: "远程（Pro）" },
   "settings.profileDir": { en: "profile directory", zh: "资料目录" },
   "settings.profileHint": {
     en: "socai launches a throwaway chrome with this profile.",
@@ -270,11 +307,6 @@ const messages = {
     en: "could not load settings.",
     zh: "无法加载设置。",
   },
-  "settings.autosaveHint": {
-    en: "changes are saved automatically.",
-    zh: "更改会自动保存。",
-  },
-
   "agent.label": { en: "model", zh: "模型" },
   "agent.configurationAria": { en: "agent configuration", zh: "智能体设置" },
   "agent.selectModelAria": { en: "select agent model", zh: "选择智能体模型" },
@@ -287,7 +319,10 @@ const messages = {
     en: "configured {preview}",
     zh: "已配置 {preview}",
   },
-  "agent.managedModel": { en: "no api key", zh: "无需 API key" },
+  "agent.managedModel": {
+    en: "an LLM adapted for socai, used with points, no API key required",
+    zh: "针对socai适配的LLM，通过点数使用，无需API key",
+  },
   "agent.chatgptConnected": {
     en: "chatgpt connected",
     zh: "已连接 chatgpt",

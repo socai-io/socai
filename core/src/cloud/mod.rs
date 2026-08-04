@@ -8,9 +8,9 @@ mod browser;
 pub use asr::{transcribe_audio_file, CloudAsrResult};
 pub use auth::{
     activate, activate_with_base_url, auth_session, hosted_llm_selected, llm_gateway_config,
-    logout, pro_activated, send_sms_code, set_hosted_llm_selected, status, take_hosted_llm_default,
-    verify_sms_code, AuthSession, CloudCredentials, CloudStatus, LlmGatewayConfig,
-    SmsChallengeResponse,
+    logout, pro_activated, redeem_invite, send_sms_code, set_hosted_llm_selected, status,
+    take_hosted_llm_default, verify_sms_code, AuthSession, CloudCredentials, CloudStatus,
+    InviteRedemption, LlmGatewayConfig, SmsChallengeResponse,
 };
 pub use billing::{
     create_alipay_order, create_wechat_order, mock_recharge, payment_order, payment_plan,

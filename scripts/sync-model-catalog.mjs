@@ -67,7 +67,7 @@ const FALLBACK = {
     entry("kimi-k2-thinking", "Kimi K2 Thinking"),
   ],
   qwen: [
-    entry("qwen3.7-plus", "Qwen 3.7 Plus", "fallback", true, pricing("CNY", QWEN_PRICING_SOURCE, [
+    entry("qwen3.7-plus", "Qwen 3.7 Plus", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
       qwenPriceTier(256000, 2, 8),
       qwenPriceTier(1000000, 6, 24),
     ], {
@@ -76,7 +76,7 @@ const FALLBACK = {
         qwenPriceTier(1000000, 8.993, 35.972),
       ]),
     })),
-    entry("qwen3.7-max", "Qwen 3.7 Max", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
+    entry("qwen3.7-max", "Qwen 3.7 Max", "fallback", true, pricing("CNY", QWEN_PRICING_SOURCE, [
       qwenPriceTier(1000000, 12, 36),
     ], {
       "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [

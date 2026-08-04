@@ -37,6 +37,7 @@ pub async fn transcribe_audio_file(
     path: &Path,
     duration_s: i64,
     timeout: Duration,
+    client_task_id: Option<&str>,
 ) -> Result<CloudAsrResult> {
     let base_url = configured_base_url()
         .ok_or_else(|| anyhow::anyhow!("socai pro server URL is not configured"))?;
@@ -62,6 +63,7 @@ pub async fn transcribe_audio_file(
                 "content_type": "audio/aac",
                 "size_bytes": bytes.len(),
                 "duration_s": duration_s.max(0),
+                "client_task_id": client_task_id.unwrap_or(""),
             })),
         &creds.device_token,
     )

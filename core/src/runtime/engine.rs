@@ -204,6 +204,12 @@ impl SocaiRuntime {
         self.cdp.connect();
     }
 
+    pub fn connect_browser_once(&self) {
+        self.activity.touch();
+        self.ensure_idle_reaper();
+        self.cdp.connect_once();
+    }
+
     pub fn connect_browser_with_options(&self, options: ChromeConnectOptions) {
         self.activity.touch();
         self.ensure_idle_reaper();
@@ -517,6 +523,7 @@ pub struct AgentRunConfig {
     pub seed_messages: Vec<Message>,
     pub session_id: Option<String>,
     pub background_media_generation: Option<u64>,
+    pub billing_task_id: Option<String>,
 }
 
 impl Default for AgentRunConfig {
@@ -535,6 +542,7 @@ impl Default for AgentRunConfig {
             seed_messages: Vec::new(),
             session_id: None,
             background_media_generation: None,
+            billing_task_id: None,
         }
     }
 }
@@ -561,6 +569,7 @@ pub async fn run_agent_task(
         seed_messages: config.seed_messages,
         session_id: config.session_id,
         background_media_generation: config.background_media_generation,
+        billing_task_id: config.billing_task_id,
     };
     run_agent_with_events(task, llm_provider, tools, options, events_tx).await
 }

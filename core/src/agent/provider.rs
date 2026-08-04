@@ -187,7 +187,7 @@ pub enum CredentialKind {
 pub static PROVIDERS: &[ProviderConfig] = &[
     ProviderConfig {
         provider: Provider::Socai,
-        display_name: "socai agent",
+        display_name: "Socai Agent",
         // Opaque by design: the server owns the concrete hosted model and may
         // change it without requiring a desktop release.
         default_model: "managed",
@@ -222,7 +222,7 @@ pub static PROVIDERS: &[ProviderConfig] = &[
     ProviderConfig {
         provider: Provider::Qwen,
         display_name: "Qwen",
-        default_model: "qwen3.7-plus",
+        default_model: "qwen3.7-max",
         env_keys: &["QWEN_API_KEY", "DASHSCOPE_API_KEY"],
         base_url: Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
         model_prefixes: &["qwen", "qwq-", "qvq-"],
@@ -230,7 +230,7 @@ pub static PROVIDERS: &[ProviderConfig] = &[
     ProviderConfig {
         provider: Provider::QwenIntl,
         display_name: "Qwen International",
-        default_model: "qwen3.7-plus",
+        default_model: "qwen3.7-max",
         env_keys: &["QWEN_INTL_API_KEY", "DASHSCOPE_INTL_API_KEY"],
         base_url: Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
         // Model ids are identical to mainland Qwen, so prefix inference

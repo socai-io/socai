@@ -75,7 +75,16 @@ impl Cdp {
     pub fn connect(&self) {
         let cdp = self.clone();
         tokio::spawn(async move {
-            run_connect(cdp, None).await;
+            run_connect(cdp, None, MAX_ATTEMPTS).await;
+        });
+    }
+
+    /// Trigger one connection attempt. Used by an explicit desktop button so
+    /// chrome shows at most one Allow prompt per user action.
+    pub fn connect_once(&self) {
+        let cdp = self.clone();
+        tokio::spawn(async move {
+            run_connect(cdp, None, 1).await;
         });
     }
 
@@ -86,7 +95,7 @@ impl Cdp {
     pub fn connect_with_options(&self, options: ChromeConnectOptions) {
         let cdp = self.clone();
         tokio::spawn(async move {
-            run_connect(cdp, Some(options)).await;
+            run_connect(cdp, Some(options), MAX_ATTEMPTS).await;
         });
     }
 
@@ -169,7 +178,7 @@ async fn release_owner_now(owner: BrowserOwner) {
     }
 }
 
-async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
+async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>, max_attempts: u8) {
     // Exactly one connect loop at a time. The state check below is a filter,
     // not a claim: two callers (a UI connect button pressed twice, say) can
     // both observe `Disconnected` before either transitions, and both would
@@ -189,11 +198,12 @@ async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
 
     // One budget for all attempts, so this task always settles into a terminal
     // state before the runtime's waiter stops polling. Per-phase timeouts alone
-    // could not promise that: their worst case multiplies by MAX_ATTEMPTS, and
+    // could not promise that: their worst case multiplies by max_attempts, and
     // nothing cancels this task when the waiter returns — a late attempt would
     // then mint a hosted session for a caller that already gave up.
     let deadline = tokio::time::Instant::now() + CONNECT_BUDGET;
-    for attempt in 1..=MAX_ATTEMPTS {
+    let max_attempts = max_attempts.max(1);
+    for attempt in 1..=max_attempts {
         if !begin_connect_attempt(&cdp, attempt, attempt == 1).await {
             return;
         }
@@ -209,7 +219,7 @@ async fn run_connect(cdp: Cdp, options: Option<ChromeConnectOptions>) {
             }
             Ok(Err(err)) => {
                 warn!(attempt, error = %err, "cdp connect attempt failed");
-                if attempt == MAX_ATTEMPTS {
+                if attempt == max_attempts {
                     transition_unconditional(
                         &cdp,
                         CdpState::Disconnected {

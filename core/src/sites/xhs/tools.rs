@@ -941,6 +941,7 @@ fn media_for(
     if include_media || transcribe_audio {
         let mut media = MediaProcessor::for_run_dir(ctx.output_dir(), llm_provider)?;
         media.set_cloud_asr(transcribe_audio);
+        media.set_billing_task_id(ctx.billing_task_id.as_deref());
         Ok(Some(media))
     } else {
         Ok(None)

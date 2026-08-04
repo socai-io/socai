@@ -63,7 +63,7 @@ fn authenticated_request(method: reqwest::Method, path: &str) -> Result<reqwest:
         .ok_or_else(|| anyhow::anyhow!("socai service URL is not configured"))?;
     let credentials = load_credentials()
         .filter(|creds| !creds.user_id.trim().is_empty() && !creds.device_token.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("sign in to use socai agent"))?;
+        .ok_or_else(|| anyhow::anyhow!("sign in to use Socai Agent"))?;
     Ok(http_client()?
         .request(method, format!("{base_url}{path}"))
         .bearer_auth(credentials.device_token))

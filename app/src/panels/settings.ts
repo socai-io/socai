@@ -1,9 +1,10 @@
 //! Topbar settings menu. A gear button opens a popover that carries the
-//! language toggle plus the preferences that mirror `~/.socai/config.json`
-//! (output directory, chrome source/profile) and a display-only timezone.
+//! language toggle plus the output preference that mirrors
+//! `~/.socai/config.json` and a display-only timezone. Chrome source selection
+//! lives under the dedicated chrome status pill.
 //!
-//! Settings save automatically: discrete controls (language, timezone, chrome
-//! source) persist on change; path fields persist on commit (blur/enter). The
+//! Settings save automatically: discrete controls (language and timezone)
+//! persist on change; path fields persist on commit (blur/enter). The
 //! UI updates optimistically, then re-seeds from the persisted truth so it
 //! reflects any normalization the core applies (e.g. relative → absolute paths).
 //! Chrome + output write through the `config_set`/`config_unset` Tauri commands
@@ -21,6 +22,7 @@ import {
   setTimezone,
   t,
 } from "../lib/i18n";
+import { authMenu } from "./auth";
 
 /** Mirrors the `DesktopConfig` returned by the `config_get` command. */
 interface DesktopConfig {
@@ -29,15 +31,12 @@ interface DesktopConfig {
   chrome_profile_dir_default: string;
   output_dir: string;
   output_dir_default: string;
-  pro_activated: boolean;
-  pro_device_id: string;
 }
 
 interface SettingsDraft {
   timezone: string;
   output_dir: string;
   chrome_source: string;
-  chrome_profile_dir: string;
   invite_code: string;
 }
 
@@ -70,6 +69,7 @@ export namespace settingsMenu {
   let loadError = false;
   let draft: SettingsDraft | null = null;
   let status: SaveStatus = "";
+  let inviteMessage = "";
   let statusTimer: number | null = null;
 
   /** Load the persisted config once at startup. Best-effort: a failure leaves
@@ -89,7 +89,34 @@ export namespace settingsMenu {
   /// The composer consults this: remote sessions are minted on demand at run
   /// start, so a disconnected status is routine there, not a setup problem.
   export function isRemoteProfile(): boolean {
+    return (draft?.chrome_source ?? config?.chrome_source) === "remote" && authMenu.hasProAccess();
+  }
+
+  export function isRemoteSelected(): boolean {
     return (draft?.chrome_source ?? config?.chrome_source) === "remote";
+  }
+
+  export function isSaving(): boolean {
+    return status === "saving";
+  }
+
+  export function renderChromeManager(): string {
+    if (loadError) return `<p class="t-small result-error">${esc(t("settings.loadFailed"))}</p>`;
+    if (!draft) seedDraft();
+    if (!config || !draft) return `<p class="t-small subtle">${esc(t("common.loading"))}</p>`;
+
+    const managed = draft.chrome_source === "managed";
+    const remote = draft.chrome_source === "remote";
+    const hasPro = authMenu.hasProAccess();
+    return `
+      <div class="chrome-manager">
+        <div class="seg-toggle chrome-manager-toggle" role="group" aria-label="${esc(t("settings.source"))}">
+          <button type="button" class="seg-toggle__button" data-settings-source="existing" aria-pressed="${!managed && !remote ? "true" : "false"}" ${status === "saving" ? "disabled" : ""}>${esc(t("settings.sourceExisting"))}</button>
+          <button type="button" class="seg-toggle__button" data-settings-source="managed" aria-pressed="${managed ? "true" : "false"}" ${status === "saving" ? "disabled" : ""}>${esc(t("settings.sourceManaged"))}</button>
+          <button type="button" class="seg-toggle__button" data-settings-source="remote" aria-pressed="${remote ? "true" : "false"}" ${hasPro && status !== "saving" ? "" : "disabled"}>${esc(t("settings.sourceRemotePro"))}</button>
+        </div>
+      </div>
+    `;
   }
 
   export function isOpen(): boolean {
@@ -102,7 +129,7 @@ export namespace settingsMenu {
     return true;
   }
 
-  export function render(shell: ShellState): string {
+  export function render(_shell: ShellState): string {
     const expanded = open ? "true" : "false";
     return `
       <div class="settings-menu">
@@ -113,12 +140,12 @@ export namespace settingsMenu {
           aria-label="${esc(t("settings.aria"))}"
           aria-expanded="${expanded}"
         >${GEAR_SVG}</button>
-        ${open ? renderPopover(shell) : ""}
+        ${open ? renderPopover() : ""}
       </div>
     `;
   }
 
-  function renderPopover(shell: ShellState): string {
+  function renderPopover(): string {
     if (loadError) {
       return `
         <div class="topbar-popover settings-popover" role="dialog" aria-label="${esc(t("settings.title"))}">
@@ -138,24 +165,15 @@ export namespace settingsMenu {
       <div class="topbar-popover settings-popover" role="dialog" aria-label="${esc(t("settings.title"))}">
         ${renderGeneralGroup(draft)}
         ${renderOutputGroup(config, draft)}
-        ${renderProGroup(config, draft)}
-        ${renderChromeGroup(shell, config, draft)}
+        ${renderInviteGroup(draft)}
         ${renderStatus()}
       </div>
     `;
   }
 
-  function renderProGroup(c: DesktopConfig, d: SettingsDraft): string {
-    const activation = c.pro_activated
-      ? t("settings.proActivated")
-      : t("settings.proNotActivated");
-    const device = c.pro_device_id ? ` · ${c.pro_device_id.slice(0, 8)}` : "";
+  function renderInviteGroup(d: SettingsDraft): string {
     return `
       <section class="settings-group">
-        <div class="settings-field">
-          <span class="settings-group-label">${esc(t("settings.pro"))}</span>
-          <p class="t-small subtle settings-field-hint">${esc(activation)}${esc(device)}</p>
-        </div>
         <div class="settings-field">
           <label class="t-small settings-field-label" for="settings-invite-code">${esc(t("settings.inviteCode"))}</label>
           <div class="settings-path-row">
@@ -164,11 +182,12 @@ export namespace settingsMenu {
               class="input-field settings-input-mono"
               type="text"
               spellcheck="false"
+              autocomplete="off"
               value="${esc(d.invite_code)}"
             />
-            <button type="button" class="btn-ghost btn-compact" data-settings-activate-pro ${status === "saving" ? "disabled" : ""}>${esc(t("settings.activate"))}</button>
+            <button type="button" class="btn-ghost btn-compact" data-settings-redeem-invite ${status === "saving" ? "disabled" : ""}>${esc(t("settings.enter"))}</button>
           </div>
-          <p class="t-small subtle settings-field-hint">${esc(t("settings.proHint"))}</p>
+          ${inviteMessage ? `<p id="settings-invite-message" class="t-small result-error settings-field-hint">${esc(inviteMessage)}</p>` : ""}
         </div>
       </section>
     `;
@@ -225,70 +244,6 @@ export namespace settingsMenu {
     `;
   }
 
-  function renderChromeGroup(shell: ShellState, c: DesktopConfig, d: SettingsDraft): string {
-    const managed = d.chrome_source === "managed";
-    const remote = d.chrome_source === "remote";
-    const detail = managed
-      ? `
-        <div class="settings-field">
-          <label class="t-small settings-field-label" for="settings-profile-dir">${esc(t("settings.profileDir"))}</label>
-          <div class="settings-path-row">
-            <input
-              id="settings-profile-dir"
-              class="input-field settings-input-mono"
-              type="text"
-              spellcheck="false"
-              placeholder="${esc(c.chrome_profile_dir_default)}"
-              value="${esc(d.chrome_profile_dir)}"
-            />
-            <button type="button" class="btn-ghost btn-compact" data-settings-browse="settings-profile-dir">${esc(t("settings.browse"))}</button>
-          </div>
-          <p class="t-small subtle settings-field-hint">${esc(t("settings.profileHint"))}</p>
-        </div>
-      `
-      : remote
-        ? `
-        <div class="settings-field">
-          <p class="t-small subtle settings-field-hint">${esc(t("settings.remoteHint"))}</p>
-        </div>
-      `
-        : renderEndpointField(shell);
-    // "existing browser" is the product default, so it leads the toggle. The
-    // remote option is pro-gated; keep it visible if it is already the
-    // configured source so the state stays legible (and escapable) even after
-    // a deactivation.
-    const showRemote = c.pro_activated || remote;
-    return `
-      <section class="settings-group">
-        <p class="settings-group-label">${esc(t("settings.chrome"))}</p>
-        <div class="settings-field">
-          <span class="t-small settings-field-label">${esc(t("settings.source"))}</span>
-          <div class="seg-toggle" role="group" aria-label="${esc(t("settings.source"))}">
-            <button type="button" class="seg-toggle__button" data-settings-source="existing" aria-pressed="${!managed && !remote ? "true" : "false"}">${esc(t("settings.sourceExisting"))}</button>
-            <button type="button" class="seg-toggle__button" data-settings-source="managed" aria-pressed="${managed ? "true" : "false"}">${esc(t("settings.sourceManaged"))}</button>
-            ${showRemote ? `<button type="button" class="seg-toggle__button" data-settings-source="remote" aria-pressed="${remote ? "true" : "false"}">${esc(t("settings.sourceRemote"))}</button>` : ""}
-          </div>
-        </div>
-        ${detail}
-      </section>
-    `;
-  }
-
-  // The "existing browser" endpoint is auto-discovered by the core (there is no
-  // stored endpoint to edit), so the field is informational: show the live
-  // endpoint when connected, otherwise a "not connected" placeholder.
-  function renderEndpointField(shell: ShellState): string {
-    const status = shell.status;
-    const value = status.state === "connected" ? status.endpoint : t("settings.endpointDisconnected");
-    return `
-      <div class="settings-field">
-        <span class="t-small settings-field-label">${esc(t("settings.endpoint"))}</span>
-        <input class="input-field settings-input-mono" type="text" value="${esc(value)}" readonly disabled />
-        <p class="t-small subtle settings-field-hint">${esc(t("settings.endpointHint"))}</p>
-      </div>
-    `;
-  }
-
   function renderStatus(): string {
     const text =
       status === "saving"
@@ -297,16 +252,22 @@ export namespace settingsMenu {
           ? t("settings.saved")
           : status === "error"
             ? t("settings.saveFailed")
-            : t("settings.autosaveHint");
+            : "";
+    if (!text) return "";
     return `<p class="t-small subtle settings-status${status === "error" ? " result-error" : ""}">${esc(text)}</p>`;
   }
 
-  export function bind(shell: ShellState, onOpen: () => void = () => {}): void {
+  export function bind(
+    shell: ShellState,
+    onOpen: () => void = () => {},
+    onInviteRedeemed: () => Promise<void> = async () => {},
+  ): void {
     document.getElementById("settings-toggle")?.addEventListener("click", (event) => {
       event.stopPropagation();
       if (!open) onOpen();
       open = !open;
       if (open) {
+        inviteMessage = "";
         // Reopening retries a failed initial load so the error state isn't a
         // dead-end (the in-menu controls that re-fetch don't render on failure).
         if (loadError || !config) {
@@ -318,6 +279,13 @@ export namespace settingsMenu {
         seedDraft();
       }
       shell.rerender();
+    });
+
+    document.querySelectorAll<HTMLButtonElement>("[data-settings-source]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const next = button.dataset.settingsSource;
+        if (next) void persistSource(next, shell);
+      });
     });
 
     if (!open || !draft) return;
@@ -341,15 +309,16 @@ export namespace settingsMenu {
     });
 
     // Path fields commit on change (blur/enter), not per keystroke.
-    bindPathField("settings-output-dir", "runs.dir", shell);
-    bindPathField("settings-profile-dir", "chrome.profile_dir", shell);
+    bindPathField("settings-output-dir", shell);
 
     const invite = document.getElementById("settings-invite-code") as HTMLInputElement | null;
     invite?.addEventListener("input", () => {
       if (draft) draft.invite_code = invite.value;
+      inviteMessage = "";
+      document.getElementById("settings-invite-message")?.remove();
     });
-    document.querySelector<HTMLButtonElement>("[data-settings-activate-pro]")?.addEventListener("click", () => {
-      void activatePro(shell);
+    document.querySelector<HTMLButtonElement>("[data-settings-redeem-invite]")?.addEventListener("click", () => {
+      void redeemInvite(shell, onInviteRedeemed);
     });
 
     document.querySelectorAll<HTMLButtonElement>("[data-settings-browse]").forEach((button) => {
@@ -361,18 +330,12 @@ export namespace settingsMenu {
       });
     });
 
-    document.querySelectorAll<HTMLButtonElement>("[data-settings-source]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const next = button.dataset.settingsSource;
-        if (next) void persistSource(next, shell);
-      });
-    });
   }
 
-  function bindPathField(inputId: string, key: string, shell: ShellState): void {
+  function bindPathField(inputId: string, shell: ShellState): void {
     const input = document.getElementById(inputId) as HTMLInputElement | null;
     input?.addEventListener("change", () => {
-      void persistPath(key, input.value, shell);
+      void persistOutputPath(input.value, shell);
     });
   }
 
@@ -381,12 +344,12 @@ export namespace settingsMenu {
       timezone: getTimezone(),
       output_dir: config?.output_dir ?? "",
       chrome_source: config?.chrome_source || "existing",
-      chrome_profile_dir: config?.chrome_profile_dir ?? "",
       invite_code: "",
     };
   }
 
   async function persistSource(value: string, shell: ShellState): Promise<void> {
+    if (value === "remote" && !authMenu.hasProAccess()) return;
     if (!draft || draft.chrome_source === value) return;
     draft.chrome_source = value; // optimistic — toggle + sub-field update immediately
     status = "saving";
@@ -404,54 +367,64 @@ export namespace settingsMenu {
     }
   }
 
-  async function persistPath(key: string, raw: string, shell: ShellState): Promise<void> {
+  async function persistOutputPath(raw: string, shell: ShellState): Promise<void> {
     if (!draft || !config) return;
     const value = raw.trim();
-    const current = (key === "runs.dir" ? config.output_dir : config.chrome_profile_dir).trim();
+    const current = config.output_dir.trim();
     if (value === current) return; // no change vs the persisted value
-    if (key === "runs.dir") draft.output_dir = value;
-    else draft.chrome_profile_dir = value;
+    draft.output_dir = value;
     status = "saving";
     shell.rerender();
     try {
       if (value) {
-        await invoke("config_set", { key, value });
+        await invoke("config_set", { key: "runs.dir", value });
       } else {
         // Clearing a field reverts it to the product default.
-        await invoke("config_unset", { key });
+        await invoke("config_unset", { key: "runs.dir" });
       }
       await loadConfig();
       seedDraft();
       flashSaved(shell);
     } catch (err) {
-      console.error(`config write ${key} failed:`, err);
+      console.error("config write runs.dir failed:", err);
       await loadConfig();
       seedDraft();
       setError(shell);
     }
   }
 
-  async function activatePro(shell: ShellState): Promise<void> {
-    // An in-flight activation must not be doubled — each success consumes an
-    // invite use and registers a new device.
+  async function redeemInvite(
+    shell: ShellState,
+    onInviteRedeemed: () => Promise<void>,
+  ): Promise<void> {
     if (!draft || status === "saving") return;
-    const inviteCode = draft.invite_code.trim();
-    if (!inviteCode) {
-      setError(shell);
+    if (!authMenu.isLoggedIn()) {
+      inviteMessage = t("settings.loginForInvite");
+      shell.rerender();
       return;
     }
+    const inviteCode = draft.invite_code.trim();
+    if (!inviteCode) {
+      inviteMessage = t("settings.inviteRequired");
+      shell.rerender();
+      return;
+    }
+    inviteMessage = "";
     status = "saving";
     shell.rerender();
     try {
       await invoke("pro_activate", { inviteCode, label: "desktop" });
       await loadConfig();
       seedDraft();
+      await onInviteRedeemed();
       flashSaved(shell);
     } catch (err) {
       console.error("pro_activate failed:", err);
       await loadConfig();
       seedDraft();
-      setError(shell);
+      status = "";
+      inviteMessage = t("settings.inviteInvalid");
+      shell.rerender();
     }
   }
 

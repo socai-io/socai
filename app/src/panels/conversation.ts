@@ -21,6 +21,8 @@ import { esc } from "../lib/html";
 import { formatStepCount, formatTaskTimestamp, formatTokenUsage, t, taskStatusLabel } from "../lib/i18n";
 import { sendShortcutLabel } from "../lib/shortcuts";
 import feishuLogo from "../assets/connectors/feishu.png";
+import chromeRemoteDebuggingImage from "../assets/chrome-remote-debugging.png";
+import chromeAllowDialogImage from "../assets/chrome-allow-dialog.png";
 import { renderNoteAnswer, renderNoteCards } from "./notes";
 import type { AgentTaskView } from "./tasks";
 
@@ -40,6 +42,8 @@ export interface ComposerProps {
    * reconnects on demand, so the connect overlay and send gating don't apply.
    */
   remoteProfile: boolean;
+  /** Existing Chrome has exposed its CDP endpoint after the user opted in. */
+  remoteDebuggingReady: boolean;
 }
 
 export interface ConversationProps {
@@ -83,38 +87,57 @@ export function renderComposePane(composer: ComposerProps): string {
           <div class="compose-form-inner" aria-hidden="${gated ? "true" : "false"}">
             ${renderComposer(composer)}
           </div>
-          ${gated ? renderConnectOverlay(composer.status) : ""}
+          ${gated ? renderConnectOverlay(composer.status, composer.remoteDebuggingReady) : ""}
         </div>
       </div>
     </div>
   `;
 }
 
-function renderConnectOverlay(status: Status): string {
+function renderConnectOverlay(status: Status, remoteDebuggingReady: boolean): string {
   const connecting = status.state === "connecting";
-  const pill = connecting
-    ? `${t("chrome.label")} · ${t("chrome.connecting")} · ${(status as Extract<Status, { state: "connecting" }>).attempt}/3`
-    : `${t("chrome.label")} · ${t("chrome.disconnected")}`;
-  const dotClass = connecting ? "badge-dot-ink badge-dot-pulse" : "badge-dot-hollow";
+  const ready = remoteDebuggingReady;
   return `
     <div class="connect-overlay" role="dialog" aria-label="${esc(t("chrome.requiredAria"))}">
-      <span class="connect-overlay-pill">
-        <i class="badge-dot ${dotClass}" aria-hidden="true"></i>${esc(pill)}
-      </span>
-      <h3 class="connect-overlay-head">${esc(connecting ? t("chrome.lookingForChrome") : t("chrome.connectToStart"))}</h3>
-      <button
-        id="overlay-chrome-connect"
-        type="button"
-        class="btn-primary connect-overlay-cta"
-        ${connecting ? "disabled" : ""}
-      >${esc(connecting ? t("chrome.connectingCta") : t("chrome.connectCta"))}</button>
-      <a
-        id="overlay-remote-debugging-help"
-        class="connect-overlay-link t-small"
-        href="https://socai.io/connect"
-        target="_blank"
-        rel="noopener noreferrer"
-      >${esc(t("chrome.remoteDebuggingHelp"))}</a>
+      <h3 class="connect-overlay-head">${esc(t("chrome.setupTitle"))}</h3>
+      <div class="connect-overlay-steps">
+        <section class="connect-setup-step ${ready ? "is-complete" : "is-active"}">
+          <div class="connect-setup-step-head">
+            <span class="connect-setup-index">${ready ? "✓" : "1"}</span>
+            <h4 class="connect-setup-title">${esc(t("chrome.setupEnableTitle"))}</h4>
+            <span class="connect-setup-state">${esc(t(ready ? "chrome.setupDone" : "chrome.setupWaiting"))}</span>
+          </div>
+          <img
+            class="connect-setup-image"
+            src="${chromeRemoteDebuggingImage}"
+            alt="${esc(t("chrome.setupEnableImageAlt"))}"
+          />
+          <button
+            id="overlay-remote-debugging-help"
+            type="button"
+            class="btn-primary connect-setup-action"
+            ${ready ? "disabled" : ""}
+          >${esc(t("chrome.setupOpenSettings"))}</button>
+        </section>
+        <section class="connect-setup-step ${ready ? "is-active" : ""}">
+          <div class="connect-setup-step-head">
+            <span class="connect-setup-index">2</span>
+            <h4 class="connect-setup-title">${esc(t("chrome.setupAllowTitle"))}</h4>
+            <span class="connect-setup-state">${esc(t(connecting ? "chrome.connecting" : "chrome.setupWaiting"))}</span>
+          </div>
+          <img
+            class="connect-setup-image"
+            src="${chromeAllowDialogImage}"
+            alt="${esc(t("chrome.setupAllowImageAlt"))}"
+          />
+          <button
+            id="overlay-chrome-connect"
+            type="button"
+            class="btn-primary connect-setup-action"
+            ${!ready || connecting ? "disabled" : ""}
+          >${esc(t(connecting ? "chrome.connectingCta" : "chrome.setupConnect"))}</button>
+        </section>
+      </div>
     </div>
   `;
 }
@@ -228,7 +251,7 @@ function renderTurn(
           hosted ? null : task.cost_currency,
         ));
       }
-      if (hosted && task.points_used !== null) {
+      if (task.points_used !== null && (hosted || task.points_used > 0)) {
         metaBits.push(t("billing.pointsUsed", { points: task.points_used }));
       }
     } else if (task.error) {

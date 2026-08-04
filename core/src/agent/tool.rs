@@ -148,6 +148,9 @@ pub struct ToolContext {
     /// the user submits another task or follow-up. `None` for hosts that do
     /// not manage generations explicitly.
     pub background_media_generation: Option<u64>,
+    /// Desktop task identifier used to aggregate paid cloud tools with the
+    /// same turn's hosted LLM usage. Other entrypoints leave this unset.
+    pub billing_task_id: Option<String>,
     pub run_state: Option<Arc<RunState>>,
     tool_dir: Option<PathBuf>,
     pub enabled_sites: Arc<Mutex<BTreeSet<String>>>,
@@ -202,6 +205,7 @@ impl ToolContext {
             step: 0,
             active_tool_name: String::new(),
             background_media_generation: None,
+            billing_task_id: None,
             run_state: None,
             tool_dir: None,
             enabled_sites: Arc::new(Mutex::new(BTreeSet::new())),
@@ -220,6 +224,11 @@ impl ToolContext {
 
     pub fn with_background_media_generation(mut self, generation: Option<u64>) -> Self {
         self.background_media_generation = generation;
+        self
+    }
+
+    pub fn with_billing_task_id(mut self, task_id: Option<String>) -> Self {
+        self.billing_task_id = task_id;
         self
     }
 

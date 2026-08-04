@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 
-import { applyLanguageToDocument, formatTabs, t } from "./lib/i18n";
+import { applyLanguageToDocument, t } from "./lib/i18n";
 import { authMenu } from "./panels/auth";
 import { agentPanel } from "./panels/tasks";
 import { settingsMenu } from "./panels/settings";
@@ -241,12 +241,22 @@ function render(): void {
         agentPanel.refreshModels(),
         subscriptionMenu.refresh(authMenu.isLoggedIn()),
       ]);
+      if (authMenu.isLoggedIn()) await agentPanel.selectSocaiAgent();
     },
   );
   subscriptionMenu.bind(state, authMenu.refreshWallet);
-  settingsMenu.bind(state, () => {
-    authMenu.closePopover();
-  });
+  settingsMenu.bind(
+    state,
+    () => {
+      authMenu.closePopover();
+    },
+    async () => {
+      await Promise.all([
+        authMenu.refreshWallet(),
+        subscriptionMenu.refresh(authMenu.isLoggedIn()),
+      ]);
+    },
+  );
   agentPanel.bind(state);
 }
 
@@ -261,61 +271,40 @@ function connectionStatusBar(): string {
   return `
     <div class="connection-status" aria-live="polite">
       ${connectionBadge()}
-      ${status.state === "connected" && connectionDetailsOpen ? renderConnectionDialog(status) : ""}
+      ${connectionDetailsOpen ? renderConnectionDialog() : ""}
     </div>
   `;
 }
 
 function connectionBadge(): string {
+  const expanded = connectionDetailsOpen ? "true" : "false";
   switch (status.state) {
     case "disconnected":
-      return `<button id="chrome-connect" type="button" class="badge badge-button" aria-label="${htmlEsc(t("chrome.connectAria"))}"><i class="badge-dot badge-dot-muted" aria-hidden="true"></i>${htmlEsc(t("chrome.label"))} · ${htmlEsc(t("chrome.disconnected"))}</button>`;
+      return `<button id="chrome-status-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}" aria-label="${htmlEsc(t("chrome.statusToggleAria"))}"><i class="badge-dot badge-dot-muted" aria-hidden="true"></i>${htmlEsc(t("chrome.label"))} · ${htmlEsc(t("chrome.disconnected"))}</button>`;
     case "connecting":
-      return `<button type="button" class="badge badge-button" disabled><i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i>${htmlEsc(t("chrome.label"))} · ${htmlEsc(t("chrome.connecting"))} · ${status.attempt}/3</button>`;
+      return `<button id="chrome-status-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}" aria-label="${htmlEsc(t("chrome.statusToggleAria"))}"><i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i>${htmlEsc(t("chrome.label"))} · ${htmlEsc(t("chrome.connecting"))}</button>`;
     case "connected":
-      return `<button id="chrome-status-toggle" type="button" class="badge badge-button" aria-expanded="${connectionDetailsOpen ? "true" : "false"}" aria-label="${htmlEsc(t("chrome.statusToggleAria"))}"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${htmlEsc(t("chrome.label"))} · ${htmlEsc(t("chrome.connected"))}</button>`;
+      return `<button id="chrome-status-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}" aria-label="${htmlEsc(t("chrome.statusToggleAria"))}"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${htmlEsc(t("chrome.label"))} · ${htmlEsc(t("chrome.connected"))}</button>`;
   }
 }
 
-function renderConnectionDialog(connected: Extract<Status, { state: "connected" }>): string {
-  const tabs = formatTabs(connected.page_count);
+function renderConnectionDialog(): string {
+  const remoteBlocked = settingsMenu.isRemoteSelected() && !authMenu.hasProAccess();
+  const action = status.state === "connected"
+    ? `<button id="chrome-disconnect" type="button" class="btn-ghost chrome-manager-action">${htmlEsc(t("chrome.disconnect"))}</button>`
+    : status.state === "connecting"
+      ? `<button type="button" class="btn-primary chrome-manager-action" disabled>${htmlEsc(t("chrome.connectingCta"))}</button>`
+      : `<button id="chrome-connect-action" type="button" class="btn-primary chrome-manager-action" ${remoteBlocked || settingsMenu.isSaving() ? "disabled" : ""}>${htmlEsc(t("chrome.connectCta"))}</button>`;
   return `
     <div class="topbar-popover connection-dialog" role="dialog" aria-label="${htmlEsc(t("chrome.dialogAria"))}">
-      <div class="connection-dialog-head">
-        <p class="t-eyebrow connection-dialog-title">${htmlEsc(t("chrome.label"))}</p>
-        <span class="badge"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${htmlEsc(t("chrome.connected"))}</span>
-      </div>
-      <div class="connection-meta">
-        <div>
-          <p class="t-eyebrow">${htmlEsc(t("chrome.tabs"))}</p>
-          <p class="t-mono">${htmlEsc(tabs)}</p>
-        </div>
-        <div>
-          <p class="t-eyebrow">${htmlEsc(t("chrome.browser"))}</p>
-          <p class="t-mono">${htmlEsc(connected.browser_version)}</p>
-        </div>
-        <div>
-          <p class="t-eyebrow">${htmlEsc(t("chrome.source"))}</p>
-          <p class="t-mono">${htmlEsc(connected.remote ? t("chrome.sourceRemote") : connected.managed ? t("chrome.sourceManaged") : t("chrome.sourceExisting"))}</p>
-        </div>
-        ${connected.user_data_dir ? `
-        <div class="connection-meta-wide">
-          <p class="t-eyebrow">${htmlEsc(t("chrome.profile"))}</p>
-          <p class="t-mono connection-endpoint">${htmlEsc(connected.user_data_dir)}</p>
-        </div>` : ""}
-        ${connected.remote ? "" : `
-        <div class="connection-meta-wide">
-          <p class="t-eyebrow">${htmlEsc(t("chrome.endpoint"))}</p>
-          <p class="t-mono connection-endpoint">${htmlEsc(connected.endpoint)}</p>
-        </div>`}
-      </div>
-      <button id="chrome-disconnect" type="button" class="btn-ghost">${htmlEsc(t("chrome.disconnect"))}</button>
+      ${settingsMenu.renderChromeManager()}
+      ${action}
     </div>
   `;
 }
 
 function bindConnectionStatusBar(): void {
-  document.getElementById("chrome-connect")?.addEventListener("click", () => {
+  document.getElementById("chrome-connect-action")?.addEventListener("click", () => {
     connectionDetailsOpen = false;
     invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
   });
@@ -323,6 +312,8 @@ function bindConnectionStatusBar(): void {
     event.stopPropagation();
     const opening = !connectionDetailsOpen;
     if (opening) {
+      settingsMenu.closePopover();
+      authMenu.closePopover();
       try {
         status = await invoke<Status>("cdp_status");
       } catch (e) {

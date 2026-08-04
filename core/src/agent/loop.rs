@@ -113,6 +113,8 @@ pub struct AgentOptions {
     pub session_id: Option<String>,
     /// Optional user-turn generation for cancelable background media work.
     pub background_media_generation: Option<u64>,
+    /// Optional client task id for aggregating paid cloud-tool usage.
+    pub billing_task_id: Option<String>,
 }
 
 impl Default for AgentOptions {
@@ -128,6 +130,7 @@ impl Default for AgentOptions {
             seed_messages: Vec::new(),
             session_id: None,
             background_media_generation: None,
+            billing_task_id: None,
         }
     }
 }
@@ -188,7 +191,8 @@ pub async fn run_agent_with_events(
 
     let mut ctx = ToolContext::new(&run_id, &run_dir)
         .with_run_state(Arc::clone(&run_state))
-        .with_background_media_generation(options.background_media_generation);
+        .with_background_media_generation(options.background_media_generation)
+        .with_billing_task_id(options.billing_task_id);
     for site in &options.enabled_sites {
         ctx.enable_site(site.clone());
     }

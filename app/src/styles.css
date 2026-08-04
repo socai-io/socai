@@ -386,7 +386,6 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex-direction: column;
   gap: var(--sp-3);
   padding-top: var(--sp-3);
-  border-top: var(--hairline);
 }
 .auth-session-actions {
   display: flex;
@@ -665,37 +664,17 @@ body.has-paper > * { position: relative; z-index: 1; }
   border-radius: var(--r-4);
   box-shadow: var(--shadow-pop);
   /* Re-enable selection inside popovers: they are descendants of the drag
-     region and would otherwise inherit its user-select:none, making copyable
-     text — the CDP endpoint URL, the Chrome profile path — unselectable.
+     region and would otherwise inherit its user-select:none.
      Safe for dragging: a bare data-tauri-drag-region only drags when the mousedown
      target IS the element carrying it, never these descendants. */
   -webkit-user-select: text;
   user-select: text;
 }
-.connection-dialog-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-}
-.connection-dialog-title { margin: 0; }
-.connection-meta {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  border: var(--hairline);
-  border-radius: var(--r-3);
-  overflow: hidden;
-}
-.connection-meta > div {
-  padding: var(--sp-3);
-  background: var(--canvas);
-}
-.connection-meta > div:nth-child(1) { border-right: var(--hairline); }
-.connection-meta > div:nth-child(-n + 2) { border-bottom: var(--hairline); }
-.connection-meta p { margin: 0; }
-.connection-meta .t-mono { margin-top: var(--sp-2); }
-.connection-meta-wide { grid-column: 1 / -1; }
-.connection-endpoint { word-break: break-all; }
+.connection-dialog { width: min(430px, calc(100vw - var(--sp-6))); }
+.chrome-manager { display: flex; flex-direction: column; gap: var(--sp-2); }
+.chrome-manager-toggle { width: 100%; }
+.chrome-manager-toggle .seg-toggle__button { flex: 1; }
+.chrome-manager-action { width: 100%; }
 .agent-config-popover { width: min(420px, calc(100vw - var(--sp-6))); }
 .agent-config-title { margin: 0; }
 .agent-config-field,
@@ -798,6 +777,7 @@ body.has-paper > * { position: relative; z-index: 1; }
 .seg-toggle__button:hover { color: var(--ink-0); }
 .seg-toggle__button[aria-pressed="true"] { background: var(--ink-0); color: var(--ink-9); }
 .seg-toggle__button[aria-pressed="true"]:hover { color: var(--ink-9); }
+.seg-toggle__button:disabled { opacity: 0.38; cursor: not-allowed; }
 .agent-model-list {
   display: flex;
   flex-direction: column;
@@ -1592,30 +1572,16 @@ body.has-paper > * { position: relative; z-index: 1; }
   top: 50%;
   transform: translate(-50%, -50%);
   z-index: 5;
-  width: min(360px, calc(100% - var(--sp-6)));
+  width: min(560px, calc(100% - var(--sp-6)));
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--sp-3);
-  padding: var(--sp-5);
+  gap: var(--sp-2);
+  padding: var(--sp-4);
   background: var(--surface);
   border: var(--hairline);
   border-radius: var(--r-4);
   box-shadow: var(--shadow-pop);
-}
-.connect-overlay-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: var(--hairline);
-  background: var(--canvas);
-  padding: 4px 10px;
-  border-radius: var(--r-pill);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  color: var(--ink-1);
-  white-space: nowrap;
 }
 .connect-overlay-head {
   margin: 0;
@@ -1626,27 +1592,80 @@ body.has-paper > * { position: relative; z-index: 1; }
   letter-spacing: -0.015em;
   color: var(--ink-0);
 }
-.connect-overlay-cta {
-  align-self: stretch;
-  margin-top: var(--sp-1);
-  padding: 9px var(--sp-4);
+.connect-overlay-steps {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.connect-setup-step {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  background: var(--canvas);
+  border: var(--hairline);
+  border-radius: var(--r-3);
+}
+.connect-setup-step.is-active { border-color: var(--ink-3); }
+.connect-setup-step.is-complete {
+  opacity: 0.48;
+  filter: grayscale(1);
+}
+.connect-setup-step-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.connect-setup-index {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--hairline);
+  border-radius: 50%;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-1);
+}
+.connect-setup-step.is-complete .connect-setup-index {
+  color: var(--canvas);
+  background: var(--ink-0);
+  border-color: var(--ink-0);
+}
+.connect-setup-title {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
   font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-0);
+}
+.connect-setup-state {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-soft);
+}
+.connect-setup-image {
+  width: 100%;
+  height: 124px;
+  display: block;
+  object-fit: contain;
+  object-position: center;
+  background: #fff;
+  border: var(--hairline);
+  border-radius: var(--r-2);
+}
+.connect-setup-action {
+  min-width: 168px;
+  align-self: flex-start;
+  padding: 8px var(--sp-4);
+  font-size: 12px;
   text-align: center;
 }
-.connect-overlay-link {
-  margin: 0;
-  padding: 0;
-  appearance: none;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  text-align: left;
-  color: var(--fg-soft);
-  text-decoration: none;
-  transition: color var(--t-fast) var(--ease);
-}
-.connect-overlay-link:hover { color: var(--ink-0); }
-
 /* ── Embedded rich notes (SocaiV2 design) ─────────────────────────────
    Xiaohongshu notes the agent saw/cited, rendered in the timeline and answer.
    Monochrome — reuses the ink scale + tokens above. Real media is a local

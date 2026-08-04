@@ -51,7 +51,7 @@ pub struct AgentTaskSnapshot {
     pub(crate) cache_creation_input_tokens: Option<u64>,
     pub(crate) estimated_cost: Option<f64>,
     pub(crate) cost_currency: Option<String>,
-    /// Server-authoritative hosted LLM charge for the latest turn.
+    /// Server-authoritative LLM + paid cloud-tool charge for the latest turn.
     pub(crate) points_used: Option<i64>,
     // The text driving the in-flight/most recent run — distinct from `task`,
     // which stays the thread's original title across replies. Not persisted

@@ -66,6 +66,10 @@ export namespace agentPanel {
   // opens the centered dialog by setting this; the delete only runs on confirm.
   let deleteRequestTaskId: string | null = null;
   let modelsCache: ModelInfo[] = [];
+  let remoteDebuggingReady = false;
+  let chromeSetupPollTimer: number | null = null;
+  let chromeSetupPollInFlight = false;
+  let chromeSetupStatus: ShellState["status"] = { state: "disconnected", reason: "starting" };
 
   // Explicit activity-fold choices, keyed `${taskId}#${turnIndex}`. Absent =
   // the default (open while that turn's run streams, folded otherwise). The
@@ -107,6 +111,14 @@ export namespace agentPanel {
     const models = await invoke<ModelInfo[]>("agent_list_models");
     setModels(models);
     return models;
+  }
+
+  export async function selectSocaiAgent(): Promise<void> {
+    const picked = modelsCache.find((item) => item.provider === "socai" && item.recommended)
+      ?? modelsCache.find((item) => item.provider === "socai");
+    if (!picked) return;
+    selectModelInfo(picked);
+    await persistModelChoice(picked);
   }
 
   export function setTasks(snapshots: AgentTaskSnapshot[]): void {
@@ -608,10 +620,10 @@ export namespace agentPanel {
     if (info && model) modelByProvider.set(info.provider, model);
   }
 
-  function persistModelChoice(info: ModelInfo): void {
+  function persistModelChoice(info: ModelInfo): Promise<void> {
     const id = modelId(info);
-    if (!id) return;
-    invoke("agent_set_default_model", { provider: info.provider, model: id }).catch(
+    if (!id) return Promise.resolve();
+    return invoke<void>("agent_set_default_model", { provider: info.provider, model: id }).catch(
       (err) => console.error("agent_set_default_model failed:", err),
     );
   }
@@ -744,6 +756,7 @@ export namespace agentPanel {
       modelReady: !!selected && selected.has_key,
       running: false,
       remoteProfile: settingsMenu.isRemoteProfile(),
+      remoteDebuggingReady,
     };
   }
 
@@ -757,6 +770,7 @@ export namespace agentPanel {
       modelReady: true,
       running,
       remoteProfile: settingsMenu.isRemoteProfile(),
+      remoteDebuggingReady,
     };
   }
 
@@ -907,6 +921,7 @@ export namespace agentPanel {
   // The pinned composer: one input, two modes. Compose mode (no task shown)
   // starts a fresh task; a shown task takes a follow-up reply instead.
   function bindComposer(shell: ShellState): void {
+    syncChromeSetupDetection(shell);
     const composerTask = view === "compose" ? undefined : selectedTask();
     const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     if (input) autosizeComposerInput(input);
@@ -932,21 +947,57 @@ export namespace agentPanel {
     document.getElementById("composer-connect")?.addEventListener("click", () => {
       invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
     });
-    // The compose pane's connect-overlay CTA.
     document.getElementById("overlay-chrome-connect")?.addEventListener("click", () => {
       invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
     });
-    // WKWebView marks target=_blank navigation as defaultPrevented before the
-    // document-level external-link delegate runs. Bind this help link directly
-    // so it reaches the same backend opener first; the global delegate then
-    // sees the prevented event and correctly avoids a duplicate open.
+    // chrome:// pages cannot be navigated to from ordinary web content. Route
+    // the explicit user click through the native shell so Chrome opens its own
+    // privileged remote-debugging page.
     document.getElementById("overlay-remote-debugging-help")?.addEventListener("click", (event) => {
       event.preventDefault();
-      const href = (event.currentTarget as HTMLAnchorElement).getAttribute("href");
-      if (href) {
-        invoke("open_external", { url: href }).catch((e) => console.error("open_external failed:", e));
-      }
+      remoteDebuggingReady = false;
+      invoke("open_chrome_remote_debugging")
+        .then(() => pollChromeSetup(shell))
+        .catch((e) => console.error("open_chrome_remote_debugging failed:", e));
     });
+  }
+
+  function syncChromeSetupDetection(shell: ShellState): void {
+    chromeSetupStatus = shell.status;
+
+    const overlayVisible = document.getElementById("overlay-remote-debugging-help") !== null;
+    if (!overlayVisible || shell.status.state === "connected" || settingsMenu.isRemoteProfile()) {
+      stopChromeSetupPolling();
+      if (shell.status.state === "connected") {
+        remoteDebuggingReady = true;
+      }
+      return;
+    }
+
+    if (chromeSetupPollTimer === null) {
+      chromeSetupPollTimer = window.setInterval(() => void pollChromeSetup(shell), 1_000);
+    }
+    void pollChromeSetup(shell);
+  }
+
+  function stopChromeSetupPolling(): void {
+    if (chromeSetupPollTimer !== null) window.clearInterval(chromeSetupPollTimer);
+    chromeSetupPollTimer = null;
+  }
+
+  async function pollChromeSetup(shell: ShellState): Promise<void> {
+    if (chromeSetupPollInFlight || chromeSetupStatus.state === "connected") return;
+    chromeSetupPollInFlight = true;
+    try {
+      const ready = await invoke<boolean>("cdp_remote_debugging_ready");
+      const changed = ready !== remoteDebuggingReady;
+      remoteDebuggingReady = ready;
+      if (changed) shell.rerender();
+    } catch (e) {
+      console.error("cdp_remote_debugging_ready failed:", e);
+    } finally {
+      chromeSetupPollInFlight = false;
+    }
   }
 
   // Toggling `disabled` on every keystroke via a full shell.rerender() would

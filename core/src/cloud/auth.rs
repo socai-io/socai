@@ -22,6 +22,15 @@ pub struct AuthSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteRedemption {
+    pub status: String,
+    pub added_points: i64,
+    pub balance_points: i64,
+    pub duration_days: i64,
+    pub active_until: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmsChallengeResponse {
     pub challenge_id: String,
     pub expires_in_seconds: i64,
@@ -155,6 +164,25 @@ pub async fn activate_with_base_url(
     })
 }
 
+pub async fn redeem_invite(invite_code: &str) -> Result<InviteRedemption> {
+    let base_url = configured_base_url()
+        .ok_or_else(|| anyhow::anyhow!("socai pro server URL is not configured"))?;
+    let credentials = load_credentials()
+        .filter(|creds| !creds.user_id.trim().is_empty() && !creds.device_token.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("sign in before entering an invite code"))?;
+    let response = http_client()?
+        .post(format!("{base_url}/v1/beta/redeem"))
+        .bearer_auth(credentials.device_token)
+        .json(&json!({ "invite_code": invite_code.trim() }))
+        .send()
+        .await
+        .context("failed to redeem invite code")?;
+    Ok(require_success(response, "invite code")
+        .await?
+        .json()
+        .await?)
+}
+
 pub async fn send_sms_code(phone: &str) -> Result<SmsChallengeResponse> {
     let base_url = configured_base_url()
         .ok_or_else(|| anyhow::anyhow!("socai pro server URL is not configured"))?;
@@ -253,7 +281,7 @@ pub fn llm_gateway_config() -> Result<LlmGatewayConfig> {
         .ok_or_else(|| anyhow::anyhow!("socai service URL is not configured"))?;
     let credentials = load_credentials()
         .filter(|creds| !creds.user_id.trim().is_empty() && !creds.device_token.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("sign in to use socai agent"))?;
+        .ok_or_else(|| anyhow::anyhow!("sign in to use Socai Agent"))?;
     Ok(LlmGatewayConfig {
         base_url,
         device_token: credentials.device_token,

@@ -19,6 +19,7 @@ pub struct MediaProcessor {
     pub(crate) llm_provider: Option<Arc<dyn LlmProvider>>,
     pub(crate) client: reqwest::Client,
     pub(crate) timing: Arc<TimingRecord>,
+    pub(crate) billing_task_id: Option<String>,
 }
 
 impl MediaProcessor {
@@ -33,6 +34,7 @@ impl MediaProcessor {
             llm_provider,
             client,
             timing: Arc::new(TimingRecord::default()),
+            billing_task_id: None,
         })
     }
 
@@ -52,6 +54,13 @@ impl MediaProcessor {
 
     pub fn set_cloud_asr(&mut self, enabled: bool) {
         self.config.use_cloud_asr = enabled;
+    }
+
+    pub fn set_billing_task_id(&mut self, task_id: Option<&str>) {
+        self.billing_task_id = task_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
     }
 
     pub fn timing_summary(&self) -> Value {
