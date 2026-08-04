@@ -179,7 +179,7 @@ and model in use are captured on `socai_agent_task_start`.
 
 | Event | Emitted when | Event-specific fields |
 | --- | --- | --- |
-| `socai_browser_connect` | User connects Chrome | — |
+| `socai_browser_connect` | Chrome connection requested, completes, fails, or disconnects | `outcome`, `browser_profile`, `browser_source`, `error` |
 | `socai_auth_sms_requested` | User requests an SMS code | `account_phone`, `outcome`, `error` |
 | `socai_auth_login` / `socai_auth_logout` | A login attempt completes or the user logs out | `account_phone`, `account_device_id` on successful login, `outcome`, `error` |
 | `socai_invite_redeemed` | An invite-code redemption completes or fails | `outcome`, `added_points`, `balance_points`, `duration_days`, `pro_active_until`, `error` |
@@ -190,6 +190,9 @@ and model in use are captured on `socai_agent_task_start`.
 | `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `steps`, token/cache usage, estimated cost breakdown, authoritative `points_used` when settlement completes, `duration_ms`, `error` |
 | `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error`, query/result summaries, and bounded unexpected-page diagnostics when present |
 | `socai_feishu_export` | A Feishu export completes/fails, including user-visible setup failures before the native export command starts | `task_id`, `run_id`, `destination`, optional `stage`, `outcome`, `duration_ms`, `error` |
+| `socai_server_payment_callback` | The backend accepts, rejects, or fails a merchant callback | `provider`, `stage`, `outcome`, `order_id`, `amount_fen`, `added_points`, `duration_days`, `error` |
+| `socai_server_asr` | A managed ASR task changes stage | `stage`, `outcome`, `task_id`, `client_task_id`, `provider`, audio duration/size, provider latency/cost, `error` |
+| `socai_server_browser_session` | The backend creates, denies, quota-blocks, or releases a hosted browser | `stage`, `outcome`, `browser_session_id`, timeout/spend/budget fields, `error` |
 
 Desktop field semantics:
 

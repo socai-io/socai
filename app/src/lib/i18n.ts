@@ -282,7 +282,10 @@ const messages = {
   "settings.sourceManaged": { en: "isolated profile", zh: "独立配置文件" },
   "settings.sourceExisting": { en: "existing browser", zh: "现有浏览器" },
   "settings.sourceRemote": { en: "remote (beta)", zh: "远程（beta）" },
-  "settings.sourceRemotePro": { en: "remote (Pro)", zh: "远程（Pro）" },
+  "settings.sourceRemotePro": {
+    en: "remote (Pro, no local xiaohongshu connection)",
+    zh: "远程（Pro，无需本地连接小红书）",
+  },
   "settings.profileDir": { en: "profile directory", zh: "资料目录" },
   "settings.profileHint": {
     en: "socai launches a throwaway chrome with this profile.",

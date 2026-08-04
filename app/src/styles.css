@@ -687,7 +687,7 @@ body.has-paper > * { position: relative; z-index: 1; }
   -webkit-user-select: text;
   user-select: text;
 }
-.connection-dialog { width: min(430px, calc(100vw - var(--sp-6))); }
+.connection-dialog { width: min(560px, calc(100vw - var(--sp-6))); }
 .chrome-manager { display: flex; flex-direction: column; gap: var(--sp-2); }
 .chrome-manager-toggle { width: 100%; }
 .chrome-manager-toggle .seg-toggle__button { flex: 1; }

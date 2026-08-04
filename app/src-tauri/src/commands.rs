@@ -64,8 +64,14 @@ pub async fn cdp_connect(
     runtime: State<'_, SocaiRuntime>,
     telemetry: State<'_, DesktopTelemetry>,
 ) -> Result<(), String> {
+    let profile = ChromeConnectOptions::from_config()
+        .map(|options| options.profile.as_str())
+        .unwrap_or("unknown");
     runtime.connect_browser_once();
-    telemetry.capture("socai_browser_connect", json!({}));
+    telemetry.capture(
+        "socai_browser_connect",
+        json!({ "outcome": "requested", "browser_profile": profile }),
+    );
     Ok(())
 }
 

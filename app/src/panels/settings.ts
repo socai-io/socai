@@ -100,6 +100,16 @@ export namespace settingsMenu {
     return status === "saving";
   }
 
+  /** Select the hosted browser after a user first gains Pro. This is called
+   *  only for the purchase transition; later refreshes preserve any local
+   *  browser choice the user makes. */
+  export async function selectRemoteForNewPro(shell: ShellState): Promise<void> {
+    if (!authMenu.hasProAccess()) return;
+    if (!config) await loadConfig();
+    if (!draft) seedDraft();
+    await persistSource("remote", shell);
+  }
+
   export function renderChromeManager(): string {
     if (loadError) return `<p class="t-small result-error">${esc(t("settings.loadFailed"))}</p>`;
     if (!draft) seedDraft();

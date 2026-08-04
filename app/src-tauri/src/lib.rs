@@ -97,6 +97,46 @@ pub fn run() {
                 while let Ok(event) = rx.recv().await {
                     match event {
                         RuntimeBrowserEvent::StatusChanged(payload) => {
+                            match &payload {
+                                socai_core::cdp::StatusPayload::Connected {
+                                    managed,
+                                    remote,
+                                    source,
+                                    ..
+                                } => {
+                                    let profile = if *remote {
+                                        "remote"
+                                    } else if *managed {
+                                        "managed"
+                                    } else {
+                                        "existing"
+                                    };
+                                    telemetry.capture(
+                                        "socai_browser_connect",
+                                        json!({
+                                            "outcome": "completed",
+                                            "browser_profile": profile,
+                                            "browser_source": source,
+                                        }),
+                                    );
+                                }
+                                socai_core::cdp::StatusPayload::Disconnected { reason }
+                                    if reason != "not_yet_connected" =>
+                                {
+                                    telemetry.capture(
+                                        "socai_browser_connect",
+                                        json!({
+                                            "outcome": if reason == "user_disconnected" {
+                                                "disconnected"
+                                            } else {
+                                                "failed"
+                                            },
+                                            "error": crate::telemetry::short_error(reason),
+                                        }),
+                                    );
+                                }
+                                _ => {}
+                            }
                             let _ = handle.emit("cdp:status_changed", payload);
                         }
                         RuntimeBrowserEvent::TargetsChanged(targets) => {

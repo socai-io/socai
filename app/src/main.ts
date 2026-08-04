@@ -252,7 +252,13 @@ function render(): void {
       if (authMenu.isLoggedIn()) await agentPanel.selectSocaiAgent();
     },
   );
-  subscriptionMenu.bind(state, authMenu.refreshWallet);
+  subscriptionMenu.bind(state, async () => {
+    const alreadyHadPro = authMenu.hasProAccess();
+    await authMenu.refreshWallet();
+    if (!alreadyHadPro && authMenu.hasProAccess()) {
+      await settingsMenu.selectRemoteForNewPro(state);
+    }
+  });
   settingsMenu.bind(
     state,
     () => {
