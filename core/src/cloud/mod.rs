@@ -18,3 +18,5 @@ pub use billing::{
     WalletBalance,
 };
 pub use browser::{create_browser_session, release_browser_session, BrowserSessionInfo};
+
+pub(crate) use auth::telemetry_account_snapshot;

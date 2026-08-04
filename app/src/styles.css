@@ -349,6 +349,23 @@ body.has-paper > * { position: relative; z-index: 1; }
   white-space: nowrap;
 }
 .auth-disclosure-mark { font-family: var(--font-mono); font-size: 16px; }
+.auth-disclosure-chevron {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  transition: transform 140ms ease;
+}
+.auth-disclosure-chevron.is-open { transform: rotate(180deg); }
+.auth-disclosure-chevron svg { width: 14px; height: 14px; }
+.auth-disclosure-chevron path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .auth-byok .auth-expanded-panel { margin-top: var(--sp-3); }
 .agent-account-config {
   display: flex;

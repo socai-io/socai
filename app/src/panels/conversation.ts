@@ -16,7 +16,7 @@
 //!
 //! Rendering only; state and bindings live in tasks.ts.
 
-import type { AgentTaskEventPayload, Status } from "../main";
+import type { AgentTaskEventPayload, AgentTaskSnapshot, Status } from "../main";
 import { esc } from "../lib/html";
 import { formatStepCount, formatTaskTimestamp, formatTokenUsage, t, taskStatusLabel } from "../lib/i18n";
 import { sendShortcutLabel } from "../lib/shortcuts";
@@ -52,6 +52,18 @@ export interface ConversationProps {
   /** Resolves a turn's activity fold state (tasks.ts owns the toggles). */
   isActivityOpen: (turnIndex: number, defaultOpen: boolean) => boolean;
   composer: ComposerProps;
+}
+
+interface TurnMetrics {
+  steps: number | null;
+  durationMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens: number | null;
+  cacheCreationInputTokens: number | null;
+  estimatedCost: number | null;
+  costCurrency: string | null;
+  pointsUsed: number | null;
 }
 
 export function renderConversation(props: ConversationProps): string {
@@ -226,9 +238,10 @@ function renderTurn(
   const { userText, userAt, body, answerText, answerAt } = buildTurn(events, index === 0, isLast, task);
   const showWorking = isLast && running;
   const hosted = task.provider === "socai";
+  const metrics = turnMetrics(task, events, isLast);
 
-  // Every agent message gets a quiet meta line; the latest answer's carries
-  // the run stats too (model · duration · tokens) after its timestamp.
+  // Every completed turn owns its own model, duration, usage and cost. Never
+  // read an earlier answer's figures from the task's latest-run snapshot.
   let answer = "";
   let exportText: string | null = null;
   const metaBits: string[] = [];
@@ -239,20 +252,19 @@ function renderTurn(
       answer = `<div class="conv-answer result-md note-answer">${renderNoteAnswer(task.final_text)}</div>`;
       if (finishedAt) metaBits.push(finishedAt);
       if (!hosted && task.model) metaBits.push(task.model);
-      const duration = formatDuration(task);
-      if (duration) metaBits.push(duration);
-      if (task.input_tokens !== null && task.output_tokens !== null) {
+      if (metrics.durationMs !== null) metaBits.push(formatDurationMs(metrics.durationMs));
+      if (metrics.inputTokens !== null && metrics.outputTokens !== null) {
         metaBits.push(formatTokenUsage(
-          task.input_tokens,
-          task.output_tokens,
-          task.cached_input_tokens,
-          task.cache_creation_input_tokens ?? 0,
-          hosted ? null : task.estimated_cost,
-          hosted ? null : task.cost_currency,
+          metrics.inputTokens,
+          metrics.outputTokens,
+          metrics.cachedInputTokens,
+          metrics.cacheCreationInputTokens ?? 0,
+          hosted ? null : metrics.estimatedCost,
+          hosted ? null : metrics.costCurrency,
         ));
       }
-      if (task.points_used !== null && (hosted || task.points_used > 0)) {
-        metaBits.push(t("billing.pointsUsed", { points: task.points_used }));
+      if (metrics.pointsUsed !== null && (hosted || metrics.pointsUsed > 0)) {
+        metaBits.push(t("billing.pointsUsed", { points: metrics.pointsUsed }));
       }
     } else if (task.error) {
       answer = `<pre class="conv-error">${esc(task.error)}</pre>`;
@@ -262,6 +274,22 @@ function renderTurn(
     exportText = answerText;
     answer = `<div class="conv-answer result-md note-answer">${renderNoteAnswer(answerText)}</div>`;
     if (answerAt) metaBits.push(formatTaskTimestamp(answerAt));
+    const started = events.find((ev) => ev.kind === "started");
+    if (!hosted && started?.model) metaBits.push(started.model);
+    if (metrics.durationMs !== null) metaBits.push(formatDurationMs(metrics.durationMs));
+    if (metrics.inputTokens !== null && metrics.outputTokens !== null) {
+      metaBits.push(formatTokenUsage(
+        metrics.inputTokens,
+        metrics.outputTokens,
+        metrics.cachedInputTokens,
+        metrics.cacheCreationInputTokens ?? 0,
+        hosted ? null : metrics.estimatedCost,
+        hosted ? null : metrics.costCurrency,
+      ));
+    }
+    if (metrics.pointsUsed !== null && (hosted || metrics.pointsUsed > 0)) {
+      metaBits.push(t("billing.pointsUsed", { points: metrics.pointsUsed }));
+    }
   }
   const meta = renderConvMeta(metaBits);
   const exportAction = exportText
@@ -283,7 +311,7 @@ function renderTurn(
   return `
     <div class="turn">
       ${user}
-      ${renderActivity(task, body, index, isLast, showWorking, isActivityOpen)}
+      ${renderActivity(task, body, index, showWorking, metrics, isActivityOpen)}
       ${answer}
       ${exportAction}
       ${meta}
@@ -315,8 +343,8 @@ function renderActivity(
   task: AgentTaskView,
   body: AgentTaskEventPayload[],
   turnIndex: number,
-  isLast: boolean,
   showWorking: boolean,
+  metrics: TurnMetrics,
   isActivityOpen: ConversationProps["isActivityOpen"],
 ): string {
   if (body.length === 0 && !showWorking) return "";
@@ -325,15 +353,17 @@ function renderActivity(
 
   // compact summary signal: steps · duration (sources live in the notes strip)
   const stepCount =
-    isLast && task.steps
-      ? task.steps
+    metrics.steps
+      ? metrics.steps
       : body.filter((ev) => ev.kind === "step").length || body.filter((ev) => ev.kind === "tool_call").length;
-  const duration = isLast ? formatDuration(task) : null;
-  const bits: string[] = [];
-  if (stepCount) bits.push(formatStepCount(stepCount));
-  if (duration) bits.push(duration);
+  // While a run is live this is the only place its accumulating figures can
+  // appear. Once the answer lands, the answer meta owns the final figures so
+  // the same duration/usage/points are not repeated twice in one turn.
+  const bits = showWorking ? activityMetricBits(task, metrics, stepCount) : [];
   const meta =
-    !showWorking && bits.length > 0 ? `<span class="activity-toggle__meta">· ${esc(bits.join(" · "))}</span>` : "";
+    bits.length > 0
+      ? `<span class="activity-toggle__meta" data-turn-metrics>· ${esc(bits.join(" · "))}</span>`
+      : `<span class="activity-toggle__meta" data-turn-metrics></span>`;
   const dot = showWorking
     ? `<span class="activity-toggle__dot"><i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i></span>`
     : "";
@@ -566,17 +596,106 @@ function groupRunEvents(task: AgentTaskView, duplicateIndex: number): AgentTaskE
 // Elapsed run time: started→finished, or started→now while still running.
 // A terminal task without a finished_at has no meaningful end, so we show no
 // duration rather than a figure that keeps ticking up against the wall clock.
-function formatDuration(task: AgentTaskView): string | null {
+function elapsedDurationMs(task: Pick<AgentTaskSnapshot, "started_at" | "finished_at" | "status">): number | null {
   if (!task.started_at) return null;
   const running = task.status === "running" || task.status === "queued";
   const end = task.finished_at ?? (running ? Date.now() : null);
   if (end === null) return null;
-  const seconds = Math.max(0, Math.round((end - task.started_at) / 1000));
+  return Math.max(0, end - task.started_at);
+}
+
+function formatDurationMs(durationMs: number): string {
+  const seconds = Math.max(0, Math.round(durationMs / 1000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function turnMetrics(task: AgentTaskView, events: AgentTaskEventPayload[], isLast: boolean): TurnMetrics {
+  if (isLast && (task.status === "queued" || task.status === "running")) {
+    return metricsFromSnapshot(task);
+  }
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const snapshot = events[index].snapshot;
+    if (snapshot) return metricsFromSnapshot(snapshot);
+  }
+  const done = [...events].reverse().find((event) => event.kind === "done");
+  if (done) {
+    return {
+      steps: done.steps ?? null,
+      durationMs: done.duration_ms ?? null,
+      inputTokens: done.input_tokens ?? null,
+      outputTokens: done.output_tokens ?? null,
+      cachedInputTokens: done.cached_input_tokens ?? null,
+      cacheCreationInputTokens: done.cache_creation_input_tokens ?? null,
+      estimatedCost: done.estimated_cost ?? null,
+      costCurrency: done.cost_currency ?? null,
+      pointsUsed: done.points_used ?? null,
+    };
+  }
+  return isLast ? metricsFromSnapshot(task) : emptyMetrics();
+}
+
+function metricsFromSnapshot(task: AgentTaskSnapshot | AgentTaskView): TurnMetrics {
+  return {
+    steps: task.steps,
+    durationMs: elapsedDurationMs(task),
+    inputTokens: task.input_tokens,
+    outputTokens: task.output_tokens,
+    cachedInputTokens: task.cached_input_tokens,
+    cacheCreationInputTokens: task.cache_creation_input_tokens,
+    estimatedCost: task.estimated_cost,
+    costCurrency: task.cost_currency,
+    pointsUsed: task.points_used,
+  };
+}
+
+function emptyMetrics(): TurnMetrics {
+  return {
+    steps: null,
+    durationMs: null,
+    inputTokens: null,
+    outputTokens: null,
+    cachedInputTokens: null,
+    cacheCreationInputTokens: null,
+    estimatedCost: null,
+    costCurrency: null,
+    pointsUsed: null,
+  };
+}
+
+function activityMetricBits(task: AgentTaskView, metrics: TurnMetrics, stepCount: number): string[] {
+  const hosted = task.provider === "socai";
+  const bits: string[] = [];
+  if (stepCount) bits.push(formatStepCount(stepCount));
+  if (metrics.durationMs !== null) bits.push(formatDurationMs(metrics.durationMs));
+  if (metrics.inputTokens !== null && metrics.outputTokens !== null) {
+    bits.push(formatTokenUsage(
+      metrics.inputTokens,
+      metrics.outputTokens,
+      metrics.cachedInputTokens,
+      metrics.cacheCreationInputTokens ?? 0,
+      hosted ? null : metrics.estimatedCost,
+      hosted ? null : metrics.costCurrency,
+    ));
+  }
+  if (metrics.pointsUsed !== null && (hosted || metrics.pointsUsed > 0)) {
+    bits.push(t("billing.pointsUsed", { points: metrics.pointsUsed }));
+  }
+  return bits;
+}
+
+export function liveActivityMetricsText(task: AgentTaskView): string {
+  const groups = groupRunEvents(task, finalAnswerEventIndex(task));
+  const events = groups.at(-1) ?? [];
+  const metrics = turnMetrics(task, events, true);
+  const stepCount = metrics.steps
+    ?? (events.filter((event) => event.kind === "step").length
+      || events.filter((event) => event.kind === "tool_call").length);
+  const bits = activityMetricBits(task, metrics, stepCount);
+  return bits.length > 0 ? `· ${bits.join(" · ")}` : "";
 }
 
 function eventGlyph(kind: AgentTaskEventPayload["kind"]): string {

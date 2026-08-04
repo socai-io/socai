@@ -107,6 +107,22 @@ pub(crate) enum AgentTaskEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_id: Option<String>,
         steps: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cached_input_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_creation_input_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        estimated_cost: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_currency: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        points_used: Option<i64>,
         text: String,
     },
     Completed {
@@ -235,6 +251,14 @@ impl AgentTaskEventKind {
             "done" => Self::Done {
                 run_id: None,
                 steps: first_number(&text).unwrap_or_default(),
+                duration_ms: None,
+                input_tokens: None,
+                output_tokens: None,
+                cached_input_tokens: None,
+                cache_creation_input_tokens: None,
+                estimated_cost: None,
+                cost_currency: None,
+                points_used: None,
                 text,
             },
             "completed" => Self::Completed { text },
@@ -429,6 +453,14 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
         AgentEvent::Done { run_id, steps, .. } => AgentTaskEventKind::Done {
             run_id: Some(run_id.clone()),
             steps: *steps,
+            duration_ms: None,
+            input_tokens: None,
+            output_tokens: None,
+            cached_input_tokens: None,
+            cache_creation_input_tokens: None,
+            estimated_cost: None,
+            cost_currency: None,
+            points_used: None,
             text: "done".to_string(),
         },
     }
@@ -602,6 +634,21 @@ fn replay_run_events(snapshot: &AgentTaskSnapshot, run_dir: &Path) -> Vec<AgentT
             AgentTaskEventKind::Done {
                 run_id: Some(run_id.to_string()),
                 steps,
+                duration_ms: run.get("duration_ms").and_then(Value::as_u64),
+                input_tokens: run.pointer("/usage/input_tokens").and_then(Value::as_u64),
+                output_tokens: run.pointer("/usage/output_tokens").and_then(Value::as_u64),
+                cached_input_tokens: run
+                    .pointer("/usage/cache_read_input_tokens")
+                    .and_then(Value::as_u64),
+                cache_creation_input_tokens: run
+                    .pointer("/usage/cache_creation_input_tokens")
+                    .and_then(Value::as_u64),
+                estimated_cost: run.pointer("/usage/cost/total").and_then(Value::as_f64),
+                cost_currency: run
+                    .pointer("/usage/cost/currency")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                points_used: run.pointer("/billing/points_used").and_then(Value::as_i64),
                 text: "done".to_string(),
             },
         ));
@@ -622,6 +669,17 @@ fn append_terminal_snapshot_events(
                     AgentTaskEventKind::Done {
                         run_id: snapshot.run_id.clone(),
                         steps: snapshot.steps.unwrap_or_default(),
+                        duration_ms: match (snapshot.started_at, snapshot.finished_at) {
+                            (Some(start), Some(end)) => Some(end.saturating_sub(start)),
+                            _ => None,
+                        },
+                        input_tokens: snapshot.input_tokens,
+                        output_tokens: snapshot.output_tokens,
+                        cached_input_tokens: snapshot.cached_input_tokens,
+                        cache_creation_input_tokens: snapshot.cache_creation_input_tokens,
+                        estimated_cost: snapshot.estimated_cost,
+                        cost_currency: snapshot.cost_currency.clone(),
+                        points_used: snapshot.points_used,
                         text: "done".into(),
                     },
                 );
@@ -826,7 +884,8 @@ fn tool_result_event(
                 .to_string()
         })
     });
-    let (_kind, text) = format_tool_result_text(name, content, duration_ms, error.as_deref().unwrap_or(""));
+    let (_kind, text) =
+        format_tool_result_text(name, content, duration_ms, error.as_deref().unwrap_or(""));
     if let Some(error) = error {
         AgentTaskEventKind::ToolError {
             id: id.to_string(),

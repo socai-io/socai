@@ -58,6 +58,18 @@ pub struct CloudCredentials {
     pub hosted_llm_default_applied: bool,
     #[serde(default)]
     pub hosted_llm_selected: bool,
+    #[serde(default)]
+    pub balance_points: Option<i64>,
+    #[serde(default)]
+    pub active_until: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AccountTelemetrySnapshot {
+    pub phone: String,
+    pub balance_points: Option<i64>,
+    pub active_until: Option<String>,
+    pub pro_subscribed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +168,8 @@ pub async fn activate_with_base_url(
         status: String::new(),
         hosted_llm_default_applied: false,
         hosted_llm_selected: false,
+        balance_points: None,
+        active_until: None,
     })?;
     Ok(CloudStatus {
         base_url,
@@ -177,10 +191,15 @@ pub async fn redeem_invite(invite_code: &str) -> Result<InviteRedemption> {
         .send()
         .await
         .context("failed to redeem invite code")?;
-    Ok(require_success(response, "invite code")
+    let redemption: InviteRedemption = require_success(response, "invite code")
         .await?
         .json()
-        .await?)
+        .await?;
+    cache_wallet_snapshot(
+        redemption.balance_points,
+        Some(redemption.active_until.clone()),
+    );
+    Ok(redemption)
 }
 
 pub async fn send_sms_code(phone: &str) -> Result<SmsChallengeResponse> {
@@ -238,6 +257,8 @@ fn save_login_credentials(
         status: body.status,
         hosted_llm_default_applied: false,
         hosted_llm_selected: false,
+        balance_points: None,
+        active_until: None,
     })?;
     // Keep the CLI and future app builds pointed at the same accepted service,
     // even when this build received the URL through SOCAI_PRO_BASE_URL. The
@@ -318,6 +339,50 @@ pub fn set_hosted_llm_selected(selected: bool) -> Result<()> {
     }
     credentials.hosted_llm_selected = selected;
     save_credentials(&credentials).map(|_| ())
+}
+
+pub(crate) fn telemetry_account_snapshot() -> Option<AccountTelemetrySnapshot> {
+    let credentials = load_credentials()?;
+    let phone = credentials.phone.trim().to_string();
+    if credentials.user_id.trim().is_empty() || phone.is_empty() {
+        return None;
+    }
+    let pro_subscribed = credentials
+        .active_until
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .is_some_and(|until| until > chrono::Utc::now());
+    Some(AccountTelemetrySnapshot {
+        phone,
+        balance_points: credentials.balance_points,
+        active_until: credentials.active_until,
+        pro_subscribed,
+    })
+}
+
+pub(super) fn cache_wallet_snapshot(balance_points: i64, active_until: Option<String>) {
+    let Some(mut credentials) = load_credentials() else {
+        return;
+    };
+    credentials.balance_points = Some(balance_points);
+    credentials.active_until = active_until;
+    let _ = save_credentials(&credentials);
+}
+
+pub(super) fn cache_balance_points(balance_points: i64) {
+    let Some(mut credentials) = load_credentials() else {
+        return;
+    };
+    credentials.balance_points = Some(balance_points);
+    let _ = save_credentials(&credentials);
+}
+
+pub(super) fn cache_active_until(active_until: Option<String>) {
+    let Some(mut credentials) = load_credentials() else {
+        return;
+    };
+    credentials.active_until = active_until;
+    let _ = save_credentials(&credentials);
 }
 
 fn logged_out_session() -> AuthSession {

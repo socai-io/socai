@@ -141,6 +141,7 @@ export interface AgentTaskEventPayload {
   sequence: number;
   created_at: number;
   step?: number;
+  steps?: number;
   id?: string;
   sequence_in_step?: number;
   name?: string;
@@ -150,6 +151,13 @@ export interface AgentTaskEventPayload {
   ok?: boolean;
   summary?: string;
   duration_ms?: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cached_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  estimated_cost?: number | null;
+  cost_currency?: string | null;
+  points_used?: number | null;
   entities?: TimelineEntity[];
   error?: string | null;
   result_file?: string | null;

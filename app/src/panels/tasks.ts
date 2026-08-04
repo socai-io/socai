@@ -20,6 +20,7 @@ import {
   noteRefsFromEvent,
   pendingSearchQuery,
   answerTextForTurn,
+  liveActivityMetricsText,
   renderComposePane,
   renderConversation,
   renderEventRow,
@@ -218,11 +219,11 @@ export namespace agentPanel {
     }
     // Refresh the snapshot too: tokens/steps accumulate into run.json after
     // every LLM step, but no agent event carries them mid-run — this keeps the
-    // state fresh so the answer meta / activity summary are right the moment
-    // the terminal render lands. Nothing displays them mid-run, so no DOM
-    // update happens here.
+    // state fresh so the running activity summary and eventual answer meta
+    // show the current run's own figures without replacing earlier turns.
     try {
       upsertTask(await invoke<AgentTaskSnapshot>("agent_task_get", { taskId: task.task_id }));
+      updateLiveTaskMetrics(task);
     } catch (e) {
       console.error("agent_task_get poll failed:", e);
     }
@@ -236,6 +237,12 @@ export namespace agentPanel {
     } catch (e) {
       console.error("agent_task_notes poll failed:", e);
     }
+  }
+
+  function updateLiveTaskMetrics(task: AgentTaskView): void {
+    const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${task.task_id}"]`);
+    const metrics = stream?.querySelector<HTMLElement>(".thread-inner > .turn:last-child [data-turn-metrics]");
+    if (metrics) metrics.textContent = liveActivityMetricsText(task);
   }
 
   let liveStripKey = "";

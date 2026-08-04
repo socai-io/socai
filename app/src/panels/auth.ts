@@ -192,7 +192,9 @@ export namespace authMenu {
         <button id="auth-model-toggle" type="button" class="auth-disclosure" aria-expanded="${modelExpanded ? "true" : "false"}">
           <span>${esc(t("agent.label"))}</span>
           <span class="auth-disclosure-value">${esc(modelLabel)}</span>
-          <span class="auth-disclosure-mark" aria-hidden="true">${modelExpanded ? "−" : "+"}</span>
+          <span class="auth-disclosure-chevron ${modelExpanded ? "is-open" : ""}" aria-hidden="true">
+            <svg viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5" /></svg>
+          </span>
         </button>
         ${modelExpanded ? `<div class="auth-expanded-panel">${modelConfigContent}</div>` : ""}
       </section>

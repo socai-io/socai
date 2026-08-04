@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::auth::{configured_base_url, http_client, load_credentials, require_success};
+use super::auth::{
+    cache_active_until, cache_balance_points, cache_wallet_snapshot, configured_base_url,
+    http_client, load_credentials, require_success,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletBalance {
@@ -74,10 +77,12 @@ pub async fn wallet_balance() -> Result<WalletBalance> {
         .send()
         .await
         .context("failed to load point balance")?;
-    Ok(require_success(response, "point balance")
+    let wallet: WalletBalance = require_success(response, "point balance")
         .await?
         .json()
-        .await?)
+        .await?;
+    cache_wallet_snapshot(wallet.balance_points, wallet.active_until.clone());
+    Ok(wallet)
 }
 
 pub async fn payment_plan() -> Result<PaymentPlan> {
@@ -127,10 +132,14 @@ pub async fn payment_order(order_id: &str) -> Result<PaymentOrder> {
         .send()
         .await
         .context("failed to load payment order")?;
-    Ok(require_success(response, "payment order")
+    let order: PaymentOrder = require_success(response, "payment order")
         .await?
         .json()
-        .await?)
+        .await?;
+    if order.status == "paid" {
+        cache_active_until(order.active_until.clone());
+    }
+    Ok(order)
 }
 
 pub async fn mock_recharge(points: i64, request_id: &str) -> Result<RechargeReceipt> {
@@ -139,10 +148,12 @@ pub async fn mock_recharge(points: i64, request_id: &str) -> Result<RechargeRece
         .send()
         .await
         .context("failed to mock recharge")?;
-    Ok(require_success(response, "mock recharge")
+    let receipt: RechargeReceipt = require_success(response, "mock recharge")
         .await?
         .json()
-        .await?)
+        .await?;
+    cache_balance_points(receipt.balance_points);
+    Ok(receipt)
 }
 
 pub async fn settle_llm_task(task_id: &str, final_status: &str) -> Result<LlmSettlement> {
@@ -163,8 +174,10 @@ pub async fn settle_llm_task(task_id: &str, final_status: &str) -> Result<LlmSet
         .send()
         .await
         .context("failed to settle hosted LLM task")?;
-    Ok(require_success(response, "hosted LLM settlement")
+    let settlement: LlmSettlement = require_success(response, "hosted LLM settlement")
         .await?
         .json()
-        .await?)
+        .await?;
+    cache_balance_points(settlement.balance_points);
+    Ok(settlement)
 }

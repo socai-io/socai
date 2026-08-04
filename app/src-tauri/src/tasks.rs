@@ -430,6 +430,10 @@ fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
                     .pointer("/usage/cost/currency")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                snapshot.points_used = run
+                    .pointer("/billing/points_used")
+                    .and_then(Value::as_i64)
+                    .or(snapshot.points_used);
             }
         }
     }

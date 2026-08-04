@@ -101,6 +101,10 @@ a filter the proxy enforces). Any new client field reaches Axiom automatically.
 | `session_id` | string UUID | One daemon/app process lifetime. |
 | `request_id` | string | One CLI request/daemon command invocation. Treat as opaque. |
 | `schema_version` | number | Telemetry schema version. Current value: `1`. |
+| `account_phone` | string | Full login phone for an authenticated cloud account. Desktop only; omitted while logged out except on an attempted SMS/login event. |
+| `balance_points` | number | Latest server-authoritative point balance cached by the desktop after wallet, invite, recharge, or task-settlement responses. |
+| `pro_active_until` | RFC 3339 string | Latest known Pro expiry. |
+| `pro_subscribed` | boolean | Whether `pro_active_until` is later than the event capture time. |
 
 ### App, source, and device context
 
@@ -176,6 +180,12 @@ and model in use are captured on `socai_agent_task_start`.
 | Event | Emitted when | Event-specific fields |
 | --- | --- | --- |
 | `socai_browser_connect` | User connects Chrome | — |
+| `socai_auth_sms_requested` | User requests an SMS code | `account_phone`, `outcome`, `error` |
+| `socai_auth_login` / `socai_auth_logout` | A login attempt completes or the user logs out | `account_phone`, `account_device_id` on successful login, `outcome`, `error` |
+| `socai_invite_redeemed` | An invite-code redemption completes or fails | `outcome`, `added_points`, `balance_points`, `duration_days`, `pro_active_until`, `error` |
+| `socai_wallet_snapshot` | The app refreshes the wallet | `balance_points`, `starter_points`, `points_per_cny`, `pro_active_until` |
+| `socai_subscription_checkout` | A WeChat Pay or Alipay order is created or fails | `provider`, `plan_id`, `outcome`, `order_id`, `amount_fen`, `points`, `duration_days`, `error` |
+| `socai_subscription_paid` | Polling first observes a paid subscription order | `order_id`, `amount_fen`, `added_points`, `duration_days`, `pro_active_until` |
 | `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
 | `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `steps`, token/cache usage, estimated cost breakdown, authoritative `points_used` when settlement completes, `duration_ms`, `error` |
 | `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error`, query/result summaries, and bounded unexpected-page diagnostics when present |
@@ -286,6 +296,11 @@ Approved content-bearing **event** telemetry is limited to:
   desktop telemetry is enabled, with no per-field opt-out. Only
   `SOCAI_TELEMETRY=off` suppresses it.
 
+The logged-in desktop also sends the account phone and billing-state scalars
+listed above. These are intentional personal/account data used by the protected
+trace viewer for support and account-history filtering; no device token,
+payment credential, or server user id is sent.
+
 Desktop tool **events** are limited to tool name, timing, success, and a
 truncated error string — never tool arguments or output bodies.
 
@@ -315,9 +330,10 @@ pipeline for reading what an agent actually did:
   one provider call.
 - root span — `socai.task_text` (capped at 8,000 chars) plus run status and step
   count.
-- trace resource — `socai.pro_activated`, a boolean snapshot taken at upload
-  time that records whether Socai Pro is activated. No account identifier or
-  device token is included.
+- trace resource — upload-time snapshots of `socai.pro_activated`,
+  `socai.account_phone`, `socai.points_balance`, `socai.pro_active_until`, and
+  `socai.pro_subscribed` when logged in. No device token or server user id is
+  included.
 
 Never uploaded, regardless of settings: image bytes/screenshots, Anthropic
 thinking signatures, encrypted reasoning items, and browser cookies/session

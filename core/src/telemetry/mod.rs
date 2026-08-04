@@ -320,6 +320,28 @@ fn enrich_trace_resource(payload: &mut Value, config: &WorkerConfig) {
         "key": "socai.pro_activated",
         "value": { "boolValue": crate::cloud::pro_activated() },
     }));
+    if let Some(account) = crate::cloud::telemetry_account_snapshot() {
+        attributes.push(json!({
+            "key": "socai.account_phone",
+            "value": { "stringValue": account.phone },
+        }));
+        if let Some(balance_points) = account.balance_points {
+            attributes.push(json!({
+                "key": "socai.points_balance",
+                "value": { "intValue": balance_points.to_string() },
+            }));
+        }
+        if let Some(active_until) = account.active_until {
+            attributes.push(json!({
+                "key": "socai.pro_active_until",
+                "value": { "stringValue": active_until },
+            }));
+        }
+        attributes.push(json!({
+            "key": "socai.pro_subscribed",
+            "value": { "boolValue": account.pro_subscribed },
+        }));
+    }
 }
 
 /// `SOCAI_TRACES_ENDPOINT` overrides the production proxy for local testing
@@ -348,6 +370,21 @@ fn enrich_properties(properties: Value, config: &WorkerConfig, timestamp_ms: u64
     map.insert("platform".into(), json!(std::env::consts::OS));
     map.insert("session_id".into(), json!(config.session_id));
     map.insert("created_at_ms".into(), json!(timestamp_ms));
+
+    if let Some(account) = crate::cloud::telemetry_account_snapshot() {
+        map.entry("account_phone")
+            .or_insert_with(|| json!(account.phone));
+        if let Some(balance_points) = account.balance_points {
+            map.entry("balance_points")
+                .or_insert_with(|| json!(balance_points));
+        }
+        if let Some(active_until) = account.active_until {
+            map.entry("pro_active_until")
+                .or_insert_with(|| json!(active_until));
+        }
+        map.entry("pro_subscribed")
+            .or_insert_with(|| json!(account.pro_subscribed));
+    }
 
     let device = device_info();
     insert_nonempty(&mut map, "os_version", &device.os_version);
