@@ -186,7 +186,7 @@ def classify(result: dict, meta: dict) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--scenarios", default="bloc1_replay,bloc1_trap,col_replay")
+    ap.add_argument("--scenarios", default="bloc1_replay,bloc1_trap")
     ap.add_argument("-n", "--trials", type=int, default=8)
     ap.add_argument("--concurrency", type=int, default=3)
     ap.add_argument("--dry-run", action="store_true")

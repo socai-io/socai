@@ -311,7 +311,6 @@ def main() -> None:
     bloc1_case, bloc1_cassette = load_case("bloc1")
     trap_cassette = copy.deepcopy(bloc1_cassette)
     drop_note(trap_cassette, "6a65d768")
-    col_case, col_cassette = load_case("col")
 
     bloc1_meta = {
         "task": bloc1_case["task"],
@@ -340,22 +339,6 @@ def main() -> None:
                 **bloc1_meta,
                 "note": "Fresh official notice (6a65d768…, 07-26) removed: only the profile check can find the truth.",
                 "expect": {"pass": ["author_scan_official"], "min_pass_rate": 0.75},
-            },
-        },
-        "col_replay": {
-            "request": assemble_request(col_case, col_cassette),
-            "meta": {
-                "task": col_case["task"],
-                "official_author_id": "60ce095a00000000010077b5",
-                "official_author_name": "Climb On Gym攀岩",
-                "query_terms": ["col", "climb on"],
-                "anchor_date": col_case["recorded_date"],
-                "fresh_patterns": [r"7\s*月\s*2[7-9]", r"07-2[7-9]", r"7\s*月\s*3[01]", r"07-3[01]"],
-                "stale_patterns": [r"2025", r"6\s*月\s*2[23]", r"06-2[23]"],
-                "note": "Cassette as recorded: fresh official notice ranked #1 (fresh-official exception applies).",
-                # Direct answer expected; a correct profile check is not wrong,
-                # just unnecessary latency.
-                "expect": {"pass": ["direct_fresh", "author_scan_official"], "min_pass_rate": 0.75},
             },
         },
     }

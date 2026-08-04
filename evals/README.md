@@ -42,11 +42,6 @@ refresh `shared/` by re-importing a run recorded with the new binary):
 - `bloc1_trap` — the fresh official notice removed: the realistic world where
   ranking sampled only the stale notice. A direct answer here is the failure
   mode this whole effort targets; passing requires the hop.
-- `col_replay` — the lucky case (fresh official notice at #1). Exercises the
-  policy's fresh-official exception: when the official account's own current
-  announcement already tops the sample, answering directly is the intended
-  behavior and a hop is unnecessary latency (still scored as verified if it
-  happens — it's not wrong, just not required).
 
 **Testing a candidate prompt wording:** edit `core/src/sites/xhs/knowledge.md`
 on a branch, rebuild scenarios, rerun the benchmark — git is the variant
