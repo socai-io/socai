@@ -202,7 +202,7 @@ fn read_run_usage(run_dir: &str) -> Option<TokenUsage> {
     serde_json::from_value(value.get("usage")?.clone()).ok()
 }
 
-fn persist_run_points_used(run_dir: Option<&str>, points_used: Option<i64>) {
+pub(crate) fn persist_run_points_used(run_dir: Option<&str>, points_used: Option<i64>) {
     let (Some(run_dir), Some(points_used)) = (run_dir, points_used) else {
         return;
     };
@@ -979,7 +979,7 @@ pub async fn agent_task_cancel(
     Ok(snapshot)
 }
 
-async fn settle_hosted_task_with_retry(
+pub(crate) async fn settle_hosted_task_with_retry(
     task_id: &str,
     final_status: &str,
 ) -> Option<socai_core::cloud::LlmSettlement> {
@@ -1009,7 +1009,7 @@ async fn settle_hosted_task_with_retry(
     None
 }
 
-fn visible_billed_points(
+pub(crate) fn visible_billed_points(
     provider: Option<&str>,
     settlement: &socai_core::cloud::LlmSettlement,
 ) -> Option<i64> {

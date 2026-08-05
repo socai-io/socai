@@ -142,13 +142,45 @@ pub fn run() {
                         RuntimeBrowserEvent::TargetsChanged(targets) => {
                             let active_targets: HashSet<String> =
                                 targets.into_iter().map(|target| target.target_id).collect();
-                            for (snapshot, abort_handle) in
+                            for (mut snapshot, abort_handle) in
                                 tasks.interrupt_missing_targets(&active_targets).await
                             {
+                                let task_id = snapshot.task_id.clone();
+                                // The registry marks the task interrupted before this
+                                // branch runs. Settle hosted usage while the runner still
+                                // holds the single-task permit, so a queued
+                                // task cannot race the server cleanup and receive a 409
+                                // for this now-terminal task.
+                                if snapshot.provider.as_deref() == Some("socai")
+                                    && socai_core::cloud::pro_activated()
+                                {
+                                    if let Some(settlement) =
+                                        commands::settle_hosted_task_with_retry(
+                                            &task_id,
+                                            "interrupted",
+                                        )
+                                        .await
+                                    {
+                                        if let Some(updated) = tasks
+                                            .update(&task_id, |task| {
+                                                task.points_used = commands::visible_billed_points(
+                                                    task.provider.as_deref(),
+                                                    &settlement,
+                                                );
+                                            })
+                                            .await
+                                        {
+                                            snapshot = updated;
+                                        }
+                                    }
+                                }
                                 if let Some(handle) = abort_handle {
                                     handle.abort();
                                 }
-                                let task_id = snapshot.task_id.clone();
+                                commands::persist_run_points_used(
+                                    snapshot.run_dir.as_deref(),
+                                    snapshot.points_used,
+                                );
                                 commands::record_interrupted_run(
                                     &snapshot,
                                     "chrome tab was closed",
