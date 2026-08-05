@@ -367,6 +367,8 @@ body.has-paper > * { position: relative; z-index: 1; }
   stroke-linejoin: round;
 }
 .auth-byok .auth-expanded-panel { margin-top: var(--sp-3); }
+.auth-model-hint { margin: var(--sp-1) 0 0; }
+.auth-model-picker .agent-account-config { margin-top: var(--sp-3); }
 .agent-account-config {
   display: flex;
   flex-direction: column;

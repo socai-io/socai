@@ -196,7 +196,8 @@ export namespace authMenu {
             <svg viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5" /></svg>
           </span>
         </button>
-        ${modelExpanded ? `<div class="auth-expanded-panel">${modelConfigContent}</div>` : ""}
+        <p class="t-small subtle auth-model-hint">${esc(t("auth.useOwnApiKeyNoPoints"))}</p>
+        ${modelExpanded ? modelConfigContent : ""}
       </section>
       ${activeUntil ? `
         <div class="auth-pro-status">

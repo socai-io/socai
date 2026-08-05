@@ -126,10 +126,17 @@ const messages = {
   "auth.accountAria": { en: "open account menu", zh: "打开账号菜单" },
   "auth.loginTitle": { en: "sign in with phone", zh: "手机号登录" },
   "auth.loginAgentHint": {
-    en: "sign in to get 30 points of agent credit",
-    zh: "登录后获赠30点 agent额度",
+    en: "sign in to get 50 points of agent credit",
+    zh: "登录后获赠50点 agent额度",
   },
-  "auth.useOwnApiKey": { en: "or use your own api key", zh: "或自己输入 API key" },
+  "auth.useOwnApiKey": {
+    en: "or use your own API key, no sign-in required",
+    zh: "或自己输入API key，无需登录",
+  },
+  "auth.useOwnApiKeyNoPoints": {
+    en: "or use your own API key without points",
+    zh: "或自己输入API key，不使用点数",
+  },
   "auth.phone": { en: "phone", zh: "手机号" },
   "auth.sendCode": { en: "send code", zh: "获取验证码" },
   "auth.sending": { en: "sending…", zh: "发送中…" },
