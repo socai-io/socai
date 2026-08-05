@@ -119,8 +119,47 @@ pub struct FeishuMessage {
 
 struct CliOutput {
     success: bool,
+    exit_code: Option<i32>,
     stdout: String,
     stderr: String,
+}
+
+#[derive(Default)]
+struct CliErrorDetails {
+    message: String,
+    error_type: Option<String>,
+    error_subtype: Option<String>,
+    error_code: Option<String>,
+    log_id: Option<String>,
+    update_available: bool,
+}
+
+struct FeishuOperationError {
+    stage: &'static str,
+    message: String,
+    cli: Option<CliErrorDetails>,
+    cli_exit_code: Option<i32>,
+}
+
+impl FeishuOperationError {
+    fn new(stage: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            stage,
+            message: message.into(),
+            cli: None,
+            cli_exit_code: None,
+        }
+    }
+
+    fn from_cli(stage: &'static str, output: &CliOutput) -> Self {
+        let cli = cli_error_details(output);
+        Self {
+            stage,
+            message: cli.message.clone(),
+            cli: Some(cli),
+            cli_exit_code: output.exit_code,
+        }
+    }
 }
 
 #[tauri::command]
@@ -481,15 +520,14 @@ pub async fn feishu_send_task_to_chat(
     let telemetry_task_id = task_id.clone();
     let run_id = tasks.get(&task_id).await.and_then(|task| task.run_id);
     let result = send_task_to_chat(&app, &state, &tasks, task_id, profile, content, chat_id).await;
-    capture_export_result(
+    capture_chat_result(
         app.state::<DesktopTelemetry>().inner(),
         &telemetry_task_id,
         run_id.as_deref(),
-        "chat",
         started_at,
         &result,
     );
-    result
+    result.map_err(|error| error.message)
 }
 
 async fn send_task_to_chat(
@@ -500,18 +538,27 @@ async fn send_task_to_chat(
     profile: String,
     content: String,
     chat_id: String,
-) -> Result<FeishuMessage, String> {
-    require_connected(app, &profile).await?;
-    ensure_send_scopes(app, state, &profile).await?;
-    if !chat_id.starts_with("oc_") {
-        return Err("无效的飞书群聊 ID".into());
-    }
-    let task = tasks
-        .get(&task_id)
+) -> Result<FeishuMessage, FeishuOperationError> {
+    require_connected(app, &profile)
         .await
-        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+        .map_err(|error| FeishuOperationError::new("check_connection", error))?;
+    ensure_send_scopes(app, state, &profile)
+        .await
+        .map_err(|error| FeishuOperationError::new("check_send_scopes", error))?;
+    if !chat_id.starts_with("oc_") {
+        return Err(FeishuOperationError::new(
+            "validate_send_request",
+            "无效的飞书群聊 ID",
+        ));
+    }
+    let task = tasks.get(&task_id).await.ok_or_else(|| {
+        FeishuOperationError::new("validate_send_request", format!("unknown task: {task_id}"))
+    })?;
     if content.trim().is_empty() {
-        return Err("这个答案没有可发送的内容".into());
+        return Err(FeishuOperationError::new(
+            "validate_send_request",
+            "这个答案没有可发送的内容",
+        ));
     }
     let content = hydrate_note_links(&task, &content);
     let markdown = format!("**{}**\n\n{}", compact_title(&task.task), content.trim());
@@ -533,8 +580,13 @@ async fn send_task_to_chat(
         ],
         None,
     )
-    .await?;
-    let value = require_cli_success(output)?;
+    .await
+    .map_err(|error| FeishuOperationError::new("execute_send", error))?;
+    if !output.success {
+        return Err(FeishuOperationError::from_cli("execute_send", &output));
+    }
+    let value = parse_json(&output.stdout)
+        .ok_or_else(|| FeishuOperationError::new("parse_send_response", "无法解析飞书 CLI 响应"))?;
     let data = cli_data(&value);
     let message_id = data
         .get("message_id")
@@ -547,12 +599,53 @@ async fn send_task_to_chat(
         .unwrap_or(&chat_id)
         .to_string();
     if message_id.is_empty() {
-        return Err("飞书已返回成功，但响应里没有消息 ID".into());
+        return Err(FeishuOperationError::new(
+            "verify_send_response",
+            "飞书已返回成功，但响应里没有消息 ID",
+        ));
     }
     Ok(FeishuMessage {
         message_id,
         chat_id: returned_chat,
     })
+}
+
+fn capture_chat_result(
+    telemetry: &DesktopTelemetry,
+    task_id: &str,
+    run_id: Option<&str>,
+    started_at: Instant,
+    result: &Result<FeishuMessage, FeishuOperationError>,
+) {
+    let (outcome, stage, error, cli_exit_code, cli) = match result {
+        Ok(_) => ("completed", "send_chat", None, None, None),
+        Err(error) => (
+            "failed",
+            error.stage,
+            Some(short_error(&error.message)),
+            error.cli_exit_code,
+            error.cli.as_ref(),
+        ),
+    };
+    telemetry.capture(
+        "socai_feishu_export",
+        json!({
+            "task_id": task_id,
+            "run_id": run_id,
+            "destination": "chat",
+            "stage": stage,
+            "outcome": outcome,
+            "duration_ms": u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "error": error,
+            "cli_exit_code": cli_exit_code,
+            "cli_error_type": cli.and_then(|detail| detail.error_type.as_deref()),
+            "cli_error_subtype": cli.and_then(|detail| detail.error_subtype.as_deref()),
+            "cli_error_code": cli.and_then(|detail| detail.error_code.as_deref()),
+            "cli_log_id": cli.and_then(|detail| detail.log_id.as_deref()),
+            "cli_update_available": cli.map(|detail| detail.update_available),
+            "message_id_present": result.is_ok(),
+        }),
+    );
 }
 
 fn capture_export_result<T>(
@@ -1038,6 +1131,7 @@ async fn run_streaming_auth(
 
     let output = CliOutput {
         success: exit_code == Some(0),
+        exit_code,
         stdout,
         stderr,
     };
@@ -1213,6 +1307,7 @@ async fn run_cli_with_stdin(
     }
     Ok(CliOutput {
         success: exit_code == Some(0),
+        exit_code,
         stdout,
         stderr,
     })
@@ -1288,6 +1383,7 @@ async fn run_cli_bounded(
 
     Ok(CliOutput {
         success: exit_code == Some(0),
+        exit_code,
         stdout,
         stderr,
     })
@@ -1509,12 +1605,40 @@ fn cli_data(value: &Value) -> &Value {
 }
 
 fn cli_error_message(output: &CliOutput) -> String {
+    cli_error_details(output).message
+}
+
+fn cli_error_details(output: &CliOutput) -> CliErrorDetails {
     for text in [&output.stdout, &output.stderr] {
         if let Some(value) = parse_json(text) {
-            for key in ["message", "error", "hint"] {
-                if let Some(message) = find_string(&value, key) {
+            let update_available = value.pointer("/_notice/update").is_some();
+            if let Some(error) = value.get("error") {
+                let message = match error {
+                    Value::String(message) => Some(message.clone()),
+                    _ => ["message", "error", "hint"]
+                        .into_iter()
+                        .find_map(|key| find_string(error, key)),
+                };
+                if let Some(message) = message.filter(|message| !message.trim().is_empty()) {
+                    return CliErrorDetails {
+                        message: friendly_cli_error(&message),
+                        error_type: find_scalar(error, "type"),
+                        error_subtype: find_scalar(error, "subtype"),
+                        error_code: find_scalar(error, "code")
+                            .or_else(|| find_scalar(error, "api_code")),
+                        log_id: find_scalar(error, "log_id"),
+                        update_available,
+                    };
+                }
+            }
+            for key in ["message", "hint"] {
+                if let Some(message) = value.get(key).and_then(Value::as_str) {
                     if !message.trim().is_empty() {
-                        return friendly_cli_error(&message);
+                        return CliErrorDetails {
+                            message: friendly_cli_error(message),
+                            update_available,
+                            ..CliErrorDetails::default()
+                        };
                     }
                 }
             }
@@ -1540,9 +1664,32 @@ fn cli_error_message(output: &CliOutput) -> String {
             .rev()
             .collect::<Vec<_>>()
             .join("\n");
-        return friendly_cli_error(&message);
+        return CliErrorDetails {
+            message: friendly_cli_error(&message),
+            ..CliErrorDetails::default()
+        };
     }
-    "飞书 CLI 执行失败".into()
+    CliErrorDetails {
+        message: "飞书 CLI 执行失败".into(),
+        ..CliErrorDetails::default()
+    }
+}
+
+fn find_scalar(value: &Value, key: &str) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            if let Some(value) = map.get(key) {
+                match value {
+                    Value::String(text) if !text.trim().is_empty() => return Some(text.clone()),
+                    Value::Number(number) => return Some(number.to_string()),
+                    _ => {}
+                }
+            }
+            map.values().find_map(|value| find_scalar(value, key))
+        }
+        Value::Array(items) => items.iter().find_map(|value| find_scalar(value, key)),
+        _ => None,
+    }
 }
 
 fn friendly_cli_error(message: &str) -> String {

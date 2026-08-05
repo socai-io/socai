@@ -189,12 +189,19 @@ and model in use are captured on `socai_agent_task_start`.
 | `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
 | `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `steps`, token/cache usage, estimated cost breakdown, authoritative `points_used` when settlement completes, `duration_ms`, `error` |
 | `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error`, query/result summaries, and bounded unexpected-page diagnostics when present |
-| `socai_feishu_export` | A Feishu export completes/fails, including user-visible setup failures before the native export command starts | `task_id`, `run_id`, `destination`, optional `stage`, `outcome`, `duration_ms`, `error` |
+| `socai_feishu_export` | A Feishu export completes/fails, including user-visible setup failures before the native export command starts | `task_id`, `run_id`, `destination`, optional `stage`, `outcome`, `duration_ms`, `error`; chat sends also include privacy-safe CLI failure metadata (`cli_exit_code`, `cli_error_type`, `cli_error_subtype`, `cli_error_code`, `cli_log_id`, `cli_update_available`) and `message_id_present` |
 | `socai_server_payment_callback` | The backend accepts, rejects, or fails a merchant callback | `provider`, `stage`, `outcome`, `order_id`, `amount_fen`, `added_points`, `duration_days`, `error` |
 | `socai_server_asr` | A managed ASR task changes stage | `stage`, `outcome`, `task_id`, `client_task_id`, `provider`, audio duration/size, provider latency/cost, `error` |
 | `socai_server_browser_session` | The backend creates, denies, quota-blocks, or releases a hosted browser | `stage`, `outcome`, `browser_session_id`, timeout/spend/budget fields, `error` |
 
 Desktop field semantics:
+
+Feishu chat failures use `stage` to separate `check_connection`,
+`check_send_scopes`, `validate_send_request`, `execute_send`,
+`parse_send_response`, and `verify_send_response`. CLI notices are not treated
+as errors; `error` comes from the structured CLI error envelope when present.
+CLI log IDs are opaque provider diagnostics and no task content, account,
+profile, document/chat ID, URL, or credential is reported.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -344,7 +351,7 @@ storage. For secrets, every uploaded text field — chat content, the root
 `socai.task_text`, and `query_text` on both pipelines — passes a client-side
 scrubber for secret-shaped values before upload: `sk-`-prefixed api keys,
 JWT-shaped tokens, `Bearer` header values, and sensitive JSON fields
-(`api_key`, `device_token`, `access_token`, …). Desktop `read_file`/`bash`
+(`api_key`, `device_token`, `access_token`, …). Desktop `read_file`/`shell`
 are confined to `~/.socai`, where `auth.json` stores provider api keys and
 the socai pro `device_token`, so tool results can legitimately contain live
 secrets. The scrubber is pattern-based — a safety net for known formats, not
