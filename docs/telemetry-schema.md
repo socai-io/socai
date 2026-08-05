@@ -356,12 +356,12 @@ messages are rebuilt from the persisted (artifact-enriched) report rather than
 the raw output the earlier turn's span recorded.
 
 Size limits are enforced client-side: 20,000 chars per message part, 200-char
-note captions, 150 KB per attribute, a 300 KB per-run content budget charged at
-JSON-escaped wire length, and a final whole-payload gate that strips content
-attributes (oldest spans first, marked `socai.content_dropped`) whenever the
-assembled trace would exceed the proxy's 512 KiB body cap. The traces proxy
-stays transport-only (shape gate, body-size cap, rate limit — no field
-inspection).
+note captions, 150 KB per attribute, and a final whole-payload gate that strips
+content attributes (oldest spans first, marked `socai.content_dropped`) only
+when the assembled trace would exceed the proxy's 2 MiB body cap. This keeps
+the most recent spans — including the final answer — whenever they fit. The
+traces proxy stays transport-only (shape gate, body-size cap, rate limit — no
+field inspection).
 
 Controls: `SOCAI_TELEMETRY_CHAT_TEXT=off` removes conversation content and
 note summaries. It is **not** a text-free trace: the root span still carries

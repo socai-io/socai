@@ -12,7 +12,7 @@
 
 const DEFAULT_AXIOM_URL = 'https://api.axiom.co';
 const DEFAULT_DATASET = 'socai-traces-prod';
-const MAX_BODY_BYTES = 512 * 1024;
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 120;
 

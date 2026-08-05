@@ -58,10 +58,6 @@ const CHAT_PART_MAX_CHARS: usize = 20_000;
 const CHAT_PART_TIGHT_MAX_CHARS: usize = 2_000;
 /// Cap on one serialized chat attribute (Axiom ingests spans as single events).
 const CHAT_ATTR_MAX_BYTES: usize = 150_000;
-/// Cumulative chat-content budget per run upload. The traces proxy rejects
-/// bodies over 512 KiB outright, so content must leave room for the span
-/// envelope and tool-arg summaries.
-const CHAT_BUDGET_BYTES: usize = 300_000;
 /// Max note summaries carried on one `execute_tool` span (`socai.notes`).
 const NOTES_MAX_PER_SPAN: usize = 25;
 /// Caption (note body) cap inside a note summary.
@@ -71,12 +67,12 @@ const NOTE_CAPTION_MAX_CHARS: usize = 200;
 const NOTE_TITLE_MAX_CHARS: usize = 300;
 const NOTE_ID_MAX_CHARS: usize = 100;
 const NOTE_STAT_MAX_CHARS: usize = 50;
-/// Ceiling for the assembled payload: the traces proxy rejects bodies over
-/// 512 KiB, and the uploader appends identity resource attributes. The chat
-/// budget bounds content, but span envelopes and non-content attributes ride
-/// on top of it — `enforce_payload_cap` strips content from oldest spans
-/// when the serialized whole would overshoot.
-const PAYLOAD_MAX_BYTES: usize = 460_000;
+/// Ceiling for the assembled payload: leave 64 KiB below the traces proxy's
+/// 2 MiB body limit for upload-time identity resource attributes. Span
+/// envelopes and non-content attributes ride alongside chat content, so
+/// `enforce_payload_cap` strips content from oldest spans when the serialized
+/// whole would overshoot.
+const PAYLOAD_MAX_BYTES: usize = 2 * 1024 * 1024 - 64 * 1024;
 /// What `enforce_payload_cap` may strip, in order: chat/note content first,
 /// then the unbounded summarizer strings (query text, arg metadata). Every
 /// attribute not listed here is small and bounded, so a payload with both
@@ -115,9 +111,6 @@ pub struct RunTraceBuilder {
     /// loop's authoritative totals.
     steps_seen: u32,
     usage: TokenUsage,
-    /// Remaining chat-content bytes for this run's upload; once spent, later
-    /// spans carry `socai.chat_text_dropped` instead of content.
-    chat_bytes_left: usize,
     /// Hash of the last uploaded system prompt, so `gen_ai.system_instructions`
     /// is emitted once and then only when it changes — **per run**. Follow-up
     /// runs of a conversation share the trace id but each uploads its own
@@ -161,7 +154,6 @@ impl RunTraceBuilder {
             dropped_spans: 0,
             steps_seen: 0,
             usage: TokenUsage::default(),
-            chat_bytes_left: CHAT_BUDGET_BYTES,
             last_system_hash: String::new(),
             finalized: false,
         }
@@ -225,9 +217,9 @@ impl RunTraceBuilder {
     }
 
     /// Attach chat content to a `chat` span: system prompt (when changed),
-    /// input delta, and full response, each budgeted against the run's
-    /// remaining chat bytes. Stops at the first attribute that would overrun
-    /// the budget and marks the span `socai.chat_text_dropped` instead.
+    /// input delta, and full response. The final whole-payload gate retains
+    /// the newest spans when the proxy body ceiling requires trimming, so a
+    /// long investigation does not lose its final answer prematurely.
     fn push_chat_attrs(
         &mut self,
         attrs: &mut Vec<Value>,
@@ -251,38 +243,20 @@ impl RunTraceBuilder {
             let rendered = capped_chat_json(
                 |cap| json!([{ "type": "text", "content": truncate_chars(&system, cap) }]),
             );
-            if !self.push_budgeted(attrs, "gen_ai.system_instructions", rendered) {
-                return;
-            }
+            self.push_content_attr(attrs, "gen_ai.system_instructions", rendered);
         }
         let input = capped_chat_json(|cap| input_messages_json(new_messages, cap, include_query));
-        if !self.push_budgeted(attrs, "gen_ai.input.messages", input) {
-            return;
-        }
+        self.push_content_attr(attrs, "gen_ai.input.messages", input);
         if let Some(response) = response {
             let output = capped_chat_json(|cap| output_messages_json(response, cap, include_query));
-            self.push_budgeted(attrs, "gen_ai.output.messages", output);
+            self.push_content_attr(attrs, "gen_ai.output.messages", output);
         }
     }
 
-    /// Push one chat-content attribute if it fits the remaining budget;
-    /// otherwise zero the budget and mark the span. Returns whether it fit.
-    /// The budget is charged at the attribute's wire cost — the JSON-escaped
-    /// form the upload serializes (quotes/backslashes/newlines in the content
-    /// escape a second time there), not the raw string length, so admitted
-    /// content can't push the POST past the proxy's body cap.
-    fn push_budgeted(&mut self, attrs: &mut Vec<Value>, key: &str, rendered: String) -> bool {
-        let wire_len = serde_json::to_string(&rendered)
-            .map(|escaped| escaped.len())
-            .unwrap_or(rendered.len());
-        if self.chat_bytes_left < wire_len {
-            self.chat_bytes_left = 0;
-            attrs.push(attr_bool("socai.chat_text_dropped", true));
-            return false;
-        }
-        self.chat_bytes_left -= wire_len;
+    /// Add bounded content to a span. The assembled payload is size-checked
+    /// before upload, where oldest content is removed only when necessary.
+    fn push_content_attr(&mut self, attrs: &mut Vec<Value>, key: &str, rendered: String) {
         attrs.push(attr_str(key, &rendered));
-        true
     }
 
     pub fn record_tool(
@@ -314,7 +288,7 @@ impl RunTraceBuilder {
                 if rendered.len() > CHAT_ATTR_MAX_BYTES {
                     rendered = "[notes omitted: over attribute cap]".to_string();
                 }
-                self.push_budgeted(&mut attrs, "socai.notes", rendered);
+                self.push_content_attr(&mut attrs, "socai.notes", rendered);
             }
         }
         self.push_span(
