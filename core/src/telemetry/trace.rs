@@ -806,7 +806,7 @@ fn string_field(entity: &Value, key: &str) -> String {
 
 /// JSON field names whose string values are scrubbed by [`redact_secrets`].
 /// Covers `~/.socai/auth.json` (every provider key lives under `api_key`)
-/// and common token envelopes a `bash`/`read_file` result could echo.
+/// and common token envelopes a `shell`/`read_file` result could echo.
 const SECRET_JSON_FIELDS: [&str; 11] = [
     "api_key",
     "apikey",
@@ -822,7 +822,7 @@ const SECRET_JSON_FIELDS: [&str; 11] = [
 ];
 
 /// Client-side secret scrub applied to every chat-content string before it
-/// enters a trace attribute. Desktop `read_file`/`bash` are confined to
+/// enters a trace attribute. Desktop `read_file`/`shell` are confined to
 /// `~/.socai` — which is exactly where `auth.json` stores provider api keys —
 /// so tool results can legitimately contain live secrets. Targeted patterns,
 /// chosen for near-zero false positives on prose:
@@ -837,7 +837,7 @@ pub fn redact_secrets(text: &str) -> String {
 
 /// Recursively scrub every string inside a JSON value — used for structured
 /// payloads (tool-arg `metadata`) where secrets can sit in any nested string,
-/// e.g. a desktop `bash` command carrying an `Authorization: Bearer …` header.
+/// e.g. a desktop `shell` command carrying an `Authorization: Bearer …` header.
 pub fn redact_secrets_in_value(value: &mut Value) {
     match value {
         Value::String(text) => {

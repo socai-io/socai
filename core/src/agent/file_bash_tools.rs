@@ -1,17 +1,17 @@
 //! Local environment tools for an interactive agent: a structured `read_file`
 //! (the one thing a shell can't do well — feed an image into the model's
-//! vision) plus a general `bash` escape hatch for everything else (write,
+//! vision) plus a general `shell` escape hatch for everything else (write,
 //! list, grep, mkdir, …).
 //!
 //! For the TUI (`local_agent_tools()`), scope is *prompt-enforced*, not
 //! sandboxed: the user is running their own terminal and carries the same
-//! privileges regardless of whether the agent has a `bash` tool. For the
+//! privileges regardless of whether the agent has a `shell` tool. For the
 //! desktop app (`desktop_agent_tools()`), the same content the agent reads —
 //! Xiaohongshu note/comment text — is untrusted, adversarial input running on
 //! a much wider, less technical install base, so these tools are additionally
 //! confined to socai's data directories (`~/.socai` plus the configured runs
 //! and sessions roots — see `desktop_tool_roots`): `read_file` rejects any
-//! path that doesn't lexically resolve under one of the roots, and `bash`
+//! path that doesn't lexically resolve under one of the roots, and `shell`
 //! rejects any command whose path-like tokens resolve outside them. This is a
 //! real, enforced boundary for path arguments — not a full OS sandbox. It
 //! doesn't stop a shell command from doing non-path-based damage (network
@@ -19,9 +19,9 @@
 //! etc.); it exists to block the straightforward "read/write/delete something
 //! outside socai's data" cases a prompt-injected note could ask for.
 //!
-//! Paths are resolved against the process working directory when relative; a
-//! leading `~` expands to the home directory. `bash` runs with its working
-//! directory set to the current run dir.
+//! Paths are resolved against the current run directory when relative; a
+//! leading `~` expands to the home directory. `shell` also runs with its
+//! working directory set to the current run dir.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -76,7 +76,29 @@ fn within_roots(path: &Path, roots: &[PathBuf], cwd: &Path) -> bool {
     let resolved = absolutize(path, cwd);
     roots
         .iter()
-        .any(|root| resolved.starts_with(normalize_lexical(root)))
+        .any(|root| path_starts_with(&resolved, &normalize_lexical(root)))
+}
+
+#[cfg(not(windows))]
+fn path_starts_with(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
+// Windows paths are case-insensitive in normal use, while Path::starts_with
+// compares components case-sensitively. Match the filesystem here so a user
+// configuring `e:\\socai_data` does not make an `E:\\socai_data` artifact look
+// like an escape (or vice versa).
+#[cfg(windows)]
+fn path_starts_with(path: &Path, root: &Path) -> bool {
+    let mut path_components = path.components();
+    root.components().all(|root_component| {
+        path_components.next().is_some_and(|path_component| {
+            path_component
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&root_component.as_os_str().to_string_lossy())
+        })
+    })
 }
 
 /// Best-effort scan for path-like tokens in a shell command line. Not a
@@ -88,14 +110,13 @@ fn within_roots(path: &Path, roots: &[PathBuf], cwd: &Path) -> bool {
 fn command_escapes_roots(command: &str, roots: &[PathBuf], cwd: &Path) -> Option<String> {
     for raw_token in command.split_whitespace() {
         let token = raw_token.trim_matches(|c| c == '"' || c == '\'' || c == ';' || c == ',');
-        let looks_like_path = (token.starts_with('/') && token.chars().any(|c| c != '/'))
-            || token.starts_with('~')
-            || token.starts_with("./")
-            || token.starts_with("../");
-        if !looks_like_path {
+        if !looks_like_path(token) {
             continue;
         }
-        let expanded = if let Some(rest) = token.strip_prefix("~/") {
+        let expanded = if let Some(rest) = token
+            .strip_prefix("~/")
+            .or_else(|| token.strip_prefix("~\\"))
+        {
             dirs::home_dir()
                 .map(|home| home.join(rest))
                 .unwrap_or_else(|| PathBuf::from(token))
@@ -111,10 +132,46 @@ fn command_escapes_roots(command: &str, roots: &[PathBuf], cwd: &Path) -> Option
     None
 }
 
+#[cfg(not(windows))]
+fn looks_like_path(token: &str) -> bool {
+    (token.starts_with('/') && token.chars().any(|c| c != '/'))
+        || token.starts_with('~')
+        || token.starts_with("./")
+        || token.starts_with("../")
+}
+
+#[cfg(windows)]
+fn looks_like_path(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    let drive_path = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    // Native Windows utilities use `/b`, `/c:pattern`, etc. as switches.
+    // Treat the leading segment as a switch even when its payload contains
+    // backslashes; paths such as `/etc/file` still contain a separator in the
+    // leading segment and remain subject to the boundary check.
+    let slash_switch = token.strip_prefix('/').is_some_and(|rest| {
+        let head = rest.split(':').next().unwrap_or(rest);
+        !head.is_empty()
+            && head
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '?')
+    });
+    let slash_rooted_path = token.starts_with('/') && !slash_switch;
+
+    drive_path
+        || token.starts_with("\\\\")
+        || token.starts_with('\\')
+        || slash_rooted_path
+        || token.starts_with('~')
+        || token.starts_with(".\\")
+        || token.starts_with("..\\")
+        || token.starts_with("./")
+        || token.starts_with("../")
+}
+
 /// The directory trees the desktop's tools are confined to: `~/.socai` (or
 /// `$SOCAI_HOME`) plus the *actual* runs and sessions roots — which the user
 /// can point elsewhere via `runs.dir` / `SOCAI_RUNS_DIR` / `SOCAI_SESSIONS_DIR`.
-/// Without including those, a relocated runs dir would make `bash` refuse its
+/// Without including those, a relocated runs dir would make `shell` refuse its
 /// own cwd and `read_file` reject every run artifact.
 fn desktop_tool_roots() -> Vec<PathBuf> {
     let candidates = [
@@ -146,12 +203,15 @@ fn roots_display(roots: &[PathBuf]) -> String {
 const MAX_INLINE_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 const DEFAULT_READ_LIMIT: usize = 2000;
-const BASH_OUTPUT_LIMIT: usize = 16_000;
-const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const SHELL_OUTPUT_LIMIT: usize = 16_000;
+const SHELL_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 fn resolve_path(raw: &str) -> PathBuf {
     let trimmed = raw.trim();
-    if let Some(rest) = trimmed.strip_prefix("~/") {
+    if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+    {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }
@@ -217,14 +277,14 @@ impl Tool for ReadFileTool {
              `offset`/`limit`); image files (png/jpg/webp/gif) are returned as \
              an image you can actually see — use this to inspect screenshot or \
              note-media artifacts from earlier run dirs. For plain text you may \
-             also just use `bash` (cat/sed), but images must go through this \
+             also just use `shell`, but images must go through this \
              tool."
         } else {
             "Read a local file. Text files return their contents (optionally a line \
              window via `offset`/`limit`); image files (png/jpg/webp/gif) are \
              returned as an image you can actually see — use this to inspect \
              screenshot artifacts from earlier run dirs. For plain text you may \
-             also just use `bash` (cat/sed), but images must go through this tool."
+             also just use `shell`, but images must go through this tool."
         }
     }
 
@@ -244,13 +304,17 @@ impl Tool for ReadFileTool {
         true
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         let Some(raw) = input.get("path").and_then(Value::as_str) else {
             anyhow::bail!("read_file requires a `path`");
         };
-        let path = resolve_path(raw);
+        let cwd = if ctx.run_dir.is_dir() {
+            ctx.run_dir.clone()
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        };
+        let path = absolutize(&resolve_path(raw), &cwd);
         if !self.roots.is_empty() {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             if !within_roots(&path, &self.roots, &cwd) {
                 anyhow::bail!(
                     "{} is outside {} — this tool is confined to those directories",
@@ -262,10 +326,7 @@ impl Tool for ReadFileTool {
         let meta = std::fs::metadata(&path)
             .map_err(|e| anyhow::anyhow!("cannot stat {}: {e}", path.display()))?;
         if meta.is_dir() {
-            anyhow::bail!(
-                "{} is a directory; use bash (ls) to list it",
-                path.display()
-            );
+            anyhow::bail!("{} is a directory; use shell to list it", path.display());
         }
 
         if let Some(media_type) = image_media_type(&path) {
@@ -326,15 +387,15 @@ impl Tool for ReadFileTool {
     }
 }
 
-/// `bash` — run a shell command. The flexible escape hatch for writing files,
+/// `shell` — run a platform-native shell command. The flexible escape hatch for writing files,
 /// listing/grepping artifacts, etc. Working directory is the current run dir.
 /// A non-empty `roots` confines path-like arguments to those directory trees
 /// (see module doc — a best-effort static check, not a sandbox).
-pub struct BashTool {
+pub struct ShellTool {
     roots: Vec<PathBuf>,
 }
 
-impl BashTool {
+impl ShellTool {
     pub fn unrestricted() -> Self {
         Self { roots: Vec::new() }
     }
@@ -345,21 +406,40 @@ impl BashTool {
 }
 
 #[async_trait]
-impl Tool for BashTool {
+impl Tool for ShellTool {
     fn name(&self) -> &str {
-        "bash"
+        "shell"
     }
 
     fn description(&self) -> &str {
+        #[cfg(windows)]
         if !self.roots.is_empty() {
-            "Run a shell command via `sh -c` and return its stdout/stderr and \
+            "Run a Windows PowerShell command and return its stdout/stderr and \
+             exit code. Working directory is the current run dir. Confined to \
+             socai's data directories — commands referencing paths outside \
+             them are rejected. Use this to write output files (e.g. \
+             Set-Content), list/search run artifacts, create directories, etc. within \
+             those directories."
+        } else {
+            "Run a Windows PowerShell command and return its stdout/stderr and exit \
+             code. Working directory is the current run dir under ~/.socai/runs, so \
+             relative paths land there; use absolute paths for other run dirs or \
+             the session dir. Use this to write output files, list/search artifacts, \
+             create directories, etc. Scope: stay within the files \
+             relevant to this task and the user's ~/.socai data — do not run \
+             destructive, networked, or system-wide commands."
+        }
+
+        #[cfg(not(windows))]
+        if !self.roots.is_empty() {
+            "Run a POSIX shell command via `sh -c` and return its stdout/stderr and \
              exit code. Working directory is the current run dir. Confined to \
              socai's data directories — commands referencing paths outside \
              them are rejected. Use this to write output files (e.g. \
              printf/tee), list and grep run artifacts, mkdir, etc. within \
              those directories."
         } else {
-            "Run a shell command via `sh -c` and return its stdout/stderr and exit \
+            "Run a POSIX shell command via `sh -c` and return its stdout/stderr and exit \
              code. Working directory is the current run dir under ~/.socai/runs, so \
              relative paths land there; use absolute paths for other run dirs or \
              the session dir. Use this to write output files (e.g. printf/tee), \
@@ -373,7 +453,7 @@ impl Tool for BashTool {
         json!({
             "type": "object",
             "properties": {
-                "command": { "type": "string", "description": "Shell command to run via `sh -c`." },
+                "command": { "type": "string", "description": "Platform-native shell command: Windows PowerShell on Windows, `sh -c` elsewhere." },
                 "timeout_ms": { "type": "integer", "description": "Optional timeout in milliseconds (default 120000)." }
             },
             "required": ["command"]
@@ -390,12 +470,12 @@ impl Tool for BashTool {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|c| !c.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("bash requires a non-empty `command`"))?;
+            .ok_or_else(|| anyhow::anyhow!("shell requires a non-empty `command`"))?;
         let timeout = Duration::from_millis(
             input
                 .get("timeout_ms")
                 .and_then(Value::as_u64)
-                .unwrap_or(BASH_DEFAULT_TIMEOUT_MS),
+                .unwrap_or(SHELL_DEFAULT_TIMEOUT_MS),
         );
 
         let cwd = if ctx.run_dir.is_dir() {
@@ -407,7 +487,7 @@ impl Tool for BashTool {
         if !self.roots.is_empty() {
             if !within_roots(&cwd, &self.roots, &cwd) {
                 anyhow::bail!(
-                    "run dir {} is outside {} — refusing to run bash there",
+                    "run dir {} is outside {} — refusing to run shell there",
                     cwd.display(),
                     roots_display(&self.roots)
                 );
@@ -422,8 +502,7 @@ impl Tool for BashTool {
             }
         }
 
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c").arg(command);
+        let mut cmd = shell_command(command);
         cmd.current_dir(&cwd);
 
         let output = match tokio::time::timeout(timeout, cmd.output()).await {
@@ -448,21 +527,42 @@ impl Tool for BashTool {
         } else {
             parts.join("\n")
         };
-        Ok(ToolResult::text(truncate_output(&body, BASH_OUTPUT_LIMIT)))
+        Ok(ToolResult::text(truncate_output(&body, SHELL_OUTPUT_LIMIT)))
     }
 }
 
-/// Local tools for the TUI: structured image-capable read + a general `bash`,
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg(command);
+    cmd
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> tokio::process::Command {
+    let script = format!(
+        "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n{command}"
+    );
+    let mut cmd = tokio::process::Command::new("powershell.exe");
+    cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+        .arg(script);
+    cmd
+}
+
+/// Backward-compatible Rust API alias. The agent-facing tool is named `shell`.
+pub type BashTool = ShellTool;
+
+/// Local tools for the TUI: structured image-capable read + a general `shell`,
 /// unrestricted (the user already carries the same privileges in their own
 /// terminal). Append to a site tool set.
 pub fn local_agent_tools() -> Vec<SharedTool> {
     vec![
         std::sync::Arc::new(ReadFileTool::unrestricted()),
-        std::sync::Arc::new(BashTool::unrestricted()),
+        std::sync::Arc::new(ShellTool::unrestricted()),
     ]
 }
 
-/// Local tools for the desktop app: the same `read_file`/`bash` pair, confined
+/// Local tools for the desktop app: the same `read_file`/`shell` pair, confined
 /// to socai's data directories (see module doc and `desktop_tool_roots`) since
 /// the desktop agent's primary input is untrusted Xiaohongshu content on a
 /// much wider install base than the TUI.
@@ -470,7 +570,7 @@ pub fn desktop_agent_tools() -> Vec<SharedTool> {
     let roots = desktop_tool_roots();
     vec![
         std::sync::Arc::new(ReadFileTool::scoped_to(roots.clone())),
-        std::sync::Arc::new(BashTool::scoped_to(roots)),
+        std::sync::Arc::new(ShellTool::scoped_to(roots)),
     ]
 }
 
@@ -502,14 +602,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bash_runs_and_reports_exit() {
-        let ok = BashTool::unrestricted()
+    async fn shell_runs_and_reports_exit() {
+        let ok = ShellTool::unrestricted()
             .call(json!({"command": "echo hi"}), &ctx())
             .await
             .unwrap();
         assert!(ok.flat_text().contains("hi"));
 
-        let fail = BashTool::unrestricted()
+        let fail = ShellTool::unrestricted()
             .call(json!({"command": "exit 3"}), &ctx())
             .await
             .unwrap();
