@@ -67,6 +67,9 @@ const FALLBACK = {
     entry("kimi-k2-thinking", "Kimi K2 Thinking"),
   ],
   qwen: [
+    // qwen3.8-max-preview is intentionally absent: Alibaba currently limits it
+    // to Token Plan, whose dedicated API key and base URL are incompatible with
+    // socai's mainland and international pay-as-you-go Qwen providers.
     entry("qwen3.7-plus", "Qwen 3.7 Plus", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
       qwenPriceTier(256000, 2, 8),
       qwenPriceTier(1000000, 6, 24),
@@ -121,6 +124,8 @@ const FALLBACK = {
   ],
   deepseek: [
     entry("deepseek-v4-pro", "DeepSeek V4 Pro", "fallback", true),
+    // This rolling official API id serves the 0731 post-trained release. The
+    // official DeepSeek endpoint does not require a dated model id.
     entry("deepseek-v4-flash", "DeepSeek V4 Flash"),
   ],
 };
