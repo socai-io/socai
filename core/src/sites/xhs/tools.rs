@@ -5,6 +5,7 @@
 //! visible, note modal open, etc.). The caller is responsible for creating
 //! the page and closing it after `run_agent` returns.
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -952,9 +953,9 @@ fn media_for(
 /// stop conditions are the budget being met, the thread being exhausted, or
 /// growth stalling; this only exists so a pathological page (DOM that keeps
 /// "growing" a sliver each round, or a hang) can't loop forever. It is a fixed
-/// generous cap on purpose — scaling it with the requested count would truncate a
-/// large request that is still legitimately loading.
-const COMMENT_LOAD_TIMEOUT_S: f64 = 120.0;
+/// conservative cap on purpose — long enough for a slow page to make progress,
+/// but short enough that one stalled note does not consume minutes.
+const COMMENT_LOAD_TIMEOUT_S: f64 = 30.0;
 
 /// Load up to `TOP_COMMENTS_PER_NOTE` top comments from the currently open note
 /// and insert them under `note["top_comments"]`. Best-effort: on failure the
@@ -2679,6 +2680,38 @@ fn write_run_perf_file(ctx: &ToolContext, name: &str, perf: &Value) {
     }
 }
 
+/// Append one durable browser/recovery breadcrumb for a composite search.
+/// JSONL keeps the last completed action available even when the tool exits
+/// before its normal aggregate perf/artifact writes.
+fn append_search_debug_event(ctx: &ToolContext, mut event: Value) {
+    if let Some(map) = event.as_object_mut() {
+        let recorded_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        map.insert("recorded_at_ms".into(), json!(recorded_at_ms));
+    }
+
+    let stats_dir = ctx.output_dir().join("stats");
+    if let Err(err) = std::fs::create_dir_all(&stats_dir) {
+        tracing::warn!(error = %err, "failed to create XHS search debug directory");
+        return;
+    }
+    let path = stats_dir.join("search.jsonl");
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        serde_json::to_writer(&mut file, &event)?;
+        file.write_all(b"\n")?;
+        Ok(())
+    })();
+    if let Err(err) = result {
+        tracing::warn!(error = %err, path = %path.display(), "failed to append XHS search debug event");
+    }
+}
+
 /// Remove OCR timing keys from the media-timing summary so the JSON artifact's
 /// `timing.media` carries only non-OCR (download) timings; OCR timing lives in
 /// the dedicated `stats/ocr.json`.
@@ -4296,7 +4329,7 @@ impl Tool for SearchTool {
 
         // Filters are applied after the initial search below, so don't pass
         // them here.
-        let search = match xhs
+        let mut search = match xhs
             .search_notes(&query, None, SEARCH_WAIT_SECONDS, None)
             .await
         {
@@ -4347,10 +4380,19 @@ impl Tool for SearchTool {
             return Ok(json_result(&payload));
         }
 
+        append_search_debug_event(
+            ctx,
+            json!({
+                "event": "search_ready",
+                "query": &query,
+                "url": xhs.current_url().await.unwrap_or_default(),
+            }),
+        );
+
         // Optional filter application.
         let mut filter_result = Value::Object(serde_json::Map::new());
-        if let Some(filters) = filters {
-            filter_result = xhs.apply_search_filters(&filters, 1.5).await?;
+        if let Some(filters) = filters.as_ref() {
+            filter_result = xhs.apply_search_filters(filters, 1.5).await?;
         }
 
         // Every sampled note is read with the same extraction level (body +
@@ -4383,9 +4425,98 @@ impl Tool for SearchTool {
         // the browse loop (the pipeline benefit) vs. spilled past it.
         let browse_t0 = std::time::Instant::now();
         let mut stop_reason = String::new();
+        let mut page_error: Option<String> = None;
+        let mut recovery_attempted = false;
 
         while notes.len() < want {
-            let cards = xhs.extract_search_cards().await?;
+            let cards = match xhs.extract_search_cards().await {
+                Ok(cards) => cards,
+                Err(err) => {
+                    let error = format!("{err:#}");
+                    let url = xhs.current_url().await.unwrap_or_default();
+                    append_search_debug_event(
+                        ctx,
+                        json!({
+                            "event": "search_page_read_failed",
+                            "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
+                            "url": url,
+                            "error": error,
+                            "recovery_already_attempted": recovery_attempted,
+                        }),
+                    );
+
+                    if url == "about:blank" && !recovery_attempted {
+                        recovery_attempted = true;
+                        let recovery_t0 = std::time::Instant::now();
+                        append_search_debug_event(
+                            ctx,
+                            json!({
+                                "event": "search_recovery_started",
+                                "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
+                                "reason": "about_blank",
+                            }),
+                        );
+                        let recovery_error = match xhs
+                            .search_notes(&query, filters.as_ref(), SEARCH_WAIT_SECONDS, None)
+                            .await
+                        {
+                            Ok(recovered)
+                                if recovered
+                                    .get("ok")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false) =>
+                            {
+                                filter_result = recovered
+                                    .get("filters")
+                                    .cloned()
+                                    .unwrap_or_else(|| Value::Object(Map::new()));
+                                search = recovered;
+                                cursor = 0;
+                                stalls = 0;
+                                append_search_debug_event(
+                                    ctx,
+                                    json!({
+                                        "event": "search_recovery_succeeded",
+                                        "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
+                                        "recovery_ms": recovery_t0.elapsed().as_millis() as u64,
+                                        "url": xhs.current_url().await.unwrap_or_default(),
+                                        "notes_preserved": notes.len(),
+                                    }),
+                                );
+                                continue;
+                            }
+                            Ok(recovered) => recovered
+                                .get("reason")
+                                .and_then(Value::as_str)
+                                .filter(|reason| !reason.is_empty())
+                                .unwrap_or("search_recovery_failed")
+                                .to_string(),
+                            Err(recovery_err) => format!("{recovery_err:#}"),
+                        };
+                        append_search_debug_event(
+                            ctx,
+                            json!({
+                                "event": "search_recovery_failed",
+                                "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
+                                "recovery_ms": recovery_t0.elapsed().as_millis() as u64,
+                                "url": xhs.current_url().await.unwrap_or_default(),
+                                "error": recovery_error,
+                            }),
+                        );
+                        stop_reason = "page_recovery_failed".to_string();
+                        page_error = Some(recovery_error);
+                    } else {
+                        stop_reason = if url == "about:blank" {
+                            "page_lost"
+                        } else {
+                            "search_page_read_failed"
+                        }
+                        .to_string();
+                        page_error = Some(error);
+                    }
+                    break;
+                }
+            };
             if cursor >= cards.len() {
                 if stalls >= 3 {
                     break;
@@ -4415,6 +4546,18 @@ impl Tool for SearchTool {
             let title = progress_title(&card);
             scan_progress.reading_started(item_index, title.clone());
             let note_started_ms = browse_t0.elapsed().as_millis() as u64;
+            let note_start_url = xhs.current_url().await.unwrap_or_default();
+            append_search_debug_event(
+                ctx,
+                json!({
+                    "event": "note_started",
+                    "elapsed_ms": note_started_ms,
+                    "item_index": item_index,
+                    "source_position": card.position,
+                    "note_id": &card.note_id,
+                    "url": note_start_url,
+                }),
+            );
 
             let entry = scan_card_note(
                 &xhs,
@@ -4461,10 +4604,35 @@ impl Tool for SearchTool {
                 }
             }
             let t_close = std::time::Instant::now();
-            let _ = xhs.close_note(0.6).await;
+            let close_result = match xhs.close_note(0.6).await {
+                Ok(result) => result,
+                Err(err) => json!({
+                    "ok": false,
+                    "strategy": "close_error",
+                    "error": format!("{err:#}"),
+                }),
+            };
             let close_ms = t_close.elapsed().as_millis() as u64;
+            let close_url = xhs.current_url().await.unwrap_or_default();
             scan_progress.reading_completed(item_index, title);
             let total_ms = (browse_t0.elapsed().as_millis() as u64).saturating_sub(note_started_ms);
+            append_search_debug_event(
+                ctx,
+                json!({
+                    "event": "note_closed",
+                    "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
+                    "item_index": item_index,
+                    "note_id": &card.note_id,
+                    "note_ok": notes[idx].get("ok").and_then(Value::as_bool),
+                    "total_ms": total_ms,
+                    "close_ms": close_ms,
+                    "close_ok": close_result.get("ok").and_then(Value::as_bool),
+                    "close_strategy": close_result.get("strategy").and_then(Value::as_str),
+                    "close_error": close_result.get("error").and_then(Value::as_str),
+                    "url_before_note": note_start_url,
+                    "url_after_close": close_url,
+                }),
+            );
             note_perfs.push(harvest_note_perf(
                 &mut notes[idx],
                 idx,
@@ -4523,7 +4691,6 @@ impl Tool for SearchTool {
         // flags reflect "known before this scan" rather than "known after this
         // scan's own writes". (Only kept in the artifact; the opened notes are
         // the returned listing.)
-        let mut search = search;
         if let Some(cards) = search.get_mut("cards") {
             history_snapshot.annotate_cards(cards);
         }
@@ -4566,6 +4733,9 @@ impl Tool for SearchTool {
         });
         if !stop_reason.is_empty() {
             payload["reason"] = json!(stop_reason);
+        }
+        if let Some(error) = page_error {
+            payload["error"] = json!(error);
         }
         promote_page_diagnostic(&mut payload);
         // Even the artifact keeps only the compact filter summary (changed +
