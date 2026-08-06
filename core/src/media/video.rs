@@ -7,7 +7,7 @@ use crate::media::processor::MediaProcessor;
 
 /// Wall-clock cap for fetching a note's video file. Generous because XHS video
 /// CDN throughput varies; still bounded so a stalled download can't hang a scan.
-const VIDEO_DOWNLOAD_TIMEOUT_S: u64 = 180;
+const VIDEO_DOWNLOAD_TIMEOUT_S: u64 = 600;
 
 impl MediaProcessor {
     /// OCR a video note's already-downloaded poster in place: read
@@ -296,8 +296,8 @@ impl MediaProcessor {
         }
 
         // Inline transcription only when cloud ASR is enabled for this run;
-        // attempting it without pro would just stamp every enriched video with
-        // a "requires socai pro" transcript_error.
+        // attempting it without an eligible hosted-agent session would stamp
+        // every enriched video with the same availability error.
         if !source.is_empty() && self.config.use_cloud_asr {
             if let Some(map) = result.as_object_mut() {
                 map.remove("transcript_error");

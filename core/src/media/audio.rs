@@ -9,14 +9,13 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use symphonia::core::units::TimeBase;
 
 use crate::media::common::{ensure_dir, url_suffix, MediaUnavailable};
 use crate::media::processor::MediaProcessor;
 
 impl MediaProcessor {
-    /// Transcribe a video/audio source through socai pro cloud ASR — the only
-    /// transcription path (local whisper was removed as uncontrollable).
+    /// Transcribe a video/audio source through socai's managed cloud ASR — the
+    /// only transcription path (local whisper was removed as uncontrollable).
     pub async fn transcribe_audio(&self, source: &str, referer: &str) -> Result<String> {
         let t0 = Instant::now();
         let result = self.transcribe_audio_inner(source, referer).await;
@@ -27,7 +26,7 @@ impl MediaProcessor {
     async fn transcribe_audio_inner(&self, source: &str, referer: &str) -> Result<String> {
         if !self.config.use_cloud_asr {
             anyhow::bail!(MediaUnavailable(
-                "audio transcription requires socai pro (cloud ASR)".into()
+                "video transcription requires a signed-in account with socai agent selected".into()
             ));
         }
         let source_path = self.local_audio_source(source, referer).await?;
@@ -134,16 +133,17 @@ fn demux_aac_to_adts(source: &Path, target: &Path, max_seconds: u64) -> Result<f
         .as_deref()
         .ok_or_else(|| MediaUnavailable("AAC track has no decoder config".into()))?;
     let header = AdtsHeader::from_asc(asc)?;
-    let time_base = track
-        .codec_params
-        .time_base
-        .unwrap_or_else(|| TimeBase::new(1, sample_rate));
-
     let mut writer = std::io::BufWriter::new(
         std::fs::File::create(target)
             .with_context(|| format!("failed to create {}", target.display()))?,
     );
-    let mut end_ts = 0u64;
+    // The emitted ADTS header declares one 1024-sample AAC frame per packet.
+    // Bound the output using that exact duration contract, which is also what
+    // socai-server validates after upload. Using the source packet timestamp
+    // allowed the last frame to cross the configured limit while the client
+    // still reported the capped value.
+    let max_samples = max_seconds.saturating_mul(u64::from(sample_rate));
+    let mut written_samples = 0u64;
     loop {
         let packet = match format.next_packet() {
             Ok(packet) => packet,
@@ -157,26 +157,22 @@ fn demux_aac_to_adts(source: &Path, target: &Path, max_seconds: u64) -> Result<f
         if packet.track_id() != track_id {
             continue;
         }
-        if timestamp_seconds(time_base, packet.ts) >= max_seconds as f64 {
+        const SAMPLES_PER_AAC_FRAME: u64 = 1024;
+        if written_samples.saturating_add(SAMPLES_PER_AAC_FRAME) > max_samples {
             break;
         }
         writer.write_all(&header.for_frame(packet.data.len())?)?;
         writer.write_all(&packet.data)?;
-        end_ts = packet.ts + packet.dur;
+        written_samples += SAMPLES_PER_AAC_FRAME;
     }
     writer.flush()?;
-    if end_ts == 0 {
+    if written_samples == 0 {
         anyhow::bail!(MediaUnavailable(format!(
             "AAC track in {} contains no audio packets",
             source.display()
         )));
     }
-    Ok(timestamp_seconds(time_base, end_ts).min(max_seconds as f64))
-}
-
-fn timestamp_seconds(time_base: TimeBase, ts: u64) -> f64 {
-    let time = time_base.calc_time(ts);
-    time.seconds as f64 + time.frac
+    Ok(written_samples as f64 / f64::from(sample_rate))
 }
 
 /// Fixed part of an ADTS header for an AAC-LC stream; only the per-frame

@@ -1,7 +1,7 @@
 //! Optional local/media processing used by site runtimes.
 //!
 //! Nothing here shells out to external media tools: video covers come from
-//! their own CDN URL, audio transcription is cloud-only (socai pro takes the
+//! their own CDN URL, audio transcription is cloud-only (socai takes the
 //! demuxed aac as-is), and OCR runs in-process. Site runtimes can opt into
 //! this crate for heavier media enrichment while keeping plain DOM extraction
 //! fast and portable.

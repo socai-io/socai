@@ -26,8 +26,8 @@ impl MediaConfig {
         Self {
             base_dir: base_dir.into(),
             request_timeout_s: 25,
-            asr_timeout_s: 300,
-            max_audio_seconds: 300,
+            asr_timeout_s: 1_800,
+            max_audio_seconds: 20 * 60,
             use_ocr: true,
             use_vision: true,
             use_cloud_asr: false,

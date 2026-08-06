@@ -77,7 +77,7 @@ pub fn xhs_tools_with_llm_provider(
     llm_provider: Option<Arc<dyn LlmProvider>>,
 ) -> Vec<Arc<dyn Tool>> {
     let history = Arc::new(XhsHistoryStore::open_default());
-    let pro = crate::cloud::pro_activated();
+    let asr_enabled = crate::cloud::hosted_llm_selected();
     vec![
         Arc::new(GetNotesTool {
             page: page.clone(),
@@ -85,7 +85,7 @@ pub fn xhs_tools_with_llm_provider(
             history: history.clone(),
             always_download_media: false,
             always_ocr: false,
-            pro,
+            asr_enabled,
         }) as Arc<dyn Tool>,
         Arc::new(ExtractSearchCardsTool {
             page: page.clone(),
@@ -99,13 +99,13 @@ pub fn xhs_tools_with_llm_provider(
             page: page.clone(),
             llm_provider: llm_provider.clone(),
             history: history.clone(),
-            pro,
+            asr_enabled,
         }),
         Arc::new(ExtractNoteTool {
             page: page.clone(),
             llm_provider: llm_provider.clone(),
             history: history.clone(),
-            pro,
+            asr_enabled,
         }),
         Arc::new(ExtractCommentsTool { page: page.clone() }),
         Arc::new(ScrollInNoteTool { page: page.clone() }),
@@ -117,14 +117,14 @@ pub fn xhs_tools_with_llm_provider(
             history: history.clone(),
             always_download_media: false,
             always_ocr: false,
-            pro,
+            asr_enabled,
         }),
         Arc::new(AuthorScanTool {
             page: page.clone(),
             history,
             always_download_media: false,
             always_ocr: false,
-            pro,
+            asr_enabled,
         }),
         Arc::new(WaitForLoginTool { page: page.clone() }),
         Arc::new(WaitForRateLimitTool),
@@ -137,7 +137,7 @@ pub fn xhs_macro_tools_with_llm_provider(
     llm_provider: Option<Arc<dyn LlmProvider>>,
 ) -> Vec<Arc<dyn Tool>> {
     let history = Arc::new(XhsHistoryStore::open_default());
-    let pro = crate::cloud::pro_activated();
+    let asr_enabled = crate::cloud::hosted_llm_selected();
     // The app/TUI agent interface always downloads note media so the offline
     // files are on hand for deeper analysis, and always OCRs every image; the
     // CLI keeps its --download-media / --ocr opt-ins via the full tool set above.
@@ -148,7 +148,7 @@ pub fn xhs_macro_tools_with_llm_provider(
             history: history.clone(),
             always_download_media: true,
             always_ocr: true,
-            pro,
+            asr_enabled,
         }) as Arc<dyn Tool>,
         Arc::new(SearchTool {
             page: page.clone(),
@@ -156,14 +156,14 @@ pub fn xhs_macro_tools_with_llm_provider(
             history: history.clone(),
             always_download_media: true,
             always_ocr: true,
-            pro,
+            asr_enabled,
         }) as Arc<dyn Tool>,
         Arc::new(AuthorScanTool {
             page: page.clone(),
             history,
             always_download_media: true,
             always_ocr: true,
-            pro,
+            asr_enabled,
         }),
         Arc::new(WaitForLoginTool { page }),
         Arc::new(WaitForRateLimitTool),
@@ -250,7 +250,7 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     key: "transcribe_audio",
                     long: Some("transcribe-audio"),
                     value_name: "TRANSCRIBE_AUDIO",
-                    help: "For video notes, transcribe audio through socai pro.",
+                    help: "For video notes, transcribe audio while signed in with socai agent selected.",
                     required: false,
                     kind: ArgKind::Flag,
                 },
@@ -327,7 +327,7 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     long: Some("transcribe-audio"),
                     value_name: "TRANSCRIBE_AUDIO",
                     help: "For opened video notes, download the video file and transcribe audio \
-                           through socai pro. Ignored with --preview.",
+                           while signed in with socai agent selected. Ignored with --preview.",
                     required: false,
                     kind: ArgKind::Flag,
                 },
@@ -403,7 +403,7 @@ pub static XHS_SITE: SiteSpec = SiteSpec {
                     long: Some("transcribe-audio"),
                     value_name: "TRANSCRIBE_AUDIO",
                     help: "For opened video notes, download the video file and transcribe audio \
-                           through socai pro. Ignored with --preview.",
+                           while signed in with socai agent selected. Ignored with --preview.",
                     required: false,
                     kind: ArgKind::Flag,
                 },
@@ -864,35 +864,31 @@ fn read_note_options(input: &Value) -> ReadNoteOptions {
     }
 }
 
-/// Tool args that require an activated socai pro device. Today that's cloud
-/// ASR (`transcribe_audio`); future pro-only args just get added here.
-const PRO_ARG_KEYS: &[&str] = &["transcribe_audio"];
+/// Tool args available only to signed-in users while socai agent is selected.
+const HOSTED_AGENT_ARG_KEYS: &[&str] = &["transcribe_audio"];
 
-/// Attached to a result when a non-pro call asked for a pro-only arg, so the
-/// agent can relay why instead of the whole call failing.
-const PRO_SKIP_NOTE: &str = "transcribe_audio requires socai pro; the call ran without \
-     transcription. Activate with `socai pro activate <invite_code>`.";
+/// Attached when an unavailable call asked for a hosted-agent-only argument,
+/// so the agent can relay the remedy instead of failing the whole call.
+const HOSTED_AGENT_SKIP_NOTE: &str = "video transcription requires a signed-in account \
+     with socai agent selected; the call ran without transcription.";
 
-/// Remove pro-only properties from a tool input schema so a non-pro session
-/// never shows the agent args it cannot use.
-fn strip_pro_schema(schema: &mut Value) {
+/// Hide hosted-agent-only properties when the current session cannot use them.
+fn strip_hosted_agent_schema(schema: &mut Value) {
     if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
-        for key in PRO_ARG_KEYS {
+        for key in HOSTED_AGENT_ARG_KEYS {
             props.remove(*key);
         }
     }
 }
 
-/// Drop pro-only args from a non-pro call's input (the schema hides them, but
-/// a stale conversation or hallucinated arg can still carry one). Returns
-/// whether any was actually requested, so the caller can attach
-/// [`PRO_SKIP_NOTE`] to its result.
-fn strip_pro_input(input: &mut Value) -> bool {
+/// Drop hosted-agent-only args when unavailable (a stale conversation can
+/// still carry one). Returns whether the argument was actually requested.
+fn strip_hosted_agent_input(input: &mut Value) -> bool {
     let Some(obj) = input.as_object_mut() else {
         return false;
     };
     let mut requested = false;
-    for key in PRO_ARG_KEYS {
+    for key in HOSTED_AGENT_ARG_KEYS {
         requested |= obj
             .remove(*key)
             .and_then(|value| value.as_bool())
@@ -901,12 +897,15 @@ fn strip_pro_input(input: &mut Value) -> bool {
     requested
 }
 
-fn attach_pro_skip_note(payload: &mut Value, skipped: bool) {
+fn attach_hosted_agent_skip_note(payload: &mut Value, skipped: bool) {
     if !skipped {
         return;
     }
     if let Some(obj) = payload.as_object_mut() {
-        obj.insert("transcribe_audio_skipped".into(), json!(PRO_SKIP_NOTE));
+        obj.insert(
+            "transcribe_audio_skipped".into(),
+            json!(HOSTED_AGENT_SKIP_NOTE),
+        );
     }
 }
 
@@ -3112,7 +3111,7 @@ pub struct GetNotesTool {
     history: Arc<XhsHistoryStore>,
     always_download_media: bool,
     always_ocr: bool,
-    pro: bool,
+    asr_enabled: bool,
 }
 
 #[async_trait]
@@ -3166,15 +3165,15 @@ impl Tool for GetNotesTool {
                 },
                 "transcribe_audio": {
                     "type": "boolean",
-                    "description": "For video notes, download the video and transcribe audio through socai pro.",
+                    "description": "For video notes, download the video and transcribe audio while signed in with socai agent selected.",
                     "default": false
                 }
             },
             "required": ["notes"],
             "additionalProperties": false
         });
-        if !self.pro {
-            strip_pro_schema(&mut schema);
+        if !self.asr_enabled {
+            strip_hosted_agent_schema(&mut schema);
         }
         schema
     }
@@ -3184,7 +3183,7 @@ impl Tool for GetNotesTool {
     }
 
     async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-        let pro_skipped = !self.pro && strip_pro_input(&mut input);
+        let asr_skipped = !self.asr_enabled && strip_hosted_agent_input(&mut input);
         let targets = direct_note_refs(&input)?;
         let gate = XhsPageRuntime::new(&self.page);
         let login = match gate.login_gate(true).await {
@@ -3395,7 +3394,7 @@ impl Tool for GetNotesTool {
             .map(|rel| ctx.run_dir.join(rel).to_string_lossy().into_owned());
         lean_scan_payload(&mut payload);
         attach_artifact_pointer(&mut payload, artifact_path, ARTIFACT_EXTRA_NOTE_PROPERTIES);
-        attach_pro_skip_note(&mut payload, pro_skipped);
+        attach_hosted_agent_skip_note(&mut payload, asr_skipped);
         Ok(json_result(&payload))
     }
 }
@@ -3405,9 +3404,9 @@ pub struct ReadNoteTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
     history: Arc<XhsHistoryStore>,
-    /// socai pro activated on this device; when false, pro-only args
-    /// ([`PRO_ARG_KEYS`]) are hidden from the schema and skipped at runtime.
-    pro: bool,
+    /// Signed in with socai agent selected; when false, managed-ASR arguments
+    /// are hidden from the schema and skipped at runtime.
+    asr_enabled: bool,
 }
 
 #[async_trait]
@@ -3436,14 +3435,14 @@ impl Tool for ReadNoteTool {
                 "max_images": { "type": "integer", "default": 12, "minimum": 1 }
             }
         });
-        if !self.pro {
-            strip_pro_schema(&mut schema);
+        if !self.asr_enabled {
+            strip_hosted_agent_schema(&mut schema);
         }
         schema
     }
 
     async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-        let pro_skipped = !self.pro && strip_pro_input(&mut input);
+        let asr_skipped = !self.asr_enabled && strip_hosted_agent_input(&mut input);
         let note_id = get_str(&input, "note_id").map(str::to_string);
         let index = input
             .get("index")
@@ -3522,7 +3521,7 @@ impl Tool for ReadNoteTool {
         if let Some(perf) = value.as_object_mut().and_then(|map| map.remove("perf")) {
             write_run_perf_file(ctx, "read.json", &json!({ "read": perf }));
         }
-        attach_pro_skip_note(&mut value, pro_skipped);
+        attach_hosted_agent_skip_note(&mut value, asr_skipped);
         Ok(json_result(&value))
     }
 }
@@ -3532,8 +3531,8 @@ pub struct ExtractNoteTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
     history: Arc<XhsHistoryStore>,
-    /// See [`ReadNoteTool::pro`].
-    pro: bool,
+    /// See [`ReadNoteTool::asr_enabled`].
+    asr_enabled: bool,
 }
 
 #[async_trait]
@@ -3559,14 +3558,14 @@ impl Tool for ExtractNoteTool {
                 "max_images": { "type": "integer", "default": 12, "minimum": 1 }
             }
         });
-        if !self.pro {
-            strip_pro_schema(&mut schema);
+        if !self.asr_enabled {
+            strip_hosted_agent_schema(&mut schema);
         }
         schema
     }
 
     async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-        let pro_skipped = !self.pro && strip_pro_input(&mut input);
+        let asr_skipped = !self.asr_enabled && strip_hosted_agent_input(&mut input);
         let wait_seconds = get_f64(&input, "wait_seconds", 8.0);
         let options = read_note_options(&input);
         let xhs = XhsPageRuntime::new_with_media(
@@ -3587,7 +3586,7 @@ impl Tool for ExtractNoteTool {
         attach_top_comments(&xhs, &mut value).await;
         self.history
             .record(&value, &options.level, options.include_media);
-        attach_pro_skip_note(&mut value, pro_skipped);
+        attach_hosted_agent_skip_note(&mut value, asr_skipped);
         Ok(json_result(&value))
     }
 }
@@ -4032,8 +4031,8 @@ pub struct SearchTool {
     /// `ocr` input. Set by the app/TUI macro factory so the desktop agent always
     /// gets OCR; the CLI/full set leaves it to the `--ocr` flag.
     always_ocr: bool,
-    /// See [`ReadNoteTool::pro`].
-    pro: bool,
+    /// See [`ReadNoteTool::asr_enabled`].
+    asr_enabled: bool,
 }
 
 fn effective_macro_input(
@@ -4124,7 +4123,7 @@ impl Tool for SearchTool {
                 },
                 "transcribe_audio": {
                     "type": "boolean",
-                    "description": "For opened video notes, download the video file and transcribe audio through socai pro. Ignored in preview mode.",
+                    "description": "For opened video notes, download the video file and transcribe audio while signed in with socai agent selected. Ignored in preview mode.",
                     "default": false
                 },
                 "preview": {
@@ -4135,8 +4134,8 @@ impl Tool for SearchTool {
             },
             "required": ["query"]
         });
-        if !self.pro {
-            strip_pro_schema(&mut schema);
+        if !self.asr_enabled {
+            strip_hosted_agent_schema(&mut schema);
         }
         schema
     }
@@ -4151,7 +4150,7 @@ impl Tool for SearchTool {
     }
 
     async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-        let pro_skipped = !self.pro && strip_pro_input(&mut input);
+        let asr_skipped = !self.asr_enabled && strip_hosted_agent_input(&mut input);
         let query = get_str(&input, "query")
             .ok_or_else(|| anyhow::anyhow!("missing query"))?
             .to_string();
@@ -4790,7 +4789,7 @@ impl Tool for SearchTool {
         // agent/CLI output stays small, then point at the artifact for the rest.
         lean_scan_payload(&mut payload);
         attach_artifact_pointer(&mut payload, artifact_path, ARTIFACT_EXTRA_NOTE_PROPERTIES);
-        attach_pro_skip_note(&mut payload, pro_skipped);
+        attach_hosted_agent_skip_note(&mut payload, asr_skipped);
         Ok(json_result(&payload))
     }
 }
@@ -4814,8 +4813,8 @@ pub struct AuthorScanTool {
     /// `ocr` input. Set by the app/TUI macro factory; the CLI/full set leaves it
     /// to the `--ocr` flag.
     always_ocr: bool,
-    /// See [`ReadNoteTool::pro`].
-    pro: bool,
+    /// See [`ReadNoteTool::asr_enabled`].
+    asr_enabled: bool,
 }
 
 #[async_trait]
@@ -4878,14 +4877,14 @@ impl Tool for AuthorScanTool {
                 },
                 "transcribe_audio": {
                     "type": "boolean",
-                    "description": "For opened video notes, download the video file and transcribe audio through socai pro. Ignored in preview mode.",
+                    "description": "For opened video notes, download the video file and transcribe audio while signed in with socai agent selected. Ignored in preview mode.",
                     "default": false
                 }
             },
             "required": ["author_id"]
         });
-        if !self.pro {
-            strip_pro_schema(&mut schema);
+        if !self.asr_enabled {
+            strip_hosted_agent_schema(&mut schema);
         }
         schema
     }
@@ -4895,7 +4894,7 @@ impl Tool for AuthorScanTool {
     }
 
     async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-        let pro_skipped = !self.pro && strip_pro_input(&mut input);
+        let asr_skipped = !self.asr_enabled && strip_hosted_agent_input(&mut input);
         let author_id = get_str(&input, "author_id")
             .map(str::trim)
             .filter(|id| !id.is_empty())
@@ -5227,7 +5226,7 @@ impl Tool for AuthorScanTool {
         // agent/CLI output stays small, then point at the artifact for the rest.
         lean_scan_payload(&mut payload);
         attach_artifact_pointer(&mut payload, artifact_path, ARTIFACT_EXTRA_NOTE_PROPERTIES);
-        attach_pro_skip_note(&mut payload, pro_skipped);
+        attach_hosted_agent_skip_note(&mut payload, asr_skipped);
         Ok(json_result(&payload))
     }
 }
@@ -5324,7 +5323,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_pro_schema_hides_pro_args() {
+    fn strip_hosted_agent_schema_hides_asr_args() {
         let mut schema = json!({
             "type": "object",
             "properties": {
@@ -5332,22 +5331,22 @@ mod tests {
                 "transcribe_audio": { "type": "boolean" }
             }
         });
-        strip_pro_schema(&mut schema);
+        strip_hosted_agent_schema(&mut schema);
         assert!(schema["properties"].get("transcribe_audio").is_none());
         assert!(schema["properties"].get("query").is_some());
     }
 
     #[test]
-    fn strip_pro_input_drops_args_and_reports_requests() {
+    fn strip_hosted_agent_input_drops_args_and_reports_requests() {
         let mut input = json!({ "query": "咖啡", "transcribe_audio": true });
-        assert!(strip_pro_input(&mut input));
+        assert!(strip_hosted_agent_input(&mut input));
         assert!(input.get("transcribe_audio").is_none());
         assert_eq!(input["query"], json!("咖啡"));
 
         // Not requested (absent or false) → no skip note owed.
         let mut plain = json!({ "query": "咖啡" });
-        assert!(!strip_pro_input(&mut plain));
+        assert!(!strip_hosted_agent_input(&mut plain));
         let mut off = json!({ "query": "咖啡", "transcribe_audio": false });
-        assert!(!strip_pro_input(&mut off));
+        assert!(!strip_hosted_agent_input(&mut off));
     }
 }

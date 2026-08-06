@@ -210,7 +210,6 @@ export namespace authMenu {
         <ul class="auth-pro-benefits t-small">
           <li>${esc(t("subscription.proPoints"))}</li>
           <li>${esc(t("subscription.proXhs"))}</li>
-          <li>${esc(t("subscription.proTranscript"))}</li>
         </ul>
       `}
       ${upgradeExpanded ? `<section class="auth-upgrade-panel" aria-label="${esc(t("subscription.upgradePro"))}">${subscriptionContent}</section>` : ""}

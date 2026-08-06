@@ -209,7 +209,6 @@ const messages = {
   "subscription.renewPro": { en: "renew pro", zh: "续订 Pro" },
   "subscription.proPoints": { en: "500 points", zh: "500 点数" },
   "subscription.proXhs": { en: "use xiaohongshu without signing in", zh: "免登录小红书" },
-  "subscription.proTranscript": { en: "extract video transcripts", zh: "获取视频文字稿" },
   "subscription.active": { en: "subscribed", zh: "已订阅" },
   "subscription.inactive": { en: "not subscribed", zh: "未订阅" },
   "subscription.loginHint": {

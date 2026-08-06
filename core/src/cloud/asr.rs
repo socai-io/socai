@@ -4,10 +4,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::json;
+use tokio::io::AsyncReadExt;
 
 use super::auth::{bearer, configured_base_url, http_client, load_credentials};
 
 const TASK_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const AUDIO_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+const MAX_AUDIO_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 /// Consecutive poll failures tolerated before giving up on a submitted task.
 const MAX_POLL_FAILURES: u32 = 3;
 
@@ -40,19 +43,29 @@ pub async fn transcribe_audio_file(
     client_task_id: Option<&str>,
 ) -> Result<CloudAsrResult> {
     let base_url = configured_base_url()
-        .ok_or_else(|| anyhow::anyhow!("socai pro server URL is not configured"))?;
+        .ok_or_else(|| anyhow::anyhow!("socai server URL is not configured"))?;
     let creds = load_credentials().ok_or_else(|| {
-        anyhow::anyhow!("socai pro is not activated; run `socai pro activate <invite_code>`")
+        anyhow::anyhow!("sign in and select socai agent before requesting video transcription")
     })?;
+    if creds.user_id.trim().is_empty() || !creds.hosted_llm_selected {
+        anyhow::bail!("sign in and select socai agent before requesting video transcription");
+    }
     // The extension matters: the server passes the filename through to
     // DashScope, which detects the audio format from it.
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("audio.aac");
-    let bytes = tokio::fs::read(path)
+    let size_bytes = tokio::fs::metadata(path)
         .await
-        .with_context(|| format!("failed to read {}", path.display()))?;
+        .with_context(|| format!("failed to read metadata for {}", path.display()))?
+        .len();
+    if size_bytes > MAX_AUDIO_UPLOAD_BYTES {
+        anyhow::bail!(
+            "audio upload is too large: {} bytes exceeds the 128 MiB limit",
+            size_bytes
+        );
+    }
     let client = http_client()?;
     let started = Instant::now();
     let upload: UploadUrlResponse = bearer(
@@ -61,7 +74,7 @@ pub async fn transcribe_audio_file(
             .json(&json!({
                 "filename": filename,
                 "content_type": "audio/aac",
-                "size_bytes": bytes.len(),
+                "size_bytes": size_bytes,
                 "duration_s": duration_s.max(0),
                 "client_task_id": client_task_id.unwrap_or(""),
             })),
@@ -73,7 +86,23 @@ pub async fn transcribe_audio_file(
     .json()
     .await?;
 
-    let mut put = client.put(&upload.upload_url).body(bytes);
+    let file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("failed to open {} for upload", path.display()))?;
+    let stream = futures::stream::try_unfold(file, |mut file| async move {
+        let mut chunk = vec![0u8; 64 * 1024];
+        let read = file.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
+        chunk.truncate(read);
+        Ok(Some((chunk, file)))
+    });
+    let mut put = client
+        .put(&upload.upload_url)
+        .timeout(AUDIO_UPLOAD_TIMEOUT)
+        .header(reqwest::header::CONTENT_LENGTH, size_bytes)
+        .body(reqwest::Body::wrap_stream(stream));
     for (key, value) in &upload.headers {
         put = put.header(key, value);
     }
@@ -115,7 +144,7 @@ pub async fn transcribe_audio_file(
                                  spoken content to transcribe"
                             );
                         }
-                        anyhow::bail!("socai pro ASR failed: {}", short_error(&error));
+                        anyhow::bail!("video transcription failed: {}", short_error(&error));
                     }
                     _ => {}
                 }
@@ -123,12 +152,12 @@ pub async fn transcribe_audio_file(
             Err(err) => {
                 poll_failures += 1;
                 if poll_failures >= MAX_POLL_FAILURES {
-                    return Err(err.context("socai pro ASR status polling failed"));
+                    return Err(err.context("video transcription status polling failed"));
                 }
             }
         }
         if Instant::now() >= deadline {
-            anyhow::bail!("socai pro ASR timed out after {}s", timeout.as_secs());
+            anyhow::bail!("video transcription timed out after {}s", timeout.as_secs());
         }
         tokio::time::sleep(TASK_POLL_INTERVAL).await;
     }
