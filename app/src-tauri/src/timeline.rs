@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use socai_core::agent::{AgentEvent, Conversation, Run};
+use socai_core::agent::{AgentEvent, Conversation, Run, ToolProgressPhase, ToolProgressStatus};
 
 use crate::tasks::{now_ms, AgentTaskSnapshot};
 
@@ -61,6 +61,21 @@ pub(crate) enum AgentTaskEventKind {
         label: String,
         args: Value,
         repeat_count: u32,
+        text: String,
+    },
+    ToolProgress {
+        id: String,
+        step: u32,
+        sequence_in_step: u32,
+        name: String,
+        phase: String,
+        progress_status: String,
+        current: u64,
+        total: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_index: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
         text: String,
     },
     ToolResult {
@@ -177,6 +192,7 @@ impl AgentTaskEventKind {
             Self::Assistant { .. } => "assistant",
             Self::Reasoning { .. } => "reasoning",
             Self::ToolCall { .. } => "tool_call",
+            Self::ToolProgress { .. } => "tool_progress",
             Self::ToolResult { .. } => "tool_result",
             Self::ToolError { .. } => "tool_error",
             Self::ApiError { .. } => "api_error",
@@ -211,6 +227,19 @@ impl AgentTaskEventKind {
                 label: "tool".into(),
                 args: Value::Null,
                 repeat_count: 0,
+                text,
+            },
+            "tool_progress" => Self::ToolProgress {
+                id: String::new(),
+                step: 0,
+                sequence_in_step: 0,
+                name: "tool".into(),
+                phase: "reading".into(),
+                progress_status: "item_started".into(),
+                current: 0,
+                total: 0,
+                item_index: None,
+                title: None,
                 text,
             },
             "tool_result" => Self::ToolResult {
@@ -423,6 +452,42 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
             input,
             repeat_count,
         } => tool_call_event(id, *step, *sequence, name, input, *repeat_count),
+        AgentEvent::ToolProgress {
+            id,
+            step,
+            sequence,
+            name,
+            progress,
+        } => {
+            let phase = match progress.phase {
+                ToolProgressPhase::Reading => "reading",
+                ToolProgressPhase::Ocr => "ocr",
+            };
+            let status = match progress.status {
+                ToolProgressStatus::ItemStarted => "item_started",
+                ToolProgressStatus::ItemCompleted => "item_completed",
+                ToolProgressStatus::Finished => "finished",
+            };
+            let display_current = progress.item_index.unwrap_or(progress.current);
+            let mut text = format!("{phase} {display_current}/{}", progress.total);
+            if let Some(title) = progress.title.as_deref().filter(|title| !title.is_empty()) {
+                text.push_str(" · ");
+                text.push_str(title);
+            }
+            AgentTaskEventKind::ToolProgress {
+                id: id.clone(),
+                step: *step,
+                sequence_in_step: *sequence,
+                name: name.clone(),
+                phase: phase.into(),
+                progress_status: status.into(),
+                current: progress.current,
+                total: progress.total,
+                item_index: progress.item_index,
+                title: progress.title.clone(),
+                text: truncate_event_text(&text),
+            }
+        }
         AgentEvent::ToolResult {
             id,
             step,

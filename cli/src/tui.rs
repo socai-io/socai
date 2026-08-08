@@ -823,6 +823,7 @@ fn print_agent_event(event: &AgentEvent) {
                 println!("  → {name}({preview})");
             }
         }
+        AgentEvent::ToolProgress { .. } => {}
         AgentEvent::ToolResult {
             name,
             summary,

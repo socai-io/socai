@@ -52,6 +52,10 @@ const DEFAULT_NUM_NOTES: i64 = 10;
 /// (not a user/agent knob), shared by the full scan and the preview path.
 const SEARCH_WAIT_SECONDS: f64 = 2.0;
 
+/// Stop a broken composite search from holding the agent indefinitely.
+const SEARCH_SCAN_TIMEOUT_SECONDS: u64 = 720;
+const MAX_CONSECUTIVE_NOTE_FAILURES: usize = 3;
+
 /// Top comments attached to every note read (read_note, extract_note,
 /// search, author_scan). Comments are read from the already-open note's DOM
 /// (one extra JS read, no extra navigation), so every note read includes them.
@@ -1153,6 +1157,7 @@ fn recovery_blocker(value: &Value) -> Option<&'static str> {
         .iter()
         .find_map(|key| match value.get(*key).and_then(Value::as_str) {
             Some("rate_limited") => Some("rate_limited"),
+            Some("security_verification") => Some("security_verification"),
             Some("login_required") => Some("login_required"),
             _ => None,
         })
@@ -4426,8 +4431,46 @@ impl Tool for SearchTool {
         let mut stop_reason = String::new();
         let mut page_error: Option<String> = None;
         let mut recovery_attempted = false;
+        let mut consecutive_note_failures = 0usize;
+        let scan_deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SEARCH_SCAN_TIMEOUT_SECONDS);
 
         while notes.len() < want {
+            if std::time::Instant::now() >= scan_deadline {
+                stop_reason = "search_timeout".to_string();
+                page_error = Some(format!(
+                    "search browse phase exceeded {SEARCH_SCAN_TIMEOUT_SECONDS}s"
+                ));
+                append_search_debug_event(
+                    ctx,
+                    json!({
+                        "event": "search_timeout",
+                        "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
+                        "timeout_seconds": SEARCH_SCAN_TIMEOUT_SECONDS,
+                        "notes_attempted": notes.len(),
+                    }),
+                );
+                break;
+            }
+
+            // The incident showed homepage cards matching the search-card
+            // extractor after history.back() left the results page.
+            let loop_url = xhs.current_url().await.unwrap_or_default();
+            if !loop_url.contains("/search_result") {
+                stop_reason = "search_route_lost".to_string();
+                page_error = Some("search left the results page".to_string());
+                append_search_debug_event(
+                    ctx,
+                    json!({
+                        "event": "search_route_lost",
+                        "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
+                        "url": loop_url,
+                        "notes_preserved": notes.len(),
+                    }),
+                );
+                break;
+            }
+
             let cards = match xhs.extract_search_cards().await {
                 Ok(cards) => cards,
                 Err(err) => {
@@ -4518,6 +4561,26 @@ impl Tool for SearchTool {
             };
             if cursor >= cards.len() {
                 if stalls >= 3 {
+                    let mut diagnostic = json!({ "ok": false });
+                    xhs.attach_page_failure_diagnostic(&mut diagnostic).await;
+                    if let Some(blocker) = recovery_blocker(&diagnostic) {
+                        stop_reason = blocker.to_string();
+                        page_error = diagnostic
+                            .get("security_verification_marker")
+                            .or_else(|| diagnostic.get("rate_limit_marker"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        append_search_debug_event(
+                            ctx,
+                            json!({
+                                "event": "search_blocked",
+                                "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
+                                "reason": blocker,
+                                "url": xhs.current_url().await.unwrap_or_default(),
+                                "notes_attempted": notes.len(),
+                            }),
+                        );
+                    }
                     break;
                 }
                 stalls += 1;
@@ -4578,6 +4641,21 @@ impl Tool for SearchTool {
             )
             .await;
             let blocker = recovery_blocker(&entry);
+            if entry.get("ok").and_then(Value::as_bool) == Some(true)
+                || entry.get("skipped").is_some()
+            {
+                consecutive_note_failures = 0;
+            } else {
+                consecutive_note_failures = consecutive_note_failures.saturating_add(1);
+            }
+            let failure_limit_reached =
+                blocker.is_none() && consecutive_note_failures >= MAX_CONSECUTIVE_NOTE_FAILURES;
+            if failure_limit_reached {
+                stop_reason = "consecutive_note_failures".to_string();
+                page_error = Some(format!(
+                    "{consecutive_note_failures} consecutive notes failed to open or read"
+                ));
+            }
             notes.push(entry);
             let idx = notes.len() - 1;
             if ocr {
@@ -4623,6 +4701,11 @@ impl Tool for SearchTool {
                     "item_index": item_index,
                     "note_id": &card.note_id,
                     "note_ok": notes[idx].get("ok").and_then(Value::as_bool),
+                    "note_reason": notes[idx]
+                        .get("reason")
+                        .or_else(|| notes[idx].get("error"))
+                        .and_then(Value::as_str),
+                    "consecutive_failures": consecutive_note_failures,
                     "total_ms": total_ms,
                     "close_ms": close_ms,
                     "close_ok": close_result.get("ok").and_then(Value::as_bool),
@@ -4641,6 +4724,9 @@ impl Tool for SearchTool {
             ));
             if let Some(blocker) = blocker {
                 stop_reason = blocker.to_string();
+                break;
+            }
+            if failure_limit_reached {
                 break;
             }
         }

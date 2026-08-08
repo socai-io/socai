@@ -41,7 +41,7 @@ use crate::agent::run_logging::{make_run_dir, AgentRunRecorder};
 use crate::agent::run_state::RunState;
 use crate::agent::signature::tool_call_signature;
 use crate::agent::system_prompt::build_system_prompt;
-use crate::agent::tool::{SharedTool, ToolContext, ToolResult, ToolResultBlock};
+use crate::agent::tool::{SharedTool, ToolContext, ToolProgressEvent, ToolResult, ToolResultBlock};
 use crate::telemetry::trace::RunTraceBuilder;
 
 /// Events streamed to subscribers while the agent is running.
@@ -70,6 +70,13 @@ pub enum AgentEvent {
         name: String,
         input: Value,
         repeat_count: u32,
+    },
+    ToolProgress {
+        id: String,
+        step: u32,
+        sequence: u32,
+        name: String,
+        progress: ToolProgressEvent,
     },
     ToolResult {
         id: String,
@@ -425,7 +432,11 @@ pub async fn run_agent_with_events(
                 .unwrap_or_else(|| input.clone());
             let tool_recorder =
                 run_recorder.start_tool_call(step, sequence, name, &effective_input)?;
-            let tool_ctx = ctx.clone().with_tool_dir(tool_recorder.dir());
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+            let tool_ctx = ctx
+                .clone()
+                .with_tool_dir(tool_recorder.dir())
+                .with_progress_sender(Some(progress_tx));
             emit(
                 &events,
                 AgentEvent::ToolCall {
@@ -439,7 +450,41 @@ pub async fn run_agent_with_events(
             );
             run_state.note_tool_call(step, name, &effective_input);
             let started = Instant::now();
-            let (result, error) = dispatch_tool(&tools, name, &effective_input, &tool_ctx).await;
+            let dispatch = dispatch_tool(&tools, name, &effective_input, &tool_ctx);
+            tokio::pin!(dispatch);
+            let mut progress_open = true;
+            let (result, error) = loop {
+                tokio::select! {
+                    outcome = &mut dispatch => break outcome,
+                    progress = progress_rx.recv(), if progress_open => {
+                        match progress {
+                            Some(progress) => emit(
+                                &events,
+                                AgentEvent::ToolProgress {
+                                    id: id.clone(),
+                                    step,
+                                    sequence,
+                                    name: name.clone(),
+                                    progress,
+                                },
+                            ),
+                            None => progress_open = false,
+                        }
+                    }
+                }
+            };
+            while let Ok(progress) = progress_rx.try_recv() {
+                emit(
+                    &events,
+                    AgentEvent::ToolProgress {
+                        id: id.clone(),
+                        step,
+                        sequence,
+                        name: name.clone(),
+                        progress,
+                    },
+                );
+            }
             let duration_ms = started.elapsed().as_millis() as u64;
             let duration_s = (duration_ms as f64) / 1000.0;
             tool_recorder.finish_blocks(&result.blocks, duration_ms, error.as_deref())?;
@@ -721,8 +766,11 @@ async fn dispatch_tool(
 }
 
 fn tool_result_to_content(result: &ToolResult) -> Vec<ToolResultContent> {
-    result
-        .blocks
+    tool_result_blocks_to_content(&result.blocks)
+}
+
+fn tool_result_blocks_to_content(blocks: &[ToolResultBlock]) -> Vec<ToolResultContent> {
+    blocks
         .iter()
         .map(|b| match b {
             ToolResultBlock::Text { text } => ToolResultContent::Text { text: text.clone() },
@@ -732,6 +780,14 @@ fn tool_result_to_content(result: &ToolResult) -> Vec<ToolResultContent> {
             },
         })
         .collect()
+}
+
+/// Rebuild the bounded model-facing form of a persisted tool result. This is
+/// used when a later run resumes an interrupted turn: raw `output.json` stays
+/// the source of truth, while the replayed context matches the same bounds as
+/// the live agent loop.
+pub(crate) fn tool_result_blocks_for_history(blocks: &[ToolResultBlock]) -> Vec<ToolResultContent> {
+    bound_content_for_history(&tool_result_blocks_to_content(blocks))
 }
 
 /// Squash a tool_result for the chat history:
@@ -885,4 +941,12 @@ fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> V
         });
     }
     blocks
+}
+
+/// Rebuild the exact bounded assistant history form from a persisted response.
+/// Interrupted-run replay uses this instead of exposing reasoning-only text or
+/// growing history beyond the limits applied during the original live run.
+pub(crate) fn assistant_blocks_for_history(response: &LLMResponse) -> Vec<Block> {
+    let (visible_texts, _) = split_thinking(&response.text_blocks);
+    build_assistant_blocks(response, &visible_texts)
 }

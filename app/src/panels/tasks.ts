@@ -838,6 +838,14 @@ export namespace agentPanel {
         }
       });
     });
+    document.querySelectorAll<HTMLButtonElement>("[data-resume-task]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const taskId = btn.dataset.resumeTask;
+        if (!taskId) return;
+        btn.disabled = true;
+        await submitReplyValue(shell, taskId, t("task.resumePrompt"));
+      });
+    });
 
     // Every delete affordance (row ×, detail-head button) only requests —
     // the confirm dialog commits. The row × is a sibling of the open button,
@@ -1063,6 +1071,11 @@ export namespace agentPanel {
   async function submitReply(shell: ShellState, taskId: string): Promise<void> {
     const value = replyDraft.trim();
     if (!value || submittingReply) return;
+    await submitReplyValue(shell, taskId, value);
+  }
+
+  async function submitReplyValue(shell: ShellState, taskId: string, value: string): Promise<void> {
+    if (!value.trim() || submittingReply) return;
     submittingReply = true;
     replyError = "";
     // Sending snaps the thread back to the newest content (and re-arms
@@ -1228,6 +1241,16 @@ export namespace agentPanel {
   }
 
   function appendUniqueEvent(task: AgentTaskView, payload: AgentTaskEventPayload): boolean {
+    if (payload.kind === "tool_progress") {
+      const index = task.events.findIndex((event) =>
+        event.kind === "tool_progress"
+        && event.id === payload.id
+        && event.phase === payload.phase);
+      if (index >= 0) {
+        task.events = task.events.map((event, eventIndex) => eventIndex === index ? payload : event);
+        return true;
+      }
+    }
     const key = stableEventKey(payload);
     if (key && task.events.some((event) => stableEventKey(event) === key)) return false;
     task.events = [...task.events, payload];
@@ -1303,6 +1326,16 @@ export namespace agentPanel {
     const turn = stream.querySelector<HTMLDivElement>(".thread-inner > .turn:last-child");
     const activity = turn?.querySelector<HTMLDivElement>(".activity");
     if (activity) {
+      if (payload.kind === "tool_progress") {
+        const progressKey = `${payload.id ?? ""}:${payload.phase ?? ""}`;
+        const existing = [...activity.querySelectorAll<HTMLElement>("[data-tool-progress]")]
+          .find((row) => row.dataset.toolProgress === progressKey);
+        if (existing) {
+          existing.outerHTML = renderEventRow(payload);
+          if (pinned) stream.scrollTop = stream.scrollHeight;
+          return;
+        }
+      }
       const working = activity.querySelector(".act-row--working");
       if (working) working.insertAdjacentHTML("beforebegin", renderEventRow(payload));
       else activity.insertAdjacentHTML("beforeend", renderEventRow(payload));

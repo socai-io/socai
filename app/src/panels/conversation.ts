@@ -157,9 +157,11 @@ function renderConnectOverlay(status: Status, remoteDebuggingReady: boolean): st
 // ── slim head: persistent subject + status + row-level actions ──────
 function renderHead(task: AgentTaskView, running: boolean): string {
   const dotClass = running ? "badge-dot-ink badge-dot-pulse" : "badge-dot-hollow";
-  const action = running
+  const actions = running
     ? `<button type="button" class="btn-ghost btn-compact" data-cancel-task="${esc(task.task_id)}">${esc(t("task.cancel"))}</button>`
-    : `<button type="button" class="btn-ghost btn-compact" data-delete-task="${esc(task.task_id)}">${esc(t("task.delete"))}</button>`;
+    : `${task.status === "interrupted" || task.status === "cancelled"
+      ? `<button type="button" class="btn-ghost btn-compact" data-resume-task="${esc(task.task_id)}">${esc(t("task.resume"))}</button>`
+      : ""}<button type="button" class="btn-ghost btn-compact" data-delete-task="${esc(task.task_id)}">${esc(t("task.delete"))}</button>`;
   return `
     <div class="conversation-head">
       <span class="conversation-head__title" title="${esc(task.task)}">${esc(task.task)}</span>
@@ -168,7 +170,7 @@ function renderHead(task: AgentTaskView, running: boolean): string {
           <i class="badge-dot ${dotClass}" aria-hidden="true"></i>
           ${esc(taskStatusLabel(task.status))}
         </span>
-        ${action}
+        ${actions}
       </div>
     </div>
   `;
@@ -393,7 +395,19 @@ function renderActivity(
 /** One activity row. Shared with the live event appender in tasks.ts so a
  *  streamed row lands as the same markup a full render rebuilds. */
 export function renderEventRow(ev: AgentTaskEventPayload): string {
-  return `<div class="act-row act-row--${esc(ev.kind)}"><span class="act-row__glyph" aria-hidden="true">${eventGlyph(ev.kind)}</span><span class="act-row__text">${esc(ev.text)}</span></div>`;
+  const progressKey = ev.kind === "tool_progress" ? `${ev.id ?? ""}:${ev.phase ?? ""}` : "";
+  const progressAttr = progressKey ? ` data-tool-progress="${esc(progressKey)}"` : "";
+  const text = ev.kind === "tool_progress" ? toolProgressText(ev) : ev.text;
+  return `<div class="act-row act-row--${esc(ev.kind)}"${progressAttr}><span class="act-row__glyph" aria-hidden="true">${eventGlyph(ev.kind)}</span><span class="act-row__text">${esc(text)}</span></div>`;
+}
+
+function toolProgressText(ev: AgentTaskEventPayload): string {
+  const phase = ev.phase === "ocr" ? t("task.progressOcr") : t("task.progressReading");
+  const current = ev.item_index ?? ev.current ?? 0;
+  const total = ev.total ?? 0;
+  const count = total > 0 ? ` ${current}/${total}` : "";
+  const title = ev.title?.trim() ? ` · ${ev.title.trim()}` : "";
+  return `${phase}${count}${title}`;
 }
 
 // ── per-search note previews (always-visible card groups) ────────────
@@ -708,6 +722,7 @@ function eventGlyph(kind: AgentTaskEventPayload["kind"]): string {
     case "assistant": return " ";
     case "reasoning": return "·";
     case "tool_call": return "→";
+    case "tool_progress": return "·";
     case "tool_result": return "←";
     case "tool_error": return "✗";
     case "api_error": return "✗";

@@ -23,6 +23,8 @@ const DIAGNOSTIC_FIELDS: &[&str] = &[
     "page_url",
     "rate_limit_detected",
     "rate_limit_marker",
+    "security_verification_detected",
+    "security_verification_marker",
     "recovery_tool",
 ];
 
@@ -35,7 +37,7 @@ pub(super) async fn attach(page: &PageSession, result: &mut Value) {
     }
     if let Some(existing) = diagnostic_fields(result) {
         merge(result, Value::Object(existing));
-        classify_rate_limit(result);
+        classify_page_blocker(result);
         return;
     }
     if result.get("url").is_none() {
@@ -44,14 +46,14 @@ pub(super) async fn attach(page: &PageSession, result: &mut Value) {
         }
     }
     merge(result, capture(page).await);
-    classify_rate_limit(result);
+    classify_page_blocker(result);
 }
 
 /// Copy a nested diagnostic from `source` onto a different result object.
 pub(super) fn copy(target: &mut Value, source: &Value) {
     if let Some(diagnostic) = diagnostic_fields(source) {
         merge(target, Value::Object(diagnostic));
-        classify_rate_limit(target);
+        classify_page_blocker(target);
     }
 }
 
@@ -61,7 +63,12 @@ pub(super) fn promote(value: &mut Value) {
         return;
     };
     merge(value, Value::Object(diagnostic));
+    classify_page_blocker(value);
+}
+
+fn classify_page_blocker(value: &mut Value) {
     classify_rate_limit(value);
+    classify_security_verification(value);
 }
 
 async fn capture(page: &PageSession) -> Value {
@@ -84,6 +91,10 @@ async fn capture(page: &PageSession) -> Value {
                 diagnostic["rate_limit_detected"] = json!(true);
                 diagnostic["rate_limit_marker"] = json!(marker);
                 diagnostic["recovery_tool"] = json!("wait_for_rate_limit");
+            }
+            if let Some(marker) = detect_security_verification_marker(trimmed) {
+                diagnostic["security_verification_detected"] = json!(true);
+                diagnostic["security_verification_marker"] = json!(marker);
             }
             diagnostic["page_ocr_truncated"] = json!(trimmed.chars().count() > OCR_MAX_CHARS);
             diagnostic["page_ocr_text"] = json!(truncate(trimmed));
@@ -137,6 +148,10 @@ fn preferred_diagnostic<'a>(values: impl Iterator<Item = &'a Value>) -> Option<M
             .get("rate_limit_detected")
             .and_then(Value::as_bool)
             == Some(true)
+            || diagnostic
+                .get("security_verification_detected")
+                .and_then(Value::as_bool)
+                == Some(true)
         {
             return Some(diagnostic);
         }
@@ -188,6 +203,21 @@ fn detect_rate_limit_marker(text: &str) -> Option<&'static str> {
     compact.contains("访问频繁").then_some("访问频繁")
 }
 
+fn detect_security_verification_marker(text: &str) -> Option<&'static str> {
+    let compact: String = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    if compact.contains("securityverification") {
+        return Some("Security Verification");
+    }
+    if compact.contains("pleaseselectthetwoimages") {
+        return Some("image captcha");
+    }
+    None
+}
+
 fn classify_rate_limit(value: &mut Value) {
     let marker = value
         .get("rate_limit_marker")
@@ -211,6 +241,30 @@ fn classify_rate_limit(value: &mut Value) {
     map.insert("rate_limit_detected".into(), json!(true));
     map.insert("rate_limit_marker".into(), json!(marker));
     map.insert("recovery_tool".into(), json!("wait_for_rate_limit"));
+}
+
+fn classify_security_verification(value: &mut Value) {
+    let marker = value
+        .get("security_verification_marker")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("page_ocr_text")
+                .and_then(Value::as_str)
+                .and_then(detect_security_verification_marker)
+                .map(str::to_string)
+        });
+    let Some(marker) = marker else {
+        return;
+    };
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    map.insert("ok".into(), json!(false));
+    map.insert("reason".into(), json!("security_verification"));
+    map.insert("security_verification_detected".into(), json!(true));
+    map.insert("security_verification_marker".into(), json!(marker));
 }
 
 fn ocr_center(screenshot: Vec<u8>, percent: u32) -> Result<String> {

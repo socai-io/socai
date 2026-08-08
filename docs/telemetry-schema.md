@@ -164,6 +164,8 @@ Current metadata keys:
 | `page_ocr_error` | string | Best-effort screenshot/OCR failure detail when no page text could be produced. |
 | `rate_limit_detected` | boolean | Whether page OCR recognized an XHS frequent-access blocker. |
 | `rate_limit_marker` | string | Matched OCR marker (`访问频繁` or `300013`). |
+| `security_verification_detected` | boolean | Whether page OCR recognized XHS's image-selection security verification. |
+| `security_verification_marker` | string | Matched verification marker (`Security Verification` or `image captcha`). |
 | `recovery_tool` | string | Agent tool recommended for the recognized blocker; currently `wait_for_rate_limit`. |
 | `waited_seconds` | integer | Actual randomized cooldown duration returned by a wait tool. |
 | `proxy_version` | number | Added by the proxy. Current value: `1`. |
@@ -179,7 +181,7 @@ and model in use are captured on `socai_agent_task_start`.
 
 | Event | Emitted when | Event-specific fields |
 | --- | --- | --- |
-| `socai_browser_connect` | Chrome connection requested, completes, fails, or disconnects | `outcome`, `browser_profile`, `browser_source`, `error` |
+| `socai_browser_connect` | Chrome connection requested, completes, fails, or disconnects | `outcome`, `browser_profile`, `browser_source`, hosted-session `remote_timeout_seconds` / `remote_remaining_seconds`, `error` |
 | `socai_auth_sms_requested` | User requests an SMS code | `account_phone`, `outcome`, `error` |
 | `socai_auth_login` / `socai_auth_logout` | A login attempt completes or the user logs out | `account_phone`, `account_device_id` on successful login, `outcome`, `error` |
 | `socai_invite_redeemed` | An invite-code redemption completes or fails | `outcome`, `added_points`, `balance_points`, `duration_days`, `pro_active_until`, `error` |

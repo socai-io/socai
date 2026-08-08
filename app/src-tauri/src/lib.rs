@@ -94,6 +94,7 @@ pub fn run() {
                 }
 
                 let mut rx = runtime.subscribe_browser_events();
+                let mut latest_disconnect_reason: Option<String> = None;
                 while let Ok(event) = rx.recv().await {
                     match event {
                         RuntimeBrowserEvent::StatusChanged(payload) => {
@@ -102,8 +103,11 @@ pub fn run() {
                                     managed,
                                     remote,
                                     source,
+                                    remote_timeout_seconds,
+                                    remote_remaining_seconds,
                                     ..
                                 } => {
+                                    latest_disconnect_reason = None;
                                     let profile = if *remote {
                                         "remote"
                                     } else if *managed {
@@ -117,23 +121,26 @@ pub fn run() {
                                             "outcome": "completed",
                                             "browser_profile": profile,
                                             "browser_source": source,
+                                            "remote_timeout_seconds": remote_timeout_seconds,
+                                            "remote_remaining_seconds": remote_remaining_seconds,
                                         }),
                                     );
                                 }
-                                socai_core::cdp::StatusPayload::Disconnected { reason }
-                                    if reason != "not_yet_connected" =>
-                                {
-                                    telemetry.capture(
-                                        "socai_browser_connect",
-                                        json!({
-                                            "outcome": if reason == "user_disconnected" {
-                                                "disconnected"
-                                            } else {
-                                                "failed"
-                                            },
-                                            "error": crate::telemetry::short_error(reason),
-                                        }),
-                                    );
+                                socai_core::cdp::StatusPayload::Disconnected { reason } => {
+                                    if reason != "not_yet_connected" {
+                                        latest_disconnect_reason = Some(reason.clone());
+                                        telemetry.capture(
+                                            "socai_browser_connect",
+                                            json!({
+                                                "outcome": if reason == "user_disconnected" {
+                                                    "disconnected"
+                                                } else {
+                                                    "failed"
+                                                },
+                                                "error": crate::telemetry::short_error(reason),
+                                            }),
+                                        );
+                                    }
                                 }
                                 _ => {}
                             }
@@ -142,8 +149,12 @@ pub fn run() {
                         RuntimeBrowserEvent::TargetsChanged(targets) => {
                             let active_targets: HashSet<String> =
                                 targets.into_iter().map(|target| target.target_id).collect();
-                            for (mut snapshot, abort_handle) in
-                                tasks.interrupt_missing_targets(&active_targets).await
+                            let interruption_reason = latest_disconnect_reason
+                                .clone()
+                                .unwrap_or_else(|| "chrome tab was closed".into());
+                            for (mut snapshot, abort_handle) in tasks
+                                .interrupt_missing_targets(&active_targets, &interruption_reason)
+                                .await
                             {
                                 let task_id = snapshot.task_id.clone();
                                 // The registry marks the task interrupted before this
@@ -181,10 +192,7 @@ pub fn run() {
                                     snapshot.run_dir.as_deref(),
                                     snapshot.points_used,
                                 );
-                                commands::record_interrupted_run(
-                                    &snapshot,
-                                    "chrome tab was closed",
-                                );
+                                commands::record_interrupted_run(&snapshot, &interruption_reason);
                                 if let Some(run_dir) = snapshot.run_dir.as_deref() {
                                     commands::upload_terminal_run_trace(
                                         run_dir,
@@ -209,6 +217,9 @@ pub fn run() {
                                             snapshot.started_at,
                                             snapshot.finished_at,
                                         ),
+                                        "error": crate::telemetry::short_error(
+                                            &interruption_reason,
+                                        ),
                                     }),
                                 );
                                 commands::emit_task_event(
@@ -216,7 +227,7 @@ pub fn run() {
                                     &tasks,
                                     &task_id,
                                     "interrupted",
-                                    "chrome tab was closed".into(),
+                                    interruption_reason.clone(),
                                     Some(snapshot),
                                 )
                                 .await;

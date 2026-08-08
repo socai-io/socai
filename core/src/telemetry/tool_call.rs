@@ -125,6 +125,12 @@ pub fn summarize_tool_result(value: &Value) -> Map<String, Value> {
     if let Some(marker) = find_string(data, "rate_limit_marker") {
         props.insert("rate_limit_marker".into(), json!(marker));
     }
+    if let Some(detected) = find_bool(data, "security_verification_detected") {
+        props.insert("security_verification_detected".into(), json!(detected));
+    }
+    if let Some(marker) = find_string(data, "security_verification_marker") {
+        props.insert("security_verification_marker".into(), json!(marker));
+    }
     if let Some(tool) = find_string(data, "recovery_tool") {
         props.insert("recovery_tool".into(), json!(tool));
     }
@@ -301,6 +307,8 @@ mod tests {
                 "page_ocr_truncated": true,
                 "rate_limit_detected": true,
                 "rate_limit_marker": "300013",
+                "security_verification_detected": true,
+                "security_verification_marker": "Security Verification",
                 "recovery_tool": "wait_for_rate_limit",
                 "cards": [{}, {}],
                 "search": { "cards": [{}, {}, {}] },
@@ -342,6 +350,14 @@ mod tests {
         assert_eq!(props.get("page_ocr_truncated"), Some(&json!(true)));
         assert_eq!(props.get("rate_limit_detected"), Some(&json!(true)));
         assert_eq!(props.get("rate_limit_marker"), Some(&json!("300013")));
+        assert_eq!(
+            props.get("security_verification_detected"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            props.get("security_verification_marker"),
+            Some(&json!("Security Verification"))
+        );
         assert_eq!(
             props.get("recovery_tool"),
             Some(&json!("wait_for_rate_limit"))

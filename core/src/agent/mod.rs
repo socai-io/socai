@@ -41,5 +41,6 @@ pub use self::run_logging::{
 };
 pub use self::run_state::{ArtifactRecord, RunState};
 pub use self::tool::{
-    EchoTool, ProcessedNote, SharedTool, Tool, ToolContext, ToolResult, ToolResultBlock,
+    EchoTool, ProcessedNote, SharedTool, Tool, ToolContext, ToolProgressEvent, ToolProgressPhase,
+    ToolProgressStatus, ToolResult, ToolResultBlock,
 };

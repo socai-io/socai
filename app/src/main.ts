@@ -23,6 +23,8 @@ export type Status =
       source?: string;
       managed?: boolean;
       remote?: boolean;
+      remote_timeout_seconds?: number | null;
+      remote_remaining_seconds?: number | null;
       user_data_dir?: string | null;
     };
 
@@ -128,6 +130,7 @@ export interface AgentTaskEventPayload {
     | "assistant"
     | "reasoning"
     | "tool_call"
+    | "tool_progress"
     | "tool_result"
     | "tool_error"
     | "api_error"
@@ -148,6 +151,12 @@ export interface AgentTaskEventPayload {
   label?: string;
   args?: unknown;
   repeat_count?: number;
+  phase?: "reading" | "ocr";
+  progress_status?: "item_started" | "item_completed" | "finished";
+  current?: number;
+  total?: number;
+  item_index?: number | null;
+  title?: string | null;
   ok?: boolean;
   summary?: string;
   duration_ms?: number;

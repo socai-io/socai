@@ -158,8 +158,21 @@ async fn run_connection<S>(
                             handle_text_message(&mut pending, text);
                         }
                     }
-                    Some(Ok(WsMessage::Close(_))) | None => {
-                        fail_all(&mut pending, "websocket closed");
+                    Some(Ok(WsMessage::Close(frame))) => {
+                        let detail = frame.map_or_else(
+                            || "websocket closed without a close frame".to_string(),
+                            |frame| {
+                                format!(
+                                    "websocket closed: code={:?}, reason={}",
+                                    frame.code, frame.reason
+                                )
+                            },
+                        );
+                        fail_all(&mut pending, &detail);
+                        break;
+                    }
+                    None => {
+                        fail_all(&mut pending, "websocket stream ended without a close frame");
                         break;
                     }
                     Some(Ok(WsMessage::Ping(_))) | Some(Ok(WsMessage::Pong(_))) => {}

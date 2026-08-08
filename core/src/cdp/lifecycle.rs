@@ -375,6 +375,7 @@ async fn open_remote_endpoint() -> anyhow::Result<OpenEndpoint> {
     // the response would overstate the remaining budget by the round trip.
     let minted_at = std::time::Instant::now();
     let session = crate::cloud::create_browser_session().await?;
+    let timeout = Duration::from_secs(session.timeout_seconds);
     Ok(OpenEndpoint {
         endpoint: Endpoint {
             source: endpoint::REMOTE_SOURCE.into(),
@@ -386,7 +387,8 @@ async fn open_remote_endpoint() -> anyhow::Result<OpenEndpoint> {
         },
         owner: BrowserOwner::Remote(RemoteSession {
             session_id: session.session_id,
-            deadline: minted_at + Duration::from_secs(session.timeout_seconds),
+            timeout,
+            deadline: minted_at + timeout,
         }),
     })
 }
@@ -479,7 +481,7 @@ async fn connect_inventory(endpoint: &Endpoint) -> anyhow::Result<ConnectInvento
     })
 }
 
-async fn on_connection_lost(cdp: Cdp, reason: String) {
+async fn on_connection_lost(cdp: Cdp, transport_error: String) {
     // Same lock order as `disconnect()`: teardown lock before state lock. A
     // shutdown racing this loss then either extracts the owner itself or
     // blocks in disconnect() until this release has landed — without the
@@ -493,6 +495,23 @@ async fn on_connection_lost(cdp: Cdp, reason: String) {
     if !matches!(*guard, CdpState::Connected { .. }) {
         return;
     }
+    let reason = match &*guard {
+        CdpState::Connected {
+            owner: BrowserOwner::Remote(session),
+            ..
+        } if session
+            .deadline
+            .saturating_duration_since(std::time::Instant::now())
+            <= Duration::from_secs(30) =>
+        {
+            format!(
+                "remote browser session expired after {}s; transport error: {transport_error}",
+                session.timeout.as_secs()
+            )
+        }
+        _ => format!("cdp connection lost; transport error: {transport_error}"),
+    };
+    warn!(error = %reason, "cdp connection lost");
     let owner = match &mut *guard {
         CdpState::Connected { owner, .. } => std::mem::replace(owner, BrowserOwner::None),
         _ => BrowserOwner::None,
@@ -583,7 +602,7 @@ fn spawn_target_poll_loop(cdp: Cdp, browser_client: RawCdpClient) -> tokio::task
                     failures = failures.saturating_add(1);
                     debug!(failures, error = %err, "target poll failed");
                     if failures >= TARGET_POLL_FAILURES {
-                        on_connection_lost(cdp.clone(), format!("connection_lost: {err}")).await;
+                        on_connection_lost(cdp.clone(), err.to_string()).await;
                         break;
                     }
                 }

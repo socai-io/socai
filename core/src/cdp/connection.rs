@@ -138,6 +138,10 @@ pub enum BrowserOwner {
 
 pub struct RemoteSession {
     pub session_id: String,
+    /// Configured lifetime returned by socai-server. Retained alongside the
+    /// deadline so connection-loss diagnostics can distinguish the hosted
+    /// browser's hard expiry from an unrelated transport failure.
+    pub timeout: std::time::Duration,
     /// Hard end-of-life for this session: the server mints it with a fixed
     /// timeout and Browserbase kills it at that instant no matter what the
     /// client is doing. The runtime uses this to re-mint before starting new
@@ -208,6 +212,10 @@ pub enum StatusPayload {
         /// True when socai minted this connection's browser remotely via
         /// socai-server (chrome.profile `remote`).
         remote: bool,
+        /// Hosted-browser hard lifetime and approximate budget at the instant
+        /// this payload is produced. Absent for local/existing Chrome.
+        remote_timeout_seconds: Option<u64>,
+        remote_remaining_seconds: Option<u64>,
         user_data_dir: Option<String>,
     },
 }
@@ -238,6 +246,19 @@ impl From<&CdpState> for StatusPayload {
                 // Ownership, not URL shape: `remote` drives teardown/release
                 // and profile matching, so it means "socai minted this".
                 remote: matches!(owner, BrowserOwner::Remote(_)),
+                remote_timeout_seconds: match owner {
+                    BrowserOwner::Remote(session) => Some(session.timeout.as_secs()),
+                    _ => None,
+                },
+                remote_remaining_seconds: match owner {
+                    BrowserOwner::Remote(session) => Some(
+                        session
+                            .deadline
+                            .saturating_duration_since(std::time::Instant::now())
+                            .as_secs(),
+                    ),
+                    _ => None,
+                },
                 user_data_dir: endpoint.user_data_dir.clone(),
             },
         }

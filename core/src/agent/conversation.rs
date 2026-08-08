@@ -2,9 +2,10 @@
 //!
 //! A conversation owns user-message order and references to L2 agent runs.
 //! Completed runs read assistant output from their `report.md`; an inline
-//! fallback is stored — and preferred when seeding follow-up turns — for
-//! runs that did not complete (their report is an error placeholder, if it
-//! exists at all) or that produced no report.
+//! fallback is stored for runs that did not complete (their report is an
+//! error placeholder, if it exists at all). When step records exist, an
+//! interrupted run instead replays its bounded model/tool transcript so a
+//! later turn can resume from real saved progress.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agent::llm::{Block, Message};
+use crate::agent::llm::{Block, LLMResponse, Message, ToolResultContent};
+use crate::agent::r#loop::{assistant_blocks_for_history, tool_result_blocks_for_history};
+use crate::agent::tool::ToolResultBlock;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Run {
@@ -72,8 +75,7 @@ impl Conversation {
         // unification persisted as session.json; the next persist migrates.
         let text = std::fs::read_to_string(dir.join("conversation.json"))
             .or_else(|_| std::fs::read_to_string(dir.join("session.json")))?;
-        let mut conversation: Self =
-            serde_json::from_str(&text).map_err(std::io::Error::other)?;
+        let mut conversation: Self = serde_json::from_str(&text).map_err(std::io::Error::other)?;
         conversation.id = dir_id(&dir);
         conversation.dir = dir;
         Ok(conversation)
@@ -121,12 +123,17 @@ impl Conversation {
         let mut messages = Vec::with_capacity(self.runs.len() * 2);
         for run in &self.runs {
             messages.push(Message::user(run.user.clone()));
+            if matches!(run.status.as_str(), "interrupted" | "cancelled") {
+                let partial_messages = interrupted_run_messages(Path::new(&run.run_dir));
+                if !partial_messages.is_empty() {
+                    messages.extend(partial_messages);
+                    continue;
+                }
+            }
             let report = run
                 .assistant_fallback
                 .clone()
-                .or_else(|| {
-                    std::fs::read_to_string(Path::new(&run.run_dir).join("report.md")).ok()
-                })
+                .or_else(|| std::fs::read_to_string(Path::new(&run.run_dir).join("report.md")).ok())
                 .unwrap_or_default();
             // Providers reject empty text blocks, so a run that produced
             // neither a report nor a fallback seeds a placeholder instead.
@@ -150,9 +157,10 @@ impl Conversation {
         )];
         for (index, run) in self.runs.iter().enumerate() {
             lines.push(format!(
-                "  {}. {} — {}",
+                "  {}. {} [{}] — {}",
                 index + 1,
                 run.run_dir,
+                run.status,
                 preview(&run.user)
             ));
             let notes = notes_line(Path::new(&run.run_dir));
@@ -162,9 +170,10 @@ impl Conversation {
         }
         if !self.runs.is_empty() {
             lines.push(
-                "Each run dir contains report.md (that run's final answer), notes.json \
-                 (full data for every note listed above), and tools/*/ raw tool outputs \
-                 (full note text, comments, and per-image OCR text where captured). \
+                "Completed run dirs contain report.md (that run's final answer). Run dirs \
+                 can also contain notes.json (full data for every note listed above) and \
+                 tools/*/ raw tool outputs (full note text, comments, and per-image OCR \
+                 text where captured). \
                  These local files can often answer follow-ups about already-gathered \
                  content without re-fetching from the site."
                     .to_string(),
@@ -187,6 +196,67 @@ impl Conversation {
             }
         }
     }
+}
+
+/// Reconstruct the normalized transcript that the agent had already seen
+/// before an interrupted/cancelled run stopped. Each persisted LLM response
+/// owns the assistant tool requests and each tool `output.json` owns the raw
+/// result. Replaying their bounded model-facing forms lets a new run continue
+/// from saved progress instead of receiving only an interruption marker.
+fn interrupted_run_messages(run_dir: &Path) -> Vec<Message> {
+    let llm_dir = run_dir.join("llm");
+    let mut messages = Vec::new();
+
+    for step in 1u32.. {
+        let response_path = llm_dir.join(format!("{step:03}.response.json"));
+        let Ok(response_text) = std::fs::read_to_string(&response_path) else {
+            break;
+        };
+        let Ok(response) = serde_json::from_str::<LLMResponse>(&response_text) else {
+            break;
+        };
+
+        messages.push(Message::assistant_blocks(assistant_blocks_for_history(
+            &response,
+        )));
+        if response.tool_calls.is_empty() {
+            continue;
+        }
+
+        let mut results = Vec::with_capacity(response.tool_calls.len());
+        for (index, tool_call) in response.tool_calls.iter().enumerate() {
+            let sequence = index as u32 + 1;
+            let content = persisted_tool_result(run_dir, step, sequence).unwrap_or_else(|| {
+                vec![ToolResultContent::Text {
+                    text: "[This tool call was interrupted before a result was recorded.]"
+                        .to_string(),
+                }]
+            });
+            results.push(Block::ToolResult {
+                tool_use_id: tool_call.id.clone(),
+                content,
+            });
+        }
+        messages.push(Message::user_blocks(results));
+    }
+
+    messages
+}
+
+fn persisted_tool_result(
+    run_dir: &Path,
+    step: u32,
+    sequence: u32,
+) -> Option<Vec<ToolResultContent>> {
+    let prefix = format!("step-{step:03}-call-{sequence:02}-");
+    let tools_dir = run_dir.join("tools");
+    let entry = std::fs::read_dir(tools_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))?;
+    let text = std::fs::read_to_string(entry.path().join("output.json")).ok()?;
+    let blocks: Vec<ToolResultBlock> = serde_json::from_str(&text).ok()?;
+    Some(tool_result_blocks_for_history(&blocks))
 }
 
 fn dir_id(dir: &Path) -> String {
@@ -226,13 +296,20 @@ fn notes_line(run_dir: &Path) -> String {
         if id.is_empty() {
             continue;
         }
-        match note.get("title").and_then(Value::as_str).filter(|t| !t.trim().is_empty()) {
+        match note
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|t| !t.trim().is_empty())
+        {
             Some(title) => parts.push(format!("{id} «{}»", preview(title))),
             None => parts.push(id.to_string()),
         }
     }
     if notes.len() > MAX_LISTED {
-        parts.push(format!("… and {} more in notes.json", notes.len() - MAX_LISTED));
+        parts.push(format!(
+            "… and {} more in notes.json",
+            notes.len() - MAX_LISTED
+        ));
     }
     parts.join("; ")
 }

@@ -54,9 +54,8 @@ pub struct AgentTaskSnapshot {
     /// Server-authoritative LLM + paid cloud-tool charge for the latest turn.
     pub(crate) points_used: Option<i64>,
     // The text driving the in-flight/most recent run — distinct from `task`,
-    // which stays the thread's original title across replies. Not persisted
-    // to tasks.json (Option fields default to None on load, which is the
-    // right fallback for a run interrupted across an app restart).
+    // which stays the thread's original title across replies. It is process-
+    // local; interrupted startup recovery reads the canonical run.json task.
     pub(crate) current_message: Option<String>,
 }
 
@@ -81,9 +80,13 @@ impl Default for AgentTaskRegistry {
                     (task.session_dir.as_deref(), task.run_dir.as_deref())
                 {
                     if let Ok(mut conversation) = Conversation::load(session_dir) {
-                        let user_text = task.current_message.as_deref().unwrap_or(&task.task);
+                        let user_text = task
+                            .current_message
+                            .clone()
+                            .or_else(|| persisted_run_task(run_dir))
+                            .unwrap_or_else(|| task.task.clone());
                         conversation.record_run(
-                            user_text,
+                            &user_text,
                             "[task interrupted: app was closed before this task finished]",
                             &PathBuf::from(run_dir),
                             "interrupted",
@@ -107,6 +110,17 @@ impl Default for AgentTaskRegistry {
             runner_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_AGENT_TASKS)),
         }
     }
+}
+
+fn persisted_run_task(run_dir: &str) -> Option<String> {
+    let text = std::fs::read_to_string(PathBuf::from(run_dir).join("run.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("task")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|task| !task.is_empty())
+        .map(str::to_string)
 }
 
 impl AgentTaskRegistry {
@@ -236,6 +250,7 @@ impl AgentTaskRegistry {
     pub(crate) async fn interrupt_missing_targets(
         &self,
         active_targets: &HashSet<String>,
+        reason: &str,
     ) -> Vec<(AgentTaskSnapshot, Option<AbortHandle>)> {
         let mut guard = self.inner.lock().await;
         let mut out = Vec::new();
@@ -252,7 +267,7 @@ impl AgentTaskRegistry {
             }
             task.status = "interrupted".into();
             task.finished_at = Some(now_ms());
-            task.error = Some("chrome tab was closed".into());
+            task.error = Some(reason.into());
             task.target_id = None;
             task_ids.push(task.task_id.clone());
             out.push((task.clone(), None));
