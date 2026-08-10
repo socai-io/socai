@@ -223,40 +223,6 @@
             }
           ]
         }
-      },
-      {
-        "id": "claude-opus-4-1-20250805",
-        "display_name": "Claude Opus 4.1",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 15,
-              "output_per_million": 75,
-              "cache_read_per_million": 1.5,
-              "cache_write_per_million": 18.75
-            }
-          ]
-        }
-      },
-      {
-        "id": "claude-opus-4-1",
-        "display_name": "Claude Opus 4.1 (latest)",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 15,
-              "output_per_million": 75,
-              "cache_read_per_million": 1.5,
-              "cache_write_per_million": 18.75
-            }
-          ]
-        }
       }
     ],
     "openai": [
@@ -269,10 +235,10 @@
           "source": "pi-ai",
           "tiers": [
             {
-              "input_per_million": 2.5,
-              "output_per_million": 15,
-              "cache_read_per_million": 0.25,
-              "cache_write_per_million": 3.125
+              "input_per_million": 2,
+              "output_per_million": 12,
+              "cache_read_per_million": 0.2,
+              "cache_write_per_million": 2.5
             }
           ]
         },
@@ -304,10 +270,10 @@
           "source": "pi-ai",
           "tiers": [
             {
-              "input_per_million": 1,
-              "output_per_million": 6,
-              "cache_read_per_million": 0.1,
-              "cache_write_per_million": 1.25
+              "input_per_million": 0.2,
+              "output_per_million": 1.2,
+              "cache_read_per_million": 0.02,
+              "cache_write_per_million": 0.25
             }
           ]
         }
