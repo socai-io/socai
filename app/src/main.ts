@@ -645,6 +645,7 @@ async function main(): Promise<void> {
   }
   try {
     currentVersion = await getVersion();
+    settingsMenu.setAppVersion(currentVersion);
   } catch (e) {
     console.error("getVersion failed:", e);
   }

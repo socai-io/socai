@@ -71,6 +71,12 @@ export namespace settingsMenu {
   let status: SaveStatus = "";
   let inviteMessage = "";
   let statusTimer: number | null = null;
+  let appVersion = "";
+
+  /** Installed app version — set once at startup from Tauri's `getVersion()`. */
+  export function setAppVersion(version: string): void {
+    appVersion = version.trim();
+  }
 
   /** Load the persisted config once at startup. Best-effort: a failure leaves
    *  the menu in a "could not load" state without blocking the app. */
@@ -160,6 +166,7 @@ export namespace settingsMenu {
       return `
         <div class="topbar-popover settings-popover" role="dialog" aria-label="${esc(t("settings.title"))}">
           <p class="t-small subtle result-error">${esc(t("settings.loadFailed"))}</p>
+          ${renderVersionFooter()}
         </div>
       `;
     }
@@ -168,6 +175,7 @@ export namespace settingsMenu {
       return `
         <div class="topbar-popover settings-popover" role="dialog" aria-label="${esc(t("settings.title"))}">
           <p class="t-small subtle">${esc(t("common.loading"))}</p>
+          ${renderVersionFooter()}
         </div>
       `;
     }
@@ -177,8 +185,14 @@ export namespace settingsMenu {
         ${renderOutputGroup(config, draft)}
         ${renderInviteGroup(draft)}
         ${renderStatus()}
+        ${renderVersionFooter()}
       </div>
     `;
+  }
+
+  function renderVersionFooter(): string {
+    if (!appVersion) return "";
+    return `<p class="settings-version" aria-label="${esc(t("settings.version"))}">${esc(appVersion)}</p>`;
   }
 
   function renderInviteGroup(d: SettingsDraft): string {

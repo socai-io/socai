@@ -312,6 +312,7 @@ const messages = {
     en: "could not save settings.",
     zh: "无法保存设置。",
   },
+  "settings.version": { en: "app version", zh: "应用版本" },
   "settings.loadFailed": {
     en: "could not load settings.",
     zh: "无法加载设置。",

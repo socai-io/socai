@@ -504,8 +504,10 @@ pub fn open_external(url: String) -> Result<(), String> {
     };
     #[cfg(target_os = "windows")]
     let mut command = {
-        let mut c = Command::new("cmd");
-        c.args(["/C", "start", "", &url]);
+        // Avoid `cmd /C start`: cmd.exe treats `&` in query strings as command
+        // separators, truncating URLs like Alipay checkout (missing-method).
+        let mut c = Command::new("rundll32");
+        c.args(["url.dll,FileProtocolHandler", &url]);
         c
     };
 
