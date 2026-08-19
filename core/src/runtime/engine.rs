@@ -35,8 +35,12 @@ const REMOTE_IDLE_TICK: Duration = Duration::from_secs(15);
 /// Minimum remaining session lifetime worth starting new work on. A remote
 /// session's clock starts at mint, so one reused late would hand the run an
 /// invisible, shortened deadline; re-minting up front trades a few seconds of
-/// connect latency for not dying mid-run.
-const REMOTE_MIN_RUN_BUDGET: Duration = Duration::from_secs(300);
+/// connect latency for not dying mid-run. This check runs only at task start
+/// (tools hold the page for the whole turn), so it must cover a realistic
+/// turn, not a single call: at 300s, turns inheriting a part-used session
+/// died mid-run — real batch turns chain multi-minute searches for 10-15
+/// minutes.
+const REMOTE_MIN_RUN_BUDGET: Duration = Duration::from_secs(600);
 
 /// Work-in-flight signal for the remote idle reaper. Guards are held by the
 /// entrypoints around browser-touching work (a daemon command, a whole agent
