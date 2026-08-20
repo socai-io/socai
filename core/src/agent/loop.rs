@@ -252,6 +252,7 @@ pub async fn run_agent_with_events(
             &mut messages,
             options.compact_after_messages,
             options.keep_recent_messages,
+            options.seed_messages.len(),
         ) {
             // The trace is an append-only diagnostic record. The rewritten
             // transcript is local context management, so restart its cursor
@@ -559,6 +560,7 @@ pub async fn run_agent_with_events(
             &mut messages,
             options.compact_after_messages,
             options.keep_recent_messages,
+            options.seed_messages.len(),
         ) {
             traced_len = messages.len();
         }

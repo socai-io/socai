@@ -19,17 +19,21 @@ const COMPACT_CONTEXT_HEADING: &str = "# Earlier compacted context";
 const LEGACY_EVIDENCE_HEADING: &str = "# Earlier tool evidence";
 
 /// Rewrite the transcript only when it has grown beyond `compact_after` full
-/// messages. The original first message remains, the last `keep_recent`
-/// messages remain verbatim (widened backward when the window would open on
-/// a tool_result message, so tool_use/tool_result pairs never split), and
-/// the older tool outputs become artifact locators. Mutating the transcript,
-/// rather than rebuilding a summary for every request, leaves the request
-/// prefix stable until the next sawtooth compaction point and therefore
-/// friendly to provider prompt caches.
+/// messages. The message at `anchor_user_index` — the current run's user task,
+/// index `0` for a fresh run and `seed_messages.len()` for a follow-up — stays
+/// verbatim at the front; the last `keep_recent` messages remain verbatim
+/// (widened backward when the window would open on a tool_result message, so
+/// tool_use/tool_result pairs never split); older tool outputs become artifact
+/// locators. Follow-up runs (`anchor_user_index > 0`) also get a short task
+/// reminder immediately before the recent tail. Mutating the transcript, rather
+/// than rebuilding a summary for every request, leaves the request prefix
+/// stable until the next sawtooth compaction point and therefore friendly to
+/// provider prompt caches.
 pub fn compact_messages_for_context(
     messages: &mut Vec<Message>,
     compact_after: usize,
     keep_recent: usize,
+    anchor_user_index: usize,
 ) -> bool {
     if compact_after == 0
         || keep_recent == 0
@@ -51,19 +55,52 @@ pub fn compact_messages_for_context(
     while recent_start > 1 && contains_tool_result(&messages[recent_start]) {
         recent_start -= 1;
     }
-    let original = messages[0].clone();
-    let older = &messages[1..recent_start];
-    let recent = messages[recent_start..].to_vec();
-    let evidence = compact_older_messages(older);
+    let anchor_idx = anchor_user_index.min(messages.len().saturating_sub(1));
+    let anchor = messages[anchor_idx].clone();
+    let older: Vec<Message> = (0..recent_start)
+        .filter(|&index| index != anchor_idx)
+        .map(|index| messages[index].clone())
+        .collect();
+    let recent: Vec<Message> = messages[recent_start..]
+        .iter()
+        .enumerate()
+        .filter(|(offset, _)| recent_start + offset != anchor_idx)
+        .map(|(_, message)| message.clone())
+        .collect();
+    let evidence = compact_older_messages(&older);
 
-    let mut compacted = Vec::with_capacity(2 + recent.len());
-    compacted.push(original);
+    let mut compacted = Vec::with_capacity(3 + recent.len());
+    compacted.push(anchor);
     if !evidence.is_empty() {
         compacted.push(Message::user(evidence));
+    }
+    if anchor_user_index > 0 {
+        if let Some(task) = user_text(&compacted[0]) {
+            compacted.push(current_task_reminder(&task));
+        }
     }
     compacted.extend(recent);
     *messages = compacted;
     true
+}
+
+fn user_text(message: &Message) -> Option<String> {
+    if !matches!(message.role, MessageRole::User) {
+        return None;
+    }
+    match &message.content {
+        MessageContent::Text(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        MessageContent::Blocks(_) => None,
+    }
+}
+
+fn current_task_reminder(task: &str) -> Message {
+    Message::user(format!(
+        "Current task (do not confuse with earlier turns): {task}"
+    ))
 }
 
 fn contains_tool_result(message: &Message) -> bool {
@@ -122,6 +159,13 @@ fn compact_older_messages(messages: &[Message]) -> String {
                 collect_artifact_evidence(&value, &mut artifacts);
             }
         }
+    }
+
+    if let Some(user) = pending_user.take().filter(|text| !text.trim().is_empty()) {
+        turns.push(compact_turn_markdown(
+            Some(user.as_str()),
+            "(no assistant report was recorded before compaction)",
+        ));
     }
 
     let mut rendered = if inherited.is_empty() {
