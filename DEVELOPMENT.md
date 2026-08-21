@@ -139,6 +139,7 @@ in [Website deployment](docs/website-deployment.md).
 | [Context window management](docs/context-window-management.md) | Agent turns, tool-result bounds, sawtooth compaction, prompt caching, and artifact evidence retention. |
 | [CLI telemetry schema](docs/telemetry-schema.md) | Telemetry schema, privacy, and configuration contract for the CLI daemon. |
 | [Telemetry runbook](docs/development/telemetry-runbook.md) | Maintainer runbook for operating CLI telemetry. |
+| [Model-visible evidence archive](docs/model-visible-evidence.md) | Lossless ToolResult archive, Axiom proxy setup, privacy gates, and recovery. |
 | [Release flow](docs/release-flow.md) | GitHub Release workflow, platform build graph, assets, and installer smoke tests. |
 | [Website deployment](docs/website-deployment.md) | Vercel deployment runbook for `socai.io`. |
 | [Website launch QA](docs/website-launch-qa.md) | Launch checklist used for the `socai.io` rollout. |

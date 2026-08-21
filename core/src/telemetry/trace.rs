@@ -832,7 +832,8 @@ const SECRET_JSON_FIELDS: [&str; 11] = [
 /// - `Bearer <token>` header values
 pub fn redact_secrets(text: &str) -> String {
     let text = redact_json_secret_fields(text);
-    redact_token_runs(&text)
+    let text = redact_token_runs(&text);
+    redact_secret_query_values(&text)
 }
 
 /// Recursively scrub every string inside a JSON value — used for structured
@@ -961,6 +962,47 @@ fn redact_token_runs(text: &str) -> String {
         let step = utf8_len(bytes[i]);
         out.push_str(&text[i..i + step]);
         i += step;
+    }
+    out
+}
+
+/// Scrub credentials embedded in URLs. These commonly appear in model-visible
+/// browser tool results as query parameters rather than structured JSON keys.
+fn redact_secret_query_values(text: &str) -> String {
+    const PARAMETERS: [&str; 3] = ["xsec_token=", "access_token=", "api_key="];
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let match_at = PARAMETERS
+            .iter()
+            .filter_map(|parameter| {
+                lower[cursor..]
+                    .find(parameter)
+                    .map(|offset| (cursor + offset, *parameter))
+            })
+            .min_by_key(|(index, _)| *index);
+        let Some((start, parameter)) = match_at else {
+            out.push_str(&text[cursor..]);
+            break;
+        };
+        out.push_str(&text[cursor..start + parameter.len()]);
+        let value_start = start + parameter.len();
+        let value_len = text.as_bytes()[value_start..]
+            .iter()
+            .take_while(|byte| {
+                !matches!(
+                    **byte,
+                    b'&' | b'#' | b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\''
+                )
+            })
+            .count();
+        if value_len == 0 {
+            cursor = value_start;
+            continue;
+        }
+        out.push_str("[redacted]");
+        cursor = value_start + value_len;
     }
     out
 }

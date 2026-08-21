@@ -7,6 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
+mod evidence;
 pub mod tool_call;
 pub mod trace;
 
@@ -15,6 +16,7 @@ pub use trace::redact_secrets;
 const EVENT_SCHEMA_VERSION: u32 = 1;
 const TELEMETRY_ENDPOINT: &str = "https://socai.io/v1/events";
 const TRACES_ENDPOINT: &str = "https://socai.io/v1/traces";
+const EVIDENCE_ENDPOINT: &str = "https://socai.io/v1/evidence";
 const CHANNEL_CAPACITY: usize = 512;
 const REMOTE_BATCH_SIZE: usize = 25;
 const REMOTE_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
@@ -23,6 +25,7 @@ const TRACE_UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const TRACE_RETRY_BATCH_SIZE: usize = 5;
 const TRACE_FILE_READY_RETRIES: usize = 20;
 const TRACE_FILE_READY_DELAY: Duration = Duration::from_millis(50);
+const EVIDENCE_BATCH_MAX_BYTES: usize = 512 * 1024;
 
 /// Which socai surface is emitting telemetry. Carried verbatim into the `source`
 /// field of every event and used to decide which device context is meaningful
@@ -52,6 +55,7 @@ impl TelemetrySource {
 pub struct Telemetry {
     sender: mpsc::Sender<QueuedItem>,
     pending_trace_dir: PathBuf,
+    pending_evidence_dir: PathBuf,
 }
 
 #[derive(Debug)]
@@ -61,6 +65,10 @@ enum QueuedItem {
     TraceFile(PathBuf),
     /// Durable, identity-free copy under telemetry/pending-traces.
     PendingTrace(PathBuf),
+    /// Run directory whose finalized provider request artifacts are not ready.
+    EvidenceRun(PathBuf),
+    /// Durable, identity-free archive under telemetry/pending-evidence.
+    PendingEvidence(PathBuf),
 }
 
 #[derive(Debug)]
@@ -76,6 +84,7 @@ struct WorkerConfig {
     source: TelemetrySource,
     local_path: PathBuf,
     pending_trace_dir: PathBuf,
+    pending_evidence_dir: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +104,7 @@ impl Telemetry {
         let session_id = new_session_id();
         let local_path = home.join("telemetry/events.jsonl");
         let pending_trace_dir = home.join("telemetry/pending-traces");
+        let pending_evidence_dir = home.join("telemetry/pending-evidence");
 
         let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
         let config = WorkerConfig {
@@ -103,12 +113,14 @@ impl Telemetry {
             source,
             local_path,
             pending_trace_dir: pending_trace_dir.clone(),
+            pending_evidence_dir: pending_evidence_dir.clone(),
         };
         spawn_worker(receiver, config);
 
         Self {
             sender,
             pending_trace_dir,
+            pending_evidence_dir,
         }
     }
 
@@ -126,6 +138,16 @@ impl Telemetry {
     /// cancellation can call this just before the trace drop guard finishes;
     /// that source path is retried briefly by the worker.
     pub fn upload_run_trace(&self, run_dir: &Path) -> bool {
+        let (evidence_item, _) = match evidence::stage_run_archive(
+            run_dir,
+            &self.pending_evidence_dir,
+            evidence_text_enabled(),
+        ) {
+            Ok(path) => (QueuedItem::PendingEvidence(path), true),
+            Err(_) => (QueuedItem::EvidenceRun(run_dir.to_path_buf()), false),
+        };
+        let _ = self.sender.try_send(evidence_item);
+
         let source = run_dir.join("trace.json");
         let (item, staged) = match stage_trace_file(&source, &self.pending_trace_dir) {
             Ok(path) => (QueuedItem::PendingTrace(path), true),
@@ -202,6 +224,14 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerCon
                     QueuedItem::PendingTrace(path) => {
                         upload_pending_trace(&client, &config, &path).await;
                     }
+                    QueuedItem::EvidenceRun(run_dir) => {
+                        if let Some(path) = stage_evidence_when_ready(&run_dir, &config.pending_evidence_dir).await {
+                            upload_pending_evidence(&client, &config, &path).await;
+                        }
+                    }
+                    QueuedItem::PendingEvidence(path) => {
+                        upload_pending_evidence(&client, &config, &path).await;
+                    }
                 }
             }
             _ = flush_tick.tick() => {
@@ -209,6 +239,7 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerCon
             }
             _ = trace_retry_tick.tick() => {
                 retry_pending_traces(&client, &config).await;
+                retry_pending_evidence(&client, &config).await;
             }
         }
     }
@@ -259,6 +290,19 @@ async fn stage_trace_file_when_ready(source: &Path, pending_dir: &Path) -> Optio
     None
 }
 
+async fn stage_evidence_when_ready(run_dir: &Path, pending_dir: &Path) -> Option<PathBuf> {
+    for attempt in 0..TRACE_FILE_READY_RETRIES {
+        match evidence::stage_run_archive(run_dir, pending_dir, evidence_text_enabled()) {
+            Ok(path) => return Some(path),
+            Err(_) if attempt + 1 < TRACE_FILE_READY_RETRIES => {
+                tokio::time::sleep(TRACE_FILE_READY_DELAY).await;
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 async fn retry_pending_traces(client: &reqwest::Client, config: &WorkerConfig) {
     let Ok(mut entries) = tokio::fs::read_dir(&config.pending_trace_dir).await else {
         return;
@@ -278,6 +322,25 @@ async fn retry_pending_traces(client: &reqwest::Client, config: &WorkerConfig) {
     }
 }
 
+async fn retry_pending_evidence(client: &reqwest::Client, config: &WorkerConfig) {
+    let Ok(mut entries) = tokio::fs::read_dir(&config.pending_evidence_dir).await else {
+        return;
+    };
+    let mut paths = Vec::new();
+    while paths.len() < TRACE_RETRY_BATCH_SIZE {
+        let Ok(Some(entry)) = entries.next_entry().await else {
+            break;
+        };
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            paths.push(path);
+        }
+    }
+    for path in paths {
+        upload_pending_evidence(client, config, &path).await;
+    }
+}
+
 /// Append identity resource attributes and POST one durable pending trace.
 /// The spool file is removed only after the proxy acknowledges the handoff.
 async fn upload_pending_trace(client: &reqwest::Client, config: &WorkerConfig, path: &Path) {
@@ -294,6 +357,107 @@ async fn upload_pending_trace(client: &reqwest::Client, config: &WorkerConfig, p
     if response.status().is_success() {
         let _ = tokio::fs::remove_file(path).await;
     }
+}
+
+/// Upload content and request manifests first, then the terminal commit. The
+/// spool file is retained unless every batch receives a successful proxy ack.
+async fn upload_pending_evidence(client: &reqwest::Client, config: &WorkerConfig, path: &Path) {
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return;
+    };
+    let Ok(payload) = serde_json::from_slice::<Value>(&bytes) else {
+        return;
+    };
+    let Some(evaluation_id) = payload.get("evaluation_id").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(records) = payload.get("records").and_then(Value::as_array) else {
+        return;
+    };
+
+    let mut body_records = Vec::new();
+    let mut commits = Vec::new();
+    for record in records {
+        let mut record = record.clone();
+        enrich_evidence_record(&mut record, config);
+        if record.get("record_type").and_then(Value::as_str) == Some("turn_commit") {
+            commits.push(record);
+        } else {
+            body_records.push(record);
+        }
+    }
+    if commits.len() != 1 {
+        return;
+    }
+    if !upload_evidence_batches(client, evaluation_id, body_records).await {
+        return;
+    }
+    if !upload_evidence_batches(client, evaluation_id, commits).await {
+        return;
+    }
+    let _ = tokio::fs::remove_file(path).await;
+}
+
+async fn upload_evidence_batches(
+    client: &reqwest::Client,
+    evaluation_id: &str,
+    records: Vec<Value>,
+) -> bool {
+    let mut batch = Vec::new();
+    for record in records {
+        let mut candidate = batch.clone();
+        candidate.push(record.clone());
+        let candidate_body = json!({
+            "schema_version": evidence::SCHEMA_VERSION,
+            "evaluation_id": evaluation_id,
+            "records": candidate,
+        });
+        let candidate_len =
+            serde_json::to_vec(&candidate_body).map_or(usize::MAX, |body| body.len());
+        let should_flush = candidate_len > EVIDENCE_BATCH_MAX_BYTES && !batch.is_empty();
+        if should_flush
+            && !post_evidence_batch(client, evaluation_id, std::mem::take(&mut batch)).await
+        {
+            return false;
+        }
+        batch.push(record);
+    }
+    batch.is_empty() || post_evidence_batch(client, evaluation_id, batch).await
+}
+
+async fn post_evidence_batch(
+    client: &reqwest::Client,
+    evaluation_id: &str,
+    records: Vec<Value>,
+) -> bool {
+    let expected = records.len() as u64;
+    let body = json!({
+        "schema_version": evidence::SCHEMA_VERSION,
+        "evaluation_id": evaluation_id,
+        "records": records,
+    });
+    let Ok(response) = client.post(evidence_endpoint()).json(&body).send().await else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    let Ok(ack) = response.json::<Value>().await else {
+        return false;
+    };
+    ack.get("ok").and_then(Value::as_bool) == Some(true)
+        && ack.get("accepted").and_then(Value::as_u64) == Some(expected)
+}
+
+fn enrich_evidence_record(record: &mut Value, config: &WorkerConfig) {
+    let Some(object) = record.as_object_mut() else {
+        return;
+    };
+    object.insert("source".into(), json!(config.source.as_str()));
+    object.insert("install_id".into(), json!(config.install_id));
+    object.insert("app_session_id".into(), json!(config.session_id));
+    object.insert("app_version".into(), json!(env!("CARGO_PKG_VERSION")));
+    object.insert("platform".into(), json!(std::env::consts::OS));
 }
 
 /// The on-disk trace stays identity-free so run dirs can be shared; the
@@ -352,6 +516,15 @@ fn traces_endpoint() -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| TRACES_ENDPOINT.to_string())
+}
+
+/// `SOCAI_EVIDENCE_ENDPOINT` overrides the production evidence proxy.
+fn evidence_endpoint() -> String {
+    std::env::var("SOCAI_EVIDENCE_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| EVIDENCE_ENDPOINT.to_string())
 }
 
 fn enrich_properties(properties: Value, config: &WorkerConfig, timestamp_ms: u64) -> Value {
@@ -484,6 +657,16 @@ pub fn chat_text_enabled() -> bool {
         "SOCAI_TELEMETRY_CHAT_TEXT",
         &["0", "false", "off", "disabled", "no"],
     )
+}
+
+/// Evidence content follows the chat-text privacy gate and has a narrower
+/// opt-out for operators who still want bounded traces without full tool data.
+pub fn evidence_text_enabled() -> bool {
+    chat_text_enabled()
+        && !env_value_is(
+            "SOCAI_TELEMETRY_EVIDENCE",
+            &["0", "false", "off", "disabled", "no"],
+        )
 }
 
 fn device_info() -> &'static DeviceInfo {
