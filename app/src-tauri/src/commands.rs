@@ -1394,10 +1394,6 @@ pub(crate) async fn upload_terminal_run_trace(
                     let _ = std::fs::write(staged_marker, b"");
                     return true;
                 }
-                if attempt + 1 < READY_RETRIES {
-                    tokio::time::sleep(READY_DELAY).await;
-                    continue;
-                }
                 return false;
             }
             Err(error)

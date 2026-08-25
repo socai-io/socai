@@ -252,7 +252,9 @@ function clientIp(req) {
 function contentLengthBytes(req) {
   const raw = req.headers?.['content-length'];
   if (raw === undefined) return null;
-  const value = Number.parseInt(String(raw), 10);
+  const text = String(raw).trim();
+  if (!/^\d+$/.test(text)) return null;
+  const value = Number.parseInt(text, 10);
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
