@@ -47,11 +47,15 @@ fn safe_component(value: &str, fallback: &str) -> String {
     }
 }
 
-fn write_json_atomic(path: &Path, value: &Value) -> std::io::Result<()> {
+pub(crate) fn write_json_atomic(path: &Path, value: &Value) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
+    write_bytes_atomic(path, &bytes)
+}
+
+pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -63,6 +67,16 @@ fn write_json_atomic(path: &Path, value: &Value) -> std::io::Result<()> {
         std::fs::rename(temp, path)?;
     }
     Ok(())
+}
+
+fn request_wire_format(provider: &str, payload: &Value) -> &'static str {
+    if payload.get("input").and_then(Value::as_array).is_some() {
+        "openai_responses"
+    } else if provider.eq_ignore_ascii_case("anthropic") {
+        "anthropic_messages"
+    } else {
+        "openai_chat"
+    }
 }
 
 fn env_runs_root(value: Option<OsString>) -> Option<PathBuf> {
@@ -130,6 +144,7 @@ pub struct AgentRunRecorder {
     run_dir: PathBuf,
     manifest_path: PathBuf,
     manifest: Mutex<Value>,
+    provider: String,
     started: Instant,
     finalized: AtomicBool,
 }
@@ -162,6 +177,7 @@ impl AgentRunRecorder {
             run_dir,
             manifest_path,
             manifest: Mutex::new(manifest),
+            provider: provider.to_string(),
             started: Instant::now(),
             finalized: AtomicBool::new(false),
         })
@@ -171,6 +187,16 @@ impl AgentRunRecorder {
         write_json_atomic(
             &self.run_dir.join(format!("llm/{step:03}.request.json")),
             payload,
+        )?;
+        write_json_atomic(
+            &self
+                .run_dir
+                .join(format!("llm/{step:03}.request.meta.json")),
+            &json!({
+                "schema_version": 1,
+                "wire_format": request_wire_format(&self.provider, payload),
+                "status": "prepared",
+            }),
         )
     }
 
@@ -187,6 +213,7 @@ impl AgentRunRecorder {
             &self.run_dir.join(format!("llm/{step:03}.response.json")),
             &value,
         )?;
+        self.update_llm_request_status(step, "accepted")?;
         // Keep running usage/step totals in run.json so the desktop app can
         // show them live mid-run; `finish` overwrites with the final figures.
         {
@@ -214,7 +241,20 @@ impl AgentRunRecorder {
                 "completed_at": timestamp(),
                 "error": error,
             }),
-        )
+        )?;
+        self.update_llm_request_status(step, "failed")
+    }
+
+    fn update_llm_request_status(&self, step: u32, status: &str) -> std::io::Result<()> {
+        let path = self
+            .run_dir
+            .join(format!("llm/{step:03}.request.meta.json"));
+        let mut metadata = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or_else(|| json!({ "schema_version": 1 }));
+        metadata["status"] = json!(status);
+        write_json_atomic(&path, &metadata)
     }
 
     pub fn start_tool_call(
@@ -386,6 +426,28 @@ impl Drop for ToolCallRecorder {
             manifest["duration_ms"] = json!(self.started.elapsed().as_millis() as u64);
             let _ = write_json_atomic(&self.manifest_path, &manifest);
         }
+    }
+}
+
+#[cfg(test)]
+mod request_metadata_tests {
+    use super::request_wire_format;
+    use serde_json::json;
+
+    #[test]
+    fn records_provider_wire_format_next_to_the_exact_request() {
+        assert_eq!(
+            request_wire_format("openai", &json!({ "input": [] })),
+            "openai_responses"
+        );
+        assert_eq!(
+            request_wire_format("anthropic", &json!({ "messages": [] })),
+            "anthropic_messages"
+        );
+        assert_eq!(
+            request_wire_format("deepseek", &json!({ "messages": [] })),
+            "openai_chat"
+        );
     }
 }
 

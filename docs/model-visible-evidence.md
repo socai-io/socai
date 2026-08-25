@@ -40,11 +40,17 @@ Uploads are staged before the telemetry worker returns:
 
 ```text
 <socai-home>/telemetry/pending-evidence/<trace-id>-<root-span-id>.json
+<socai-home>/telemetry/pending-evidence/<trace-id>-<root-span-id>.state
+<socai-home>/telemetry/pending-evidence/dead/
 ```
 
-Pending files survive proxy or Axiom outages. The worker retries up to five
-files every 30 seconds and removes a file only after all content/manifests and
-the final commit receive successful proxy acknowledgements.
+Pending files survive proxy or Axiom outages. The `.state` sidecar checkpoints
+the next batch and retry time. The worker retries eligible oldest files with
+exponential backoff, honors numeric `Retry-After`, and removes an archive only
+after all content/manifests and the final commit receive verified proxy
+acknowledgements. Deterministically invalid local payloads and proxy 400/413/422
+responses move to `dead/` with a content-free reason file instead of retrying
+forever or being deleted.
 
 ## Schema
 
@@ -70,7 +76,9 @@ If later context management changes a ToolResult value, its content hash and
 evidence ID change, preserving the model-visible version for each request.
 
 The client uploads all `evidence_chunk` and `request_manifest` records before
-the single `turn_commit`. Duplicate records can occur after a lost HTTP
+the single `turn_commit`, batching at no more than 32 records and 512 KiB. Each
+batch has a stable index and SHA-256; the client verifies the proxy echo and
+checkpoints every accepted batch. Duplicate records can still occur after a lost HTTP
 acknowledgement; readers must deduplicate by `(evidence_id, chunk_index)` and
 reject conflicting values for the same stable key.
 
@@ -85,8 +93,11 @@ for generic `content` fields:
 | OpenAI Responses | `input[]` with `type=function_call_output`. |
 | Anthropic Messages | `messages[].content[]` with `type=tool_result`. |
 
-An accepted request with an unsupported shape produces an `unsupported`
-manifest and a `partial` turn commit. It never falls back to raw tool output.
+New runs record wire format and request outcome explicitly in
+`llm/NNN.request.meta.json`. Legacy runs without the sidecar use the shape
+detector and response parser as a compatibility fallback. An accepted request
+with an unsupported shape produces an `unsupported` manifest and a `partial`
+turn commit. It never falls back to raw tool output.
 
 ## Privacy controls
 
@@ -104,8 +115,11 @@ of the user's run record.
 
 Before staging, the existing trace secret scrubber removes sensitive JSON
 fields, API keys, JWTs, Bearer values, and URL query credentials including
-`xsec_token`, `access_token`, and `api_key`. The proxy validates chunk hashes
-and forwards content without trimming or rewriting it.
+all sensitive JSON field names, including `xsec_token`, `access_token`,
+`refresh_token`, `client_secret`, `password`, and `api_key`. Query-value
+scanning accepts token-safe characters only, so commas, JSON escapes, brackets,
+and neighboring fields remain intact. The proxy validates chunk and batch
+hashes and forwards content without trimming or rewriting it.
 
 ## Proxy deployment
 
@@ -130,9 +144,12 @@ The proxy forwards validated arrays to:
 POST /v1/datasets/<dataset>/ingest
 ```
 
-It limits request bodies to 1 MiB, batches to 32 records, individual chunks to
-32 KiB, and each install to 240 requests/32 MiB per minute. Proxy errors return
-non-2xx so clients retain pending files.
+It limits request bodies to 1 MiB, batches to 32 records, and individual chunks
+to 32 KiB. It checks wire `Content-Length` before expensive validation and uses
+both IP and install buckets. Because Vercel's in-memory buckets are
+instance-local and install IDs are client-asserted, production must also enable
+Vercel Firewall/WAF rate limits. Proxy errors return non-2xx so clients retain,
+back off, or quarantine pending files according to the status class.
 
 ## Local proxy overrides
 
@@ -143,8 +160,9 @@ SOCAI_EVIDENCE_ENDPOINT=http://localhost:3000/v1/evidence
 SOCAI_TRACES_ENDPOINT=http://localhost:3000/v1/traces
 ```
 
-The client sends records in batches below 512 KiB and sends the terminal commit
-only after every preceding batch succeeds.
+The client sends at most 32 records per batch below 512 KiB and sends the
+terminal commit only after every preceding batch succeeds. A restart resumes
+from the checkpointed batch rather than batch zero.
 
 ## Trace summary
 

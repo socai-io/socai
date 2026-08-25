@@ -43,6 +43,7 @@ use crate::agent::llm::{
     Block, LLMResponse, Message, MessageContent, MessageRole, TokenUsage, ToolResultContent,
 };
 use crate::agent::r#loop::THINKING_TEXT_PREFIX;
+use crate::agent::run_logging::write_bytes_atomic;
 use crate::agent::signature::md5_hex;
 
 /// Safety net for pathological runs; a default run (30 steps) stays far below.
@@ -424,7 +425,7 @@ impl RunTraceBuilder {
 
     fn write_trace_file(&self, payload: &Value) {
         if let Ok(bytes) = serde_json::to_vec(payload) {
-            let _ = std::fs::write(self.run_dir.join("trace.json"), bytes);
+            let _ = write_bytes_atomic(&self.run_dir.join("trace.json"), &bytes);
         }
     }
 }
@@ -471,10 +472,8 @@ pub fn mark_run_trace_status(run_dir: impl AsRef<Path>, status: &str) -> std::io
             attribute["value"] = json!({ "stringValue": status });
         }
     }
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&payload).map_err(std::io::Error::other)?,
-    )
+    let bytes = serde_json::to_vec(&payload).map_err(std::io::Error::other)?;
+    write_bytes_atomic(&path, &bytes)
 }
 
 /// Flatten a summarizer map (`summarize_tool_args` / `summarize_tool_result`)
@@ -969,17 +968,19 @@ fn redact_token_runs(text: &str) -> String {
 /// Scrub credentials embedded in URLs. These commonly appear in model-visible
 /// browser tool results as query parameters rather than structured JSON keys.
 fn redact_secret_query_values(text: &str) -> String {
-    const PARAMETERS: [&str; 3] = ["xsec_token=", "access_token=", "api_key="];
     let lower = text.to_ascii_lowercase();
     let mut out = String::with_capacity(text.len());
     let mut cursor = 0;
     while cursor < text.len() {
-        let match_at = PARAMETERS
+        let match_at = SECRET_JSON_FIELDS
             .iter()
-            .filter_map(|parameter| {
+            .filter_map(|field| {
+                let parameter = format!("{field}=");
                 lower[cursor..]
-                    .find(parameter)
-                    .map(|offset| (cursor + offset, *parameter))
+                    .match_indices(&parameter)
+                    .map(|(offset, _)| cursor + offset)
+                    .find(|&start| query_parameter_boundary(text.as_bytes(), start))
+                    .map(|start| (start, parameter))
             })
             .min_by_key(|(index, _)| *index);
         let Some((start, parameter)) = match_at else {
@@ -990,12 +991,7 @@ fn redact_secret_query_values(text: &str) -> String {
         let value_start = start + parameter.len();
         let value_len = text.as_bytes()[value_start..]
             .iter()
-            .take_while(|byte| {
-                !matches!(
-                    **byte,
-                    b'&' | b'#' | b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\''
-                )
-            })
+            .take_while(|&&byte| secret_query_value_byte(byte))
             .count();
         if value_len == 0 {
             cursor = value_start;
@@ -1005,6 +1001,22 @@ fn redact_secret_query_values(text: &str) -> String {
         cursor = value_start + value_len;
     }
     out
+}
+
+fn query_parameter_boundary(bytes: &[u8], start: usize) -> bool {
+    start == 0
+        || matches!(
+            bytes[start - 1],
+            b'?' | b'&' | b';' | b',' | b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'' | b'\\'
+        )
+}
+
+fn secret_query_value_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'.' | b'_' | b'~' | b'+' | b'/' | b'-' | b'=' | b'%' | b':' | b'@'
+        )
 }
 
 fn token_run_len(bytes: &[u8], accept: impl Fn(u8) -> bool) -> usize {
@@ -1145,4 +1157,30 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     }
     let truncated: String = text.chars().take(max_chars).collect();
     format!("{truncated}…")
+}
+
+#[cfg(test)]
+mod evidence_redaction_tests {
+    use super::redact_secrets;
+
+    #[test]
+    fn query_secret_redaction_preserves_adjacent_fields() {
+        assert_eq!(
+            redact_secrets("access_token=abc,expires_in=3600,scope=read"),
+            "access_token=[redacted],expires_in=3600,scope=read"
+        );
+        assert_eq!(
+            redact_secrets(r#"xsec_token=abc\",\"next\":1"#),
+            r#"xsec_token=[redacted]\",\"next\":1"#
+        );
+    }
+
+    #[test]
+    fn query_secret_redaction_uses_the_structured_secret_field_set() {
+        let input = "client_secret=one&refresh_token=two&password=three&safe=four";
+        assert_eq!(
+            redact_secrets(input),
+            "client_secret=[redacted]&refresh_token=[redacted]&password=[redacted]&safe=four"
+        );
+    }
 }

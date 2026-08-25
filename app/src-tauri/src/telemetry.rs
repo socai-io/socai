@@ -35,11 +35,21 @@ impl DesktopTelemetry {
 
     /// Upload a run's `trace.json` to the traces proxy. No-op when telemetry
     /// is off or the file is missing.
-    pub(crate) fn upload_run_trace(&self, run_dir: impl AsRef<Path>) -> bool {
-        if let Some(telemetry) = &self.0 {
-            return telemetry.upload_run_trace(run_dir.as_ref());
+    pub(crate) async fn upload_run_trace(&self, run_dir: impl AsRef<Path>) -> bool {
+        let run_dir = run_dir.as_ref().to_path_buf();
+        let staged = match self.0.clone() {
+            Some(telemetry) => tokio::task::spawn_blocking({
+                let run_dir = run_dir.clone();
+                move || telemetry.upload_run_trace(&run_dir)
+            })
+            .await
+            .unwrap_or(false),
+            None => true,
+        };
+        if staged {
+            let _ = std::fs::write(run_dir.join(".observability-staged"), b"");
         }
-        false
+        staged
     }
 }
 
@@ -61,5 +71,24 @@ pub(crate) fn duration_ms(started_at: Option<u64>, finished_at: Option<u64>) -> 
     match (started_at, finished_at) {
         (Some(start), Some(end)) => Some(end.saturating_sub(start)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod observability_staging_tests {
+    use super::DesktopTelemetry;
+
+    #[tokio::test]
+    async fn telemetry_opt_out_still_allows_task_artifact_deletion() {
+        let run_dir = std::env::temp_dir().join(format!(
+            "socai-observability-opt-out-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&run_dir);
+        std::fs::create_dir_all(&run_dir).expect("create run directory");
+        let telemetry = DesktopTelemetry(None);
+        assert!(telemetry.upload_run_trace(&run_dir).await);
+        assert!(run_dir.join(".observability-staged").is_file());
+        std::fs::remove_dir_all(run_dir).expect("remove run directory");
     }
 }

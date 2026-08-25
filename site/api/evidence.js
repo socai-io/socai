@@ -15,7 +15,7 @@ const RATE_LIMIT_MAX_BYTES = 32 * 1024 * 1024;
 const COMMON_FIELDS = [
   'schema_version', 'record_type', 'evaluation_id', 'trace_id', 'root_span_id',
   'run_id', 'provider', 'model', 'created_at', 'source', 'install_id',
-  'app_session_id', 'app_version', 'platform',
+  'app_session_id', 'app_version', 'client_version', 'platform',
 ];
 const RECORD_FIELDS = {
   evidence_chunk: [
@@ -58,13 +58,20 @@ export default async function handler(req, res) {
     return;
   }
 
+  if (!consumeRateLimit(`ip:${clientIp(req)}`, bodyBytes)) {
+    res.setHeader('Retry-After', '60');
+    res.status(429).json({ ok: false, error: 'rate_limited' });
+    return;
+  }
+
   const error = validateEnvelope(input);
   if (error) {
     res.status(400).json({ ok: false, error });
     return;
   }
   const records = input.records;
-  if (!consumeRateLimit(rateLimitKey(req, records), bodyBytes)) {
+  if (!consumeRateLimit(`install:${records[0].install_id}`, bodyBytes)) {
+    res.setHeader('Retry-After', '60');
     res.status(429).json({ ok: false, error: 'rate_limited' });
     return;
   }
@@ -74,7 +81,7 @@ export default async function handler(req, res) {
     res.status(202).json({
       ok: true,
       accepted: records.length,
-      batch_sha256: sha256(JSON.stringify(records)),
+      batch_sha256: input.batch_sha256,
     });
   } catch (error) {
     console.error('evidence forward failed', error instanceof Error ? error.message : 'unknown');
@@ -84,12 +91,14 @@ export default async function handler(req, res) {
 
 async function readJsonBody(req) {
   if (req.body !== undefined && req.body !== null) {
-    const text = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-    const bodyBytes = Buffer.byteLength(text, 'utf8');
+    const contentLength = contentLengthBytes(req);
+    const text = typeof req.body === 'string' ? req.body : null;
+    const input = text === null ? req.body : parseJson(text);
+    const bodyBytes = contentLength ?? Buffer.byteLength(text ?? JSON.stringify(input), 'utf8');
     if (bodyBytes > MAX_BODY_BYTES) {
       throw requestError(413, 'body_too_large');
     }
-    return { input: parseJson(text), bodyBytes };
+    return { input, bodyBytes };
   }
 
   let bodyBytes = 0;
@@ -126,6 +135,11 @@ function validateEnvelope(input) {
   if (!validEvaluationId(input.evaluation_id)) return 'invalid_evaluation_id';
   if (!Array.isArray(input.records) || input.records.length === 0) return 'no_records';
   if (input.records.length > MAX_RECORDS) return 'too_many_records';
+  if (!Number.isInteger(input.batch_index) || input.batch_index < 0) return 'invalid_batch_index';
+  if (!Number.isInteger(input.batch_count) || input.batch_count < 1) return 'invalid_batch_count';
+  if (input.batch_index >= input.batch_count) return 'batch_index_out_of_range';
+  if (!/^[a-f0-9]{64}$/.test(input.batch_sha256 || '')) return 'invalid_batch_hash';
+  if (sha256(JSON.stringify(input.records)) !== input.batch_sha256) return 'batch_hash_mismatch';
 
   const installIds = new Set(input.records.map((record) => record?.install_id));
   const sources = new Set(input.records.map((record) => record?.source));
@@ -191,7 +205,7 @@ function validateManifest(record) {
   if (!['accepted', 'failed', 'unknown', 'unsupported'].includes(record.request_status)) {
     return 'invalid_request_status';
   }
-  if (!Array.isArray(record.evidence_ids) || record.evidence_ids.length > 500) {
+  if (!Array.isArray(record.evidence_ids)) {
     return 'invalid_manifest_evidence_ids';
   }
   if (!record.evidence_ids.every((value) => /^ev_[a-f0-9]{64}$/.test(value))) {
@@ -230,11 +244,16 @@ function sha256(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-function rateLimitKey(req, records) {
-  const installId = records.find((record) => validScalar(record.install_id, 200))?.install_id;
-  if (installId) return `install:${installId}`;
+function clientIp(req) {
   const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return `ip:${forwardedFor || req.socket?.remoteAddress || 'unknown'}`;
+  return forwardedFor || req.socket?.remoteAddress || 'unknown';
+}
+
+function contentLengthBytes(req) {
+  const raw = req.headers?.['content-length'];
+  if (raw === undefined) return null;
+  const value = Number.parseInt(String(raw), 10);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function consumeRateLimit(key, bytes) {
@@ -268,7 +287,14 @@ async function forwardToAxiom(records) {
   if (!response.ok) throw new Error(`Axiom evidence ingest failed: ${response.status}`);
 
   const result = await response.json().catch(() => null);
-  if (result && (result.failed > 0 || (Number.isInteger(result.ingested) && result.ingested !== records.length))) {
+  const verified = result
+    && Number.isInteger(result.ingested)
+    && result.ingested === records.length
+    && Number.isInteger(result.failed)
+    && result.failed === 0
+    && (result.failures === undefined || result.failures === null
+      || (Array.isArray(result.failures) && result.failures.length === 0));
+  if (!verified) {
     throw new Error('Axiom evidence ingest was partial');
   }
 }

@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
 use super::trace::redact_secrets_in_value;
 use crate::agent::llm::LLMResponse;
+use crate::agent::run_logging::write_json_atomic;
 
 pub(crate) const SCHEMA_VERSION: &str = "socai.model-visible-evidence.v1";
 const ARCHIVE_RELATIVE_PATH: &str = "evidence/model-visible-v1.json";
@@ -78,6 +78,7 @@ fn build_archive(run_dir: &Path, content_enabled: bool) -> io::Result<Value> {
     let mut records = Vec::new();
     let mut index_entries = Vec::new();
     let mut seen_evidence = HashSet::new();
+    let mut model_view_cache: HashMap<String, (Value, String)> = HashMap::new();
     let mut accepted_request_count = 0usize;
     let mut evidence_object_count = 0usize;
     let mut evidence_chunk_count = 0usize;
@@ -91,18 +92,30 @@ fn build_archive(run_dir: &Path, content_enabled: bool) -> io::Result<Value> {
         }
         for (step, request_path) in requests {
             let response_path = run_dir.join("llm").join(format!("{step:03}.response.json"));
-            let request_status = response_status(&response_path);
+            let (request_status, wire_format) = request_observation(run_dir, step, &response_path);
             let mut evidence_ids = Vec::new();
             let mut extraction_error = None;
 
             if request_status == "accepted" {
                 accepted_request_count += 1;
                 match read_json(&request_path).and_then(|payload| {
-                    extract_model_visible_tool_results(&metadata.provider, &payload)
+                    extract_model_visible_tool_results(
+                        &metadata.provider,
+                        wire_format.as_deref(),
+                        &payload,
+                    )
                 }) {
                     Ok(results) => {
                         for result in results {
                             let mut content = result.content;
+                            if let Some((cached_content, cached_id)) =
+                                model_view_cache.get(&result.tool_call_id)
+                            {
+                                if cached_content == &content {
+                                    evidence_ids.push(cached_id.clone());
+                                    continue;
+                                }
+                            }
                             let original = content.clone();
                             redact_secrets_in_value(&mut content);
                             let redaction_count = changed_leaf_count(&original, &content);
@@ -112,6 +125,10 @@ fn build_archive(run_dir: &Path, content_enabled: bool) -> io::Result<Value> {
                             let evidence_id =
                                 evidence_id(&evaluation_id, &result.tool_call_id, &content_sha256);
                             evidence_ids.push(evidence_id.clone());
+                            model_view_cache.insert(
+                                result.tool_call_id.clone(),
+                                (original, evidence_id.clone()),
+                            );
 
                             if !seen_evidence.insert(evidence_id.clone()) {
                                 continue;
@@ -171,10 +188,15 @@ fn build_archive(run_dir: &Path, content_enabled: bool) -> io::Result<Value> {
             }
 
             dedupe_preserving_order(&mut evidence_ids);
+            let manifest_status = if extraction_error.is_some() {
+                "unsupported"
+            } else {
+                request_status.as_str()
+            };
             let manifest_body = json!({
                 "step": step,
-                "request_status": if extraction_error.is_some() { "unsupported" } else { request_status },
-                "evidence_ids": evidence_ids,
+                "request_status": manifest_status,
+                "evidence_ids": evidence_ids.clone(),
             });
             let manifest_sha256 = sha256_json(&manifest_body)?;
             index_entries.push(json!({
@@ -189,9 +211,9 @@ fn build_archive(run_dir: &Path, content_enabled: bool) -> io::Result<Value> {
                 json!({
                     "record_type": "request_manifest",
                     "step": step,
-                    "request_status": if extraction_error.is_some() { "unsupported" } else { request_status },
-                    "evidence_ids": manifest_body["evidence_ids"].clone(),
-                    "evidence_count": manifest_body["evidence_ids"].as_array().map_or(0, Vec::len),
+                    "request_status": manifest_status,
+                    "evidence_count": evidence_ids.len(),
+                    "evidence_ids": evidence_ids,
                     "manifest_sha256": manifest_sha256,
                     "error": extraction_error,
                 }),
@@ -242,8 +264,20 @@ fn build_archive(run_dir: &Path, content_enabled: bool) -> io::Result<Value> {
 
 fn extract_model_visible_tool_results(
     provider: &str,
+    wire_format: Option<&str>,
     payload: &Value,
 ) -> io::Result<Vec<ExtractedToolResult>> {
+    match wire_format {
+        Some("openai_responses") => return extract_openai_responses(payload),
+        Some("anthropic_messages") => return extract_anthropic_messages(payload),
+        Some("openai_chat") => return extract_openai_chat(payload),
+        Some(other) => {
+            return Err(io::Error::other(format!(
+                "unsupported recorded provider wire format: {other}"
+            )))
+        }
+        None => {}
+    }
     if payload.get("input").and_then(Value::as_array).is_some() {
         return extract_openai_responses(payload);
     }
@@ -442,6 +476,29 @@ fn response_status(path: &Path) -> &'static str {
     }
 }
 
+fn request_observation(
+    run_dir: &Path,
+    step: u32,
+    response_path: &Path,
+) -> (String, Option<String>) {
+    let metadata_path = run_dir
+        .join("llm")
+        .join(format!("{step:03}.request.meta.json"));
+    if let Ok(metadata) = read_json(&metadata_path) {
+        let status = match metadata.get("status").and_then(Value::as_str) {
+            Some("accepted") => "accepted",
+            Some("failed") => "failed",
+            _ => "unknown",
+        };
+        let wire_format = metadata
+            .get("wire_format")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        return (status.to_string(), wire_format);
+    }
+    (response_status(response_path).to_string(), None)
+}
+
 fn trace_identity(trace: &Value) -> Option<TraceIdentity> {
     let root = trace
         .pointer("/resourceSpans/0/scopeSpans/0/spans")
@@ -490,6 +547,8 @@ fn common_record(
     record.insert("provider".into(), json!(metadata.provider));
     record.insert("model".into(), json!(metadata.model));
     record.insert("created_at".into(), json!(created_at));
+    record.insert("client_version".into(), json!(env!("CARGO_PKG_VERSION")));
+    record.insert("platform".into(), json!(std::env::consts::OS));
     Value::Object(record)
 }
 
@@ -564,19 +623,6 @@ fn read_json(path: &Path) -> io::Result<Value> {
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
-fn write_json_atomic(path: &Path, value: &Value) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
-    let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    fs::write(&temporary, bytes)?;
-    if path.exists() {
-        let _ = fs::remove_file(path);
-    }
-    fs::rename(temporary, path)
-}
-
 fn changed_leaf_count(before: &Value, after: &Value) -> usize {
     match (before, after) {
         (Value::Array(left), Value::Array(right)) => left
@@ -597,6 +643,10 @@ fn changed_leaf_count(before: &Value, after: &Value) -> usize {
 }
 
 fn split_utf8(text: &str, max_bytes: usize) -> Vec<String> {
+    assert!(
+        max_bytes >= 4,
+        "UTF-8 chunks require a budget of at least 4 bytes"
+    );
     if text.is_empty() {
         return vec![String::new()];
     }
@@ -607,9 +657,7 @@ fn split_utf8(text: &str, max_bytes: usize) -> Vec<String> {
         while end > start && !text.is_char_boundary(end) {
             end -= 1;
         }
-        if end == start {
-            end = text.len();
-        }
+        debug_assert!(end > start);
         chunks.push(text[start..end].to_string());
         start = end;
     }
