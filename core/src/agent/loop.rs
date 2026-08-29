@@ -206,6 +206,8 @@ pub async fn run_agent_with_events(
 
     let mut messages: Vec<Message> = options.seed_messages.clone();
     messages.push(Message::user(task.to_string()));
+    let mut anchor_user_index = options.seed_messages.len();
+    let is_follow_up = !options.seed_messages.is_empty();
     // Everything before this index is already in the trace: seed messages were
     // uploaded by the earlier turns that share this conversation's trace id,
     // and within the run the marker advances so each `chat` span carries only
@@ -252,7 +254,8 @@ pub async fn run_agent_with_events(
             &mut messages,
             options.compact_after_messages,
             options.keep_recent_messages,
-            options.seed_messages.len(),
+            &mut anchor_user_index,
+            is_follow_up,
         ) {
             // The trace is an append-only diagnostic record. The rewritten
             // transcript is local context management, so restart its cursor
@@ -560,7 +563,8 @@ pub async fn run_agent_with_events(
             &mut messages,
             options.compact_after_messages,
             options.keep_recent_messages,
-            options.seed_messages.len(),
+            &mut anchor_user_index,
+            is_follow_up,
         ) {
             traced_len = messages.len();
         }

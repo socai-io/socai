@@ -7,6 +7,10 @@
 //! their own `base_url` via `ProviderConfig`; their quirks (the
 //! `reasoning_content` field, thinking toggles) live here too.
 
+use std::collections::HashSet;
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -19,6 +23,31 @@ use crate::agent::llm::{
 use crate::agent::provider::{
     config_for, load_api_key, load_openai_credential, Credential, Provider, ProviderConfig,
 };
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const IDLE_POOL_TIMEOUT: Duration = Duration::from_secs(300);
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn http_client() -> anyhow::Result<reqwest::Client> {
+    if let Some(client) = HTTP_CLIENT.get() {
+        return Ok(client.clone());
+    }
+    // Agent tasks spend minutes inside browser tools between model turns. A
+    // process-wide pool lets all three tasks reuse whichever ChatGPT/OpenAI
+    // connection is still healthy instead of maintaining three independent
+    // pools that all reconnect after the same idle window. Bound the connect
+    // phase separately so a dead route reaches the existing retry loop in
+    // seconds rather than waiting for the operating system's TCP timeout.
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .pool_idle_timeout(IDLE_POOL_TIMEOUT)
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()?;
+    let _ = HTTP_CLIENT.set(client.clone());
+    Ok(HTTP_CLIENT.get().cloned().unwrap_or(client))
+}
 
 #[derive(Debug, Clone)]
 pub struct OpenAICompatBackend {
@@ -80,9 +109,7 @@ impl OpenAICompatBackend {
         } else {
             model
         };
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(180))
-            .build()?;
+        let client = http_client()?;
         Ok(Self {
             provider,
             model: resolved_model,
@@ -126,9 +153,9 @@ impl OpenAICompatBackend {
         extra
     }
 
-    /// Some providers (Kimi, Qwen, Doubao) want `reasoning_content` round-tripped
-    /// in the assistant message when tool_calls are present. Others
-    /// (OpenAI proper) ignore it. Toggle is per-provider.
+    /// Some OpenAI-compatible providers require `reasoning_content` to be
+    /// round-tripped in the assistant message whenever tool calls are replayed.
+    /// Others (OpenAI proper) ignore it. Toggle is per-provider.
     fn preserve_reasoning_content(&self) -> bool {
         matches!(
             self.provider,
@@ -137,6 +164,7 @@ impl OpenAICompatBackend {
                 | Provider::Qwen
                 | Provider::QwenIntl
                 | Provider::Doubao
+                | Provider::DeepSeek
         )
     }
 
@@ -151,10 +179,20 @@ impl OpenAICompatBackend {
         let has_tools = !chat_tools.is_empty();
         OutgoingRequest {
             model: self.model.clone(),
-            messages: build_chat_messages(system, messages, self.preserve_reasoning_content()),
+            messages: build_chat_messages(
+                system,
+                messages,
+                self.preserve_reasoning_content(),
+                self.provider == Provider::DeepSeek,
+            ),
             max_tokens,
             tools: chat_tools,
-            tool_choice: if has_tools { Some("auto") } else { None },
+            // DeepSeek thinking mode supports tools but rejects tool_choice.
+            tool_choice: if has_tools && self.provider != Provider::DeepSeek {
+                Some("auto")
+            } else {
+                None
+            },
             extra: self.extra_body(),
         }
     }
@@ -196,6 +234,47 @@ impl OpenAICompatBackend {
             include,
         }
     }
+}
+
+fn validate_deepseek_tool_context(messages: &[Message]) -> anyhow::Result<()> {
+    let mut pending = HashSet::new();
+    for message in messages {
+        match message.role {
+            crate::agent::llm::MessageRole::Assistant => {
+                if !pending.is_empty() {
+                    anyhow::bail!(
+                        "DeepSeek API error | status=400 | code=invalid_tool_context | message=assistant turn started before every prior tool call had a matching result"
+                    );
+                }
+                for block in message.content.as_blocks() {
+                    if let Block::ToolUse { id, .. } = block {
+                        if id.trim().is_empty() || !pending.insert(id) {
+                            anyhow::bail!(
+                                "DeepSeek API error | status=400 | code=invalid_tool_context | message=assistant history contains an empty or duplicate tool call id"
+                            );
+                        }
+                    }
+                }
+            }
+            crate::agent::llm::MessageRole::User => {
+                for block in message.content.as_blocks() {
+                    if let Block::ToolResult { tool_use_id, .. } = block {
+                        if !pending.remove(&tool_use_id) {
+                            anyhow::bail!(
+                                "DeepSeek API error | status=400 | code=invalid_tool_context | message=tool result has no matching assistant tool call"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !pending.is_empty() {
+        anyhow::bail!(
+            "DeepSeek API error | status=400 | code=invalid_tool_context | message=assistant tool call has no matching tool result"
+        );
+    }
+    Ok(())
 }
 
 /// OpenAI models that accept the Responses API `reasoning` parameter.
@@ -242,13 +321,18 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output
 
     #[test]
     fn responses_input_preserves_function_call_outputs() {
-        let input = build_responses_input(&[
+        let messages = [
             Message::user("lookup abc"),
-            Message::assistant_blocks(vec![Block::ToolUse {
-                id: "call_1".into(),
-                name: "lookup".into(),
-                input: json!({"key": "abc"}),
-            }]),
+            Message::assistant_blocks(vec![
+                Block::ReasoningContent {
+                    text: "need the lookup result".into(),
+                },
+                Block::ToolUse {
+                    id: "call_1".into(),
+                    name: "lookup".into(),
+                    input: json!({"key": "abc"}),
+                },
+            ]),
             Message {
                 role: MessageRole::User,
                 content: MessageContent::Blocks(vec![Block::ToolResult {
@@ -256,12 +340,76 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output
                     content: vec![ToolResultContent::Text { text: "42".into() }],
                 }]),
             },
-        ]);
+        ];
+        let input = build_responses_input(&messages);
 
         assert_eq!(input[1]["type"], "function_call");
         assert_eq!(input[1]["call_id"], "call_1");
         assert_eq!(input[2]["type"], "function_call_output");
         assert_eq!(input[2]["output"], "42");
+
+        let deepseek = OpenAICompatBackend {
+            provider: Provider::DeepSeek,
+            model: "deepseek-v4-pro".into(),
+            credential: Credential::ApiKey("test-key".into()),
+            base_url: "https://example.invalid/v1".into(),
+            client: reqwest::Client::new(),
+            task_id: None,
+        };
+        let request = deepseek.build_chat_request(
+            "system",
+            &messages,
+            &[ToolSchema {
+                name: "lookup".into(),
+                description: "lookup a value".into(),
+                input_schema: json!({"type": "object"}),
+            }],
+            1024,
+        );
+        let payload = serde_json::to_value(request).expect("request should serialize");
+        let chat = payload["messages"]
+            .as_array()
+            .expect("messages should be an array");
+        assert_eq!(chat[2]["reasoning_content"], "need the lookup result");
+        assert_eq!(chat[2]["content"], "");
+        assert_eq!(chat[2]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(chat[3]["role"], "tool");
+        assert_eq!(chat[3]["tool_call_id"], "call_1");
+        assert!(payload.get("tool_choice").is_none());
+
+        let kimi = OpenAICompatBackend {
+            provider: Provider::Kimi,
+            model: "kimi-k2.6".into(),
+            credential: Credential::ApiKey("test-key".into()),
+            base_url: "https://example.invalid/v1".into(),
+            client: reqwest::Client::new(),
+            task_id: None,
+        };
+        let payload = serde_json::to_value(kimi.build_chat_request(
+            "system",
+            &messages,
+            &[ToolSchema {
+                name: "lookup".into(),
+                description: "lookup a value".into(),
+                input_schema: json!({"type": "object"}),
+            }],
+            1024,
+        ))
+        .expect("request should serialize");
+        assert_eq!(payload["tool_choice"], "auto");
+        assert!(payload["messages"][2]["content"].is_null());
+
+        let invalid = [Message {
+            role: MessageRole::User,
+            content: MessageContent::Blocks(vec![Block::ToolResult {
+                tool_use_id: "missing_call".into(),
+                content: vec![ToolResultContent::Text { text: "42".into() }],
+            }]),
+        }];
+        let error = deepseek
+            .request_payload("system", &invalid, &[], 1024)
+            .expect_err("orphaned tool result should fail locally");
+        assert!(error.to_string().contains("code=invalid_tool_context"));
     }
 }
 
@@ -301,7 +449,12 @@ fn flatten_tool_result_content(blocks: &[ToolResultContent]) -> Value {
 }
 
 /// Translate Anthropic-shaped history into chat-completion messages.
-fn build_chat_messages(system: &str, messages: &[Message], preserve_reasoning: bool) -> Vec<Value> {
+fn build_chat_messages(
+    system: &str,
+    messages: &[Message],
+    preserve_reasoning: bool,
+    require_assistant_content: bool,
+) -> Vec<Value> {
     let mut out = vec![json!({"role": "system", "content": system})];
 
     for msg in messages {
@@ -336,7 +489,9 @@ fn build_chat_messages(system: &str, messages: &[Message], preserve_reasoning: b
                 let content_str = text_parts.join("\n").trim().to_string();
                 let mut assistant_msg = Map::new();
                 assistant_msg.insert("role".into(), json!("assistant"));
-                if content_str.is_empty() {
+                if content_str.is_empty() && require_assistant_content && !tool_calls.is_empty() {
+                    assistant_msg.insert("content".into(), json!(""));
+                } else if content_str.is_empty() {
                     assistant_msg.insert("content".into(), Value::Null);
                 } else {
                     assistant_msg.insert("content".into(), json!(content_str));
@@ -742,6 +897,9 @@ impl Backend for OpenAICompatBackend {
         tools: &[ToolSchema],
         max_tokens: u32,
     ) -> anyhow::Result<Value> {
+        if self.provider == Provider::DeepSeek {
+            validate_deepseek_tool_context(messages)?;
+        }
         if self.provider == Provider::OpenAI {
             serde_json::to_value(self.build_responses_request(system, messages, tools, max_tokens))
                 .map_err(Into::into)
@@ -762,6 +920,10 @@ impl Backend for OpenAICompatBackend {
             return self
                 .send_responses(system, messages, tools, max_tokens)
                 .await;
+        }
+
+        if self.provider == Provider::DeepSeek {
+            validate_deepseek_tool_context(messages)?;
         }
 
         let body = self.build_chat_request(system, messages, tools, max_tokens);

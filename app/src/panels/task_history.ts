@@ -49,13 +49,14 @@ function renderTaskRows(props: SidebarProps): string {
     .map((task) => {
       const active = !props.composing && task.task_id === props.selectedTaskId ? "task-row-active" : "";
       const running = task.status === "running" || task.status === "queued";
+      const statusLabel = taskStatusLabel(task.status);
       return `
         <div class="task-row ${active}">
           <button type="button" class="task-row-open" data-task-id="${esc(task.task_id)}">
-            <span class="task-row-glyph task-row-glyph-${esc(task.status)}" aria-hidden="true">${taskStatusGlyph(task.status)}</span>
+            <span class="task-row-glyph task-row-glyph-${esc(task.status)}" aria-hidden="true" title="${esc(statusLabel)}">${taskStatusGlyph(task.status)}</span>
             <span class="task-row-main">
               <span class="task-row-title">${esc(task.task)}</span>
-              <span class="task-row-meta">${esc(taskStatusLabel(task.status))} · ${esc(formatTaskTimestamp(task.created_at))}</span>
+              <span class="task-row-meta">${esc(statusLabel)} · ${esc(formatTaskTimestamp(task.created_at))}</span>
             </span>
           </button>
           ${running ? "" : `
@@ -93,8 +94,8 @@ export function renderConfirmDeleteDialog(task: AgentTaskView): string {
 
 function taskStatusGlyph(status: AgentTaskView["status"]): string {
   switch (status) {
-    case "queued": return "○";
-    case "running": return "●";
+    case "queued": return "";
+    case "running": return "";
     case "completed": return "✓";
     case "failed": return "×";
     case "cancelled": return "−";

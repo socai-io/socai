@@ -387,6 +387,10 @@ const messages = {
   "task.you": { en: "you", zh: "你" },
   "task.working": { en: "working…", zh: "运行中…" },
   "task.activityLabel": { en: "activity", zh: "运行过程" },
+  "task.interruptedAppClosed": {
+    en: "the app was closed before this task finished.",
+    zh: "应用在任务完成前已关闭。",
+  },
   "task.searchLabel": { en: "search", zh: "搜索" },
   "task.progressReading": { en: "reading", zh: "读取笔记" },
   "task.progressOcr": { en: "reading images", zh: "识别图片文字" },
@@ -432,6 +436,10 @@ const messages = {
   "task.preflightBrowserRemote": {
     en: "socai could not connect to the hosted browser. check your network and socai account, then try again.",
     zh: "socai 无法连接云端浏览器。请检查网络和 socai 账号状态，然后重试。",
+  },
+  "task.preflightBrowserRemoteQuota": {
+    en: "this device has used up today's hosted browser time. try again tomorrow, or switch the browser source to a local chrome in settings.",
+    zh: "本设备今日的云端浏览器时长已用完。请明天再试，或在设置中将浏览器来源切换为本地 chrome。",
   },
   "task.preflightXhsLogin": {
     en: "xiaohongshu is signed out in the connected chrome profile. complete sign-in there, then try again.",
@@ -489,6 +497,18 @@ const messages = {
     en: "{provider} denied this model to the API key you provided. check the model permission and account region.",
     zh: "{provider} 拒绝您提供的 API Key 访问该模型。请检查模型权限和账号区域。",
   },
+  "task.apiErrorModelNotActivatedTitle": {
+    en: "selected model is not enabled",
+    zh: "所选模型尚未开通",
+  },
+  "task.apiErrorModelNotActivated": {
+    en: "the selected model is not enabled for the current {provider} account. this task has stopped and will not retry automatically. enable the model in the provider console, or switch to an enabled model and send the task again.",
+    zh: "当前 {provider} 账号尚未开通所选模型。本次任务已停止，不会自动重试。请先在模型服务商控制台开通该模型，或在右上角模型菜单切换到已开通的模型后重新发送。",
+  },
+  "task.apiErrorModelNotActivatedOwnKey": {
+    en: "the account for your {provider} API key does not have the selected model enabled. this task has stopped and will not retry automatically. enable the model in the provider console, or use an enabled model or API key and send the task again.",
+    zh: "您提供的 {provider} API Key 对应账号尚未开通所选模型。本次任务已停止，不会自动重试。请先在模型服务商控制台开通该模型，或更换已开通的模型/API Key 后重新发送。",
+  },
   "task.apiErrorRateLimitTitle": { en: "model requests are too frequent", zh: "模型请求过于频繁" },
   "task.apiErrorRateLimit": {
     en: "{provider} is rate limiting requests. wait briefly and send the task again, or switch models.",
@@ -536,6 +556,47 @@ const messages = {
   "task.apiErrorSwitchManagedHint": {
     en: "or switch to socai's built-in model in the model menu, which runs on account points without an API key.",
     zh: "也可以在模型菜单中切换到 socai 内置模型，使用账号点数、无需 API Key。",
+  },
+
+  "artifact.listAria": { en: "generated files", zh: "生成的文件" },
+  "artifact.download": { en: "download", zh: "下载" },
+  "artifact.downloading": { en: "downloading…", zh: "下载中…" },
+  "artifact.downloadFailed": { en: "retry download", zh: "重试下载" },
+  "artifact.downloadAria": { en: "download {name}", zh: "下载 {name}" },
+  "artifact.downloadingAria": { en: "downloading {name}", zh: "正在下载 {name}" },
+  "artifact.downloadFailedAria": { en: "retry downloading {name}", zh: "重试下载 {name}" },
+  "artifact.open": { en: "open", zh: "打开" },
+  "artifact.opening": { en: "opening…", zh: "正在打开…" },
+  "artifact.openFailed": { en: "retry opening", zh: "重试打开" },
+  "artifact.openAria": { en: "show downloaded {name} in folder", zh: "在下载目录中显示 {name}" },
+  "artifact.openingAria": { en: "showing {name} in folder", zh: "正在下载目录中显示 {name}" },
+  "artifact.openFailedAria": { en: "retry showing {name} in folder", zh: "重试在下载目录中显示 {name}" },
+  "artifact.previewAria": { en: "preview {name}", zh: "预览 {name}" },
+  "artifact.previewPanelAria": { en: "preview of {name}", zh: "{name} 预览" },
+  "artifact.previewClose": { en: "close preview", zh: "关闭预览" },
+  "artifact.previewResize": { en: "resize preview", zh: "调整预览宽度" },
+  "artifact.previewLoading": { en: "loading preview…", zh: "正在加载预览…" },
+  "artifact.previewFailed": { en: "preview unavailable", zh: "无法预览" },
+  "artifact.previewPdfUnavailable": {
+    en: "PDF preview is unavailable in this WebView.",
+    zh: "当前 WebView 无法显示 PDF 预览。",
+  },
+  "artifact.previewTableLimit": {
+    en: "preview limited to {rows} rows and {columns} columns",
+    zh: "预览最多显示 {rows} 行、{columns} 列",
+  },
+  "artifact.previewWorkbookEmpty": {
+    en: "this workbook has no visible data",
+    zh: "工作簿中没有可显示的数据",
+  },
+  "artifact.previewWorkbookSheets": { en: "workbook sheets", zh: "工作表" },
+  "artifact.previewWorkbookLimit": {
+    en: "preview truncated ({shown} of {total} sheets shown); download the file for complete data",
+    zh: "预览内容已截断（显示 {shown}/{total} 个工作表）；完整数据请下载文件查看",
+  },
+  "artifact.previewWorksheetLimit": {
+    en: "worksheet preview truncated; download the file for complete data",
+    zh: "工作表预览内容已截断；完整数据请下载文件查看",
   },
 
   "feishu.export": { en: "export to feishu", zh: "导出到飞书" },
@@ -675,6 +736,7 @@ const taskPreflightMessages = {
   preflight_browser_config: "task.preflightBrowserConfig",
   preflight_browser: "task.preflightBrowser",
   preflight_browser_remote: "task.preflightBrowserRemote",
+  preflight_browser_remote_quota: "task.preflightBrowserRemoteQuota",
   preflight_xhs_login: "task.preflightXhsLogin",
   preflight_xhs_session: "task.preflightXhsSession",
 } as const satisfies Record<string, MessageKey>;
@@ -722,6 +784,7 @@ const ownKeyMessages: Partial<Record<MessageKey, MessageKey>> = {
   "task.apiErrorBalance": "task.apiErrorBalanceOwnKey",
   "task.apiErrorUsageLimit": "task.apiErrorUsageLimitOwnKey",
   "task.apiErrorForbidden": "task.apiErrorForbiddenOwnKey",
+  "task.apiErrorModelNotActivated": "task.apiErrorModelNotActivatedOwnKey",
   "task.apiErrorRateLimit": "task.apiErrorRateLimitOwnKey",
 };
 
@@ -746,10 +809,22 @@ export function formatTaskApiError(error: string): TaskApiErrorPresentation {
   const status = parsed.status;
   const signal = parsed.signal;
   const explicitCode = parsed.code || parsed.type;
+  const entitlementCode = `${parsed.code} ${parsed.type}`.toLowerCase();
+  const detail = parsed.message.toLowerCase();
+  const modelNotActivated = (status === 403 || status === 404)
+    && (
+      /\bmodel[_-]?not[_-]?(?:activated|open)\b/.test(entitlementCode)
+      || /model (?:is )?not (?:activated|enabled|open)|not (?:activated|enabled|opened) (?:the )?model/.test(detail)
+      || /模型(?:尚未|未)开通|(?:尚未|未)开通(?:此|该|所选)?模型/.test(detail)
+    );
   let fallbackCode: string;
   let titleKey: MessageKey;
   let messageKey: MessageKey;
-  if (status === 401 || /auth|unauthor|invalid.*(?:api|x-api).*key/.test(signal)) {
+  if (modelNotActivated) {
+    titleKey = "task.apiErrorModelNotActivatedTitle";
+    messageKey = "task.apiErrorModelNotActivated";
+    fallbackCode = "model_not_activated";
+  } else if (status === 401 || /auth|unauthor|invalid.*(?:api|x-api).*key/.test(signal)) {
     titleKey = "task.apiErrorAuthTitle";
     messageKey = "task.apiErrorAuth";
     fallbackCode = "authentication_error";
@@ -863,6 +938,7 @@ interface ParsedTaskApiError {
   statusText: string;
   code: string;
   type: string;
+  message: string;
   detail: string;
   requestId: string;
   signal: string;
@@ -887,7 +963,8 @@ function parseTaskApiError(error: string): ParsedTaskApiError {
   const status = Number.isFinite(parsedStatus) ? parsedStatus : null;
   const code = fields.get("code") || embedded.code || "";
   const type = fields.get("type") || embedded.type || "";
-  const detail = fields.get("message") || embedded.message || raw;
+  const message = fields.get("message") || embedded.message || "";
+  const detail = message || raw;
   const requestId = fields.get("request_id") || embedded.request_id || "";
   return {
     provider: providerLabel(providerValue),
@@ -896,6 +973,7 @@ function parseTaskApiError(error: string): ParsedTaskApiError {
     statusText,
     code,
     type,
+    message,
     detail,
     requestId,
     signal: `${code} ${type} ${detail} ${raw}`.toLowerCase(),
@@ -1042,6 +1120,15 @@ export function setTimezone(timezone: string): void {
 
 export function taskStatusLabel(status: TaskStatusKey): string {
   return taskStatusLabels[status][currentLanguage];
+}
+
+export function formatTaskInterruptionMessage(message: string): string {
+  const appClosed = "app was closed before this task finished";
+  const normalized = message.trim().toLowerCase();
+  if (normalized === appClosed || normalized === `[task interrupted: ${appClosed}]`) {
+    return t("task.interruptedAppClosed");
+  }
+  return message;
 }
 
 export function formatTabs(count: number): string {

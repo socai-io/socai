@@ -78,6 +78,23 @@ export interface AgentTaskSnapshot {
   points_used: number | null;
 }
 
+export interface AgentArtifact {
+  turn_index: number;
+  name: string;
+  path: string;
+  relative_path: string;
+  kind: string;
+  size_bytes: number;
+  version: string;
+  preview_kind?: "markdown" | "csv" | "text" | "spreadsheet" | "pdf" | "image" | null;
+}
+
+export interface AgentArtifactDownload {
+  name: string;
+  path: string;
+  identity: string;
+}
+
 export interface TimelineEntity {
   type: string;
   data: unknown;
@@ -373,7 +390,18 @@ function captureTaskCommandErrorNotice(error: unknown): boolean {
 }
 
 function captureRuntimeErrorNotice(payload: AgentTaskEventPayload): boolean {
-  if (payload.kind !== "api_error" || !payload.text.trim()) return false;
+  if (!payload.text.trim()) return false;
+  if (payload.kind === "failed") {
+    const commandPresentation = formatTaskCommandErrorPresentation(payload.text);
+    if (!commandPresentation) return false;
+    showRuntimeErrorNotice({
+      key: `${payload.task_id}:${commandPresentation.fingerprint}`,
+      kind: "command",
+      error: payload.text,
+    });
+    return true;
+  }
+  if (payload.kind !== "api_error") return false;
   console.error("agent task API error:", payload.text);
   const presentation = formatTaskApiError(payload.text);
   const key = `${payload.task_id}:${presentation.fingerprint}`;
@@ -715,14 +743,17 @@ async function main(): Promise<void> {
     if (agentPanel.appendTaskEvent(event.payload) || showRuntimeError) render();
     if (event.payload.kind === "tool_result") {
       // Each finished step's notes are on disk — refresh so the result row's
-      // embed renders them now, not when the whole task ends.
+      // embed and newly-created artifact cards render now, not when the whole
+      // task ends.
       void agentPanel.loadTaskNotes(event.payload.task_id, shell());
+      void agentPanel.loadTaskArtifacts(event.payload.task_id, shell());
     }
     if (isTaskFinishedEvent(event.payload)) {
       // A finished task is a good, quiet moment to check for an update, and the
       // point at which its full note archive (notes.json) is on disk to render.
       void maybeCheckForUpdate();
       void agentPanel.loadTaskNotes(event.payload.task_id, shell());
+      void agentPanel.loadTaskArtifacts(event.payload.task_id, shell());
       maybeRelaunchReadyUpdate();
       void authMenu.refreshWallet().then(render);
     }
@@ -757,12 +788,14 @@ async function main(): Promise<void> {
   }
   await Promise.all([settingsMenu.loadConfig(), authMenu.loadSession()]);
   await subscriptionMenu.refresh(authMenu.isLoggedIn());
+  await agentPanel.prepareArtifactDownloads();
   render();
   bindGlobalDismiss();
   bindExternalLinks();
   installUpdatePreviewHook();
   void hydrateTaskEvents(initialTasks);
   void agentPanel.loadSelectedTaskNotes(shell());
+  void agentPanel.loadSelectedTaskArtifacts(shell());
   void maybeCheckForUpdate();
 
   const refresh = (): void => {
@@ -776,6 +809,7 @@ async function main(): Promise<void> {
   window.addEventListener("focus", () => {
     appWindowFocused = true;
     refresh();
+    void agentPanel.revalidateArtifactDownloads(shell());
   });
   window.addEventListener("blur", () => {
     appWindowFocused = false;

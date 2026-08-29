@@ -1,7 +1,10 @@
+use crate::artifact_tool::PublishArtifactTool;
 use crate::tasks::{app_data_dir, now_ms, AgentTaskRegistry, AgentTaskSnapshot};
 use crate::telemetry::{duration_ms, short_error, DesktopTelemetry};
 use crate::timeline::{agent_event_to_timeline, AgentTaskEventKind, AgentTaskEventPayload};
 use anyhow::Result;
+use calamine::{Data, DataRef, Reader, SheetType, Xlsx};
+use quick_xml::{events::Event as XmlEvent, Reader as XmlReader};
 use serde_json::{json, Map, Value};
 use socai_core::agent::{
     catalog_models_for, configured_default_model_for, configured_default_provider,
@@ -11,16 +14,18 @@ use socai_core::agent::{
 };
 use socai_core::runtime::{
     create_llm_provider_for_task, ensure_llm_provider_configured_for,
-    run_agent_task as run_agent_with_tools, AgentRunConfig, BrowserStatus, ChromeConnectOptions,
-    ChromeProfile, RuntimePageSession, SocaiRuntime,
+    run_agent_task as run_agent_with_tools, AgentRunConfig, BrowserBusy, BrowserBusyKind,
+    BrowserLease, BrowserStatus, ChromeConnectOptions, ChromeProfile, RuntimePageSession,
+    SocaiRuntime,
 };
 use socai_core::sites::xhs::{XhsHistoryStore, XhsPageRuntime};
 use socai_core::sites::{find_site, SiteSpec};
 use socai_core::telemetry::query_text_enabled;
 use socai_core::telemetry::tool_call::{summarize_tool_args, summarize_tool_result};
 use socai_core::telemetry::trace::mark_run_trace_status;
-use std::collections::HashMap;
-use std::io::{BufReader, Read};
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -28,11 +33,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 const TAURI_AGENT_PREAMBLE: &str =
     "You are running inside the socai desktop app as a conversational, multi-turn agent. \
-     Besides the Xiaohongshu site tools you have local environment tools, confined to \
-     socai's data directories (run artifacts, session records): `read_file` (read text, \
-     or view image/screenshot artifacts) and `shell` (PowerShell on Windows, `sh` on \
-     macOS/Linux; scoped to those \
-     same directories, to write files, list/search artifacts, etc.). Maintain continuity \
+     Besides the Xiaohongshu site tools you have unrestricted local environment tools: \
+     `read_file` (read text, or view image/screenshot files) and `shell` (PowerShell on \
+     Windows, `sh` on macOS/Linux; use absolute paths to work outside the current run \
+     directory). Only access files relevant to the user's request. Maintain continuity \
      with earlier turns in this chat.";
 
 // Appended AFTER the site playbook so it sits at the tail of the system
@@ -49,6 +53,12 @@ const TAURI_CITATION_RULES: &str = "\n\n## Citing notes in the final answer (req
     - Link text is the note's title; drop any square brackets inside it.\n\
     - For notes only seen as preview cards and never read, link their url instead.\n\
     - Cite each note where it is discussed, not in a separate list at the end.";
+
+const TAURI_ARTIFACT_RULES: &str = "\n\n## Deliverable files\n\
+    After you create and verify any file the user should download, call \
+    `publish_artifact` with that file's path. Creating or mentioning a file \
+    alone does not display a download card. Only tell the user the file is \
+    downloadable after `publish_artifact` succeeds.";
 
 /// Site the desktop agent runner drives. Becomes a runtime choice once the
 /// app grows a site switcher.
@@ -139,31 +149,6 @@ pub async fn app_relaunch(app: AppHandle) {
     app.state::<SocaiRuntime>().disconnect_browser().await;
     app.cleanup_before_exit();
     tauri::process::restart(&app.env());
-}
-
-/// Ensure the browser is connected before an agent run and return the shared
-/// site page for the login preflight. Starting a run expresses the user's
-/// intent to resume, so a dropped connection reconnects here instead of
-/// bouncing them to the connect button. Routine for remote profiles — hosted
-/// sessions expire on a server-side timeout between runs, and reconnecting
-/// mints a fresh one — and it also revives a killed managed chrome. Bounded by
-/// the runtime's connect budget.
-async fn ensure_browser_connected(
-    runtime: &SocaiRuntime,
-) -> Result<Arc<RuntimePageSession>, String> {
-    let site =
-        app_site().map_err(|error| task_preflight_error("preflight_site", format!("{error:#}")))?;
-    let options = ChromeConnectOptions::from_config()
-        .map_err(|error| task_preflight_error("preflight_browser_config", format!("{error:#}")))?;
-    let browser_error_code = if options.profile == ChromeProfile::Remote {
-        "preflight_browser_remote"
-    } else {
-        "preflight_browser"
-    };
-    runtime
-        .ensure_site_page_with_browser_options(site.id, site.home_url, options)
-        .await
-        .map_err(|error| task_preflight_error(browser_error_code, format!("{error:#}")))
 }
 
 async fn label_controlled_page(page: &RuntimePageSession, label: &str) {
@@ -606,7 +591,7 @@ pub async fn agent_task_start(
     if task_text.is_empty() {
         return Err("task is empty".into());
     }
-    run_task_preflight(&runtime, provider.as_deref(), model.as_deref()).await?;
+    run_task_preflight(provider.as_deref(), model.as_deref()).await?;
 
     // One conversation = one folder under the runs root, named after the
     // first task; each turn's run dir nests inside it (turn-01_…, turn-02_…).
@@ -671,8 +656,8 @@ pub async fn agent_task_start(
 }
 
 /// Continue an existing task's conversation with a follow-up message. The
-/// task must be terminal (not queued/running) — replies are serialized, same
-/// as new tasks, via `MAX_CONCURRENT_AGENT_TASKS`. Keeps the same `task_id`
+/// task must be terminal (not queued/running). Replies and new tasks share the
+/// global `MAX_CONCURRENT_AGENT_TASKS` limit. Keeps the same `task_id`
 /// and `session_dir` (so the whole thread's history stays attached to one
 /// sidebar entry) but starts a fresh run dir for this turn.
 #[tauri::command]
@@ -701,7 +686,10 @@ pub async fn agent_task_reply(
     };
     let provider = existing.provider.clone();
     let model = existing.model.clone();
-    run_task_preflight(&runtime, provider.as_deref(), model.as_deref()).await?;
+    run_task_preflight(provider.as_deref(), model.as_deref()).await?;
+    if let Some(previous_run_dir) = existing.run_dir.as_deref() {
+        socai_core::media::cancel_background_media_for_run(previous_run_dir);
+    }
 
     // This turn's run dir nests inside the conversation dir. Tasks created
     // before nesting have their session dir under ~/.socai/sessions; their
@@ -719,7 +707,6 @@ pub async fn agent_task_reply(
             snapshot.finished_at = None;
             snapshot.run_id = None;
             snapshot.run_dir = Some(run_dir.display().to_string());
-            snapshot.target_id = None;
             snapshot.final_text = None;
             snapshot.error = None;
             snapshot.steps = None;
@@ -777,11 +764,7 @@ pub async fn agent_task_reply(
     Ok(snapshot)
 }
 
-async fn run_task_preflight(
-    runtime: &SocaiRuntime,
-    provider: Option<&str>,
-    model: Option<&str>,
-) -> Result<(), String> {
+async fn run_task_preflight(provider: Option<&str>, model: Option<&str>) -> Result<(), String> {
     let resolved_provider = ensure_llm_provider_configured_for(provider, model)
         .map_err(|error| task_preflight_error("preflight_model_config", format!("{error:#}")))?;
     if resolved_provider == Provider::Socai {
@@ -797,20 +780,23 @@ async fn run_task_preflight(
         validate_preflight_balance(wallet.balance_points)?;
     }
 
-    let page = ensure_browser_connected(runtime).await?;
+    Ok(())
+}
+
+async fn run_session_login_preflight(page: &RuntimePageSession) -> Result<(), String> {
     let login_error_code = if page.is_remote_browser() {
         "preflight_xhs_session"
     } else {
         "preflight_xhs_login"
     };
-    let login = XhsPageRuntime::new(&page)
+    let login = XhsPageRuntime::new(page)
         .login_gate(true)
         .await
         .map_err(|error| task_preflight_error(login_error_code, format!("{error:#}")))?;
     if login == socai_core::sites::xhs::page::LoginGate::Required {
         return Err(task_preflight_error(
             login_error_code,
-            "Xiaohongshu login is required in the active browser session",
+            "Xiaohongshu login is required in this conversation's browser session",
         ));
     }
     Ok(())
@@ -833,6 +819,174 @@ fn validate_preflight_balance(balance_points: i64) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+/// How many times a run retries a browser that will not open before it gives
+/// up and reports the browser's own error. Capacity waits are unbounded — the
+/// runs ahead always finish — but a browser that fails to connect may be a
+/// server outage or a spent daily remote-browser quota, and a task that never
+/// stops queueing hides that from the user.
+const MAX_BROWSER_CONNECT_ATTEMPTS: u32 = 3;
+
+/// Outcome of bringing up a run's Chrome tab. `Busy` means "ask again in a
+/// moment" and keeps the task queued; `Failed` carries a coded preflight error
+/// the UI translates.
+enum PageAdmission {
+    Busy(BrowserBusy),
+    Failed(String),
+}
+
+struct UnboundPageGuard {
+    runtime: SocaiRuntime,
+    target_id: Option<String>,
+}
+
+impl UnboundPageGuard {
+    fn disarm(&mut self) {
+        self.target_id = None;
+    }
+}
+
+impl Drop for UnboundPageGuard {
+    fn drop(&mut self) {
+        let Some(target_id) = self.target_id.take() else {
+            return;
+        };
+        let runtime = self.runtime.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = runtime.close_target(&target_id).await;
+        });
+    }
+}
+
+fn remote_browser_selected() -> bool {
+    ChromeConnectOptions::from_config()
+        .map(|options| options.profile == ChromeProfile::Remote)
+        .unwrap_or(false)
+}
+
+/// Bring up this conversation's Chrome tab under the run's browser lease.
+/// Called from the admission loop so a refusal parks the task in the queue
+/// rather than failing it.
+async fn acquire_session_page(
+    runtime: &SocaiRuntime,
+    lease: &BrowserLease,
+    session_id: &str,
+) -> Result<(Arc<RuntimePageSession>, UnboundPageGuard), PageAdmission> {
+    let site = app_site().map_err(|error| {
+        PageAdmission::Failed(task_preflight_error("preflight_site", format!("{error:#}")))
+    })?;
+    let options = ChromeConnectOptions::from_config().map_err(|error| {
+        PageAdmission::Failed(task_preflight_error(
+            "preflight_browser_config",
+            format!("{error:#}"),
+        ))
+    })?;
+    // Each conversation owns one site tab. Separate tasks run in parallel
+    // without navigating or closing another session's target; replies keep the
+    // same target while the configured browser connection stays available.
+    let page = runtime
+        .ensure_session_site_page_with_browser_options(
+            lease,
+            session_id,
+            site.id,
+            site.home_url,
+            options,
+        )
+        .await
+        .map_err(|error| match BrowserBusy::find(&error) {
+            Some(busy) => PageAdmission::Busy(busy.clone()),
+            None => PageAdmission::Failed(browser_preflight_error(format!("{error:#}"))),
+        })?;
+    let guard = UnboundPageGuard {
+        runtime: runtime.clone(),
+        target_id: Some(page.target_id().to_string()),
+    };
+    Ok((page, guard))
+}
+
+/// Associate a tab with its task as soon as browser admission succeeds. The
+/// caller keeps an armed cleanup guard across these awaits, so cancellation
+/// closes a page that has not reached the registry yet.
+async fn bind_task_page(
+    app: &AppHandle,
+    registry: &AgentTaskRegistry,
+    task_id: &str,
+    page: &RuntimePageSession,
+    title_label: &str,
+) -> bool {
+    let target_id = page.target_id().to_string();
+    let page_url = page
+        .evaluate_json("location.href")
+        .await
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string));
+    let page_title_marker = format!("task:{task_id}");
+    let Some((snapshot, target_changed)) = registry
+        .bind_target_if_active(task_id, target_id, page_url, page_title_marker.clone())
+        .await
+    else {
+        return false;
+    };
+    label_controlled_page(page, &format!("{page_title_marker} · {title_label}")).await;
+    if target_changed {
+        emit_task_event(
+            app,
+            registry,
+            task_id,
+            "tab",
+            "chrome tab marked as controlled by socai".into(),
+            Some(snapshot),
+        )
+        .await;
+    }
+    true
+}
+
+fn browser_preflight_error(detail: String) -> String {
+    task_preflight_error(browser_preflight_code(&detail), detail)
+}
+
+/// Which browser failure the user is looking at. A spent daily allowance on the
+/// hosted browser is called out separately: unlike the other remote failures it
+/// is not fixed by retrying or by checking the network.
+fn browser_preflight_code(detail: &str) -> &'static str {
+    if !remote_browser_selected() {
+        return "preflight_browser";
+    }
+    if detail
+        .to_ascii_lowercase()
+        .contains("daily remote browser time limit")
+    {
+        return "preflight_browser_remote_quota";
+    }
+    "preflight_browser_remote"
+}
+
+/// Wait out a browser refusal. Returns false once a run has spent its connect
+/// attempts, which is the point at which the browser error becomes the task's
+/// failure instead of another wait.
+async fn wait_out_browser_busy(busy: &BrowserBusy, connect_attempts: &mut u32) -> bool {
+    if busy.kind == BrowserBusyKind::Connect {
+        *connect_attempts += 1;
+        if *connect_attempts >= MAX_BROWSER_CONNECT_ATTEMPTS {
+            return false;
+        }
+    } else {
+        *connect_attempts = 0;
+    }
+    tokio::time::sleep(busy.retry_after).await;
+    true
+}
+
+/// The conversation session a task belongs to, which is also its Chrome tab's
+/// identity. Tasks created before conversations were introduced have none.
+async fn task_session_id(registry: &AgentTaskRegistry, task_id: &str) -> Option<String> {
+    let session_dir = registry
+        .get(task_id)
+        .await
+        .and_then(|task| task.session_dir)?;
+    Conversation::load(&session_dir).ok().map(|c| c.id)
 }
 
 #[tauri::command]
@@ -940,6 +1094,957 @@ pub async fn agent_task_notes(
         .collect())
 }
 
+/// A file produced during one conversation turn and safe to expose as a
+/// download. `turn_index` matches the frontend's zero-based conversation turn.
+#[derive(serde::Serialize)]
+pub struct AgentArtifact {
+    turn_index: usize,
+    name: String,
+    path: String,
+    relative_path: String,
+    kind: String,
+    size_bytes: u64,
+    version: String,
+    preview_kind: Option<String>,
+    #[serde(skip)]
+    identity: same_file::Handle,
+}
+
+#[derive(serde::Serialize)]
+pub struct AgentArtifactDownload {
+    name: String,
+    path: String,
+    identity: String,
+}
+
+const ARTIFACT_TEXT_PREVIEW_MAX_BYTES: u64 = 4 * 1024 * 1024;
+const ARTIFACT_BINARY_PREVIEW_MAX_BYTES: u64 = 24 * 1024 * 1024;
+const ARTIFACT_IMAGE_PREVIEW_MAX_PIXELS: u64 = 24_000_000;
+const ARTIFACT_SPREADSHEET_PREVIEW_MAX_BYTES: u64 = 12 * 1024 * 1024;
+const ARTIFACT_SPREADSHEET_MAX_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
+const ARTIFACT_SPREADSHEET_MAX_ARCHIVE_ENTRIES: usize = 4_096;
+const ARTIFACT_SPREADSHEET_MAX_SHEETS: usize = 5;
+const ARTIFACT_SPREADSHEET_MAX_ROWS: usize = 500;
+const ARTIFACT_SPREADSHEET_MAX_COLUMNS: usize = 80;
+const ARTIFACT_SPREADSHEET_MAX_CELL_BYTES: usize = 8 * 1024;
+const ARTIFACT_SPREADSHEET_MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const ARTIFACT_SPREADSHEET_MAX_CELL_RECORDS: usize =
+    ARTIFACT_SPREADSHEET_MAX_ROWS * ARTIFACT_SPREADSHEET_MAX_COLUMNS;
+const ARTIFACT_SPREADSHEET_MAX_SHARED_STRINGS: usize = 100_000;
+
+#[derive(serde::Serialize)]
+struct SpreadsheetPreview {
+    sheets: Vec<SpreadsheetSheetPreview>,
+    sheet_count: usize,
+    truncated: bool,
+}
+
+#[derive(serde::Serialize)]
+struct SpreadsheetSheetPreview {
+    name: String,
+    rows: Vec<Vec<String>>,
+    truncated: bool,
+}
+
+/// Download cards include tool-registered artifacts (`artifacts/**`) and
+/// explicit user deliverables (`outputs/**`). Runtime logs, note media and
+/// model request/response traces stay private implementation detail.
+#[tauri::command]
+pub async fn agent_task_artifacts(
+    tasks: State<'_, AgentTaskRegistry>,
+    task_id: String,
+) -> Result<Vec<AgentArtifact>, String> {
+    let snapshot = tasks
+        .get(&task_id)
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    Ok(task_artifacts(&snapshot))
+}
+
+/// Read a previewable task artifact after authorizing it against the current
+/// task snapshot. Returning bytes over IPC keeps run paths outside the
+/// WebView's asset-protocol scope and applies one size limit on every platform.
+#[tauri::command]
+pub async fn agent_task_artifact_preview(
+    tasks: State<'_, AgentTaskRegistry>,
+    task_id: String,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    let snapshot = tasks
+        .get(&task_id)
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    let artifact = task_artifacts(&snapshot)
+        .into_iter()
+        .find(|artifact| artifact.path == path)
+        .ok_or_else(|| "artifact is not part of this task".to_string())?;
+    let preview_kind = artifact
+        .preview_kind
+        .clone()
+        .ok_or_else(|| "artifact type is not previewable".to_string())?;
+    let source = PathBuf::from(&artifact.path);
+    let source_identity = artifact.identity;
+    tokio::task::spawn_blocking(move || {
+        let file = open_artifact_source(&source, &source_identity)?;
+        if preview_kind == "spreadsheet" {
+            return spreadsheet_preview_response(file);
+        }
+        let limit = if matches!(preview_kind.as_str(), "pdf" | "image") {
+            ARTIFACT_BINARY_PREVIEW_MAX_BYTES
+        } else {
+            ARTIFACT_TEXT_PREVIEW_MAX_BYTES
+        };
+        let bytes = read_artifact_preview(file, limit)?;
+        if preview_kind == "image" {
+            validate_artifact_image_preview(&source, &bytes)?;
+        } else if preview_kind != "pdf" {
+            std::str::from_utf8(&bytes)
+                .map_err(|_| format!("artifact is not valid UTF-8: {}", source.display()))?;
+        }
+        Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|error| format!("artifact preview task failed: {error}"))?
+}
+
+/// Copy one artifact into the user's Downloads directory. The requested path
+/// must exactly match the task's current artifact listing; callers cannot use
+/// this command as a general-purpose local-file copier.
+#[tauri::command]
+pub async fn agent_task_artifact_download(
+    tasks: State<'_, AgentTaskRegistry>,
+    task_id: String,
+    path: String,
+) -> Result<AgentArtifactDownload, String> {
+    let snapshot = tasks
+        .get(&task_id)
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    let artifact = task_artifacts(&snapshot)
+        .into_iter()
+        .find(|artifact| artifact.path == path)
+        .ok_or_else(|| "artifact is not part of this task".to_string())?;
+    let source = PathBuf::from(&artifact.path);
+    let source_identity = artifact.identity;
+    let downloads = dirs::download_dir()
+        .ok_or_else(|| "could not resolve the Downloads directory".to_string())?;
+    let artifact_name = artifact.name.clone();
+
+    let (destination, identity) = tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&downloads)
+            .map_err(|error| format!("could not create {}: {error}", downloads.display()))?;
+        let mut source_file = open_artifact_source(&source, &source_identity)?;
+        let (destination, mut destination_file) = create_unique_download(&downloads, &source)?;
+        if let Err(error) = std::io::copy(&mut source_file, &mut destination_file)
+            .and_then(|_| destination_file.flush())
+        {
+            drop(destination_file);
+            let _ = std::fs::remove_file(&destination);
+            return Err(format!(
+                "could not download {} to {}: {error}",
+                source.display(),
+                destination.display()
+            ));
+        }
+        let identity = match artifact_file_identity(&destination_file) {
+            Ok(identity) => identity,
+            Err(error) => {
+                drop(destination_file);
+                let _ = std::fs::remove_file(&destination);
+                return Err(error);
+            }
+        };
+        Ok::<(PathBuf, String), String>((destination, identity))
+    })
+    .await
+    .map_err(|error| format!("artifact download task failed: {error}"))??;
+
+    Ok(AgentArtifactDownload {
+        name: artifact_name,
+        path: destination.to_string_lossy().to_string(),
+        identity,
+    })
+}
+
+/// Check whether a previously downloaded artifact still exists at the exact
+/// path returned by the download command. Both the task artifact and the
+/// destination filename are re-authorized before touching the Downloads path.
+#[tauri::command]
+pub async fn agent_task_artifact_download_exists(
+    tasks: State<'_, AgentTaskRegistry>,
+    task_id: String,
+    path: String,
+    download_path: String,
+    download_identity: String,
+) -> Result<bool, String> {
+    let snapshot = tasks
+        .get(&task_id)
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    let Some((downloads, destination)) =
+        authorize_artifact_download(&snapshot, &path, &download_path)?
+    else {
+        return Ok(false);
+    };
+
+    tokio::task::spawn_blocking(move || {
+        downloaded_artifact_file(&downloads, &destination, &download_identity)
+            .map(|file| file.is_some())
+    })
+    .await
+    .map_err(|error| format!("artifact download check failed: {error}"))?
+}
+
+/// Reveal the downloaded copy in Finder or Explorer. Missing, moved, replaced,
+/// linked, or non-file destinations return `false`, allowing the card to return
+/// to its download state without opening an untrusted path.
+#[tauri::command]
+pub async fn agent_task_artifact_open(
+    tasks: State<'_, AgentTaskRegistry>,
+    task_id: String,
+    path: String,
+    download_path: String,
+    download_identity: String,
+) -> Result<bool, String> {
+    let snapshot = tasks
+        .get(&task_id)
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    let Some((downloads, destination)) =
+        authorize_artifact_download(&snapshot, &path, &download_path)?
+    else {
+        return Ok(false);
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let Some(file) = downloaded_artifact_file(&downloads, &destination, &download_identity)?
+        else {
+            return Ok(false);
+        };
+        reveal_artifact_in_file_manager(&destination, file)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|error| format!("artifact open task failed: {error}"))?
+}
+
+fn task_artifacts(snapshot: &AgentTaskSnapshot) -> Vec<AgentArtifact> {
+    let mut artifacts = Vec::new();
+    let mut seen = HashSet::new();
+    for (turn_index, (run_dir, _)) in crate::timeline::conversation_run_dirs(snapshot)
+        .into_iter()
+        .enumerate()
+    {
+        collect_run_artifacts(&run_dir, turn_index, &mut artifacts, &mut seen);
+    }
+    artifacts.sort_by(|left, right| {
+        left.turn_index
+            .cmp(&right.turn_index)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+    artifacts
+}
+
+fn collect_run_artifacts(
+    run_dir: &std::path::Path,
+    turn_index: usize,
+    artifacts: &mut Vec<AgentArtifact>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    let Ok(run_root) = run_dir.canonicalize() else {
+        return;
+    };
+    let mut pending = ["artifacts", "outputs"]
+        .into_iter()
+        .map(|name| run_root.join(name))
+        .collect::<Vec<_>>();
+    while let Some(dir) = pending.pop() {
+        let Ok(dir_type) = std::fs::symlink_metadata(&dir).map(|metadata| metadata.file_type())
+        else {
+            continue;
+        };
+        if dir_type.is_symlink() || !dir_type.is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Ok(canonical) = path.canonicalize() else {
+                continue;
+            };
+            if !canonical.starts_with(&run_root) {
+                continue;
+            }
+            if !seen.insert(canonical.clone()) {
+                continue;
+            }
+            let Ok(file) = open_read_only_no_follow(&canonical) else {
+                continue;
+            };
+            let Ok(metadata) = file.metadata() else {
+                continue;
+            };
+            if !metadata.is_file() || canonical.canonicalize().ok().as_ref() != Some(&canonical) {
+                continue;
+            }
+            let Ok(identity) = same_file::Handle::from_file(file) else {
+                continue;
+            };
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let Ok(relative_path) = path.strip_prefix(&run_root) else {
+                continue;
+            };
+            let relative_path = relative_path.to_string_lossy().to_string();
+            let kind = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("file")
+                .to_ascii_uppercase();
+            artifacts.push(AgentArtifact {
+                turn_index,
+                name: name.to_string(),
+                path: canonical.to_string_lossy().to_string(),
+                relative_path,
+                kind,
+                size_bytes: metadata.len(),
+                version: artifact_version(&identity, &metadata),
+                preview_kind: artifact_preview_kind(&path, metadata.len()).map(str::to_string),
+                identity,
+            });
+        }
+    }
+}
+
+fn artifact_preview_kind(path: &std::path::Path, size_bytes: u64) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    let (kind, limit) = match extension.as_str() {
+        "md" | "markdown" => ("markdown", ARTIFACT_TEXT_PREVIEW_MAX_BYTES),
+        "csv" | "tsv" => ("csv", ARTIFACT_TEXT_PREVIEW_MAX_BYTES),
+        "txt" | "json" | "jsonl" | "yaml" | "yml" | "toml" | "xml" | "html" | "htm" | "css"
+        | "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "rs" | "py" | "go" | "java" | "kt"
+        | "swift" | "sh" | "zsh" | "fish" | "ps1" | "sql" | "log" => {
+            ("text", ARTIFACT_TEXT_PREVIEW_MAX_BYTES)
+        }
+        "xlsx" | "xlsm" => ("spreadsheet", ARTIFACT_SPREADSHEET_PREVIEW_MAX_BYTES),
+        "pdf" => ("pdf", ARTIFACT_BINARY_PREVIEW_MAX_BYTES),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => {
+            ("image", ARTIFACT_BINARY_PREVIEW_MAX_BYTES)
+        }
+        _ => return None,
+    };
+    (size_bytes <= limit).then_some(kind)
+}
+
+fn read_artifact_preview(file: std::fs::File, max_bytes: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read artifact preview: {error}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "artifact exceeds the {} MB preview limit",
+            max_bytes / (1024 * 1024)
+        ));
+    }
+    Ok(bytes)
+}
+
+fn spreadsheet_preview_response(file: std::fs::File) -> Result<tauri::ipc::Response, String> {
+    let bytes = read_artifact_preview(file, ARTIFACT_SPREADSHEET_PREVIEW_MAX_BYTES)?;
+    let mut source = Cursor::new(bytes);
+    validate_spreadsheet_archive(&mut source)?;
+    let mut workbook =
+        Xlsx::new(source).map_err(|error| format!("could not open Excel workbook: {error}"))?;
+    let sheet_names = workbook
+        .sheets_metadata()
+        .iter()
+        .filter(|sheet| sheet.typ == SheetType::WorkSheet)
+        .map(|sheet| sheet.name.clone())
+        .collect::<Vec<_>>();
+    let mut remaining_text_bytes = ARTIFACT_SPREADSHEET_MAX_TEXT_BYTES;
+    let mut sheets = Vec::new();
+
+    for name in sheet_names.iter().take(ARTIFACT_SPREADSHEET_MAX_SHEETS) {
+        let mut reader = workbook
+            .worksheet_cells_reader(name)
+            .map_err(|error| format!("could not read worksheet {name}: {error}"))?;
+        let dimensions = reader.dimensions();
+        let declared_rows = dimensions.end.0.saturating_sub(dimensions.start.0) as usize + 1;
+        let declared_columns = dimensions.end.1.saturating_sub(dimensions.start.1) as usize + 1;
+        let mut truncated = declared_rows > ARTIFACT_SPREADSHEET_MAX_ROWS
+            || declared_columns > ARTIFACT_SPREADSHEET_MAX_COLUMNS;
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut cell_records = 0_usize;
+
+        loop {
+            if cell_records >= ARTIFACT_SPREADSHEET_MAX_CELL_RECORDS {
+                truncated = true;
+                break;
+            }
+            let Some(cell) = reader
+                .next_cell()
+                .map_err(|error| format!("could not read worksheet {name}: {error}"))?
+            else {
+                break;
+            };
+            cell_records += 1;
+            if matches!(cell.get_value(), DataRef::Empty) {
+                continue;
+            }
+            let (row, column) = cell.get_position();
+            let Some(row) = row
+                .checked_sub(dimensions.start.0)
+                .map(|value| value as usize)
+            else {
+                truncated = true;
+                continue;
+            };
+            let Some(column) = column
+                .checked_sub(dimensions.start.1)
+                .map(|value| value as usize)
+            else {
+                truncated = true;
+                continue;
+            };
+            if row >= ARTIFACT_SPREADSHEET_MAX_ROWS || column >= ARTIFACT_SPREADSHEET_MAX_COLUMNS {
+                truncated = true;
+                continue;
+            }
+            if remaining_text_bytes == 0 {
+                truncated = true;
+                break;
+            }
+
+            let raw = spreadsheet_cell_text(cell.get_value());
+            let cell_limit = ARTIFACT_SPREADSHEET_MAX_CELL_BYTES.min(remaining_text_bytes);
+            let (text, cell_truncated) = truncate_utf8_bytes(&raw, cell_limit);
+            truncated |= cell_truncated;
+            remaining_text_bytes = remaining_text_bytes.saturating_sub(text.len());
+            rows.resize_with(row + 1, Vec::new);
+            rows[row].resize(column + 1, String::new());
+            rows[row][column] = text;
+        }
+
+        sheets.push(SpreadsheetSheetPreview {
+            name: name.clone(),
+            rows,
+            truncated,
+        });
+        if remaining_text_bytes == 0 {
+            break;
+        }
+    }
+
+    let payload = SpreadsheetPreview {
+        truncated: sheets.len() < sheet_names.len(),
+        sheets,
+        sheet_count: sheet_names.len(),
+    };
+    serde_json::to_vec(&payload)
+        .map(tauri::ipc::Response::new)
+        .map_err(|error| format!("could not encode Excel preview: {error}"))
+}
+
+fn validate_spreadsheet_archive(file: &mut Cursor<Vec<u8>>) -> Result<(), String> {
+    let mut archive = zip::ZipArchive::new(&mut *file)
+        .map_err(|error| format!("invalid Excel workbook: {error}"))?;
+    if archive.len() > ARTIFACT_SPREADSHEET_MAX_ARCHIVE_ENTRIES {
+        return Err(format!(
+            "Excel workbook exceeds the {} entry preview limit",
+            ARTIFACT_SPREADSHEET_MAX_ARCHIVE_ENTRIES
+        ));
+    }
+    let mut uncompressed_bytes = 0_u64;
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| format!("could not inspect Excel workbook: {error}"))?;
+        uncompressed_bytes = uncompressed_bytes
+            .checked_add(entry.size())
+            .ok_or_else(|| "Excel workbook uncompressed size overflowed".to_string())?;
+        if uncompressed_bytes > ARTIFACT_SPREADSHEET_MAX_UNCOMPRESSED_BYTES {
+            return Err(format!(
+                "Excel workbook exceeds the {} MB expanded preview limit",
+                ARTIFACT_SPREADSHEET_MAX_UNCOMPRESSED_BYTES / (1024 * 1024)
+            ));
+        }
+    }
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| format!("could not inspect Excel workbook: {error}"))?;
+        let is_xml = entry
+            .name()
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("xml"));
+        if is_xml {
+            validate_spreadsheet_xml(entry)?;
+        }
+    }
+    drop(archive);
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("could not reset Excel workbook: {error}"))?;
+    Ok(())
+}
+
+fn validate_spreadsheet_xml(reader: impl Read) -> Result<(), String> {
+    let mut xml = XmlReader::from_reader(BufReader::new(reader));
+    let mut buffer = Vec::new();
+    let mut shared_strings = false;
+    let mut worksheet = false;
+    let mut shared_string_count = 0_usize;
+    let mut cell_count = 0_usize;
+
+    loop {
+        buffer.clear();
+        match xml.read_event_into(&mut buffer) {
+            Ok(XmlEvent::Start(event)) | Ok(XmlEvent::Empty(event)) => {
+                let name = event.local_name();
+                if name.as_ref() == b"sst" {
+                    shared_strings = true;
+                    for attribute in event.attributes().with_checks(false) {
+                        let attribute = attribute
+                            .map_err(|error| format!("invalid Excel shared strings: {error}"))?;
+                        if attribute.key.local_name().as_ref() != b"uniqueCount" {
+                            continue;
+                        }
+                        let count = std::str::from_utf8(attribute.value.as_ref())
+                            .ok()
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .ok_or_else(|| {
+                                "invalid Excel shared string count metadata".to_string()
+                            })?;
+                        if count > ARTIFACT_SPREADSHEET_MAX_SHARED_STRINGS {
+                            return Err(format!(
+                                "Excel workbook exceeds the {} shared string preview limit",
+                                ARTIFACT_SPREADSHEET_MAX_SHARED_STRINGS
+                            ));
+                        }
+                    }
+                } else if name.as_ref() == b"worksheet" {
+                    worksheet = true;
+                } else if shared_strings && name.as_ref() == b"si" {
+                    shared_string_count += 1;
+                    if shared_string_count > ARTIFACT_SPREADSHEET_MAX_SHARED_STRINGS {
+                        return Err(format!(
+                            "Excel workbook exceeds the {} shared string preview limit",
+                            ARTIFACT_SPREADSHEET_MAX_SHARED_STRINGS
+                        ));
+                    }
+                } else if worksheet && name.as_ref() == b"c" {
+                    cell_count += 1;
+                    if cell_count > ARTIFACT_SPREADSHEET_MAX_CELL_RECORDS {
+                        return Ok(());
+                    }
+                }
+            }
+            Ok(XmlEvent::Eof) => return Ok(()),
+            Err(error) => return Err(format!("invalid Excel XML: {error}")),
+            _ => {}
+        }
+    }
+}
+
+fn spreadsheet_cell_text(value: &DataRef<'_>) -> String {
+    let value: Data = value.clone().into();
+    match value {
+        Data::DateTime(value) if value.is_datetime() => {
+            let (year, month, day, hour, minute, second, millis) = value.to_ymd_hms_milli();
+            if hour == 0 && minute == 0 && second == 0 && millis == 0 {
+                format!("{year:04}-{month:02}-{day:02}")
+            } else if millis == 0 {
+                format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+            } else {
+                format!(
+                    "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{millis:03}"
+                )
+            }
+        }
+        value => value.to_string(),
+    }
+}
+
+fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_string(), false);
+    }
+    if max_bytes < '…'.len_utf8() {
+        return (String::new(), true);
+    }
+    let mut end = max_bytes - '…'.len_utf8();
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = text[..end].to_string();
+    truncated.push('…');
+    (truncated, true)
+}
+
+fn artifact_version(identity: &same_file::Handle, metadata: &std::fs::Metadata) -> String {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!(
+        "{}:{}:{modified}",
+        hash_artifact_identity(identity),
+        metadata.len()
+    )
+}
+
+fn validate_artifact_image_preview(source: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let expected = match source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => image::ImageFormat::Png,
+        "jpg" | "jpeg" => image::ImageFormat::Jpeg,
+        "gif" => image::ImageFormat::Gif,
+        "webp" => image::ImageFormat::WebP,
+        "bmp" => image::ImageFormat::Bmp,
+        _ => return Err("unsupported image preview format".to_string()),
+    };
+    let reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| format!("could not inspect image preview: {error}"))?;
+    if reader.format() != Some(expected) {
+        return Err(format!(
+            "image contents do not match the file extension: {}",
+            source.display()
+        ));
+    }
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|error| format!("could not read image dimensions: {error}"))?;
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if pixels > ARTIFACT_IMAGE_PREVIEW_MAX_PIXELS {
+        return Err(format!(
+            "image exceeds the {} megapixel preview limit",
+            ARTIFACT_IMAGE_PREVIEW_MAX_PIXELS / 1_000_000
+        ));
+    }
+    Ok(())
+}
+
+fn open_artifact_source(
+    source: &std::path::Path,
+    expected_identity: &same_file::Handle,
+) -> Result<std::fs::File, String> {
+    let file = open_read_only_no_follow(source)
+        .map_err(|error| format!("could not open {}: {error}", source.display()))?;
+    let opened = file.metadata().map_err(|error| {
+        format!(
+            "could not inspect open artifact {}: {error}",
+            source.display()
+        )
+    })?;
+    if !opened.is_file() {
+        return Err(format!(
+            "artifact is no longer a regular file: {}",
+            source.display()
+        ));
+    }
+    let opened_identity = same_file::Handle::from_file(
+        file.try_clone()
+            .map_err(|error| format!("could not inspect {}: {error}", source.display()))?,
+    )
+    .map_err(|error| format!("could not identify {}: {error}", source.display()))?;
+    if &opened_identity != expected_identity {
+        return Err(format!(
+            "artifact changed while opening download: {}",
+            source.display()
+        ));
+    }
+    let current = source
+        .canonicalize()
+        .map_err(|error| format!("could not resolve {}: {error}", source.display()))?;
+    if current != source {
+        return Err(format!(
+            "artifact path changed before download: {}",
+            source.display()
+        ));
+    }
+    Ok(file)
+}
+
+fn open_read_only_no_follow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Keep a final-component reparse point from being followed between the
+        // metadata check above and opening the handle.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(path)
+}
+
+fn create_unique_download(
+    downloads: &std::path::Path,
+    source: &std::path::Path,
+) -> Result<(PathBuf, std::fs::File), String> {
+    let file_name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("artifact has no valid filename: {}", source.display()))?;
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("artifact has no valid filename stem: {}", source.display()))?;
+    let extension = source.extension().and_then(|value| value.to_str());
+    for index in 0..=9999 {
+        let candidate_name = match (index, extension) {
+            (0, _) => file_name.to_string(),
+            (_, Some(extension)) => format!("{stem} ({index}).{extension}"),
+            (_, None) => format!("{stem} ({index})"),
+        };
+        let candidate = downloads.join(candidate_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!("could not create {}: {error}", candidate.display()));
+            }
+        }
+    }
+    Err(format!(
+        "could not allocate a download name for {file_name}"
+    ))
+}
+
+fn authorize_artifact_download(
+    snapshot: &AgentTaskSnapshot,
+    source_path: &str,
+    download_path: &str,
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    let artifact = task_artifacts(snapshot)
+        .into_iter()
+        .find(|artifact| artifact.path == source_path)
+        .ok_or_else(|| "artifact is not part of this task".to_string())?;
+    let downloads = dirs::download_dir()
+        .ok_or_else(|| "could not resolve the Downloads directory".to_string())?;
+    let destination = PathBuf::from(download_path);
+    if !destination.is_absolute() {
+        return Err("artifact download path must be absolute".into());
+    }
+    let candidate_name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "artifact download path has no valid filename".to_string())?;
+    if !is_artifact_download_name(&artifact.name, candidate_name) {
+        return Err("artifact download filename does not match the task artifact".into());
+    }
+    let destination_parent = destination
+        .parent()
+        .ok_or_else(|| "artifact download path has no parent directory".to_string())?;
+    if destination_parent != downloads {
+        return Err("artifact download is outside the Downloads directory".into());
+    }
+    let downloads_root = match downloads.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "could not resolve {}: {error}",
+                downloads.display()
+            ));
+        }
+    };
+    Ok(Some((downloads_root, destination)))
+}
+
+fn is_artifact_download_name(source_name: &str, candidate_name: &str) -> bool {
+    if source_name == candidate_name {
+        return true;
+    }
+    let source = std::path::Path::new(source_name);
+    let Some(stem) = source.file_stem().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let prefix = format!("{stem} (");
+    let suffix = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|extension| format!(").{extension}"))
+        .unwrap_or_else(|| ")".to_string());
+    let Some(index) = candidate_name
+        .strip_prefix(&prefix)
+        .and_then(|name| name.strip_suffix(&suffix))
+    else {
+        return false;
+    };
+    let Ok(index_value) = index.parse::<u16>() else {
+        return false;
+    };
+    (1..=9999).contains(&index_value) && index_value.to_string() == index
+}
+
+fn downloaded_artifact_file(
+    downloads_root: &std::path::Path,
+    destination: &std::path::Path,
+    expected_identity: &str,
+) -> Result<Option<std::fs::File>, String> {
+    let metadata = match std::fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "could not inspect downloaded artifact {}: {error}",
+                destination.display()
+            ));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(None);
+    }
+    let file = match open_read_only_no_follow(destination) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "could not open downloaded artifact {}: {error}",
+                destination.display()
+            ));
+        }
+    };
+    let opened = file.metadata().map_err(|error| {
+        format!(
+            "could not inspect open downloaded artifact {}: {error}",
+            destination.display()
+        )
+    })?;
+    if !opened.is_file() {
+        return Ok(None);
+    }
+    let canonical = match destination.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "could not resolve downloaded artifact {}: {error}",
+                destination.display()
+            ));
+        }
+    };
+    if canonical.parent() != Some(downloads_root) {
+        return Ok(None);
+    }
+    let opened_identity = same_file::Handle::from_file(file.try_clone().map_err(|error| {
+        format!(
+            "could not inspect downloaded artifact {}: {error}",
+            destination.display()
+        )
+    })?)
+    .map_err(|error| {
+        format!(
+            "could not identify downloaded artifact {}: {error}",
+            destination.display()
+        )
+    })?;
+    let current_identity = same_file::Handle::from_path(&canonical).map_err(|error| {
+        format!(
+            "could not identify current downloaded artifact {}: {error}",
+            destination.display()
+        )
+    })?;
+    if opened_identity != current_identity {
+        return Ok(None);
+    }
+    if hash_artifact_identity(&opened_identity) != expected_identity {
+        return Ok(None);
+    }
+    Ok(Some(file))
+}
+
+fn artifact_file_identity(file: &std::fs::File) -> Result<String, String> {
+    let handle = same_file::Handle::from_file(
+        file.try_clone()
+            .map_err(|error| format!("could not inspect downloaded artifact: {error}"))?,
+    )
+    .map_err(|error| format!("could not identify downloaded artifact: {error}"))?;
+    Ok(hash_artifact_identity(&handle))
+}
+
+fn hash_artifact_identity(handle: &same_file::Handle) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    handle.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn reveal_artifact_in_file_manager(
+    path: &std::path::Path,
+    source_file: std::fs::File,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .status()
+        .map_err(|error| format!("failed to reveal {}: {error}", path.display()))?;
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("explorer.exe")
+        .arg(format!("/select,{}", dunce::simplified(path).display()))
+        .status()
+        .map_err(|error| format!("failed to reveal {}: {error}", path.display()))?;
+
+    #[cfg(target_os = "linux")]
+    let status = {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("artifact has no parent directory: {}", path.display()))?;
+        Command::new("xdg-open")
+            .arg(parent)
+            .status()
+            .map_err(|error| format!("failed to reveal {}: {error}", path.display()))?
+    };
+
+    if !status.success() {
+        return Err(format!(
+            "file manager could not reveal {} (status {status})",
+            path.display()
+        ));
+    }
+    drop(source_file);
+    Ok(())
+}
+
 /// Rewrite a note's run-dir-relative media paths (`media[].src`/`poster`,
 /// resolved via `media_dir`) to absolute paths, so notes from different runs
 /// can share one frontend registry.
@@ -983,7 +2088,9 @@ pub async fn agent_task_cancel(
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
     if changed {
-        socai_core::media::begin_background_media_generation();
+        if let Some(run_dir) = snapshot.run_dir.as_deref() {
+            socai_core::media::cancel_background_media_for_run(run_dir);
+        }
     }
     if let Some(handle) = abort_handle {
         handle.abort();
@@ -1097,11 +2204,15 @@ pub(crate) fn visible_billed_points(
 /// tasks must be cancelled first; the registry enforces that.
 #[tauri::command]
 pub async fn agent_task_delete(
+    runtime: State<'_, SocaiRuntime>,
     tasks: State<'_, AgentTaskRegistry>,
     telemetry: State<'_, DesktopTelemetry>,
     task_id: String,
 ) -> Result<(), String> {
     let snapshot = tasks.delete(&task_id).await?;
+    if let Some(target_id) = snapshot.target_id.as_deref() {
+        let _ = runtime.close_target(target_id).await;
+    }
     if let Some(run_dir) = snapshot.run_dir.as_deref() {
         socai_core::media::cancel_background_media_for_run(run_dir);
     }
@@ -1178,32 +2289,131 @@ async fn run_agent_task_background(
     background_media_generation: u64,
     telemetry: DesktopTelemetry,
 ) {
-    let Some(_permit) = registry.acquire_run_permit().await else {
-        let error = "task runner queue closed".to_string();
-        if let Some(snapshot) = registry
-            .finalize_if_active(&task_id, |snapshot| {
-                snapshot.status = "failed".into();
-                snapshot.finished_at = Some(now_ms());
-                snapshot.error = Some(error.clone());
-            })
-            .await
-        {
-            record_desktop_session(&snapshot, &format!("[task failed: {error}]"), "failed");
-            telemetry.capture(
-                "socai_agent_task_end",
-                json!({
-                    "task_id": task_id.clone(),
-                    "provider": provider.clone(),
-                    "model": model.clone(),
-                    "outcome": "failed",
-                    "error": short_error(&error),
-                    "points_used": snapshot.points_used,
-                    "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
-                }),
-            );
-            emit_task_event(&app, &registry, &task_id, "failed", error, Some(snapshot)).await;
-        }
+    let Some(session_id) = task_session_id(&registry, &task_id).await else {
+        fail_task_before_run(
+            &app,
+            &registry,
+            &telemetry,
+            &task_id,
+            provider.as_deref(),
+            model.as_deref(),
+            task_preflight_error("preflight_site", "task has no conversation session"),
+        )
+        .await;
         return;
+    };
+
+    // Admission is local to this app process: each run holds one task permit
+    // and one browser lease for its entire lifetime.
+    let mut connect_attempts = 0u32;
+    let (_permit, _lease, _activity, page) = loop {
+        let Some(permit) = registry.acquire_run_permit().await else {
+            let error = "task runner queue closed".to_string();
+            fail_task_before_run(
+                &app,
+                &registry,
+                &telemetry,
+                &task_id,
+                provider.as_deref(),
+                model.as_deref(),
+                error,
+            )
+            .await;
+            return;
+        };
+        let lease = match runtime.try_acquire_browser_lease() {
+            Ok(lease) => lease,
+            Err(busy) => {
+                drop(permit);
+                if wait_out_browser_busy(&busy, &mut connect_attempts).await {
+                    continue;
+                }
+                fail_task_before_run(
+                    &app,
+                    &registry,
+                    &telemetry,
+                    &task_id,
+                    provider.as_deref(),
+                    model.as_deref(),
+                    browser_preflight_error(busy.reason),
+                )
+                .await;
+                return;
+            }
+        };
+        // Held for the whole task — LLM thinking pauses between tool calls
+        // included — so the remote idle reaper only fires between tasks.
+        let activity = runtime.begin_activity().await;
+        let (page, mut page_guard) =
+            match acquire_session_page(&runtime, &lease, &session_id).await {
+                Ok(admitted) => admitted,
+                Err(PageAdmission::Busy(busy)) => {
+                    drop(activity);
+                    drop(lease);
+                    drop(permit);
+                    if wait_out_browser_busy(&busy, &mut connect_attempts).await {
+                        continue;
+                    }
+                    fail_task_before_run(
+                        &app,
+                        &registry,
+                        &telemetry,
+                        &task_id,
+                        provider.as_deref(),
+                        model.as_deref(),
+                        browser_preflight_error(busy.reason),
+                    )
+                    .await;
+                    return;
+                }
+                Err(PageAdmission::Failed(error)) => {
+                    drop(activity);
+                    drop(lease);
+                    drop(permit);
+                    fail_task_before_run(
+                        &app,
+                        &registry,
+                        &telemetry,
+                        &task_id,
+                        provider.as_deref(),
+                        model.as_deref(),
+                        error,
+                    )
+                    .await;
+                    return;
+                }
+            };
+        if !bind_task_page(
+            &app,
+            &registry,
+            &task_id,
+            &page,
+            &format!("task · {}", title_safe(&task)),
+        )
+        .await
+        {
+            return;
+        }
+        page_guard.disarm();
+        // Every conversation owns its own tab. Validate login on that exact
+        // page before the task is marked running or sends its first LLM request.
+        if let Err(error) = run_session_login_preflight(&page).await {
+            drop(activity);
+            drop(lease);
+            drop(permit);
+            fail_task_before_run(
+                &app,
+                &registry,
+                &telemetry,
+                &task_id,
+                provider.as_deref(),
+                model.as_deref(),
+                error,
+            )
+            .await;
+            return;
+        }
+        break (permit, lease, activity, page);
     };
 
     if let Some(snapshot) = registry
@@ -1235,10 +2445,10 @@ async fn run_agent_task_background(
         }),
     );
 
-    let result = run_agent_task_on_shared_page(
+    let result = run_agent_task_on_session_page(
         app.clone(),
         task_id.clone(),
-        runtime,
+        page,
         &task,
         provider.as_deref(),
         model.as_deref(),
@@ -1246,7 +2456,6 @@ async fn run_agent_task_background(
         Some(background_media_generation),
         Some(registry.clone()),
         telemetry.clone(),
-        format!("task · {}", title_safe(&task)),
     )
     .await;
 
@@ -1359,6 +2568,41 @@ async fn run_agent_task_background(
     }
 }
 
+async fn fail_task_before_run(
+    app: &AppHandle,
+    registry: &AgentTaskRegistry,
+    telemetry: &DesktopTelemetry,
+    task_id: &str,
+    provider: Option<&str>,
+    model: Option<&str>,
+    error: String,
+) {
+    let _ = registry.remove_abort_handle(task_id).await;
+    if let Some(snapshot) = registry
+        .finalize_if_active(task_id, |snapshot| {
+            snapshot.status = "failed".into();
+            snapshot.finished_at = Some(now_ms());
+            snapshot.error = Some(error.clone());
+        })
+        .await
+    {
+        record_desktop_session(&snapshot, &format!("[task failed: {error}]"), "failed");
+        telemetry.capture(
+            "socai_agent_task_end",
+            json!({
+                "task_id": task_id,
+                "provider": provider,
+                "model": model,
+                "outcome": "failed",
+                "error": short_error(&error),
+                "points_used": snapshot.points_used,
+                "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
+            }),
+        );
+        emit_task_event(app, registry, task_id, "failed", error, Some(snapshot)).await;
+    }
+}
+
 pub(crate) fn record_interrupted_run(snapshot: &AgentTaskSnapshot, message: &str) {
     if let Some(run_dir) = snapshot.run_dir.as_deref() {
         let _ = mark_agent_run_status(run_dir, "interrupted", Some(message));
@@ -1440,10 +2684,10 @@ fn record_desktop_session(snapshot: &AgentTaskSnapshot, assistant: &str, status:
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_agent_task_on_shared_page(
+async fn run_agent_task_on_session_page(
     app: AppHandle,
     task_id: String,
-    runtime: SocaiRuntime,
+    page: Arc<RuntimePageSession>,
     task: &str,
     provider: Option<&str>,
     model: Option<&str>,
@@ -1451,7 +2695,6 @@ async fn run_agent_task_on_shared_page(
     background_media_generation: Option<u64>,
     registry: Option<AgentTaskRegistry>,
     telemetry: DesktopTelemetry,
-    title_label: String,
 ) -> Result<AgentRunOutcome> {
     let task = task.trim();
     if task.is_empty() {
@@ -1483,50 +2726,38 @@ async fn run_agent_task_on_shared_page(
     ensure_llm_provider_configured_for(provider, model)?;
     let llm_provider = create_llm_provider_for_task(provider, model, &task_id)?;
     let site = app_site()?;
-    // Held for the whole task — LLM thinking pauses between tool calls
-    // included — so the remote idle reaper only fires between tasks.
-    let _activity = runtime.begin_activity().await;
-    // Reuse the site tab only while it belongs to the currently configured
-    // browser profile. A user may switch local/managed/remote between turns;
-    // the options-aware runtime closes the cached page and reconnects before
-    // a follow-up can accidentally keep driving the previous browser.
-    let browser_options = ChromeConnectOptions::from_config()?;
-    let page = runtime
-        .ensure_site_page_with_browser_options(site.id, site.home_url, browser_options)
-        .await?;
-    let target_id = page.target_id().to_string();
-    let page_url = page
-        .evaluate_json("location.href")
+    let session_id =
+        session_id.ok_or_else(|| anyhow::anyhow!("task has no conversation session"))?;
+    // The tab was opened and bound to this task during admission. The browser
+    // lease and activity guard that keep it alive are held by the caller.
+    // Login is checked in the conversation's own tab rather than in a shared
+    // site tab, so a run never opens a second target just to look at the gate.
+    // Both outcomes carry a code the UI translates — a hosted browser's shared
+    // login is socai-operated, so its message differs from the local one.
+    let login_error_code = if page.is_remote_browser() {
+        "preflight_xhs_session"
+    } else {
+        "preflight_xhs_login"
+    };
+    let login = XhsPageRuntime::new(&page)
+        .login_gate(true)
         .await
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_else(|| site.home_url.to_string());
-    let page_title_marker = format!("task:{task_id}");
-    label_controlled_page(&page, &format!("{page_title_marker} · {title_label}")).await;
-    if let Some(registry) = &registry {
-        if let Some(snapshot) = registry
-            .update(&task_id, |snapshot| {
-                snapshot.target_id = Some(target_id.clone());
-                snapshot.page_url = Some(page_url.clone());
-                snapshot.page_title_marker = Some(page_title_marker.clone());
-            })
-            .await
-        {
-            emit_task_event(
-                &app,
-                registry,
-                &task_id,
-                "tab",
-                "chrome tab marked as controlled by socai".into(),
-                Some(snapshot),
-            )
-            .await;
-        }
+        .map_err(|error| {
+            anyhow::anyhow!(task_preflight_error(login_error_code, format!("{error:#}")))
+        })?;
+    if login == socai_core::sites::xhs::page::LoginGate::Required {
+        anyhow::bail!(task_preflight_error(
+            login_error_code,
+            "Xiaohongshu login is required in this conversation's Chrome tab",
+        ));
     }
     let outcome = async {
         let agent_tools = site.default_agent_tools.unwrap_or(site.agent_tools);
         let mut tools = agent_tools(page.clone(), llm_provider.clone()).await?;
         tools.extend(desktop_agent_tools());
+        tools.push(Arc::new(PublishArtifactTool::new(
+            session_dir.as_deref().map(PathBuf::from),
+        )));
         let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
         let pump = pump_agent_task_events(
             app,
@@ -1542,14 +2773,15 @@ async fn run_agent_task_on_shared_page(
         let preamble = format!("{TAURI_AGENT_PREAMBLE}\n\n{context_note}");
         let config = AgentRunConfig {
             extra_instructions: format!(
-                "{}{}",
+                "{}{}{}",
                 agent_instructions(&preamble),
-                TAURI_CITATION_RULES
+                TAURI_CITATION_RULES,
+                TAURI_ARTIFACT_RULES
             ),
             enabled_sites: vec![site.id.to_string()],
             seed_messages,
             run_dir,
-            session_id,
+            session_id: Some(session_id),
             background_media_generation,
             billing_task_id: Some(task_id.clone()),
             ..AgentRunConfig::default()
@@ -1585,13 +2817,6 @@ async fn run_agent_task_on_shared_page(
         })
     }
     .await;
-    if let Some(registry) = &registry {
-        let _ = registry
-            .update(&task_id, |snapshot| {
-                snapshot.target_id = None;
-            })
-            .await;
-    }
     outcome
 }
 

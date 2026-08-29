@@ -10,17 +10,19 @@
 //!   · the answer inline as rich markdown with note citations — no separate
 //!     panel, no "jump to answer" bridge
 //! The same chat composer serves both faces: pinned under the thread in
-//! "reply" mode (disabled while the task runs — the app owns a single agent
-//! slot), and centered with the hero in the new-task compose pane
+//! "reply" mode (disabled while that conversation runs), and centered with the
+//! hero in the new-task compose pane
 //! (renderComposePane), which the connect overlay masks until chrome is up.
 //!
 //! Rendering only; state and bindings live in tasks.ts.
 
-import type { AgentTaskEventPayload, AgentTaskSnapshot, Status } from "../main";
+import type { AgentArtifact, AgentTaskEventPayload, AgentTaskSnapshot, Status } from "../main";
 import { esc } from "../lib/html";
 import {
   formatStepCount,
   formatTaskApiError,
+  formatTaskCommandErrorPresentation,
+  formatTaskInterruptionMessage,
   formatTaskTimestamp,
   formatTokenUsage,
   isTaskApiError,
@@ -32,6 +34,7 @@ import feishuLogo from "../assets/connectors/feishu.png";
 import chromeRemoteDebuggingImage from "../assets/chrome-remote-debugging.png";
 import chromeAllowDialogImage from "../assets/chrome-allow-dialog.png";
 import { renderNoteAnswer, renderNoteCards } from "./notes";
+import { artifactFileIcon, downloadIcon, eyeIcon, formatArtifactSize } from "./artifact_preview";
 import type { AgentTaskView } from "./tasks";
 
 export interface ComposerProps {
@@ -59,7 +62,16 @@ export interface ConversationProps {
   running: boolean;
   /** Resolves a turn's activity fold state (tasks.ts owns the toggles). */
   isActivityOpen: (turnIndex: number, defaultOpen: boolean) => boolean;
+  /** Download/open progress survives the full-shell rerenders owned by tasks.ts. */
+  artifactDownloadState: (path: string) => ArtifactDownloadState | undefined;
+  artifactPreviewPath: string | null;
   composer: ComposerProps;
+}
+
+export interface ArtifactDownloadState {
+  status: "downloading" | "downloaded" | "opening" | "download_failed" | "open_failed";
+  destination?: string;
+  identity?: string;
 }
 
 interface TurnMetrics {
@@ -81,7 +93,13 @@ export function renderConversation(props: ConversationProps): string {
       ${renderHead(task, running)}
       <div class="thread" data-agent-events="${esc(task.task_id)}">
         <div class="thread-inner">
-          ${renderThread(task, running, props.isActivityOpen)}
+          ${renderThread(
+            task,
+            running,
+            props.isActivityOpen,
+            props.artifactDownloadState,
+            props.artifactPreviewPath,
+          )}
         </div>
       </div>
       <div class="composer-dock">
@@ -193,12 +211,23 @@ function renderThread(
   task: AgentTaskView,
   running: boolean,
   isActivityOpen: ConversationProps["isActivityOpen"],
+  artifactDownloadState: ConversationProps["artifactDownloadState"],
+  artifactPreviewPath: ConversationProps["artifactPreviewPath"],
 ): string {
   const duplicateIndex = finalAnswerEventIndex(task);
   const groups = groupRunEvents(task, duplicateIndex);
   if (groups.length === 0) groups.push([]); // no events (e.g. an early failure) → still show prompt + error
   return groups
-    .map((events, index) => renderTurn(task, events, index, index === groups.length - 1, running, isActivityOpen))
+    .map((events, index) => renderTurn(
+      task,
+      events,
+      index,
+      index === groups.length - 1,
+      running,
+      isActivityOpen,
+      artifactDownloadState,
+      artifactPreviewPath,
+    ))
     .join("");
 }
 
@@ -248,6 +277,8 @@ function renderTurn(
   isLast: boolean,
   running: boolean,
   isActivityOpen: ConversationProps["isActivityOpen"],
+  artifactDownloadState: ConversationProps["artifactDownloadState"],
+  artifactPreviewPath: ConversationProps["artifactPreviewPath"],
 ): string {
   const { userText, userAt, body, answerText, answerAt } = buildTurn(events, index === 0, isLast, task);
   const showWorking = isLast && running;
@@ -262,7 +293,11 @@ function renderTurn(
   if (isLast) {
     const finishedAt = task.finished_at ? formatTaskTimestamp(task.finished_at) : null;
     const apiError = taskApiError(task);
-    if (apiError) {
+    const commandError = task.error ? formatTaskCommandErrorPresentation(task.error) : null;
+    if (commandError) {
+      answer = renderTaskCommandErrorCard(commandError);
+      if (finishedAt) metaBits.push(finishedAt);
+    } else if (apiError) {
       answer = renderTaskApiErrorCard(apiError);
       if (finishedAt) metaBits.push(finishedAt);
     } else if (task.final_text) {
@@ -285,7 +320,10 @@ function renderTurn(
         metaBits.push(t("billing.pointsUsed", { points: metrics.pointsUsed }));
       }
     } else if (task.error) {
-      answer = `<pre class="conv-error">${esc(task.error)}</pre>`;
+      const error = task.status === "interrupted"
+        ? formatTaskInterruptionMessage(task.error)
+        : task.error;
+      answer = `<pre class="conv-error">${esc(error)}</pre>`;
       if (finishedAt) metaBits.push(finishedAt);
     }
   } else if (answerText != null) {
@@ -310,6 +348,13 @@ function renderTurn(
     }
   }
   const meta = renderConvMeta(metaBits);
+  const artifactCards = renderArtifactCards(
+    task.task_id,
+    task.artifacts ?? [],
+    index,
+    artifactDownloadState,
+    artifactPreviewPath,
+  );
   const exportAction = exportText
     ? `<div class="conv-answer-actions">
         <button type="button" class="btn-ghost btn-compact feishu-export-action" data-feishu-export="${esc(task.task_id)}" data-feishu-turn="${index}">
@@ -331,10 +376,97 @@ function renderTurn(
       ${user}
       ${renderActivity(task, body, index, showWorking, metrics, isActivityOpen)}
       ${answer}
+      ${artifactCards}
       ${exportAction}
       ${meta}
     </div>
   `;
+}
+
+function renderArtifactCards(
+  taskId: string,
+  artifacts: AgentArtifact[],
+  turnIndex: number,
+  downloadState: ConversationProps["artifactDownloadState"],
+  previewPath: string | null,
+): string {
+  const cards = artifacts
+    .filter((artifact) => artifact.turn_index === turnIndex)
+    .map((artifact) => {
+      const state = downloadState(artifact.path);
+      const statusKey = state?.status === "downloading"
+        ? "artifact.downloading"
+        : state?.status === "downloaded"
+          ? "artifact.open"
+          : state?.status === "opening"
+            ? "artifact.opening"
+            : state?.status === "open_failed"
+              ? "artifact.openFailed"
+              : state?.status === "download_failed"
+                ? "artifact.downloadFailed"
+                : "artifact.download";
+      const openingState = state?.status === "downloaded"
+        || state?.status === "opening"
+        || state?.status === "open_failed";
+      const stateClass = openingState
+        ? " is-downloaded"
+        : state?.status === "download_failed"
+          ? " is-error"
+          : "";
+      const ariaLabel = state?.status === "downloading"
+        ? t("artifact.downloadingAria", { name: artifact.name })
+        : state?.status === "download_failed"
+          ? t("artifact.downloadFailedAria", { name: artifact.name })
+          : state?.status === "opening"
+            ? t("artifact.openingAria", { name: artifact.name })
+            : state?.status === "open_failed"
+              ? t("artifact.openFailedAria", { name: artifact.name })
+              : openingState
+                ? t("artifact.openAria", { name: artifact.name })
+                : t("artifact.downloadAria", { name: artifact.name });
+      const previewable = !!artifact.preview_kind;
+      const main = previewable
+        ? `<button
+            type="button"
+            class="artifact-card__main"
+            data-artifact-preview="${esc(taskId)}"
+            data-artifact-path="${esc(artifact.path)}"
+            aria-label="${esc(t("artifact.previewAria", { name: artifact.name }))}"
+            aria-pressed="${previewPath === artifact.path ? "true" : "false"}"
+          >
+            <span class="artifact-card__icon" aria-hidden="true">${artifactFileIcon(artifact.name)}</span>
+            <span class="artifact-card__copy">
+              <span class="artifact-card__name">${esc(artifact.name)}</span>
+              <span class="artifact-card__meta">${esc(artifact.kind)} · ${esc(formatArtifactSize(artifact.size_bytes))}</span>
+            </span>
+            <span class="artifact-card__eye" aria-hidden="true">${eyeIcon()}</span>
+          </button>`
+        : `<div class="artifact-card__main artifact-card__main--static">
+            <span class="artifact-card__icon" aria-hidden="true">${artifactFileIcon(artifact.name)}</span>
+            <span class="artifact-card__copy">
+              <span class="artifact-card__name">${esc(artifact.name)}</span>
+              <span class="artifact-card__meta">${esc(artifact.kind)} · ${esc(formatArtifactSize(artifact.size_bytes))}</span>
+            </span>
+          </div>`;
+      return `
+        <div class="artifact-card${stateClass}${state?.status === "open_failed" ? " is-error" : ""}${previewPath === artifact.path ? " is-previewing" : ""}" title="${esc(state?.destination ?? artifact.relative_path)}">
+          ${main}
+          <button
+            type="button"
+            class="artifact-card__action"
+            data-artifact-action="${esc(taskId)}"
+            data-artifact-path="${esc(artifact.path)}"
+            title="${esc(t(statusKey))}"
+            aria-label="${esc(ariaLabel)}"
+            ${state?.status === "downloading" || state?.status === "opening" ? 'aria-disabled="true" aria-busy="true"' : ""}
+          >${downloadIcon()}</button>
+          <span class="sr-only" role="status" aria-live="polite">${esc(t(statusKey))}</span>
+        </div>
+      `;
+    })
+    .join("");
+  if (!cards) return "";
+  return `<div class="artifact-cards" aria-label="${esc(t("artifact.listAria"))}">${cards}</div>`;
 }
 
 /** Exact answer represented by an answer-level export button. */
@@ -414,7 +546,9 @@ export function renderEventRow(ev: AgentTaskEventPayload): string {
   const progressKey = ev.kind === "tool_progress" ? `${ev.id ?? ""}:${ev.phase ?? ""}` : "";
   const progressAttr = progressKey ? ` data-tool-progress="${esc(progressKey)}"` : "";
   if (ev.kind === "api_error") return renderTaskApiErrorEvent(ev);
-  const text = ev.kind === "tool_progress" ? toolProgressText(ev) : ev.text;
+  const text = ev.kind === "tool_progress"
+    ? toolProgressText(ev)
+    : formatTaskInterruptionMessage(ev.text);
   return `<div class="act-row act-row--${esc(ev.kind)}"${progressAttr}><span class="act-row__glyph" aria-hidden="true">${eventGlyph(ev.kind)}</span><span class="act-row__text">${esc(text)}</span></div>`;
 }
 
@@ -432,6 +566,19 @@ function renderTaskApiErrorEvent(ev: AgentTaskEventPayload): string {
 
 function renderTaskApiErrorCard(error: string): string {
   const presentation = formatTaskApiError(error);
+  return `<div class="task-api-error-card" role="alert">
+    <div class="task-api-error-card__heading">
+      <i class="runtime-error-notice__dot" aria-hidden="true"></i>
+      <p class="task-api-error-card__title">${esc(presentation.title)}</p>
+    </div>
+    <p class="task-api-error-card__message">${esc(presentation.message)}</p>
+    <p class="task-api-error-card__meta">${esc(presentation.meta)}</p>
+  </div>`;
+}
+
+function renderTaskCommandErrorCard(
+  presentation: NonNullable<ReturnType<typeof formatTaskCommandErrorPresentation>>,
+): string {
   return `<div class="task-api-error-card" role="alert">
     <div class="task-api-error-card__heading">
       <i class="runtime-error-notice__dot" aria-hidden="true"></i>

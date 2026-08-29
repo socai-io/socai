@@ -17,9 +17,8 @@ mod timing;
 mod video;
 
 pub use self::background::{
-    background_media_generation_is_current, begin_background_media_generation,
-    cancel_background_media_for_run, current_background_media_generation,
-    subscribe_background_media_events, BackgroundMediaEvent,
+    begin_background_media_generation, cancel_background_media_for_run,
+    current_background_media_generation, subscribe_background_media_events, BackgroundMediaEvent,
 };
 pub(crate) use self::background::{
     background_media_run_is_cancelled, background_video_download_semaphore,

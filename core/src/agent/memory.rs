@@ -24,16 +24,20 @@ const LEGACY_EVIDENCE_HEADING: &str = "# Earlier tool evidence";
 /// verbatim at the front; the last `keep_recent` messages remain verbatim
 /// (widened backward when the window would open on a tool_result message, so
 /// tool_use/tool_result pairs never split); older tool outputs become artifact
-/// locators. Follow-up runs (`anchor_user_index > 0`) also get a short task
-/// reminder immediately before the recent tail. Mutating the transcript, rather
-/// than rebuilding a summary for every request, leaves the request prefix
-/// stable until the next sawtooth compaction point and therefore friendly to
-/// provider prompt caches.
+/// locators. Follow-up runs (`is_follow_up`) also get a short task
+/// reminder adjacent to the recent tail. `anchor_user_index` is updated to the
+/// anchor's new position after a rewrite so a later compaction in the same run
+/// cannot accidentally pin a tool message; `is_follow_up` remains stable so
+/// every later rewrite can recreate the reminder. Mutating the transcript,
+/// rather than rebuilding a summary for every request, leaves the request
+/// prefix stable until the next sawtooth compaction point and therefore
+/// friendly to provider prompt caches.
 pub fn compact_messages_for_context(
     messages: &mut Vec<Message>,
     compact_after: usize,
     keep_recent: usize,
-    anchor_user_index: usize,
+    anchor_user_index: &mut usize,
+    is_follow_up: bool,
 ) -> bool {
     if compact_after == 0
         || keep_recent == 0
@@ -55,7 +59,7 @@ pub fn compact_messages_for_context(
     while recent_start > 1 && contains_tool_result(&messages[recent_start]) {
         recent_start -= 1;
     }
-    let anchor_idx = anchor_user_index.min(messages.len().saturating_sub(1));
+    let anchor_idx = (*anchor_user_index).min(messages.len().saturating_sub(1));
     let anchor = messages[anchor_idx].clone();
     let older: Vec<Message> = (0..recent_start)
         .filter(|&index| index != anchor_idx)
@@ -69,18 +73,28 @@ pub fn compact_messages_for_context(
         .collect();
     let evidence = compact_older_messages(&older);
 
+    let task_reminder = is_follow_up
+        .then(|| user_text(&anchor))
+        .flatten()
+        .map(|task| current_task_reminder(&task));
+    let recent_ends_with_assistant = recent
+        .last()
+        .is_some_and(|message| matches!(message.role, MessageRole::Assistant));
+
     let mut compacted = Vec::with_capacity(3 + recent.len());
     compacted.push(anchor);
     if !evidence.is_empty() {
         compacted.push(Message::user(evidence));
     }
-    if anchor_user_index > 0 {
-        if let Some(task) = user_text(&compacted[0]) {
-            compacted.push(current_task_reminder(&task));
-        }
+    if !recent_ends_with_assistant {
+        compacted.extend(task_reminder.clone());
     }
     compacted.extend(recent);
+    if recent_ends_with_assistant {
+        compacted.extend(task_reminder);
+    }
     *messages = compacted;
+    *anchor_user_index = 0;
     true
 }
 

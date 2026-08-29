@@ -1,7 +1,7 @@
 {
   "name": "socai-app",
   "private": true,
-  "version": "0.5.4",
+  "version": "0.5.5",
   "packageManager": "pnpm@10.28.2",
   "type": "module",
   "scripts": {
@@ -25,11 +25,13 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "dompurify": "^3.4.8",
     "marked": "^18.0.5",
+    "papaparse": "^5.6.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.84.2",
     "@tauri-apps/cli": "^2.11.1",
+    "@types/papaparse": "^5.5.2",
     "@types/qrcode": "^1.5.6",
     "typescript": "~5.6.2",
     "vite": "^6.0.3"

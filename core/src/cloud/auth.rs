@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -11,6 +12,7 @@ const AUTH_KEY: &str = "socai_pro";
 const LEGACY_AUTH_KEY: &str = "socai_cloud";
 const LEGACY_PRO_BASE_URL: &str = "http://47.94.86.171";
 const PRODUCTION_BASE_URL: &str = "https://api.socai.work";
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AuthSession {
@@ -423,10 +425,15 @@ fn normalize_mainland_phone(value: &str) -> Result<String> {
 }
 
 pub(super) fn http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+    if let Some(client) = HTTP_CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(120))
-        .build()?)
+        .build()?;
+    let _ = HTTP_CLIENT.set(client.clone());
+    Ok(HTTP_CLIENT.get().cloned().unwrap_or(client))
 }
 
 pub(super) fn bearer(request: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {

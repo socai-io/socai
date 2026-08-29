@@ -1,6 +1,6 @@
 [package]
 name = "socai_app"
-version = "0.5.4"
+version = "0.5.5"
 description = "socai desktop app"
 edition = "2021"
 
@@ -20,10 +20,24 @@ serde_json.workspace = true
 base64.workspace = true
 flate2 = "1"
 reqwest.workspace = true
+futures.workspace = true
+sha2 = "0.10"
+hex = "0.4"
+fs2 = "0.4"
+libc.workspace = true
+same-file = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 url = "2"
 tokio = { workspace = true }
 anyhow.workspace = true
+async-trait.workspace = true
+cap-std = "4"
+tempfile = "3"
 dirs = "5"
+dunce = "1"
+calamine = "0.36.1"
+quick-xml = "0.41"
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 socai-core.workspace = true
 
 # macOS-only: attach an empty unified toolbar so AppKit centers the native

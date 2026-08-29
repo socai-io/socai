@@ -29,3 +29,24 @@ export function renderMarkdown(src: string): string {
   const html = marked.parse(src, { async: false });
   return DOMPurify.sanitize(html);
 }
+
+/** Artifact previews never auto-load media from generated Markdown. External
+ * links remain visible and still require an explicit user click. */
+export function renderArtifactMarkdown(src: string): string {
+  const html = marked.parse(src, { async: false });
+  return DOMPurify.sanitize(html, {
+    // Keep this HTML-only. DOMPurify's broad defaults include SVG/MathML and
+    // style-bearing elements whose href/url() values can fetch remote content
+    // even when ordinary image/media tags are forbidden.
+    ALLOWED_TAGS: [
+      "a", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6",
+      "hr", "input", "li", "ol", "p", "pre", "strong", "table", "tbody", "td", "th", "thead",
+      "tr", "ul",
+    ],
+    ALLOWED_ATTR: [
+      "checked", "class", "colspan", "disabled", "href", "rowspan", "scope", "title", "type",
+    ],
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
+  });
+}

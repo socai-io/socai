@@ -401,6 +401,9 @@ async fn export_task(
         .and_then(|name| name.to_str())
         .ok_or_else(|| "无法生成飞书导出文件名".to_string())?
         .to_string();
+    let export_dir = export_path
+        .parent()
+        .ok_or_else(|| "无法确定飞书导出目录".to_string())?;
 
     let title = compact_title(&task.task);
     let output_result = run_cli(
@@ -421,7 +424,7 @@ async fn export_task(
             "--format".into(),
             "json".into(),
         ],
-        Some(Path::new(run_dir)),
+        Some(export_dir),
     )
     .await;
     let _ = std::fs::remove_file(&export_path);
@@ -1547,6 +1550,10 @@ fn replace_note_reference(content: &str, note_id: &str, title: &str, url: &str) 
 }
 
 fn write_export_file(run_dir: &Path, content: &str) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(run_dir).map_err(|error| format!("无法准备飞书导出目录：{error}"))?;
+    let run_dir = run_dir
+        .canonicalize()
+        .map_err(|error| format!("无法解析飞书导出目录：{error}"))?;
     for suffix in 0..100 {
         let path = run_dir.join(format!(".socai-feishu-export-{}-{suffix}.md", now_millis()));
         match std::fs::OpenOptions::new()

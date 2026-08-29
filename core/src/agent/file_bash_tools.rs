@@ -3,21 +3,12 @@
 //! vision) plus a general `shell` escape hatch for everything else (write,
 //! list, grep, mkdir, …).
 //!
-//! For the TUI (`local_agent_tools()`), scope is *prompt-enforced*, not
-//! sandboxed: the user is running their own terminal and carries the same
-//! privileges regardless of whether the agent has a `shell` tool. For the
-//! desktop app (`desktop_agent_tools()`), the same content the agent reads —
-//! Xiaohongshu note/comment text — is untrusted, adversarial input running on
-//! a much wider, less technical install base, so these tools are additionally
-//! confined to socai's data directories (`~/.socai` plus the configured runs
-//! and sessions roots — see `desktop_tool_roots`): `read_file` rejects any
-//! path that doesn't lexically resolve under one of the roots, and `shell`
-//! rejects any command whose path-like tokens resolve outside them. This is a
-//! real, enforced boundary for path arguments — not a full OS sandbox. It
-//! doesn't stop a shell command from doing non-path-based damage (network
-//! calls, following a symlink planted inside a root that points back out,
-//! etc.); it exists to block the straightforward "read/write/delete something
-//! outside socai's data" cases a prompt-injected note could ask for.
+//! TUI and desktop both use prompt-enforced scope rather than a filesystem
+//! boundary: the tools carry the same local privileges as the socai process,
+//! while their descriptions tell the agent to touch only files relevant to
+//! the user's request. `ReadFileTool::scoped_to` and `ShellTool::scoped_to`
+//! remain available to embedders that explicitly want a lexical path boundary,
+//! but socai's interactive entrypoints use their unrestricted constructors.
 //!
 //! Paths are resolved against the current run directory when relative; a
 //! leading `~` expands to the home directory. `shell` also runs with its
@@ -32,7 +23,7 @@ use serde_json::{json, Value};
 
 use crate::agent::tool::{SharedTool, Tool, ToolContext, ToolResult, ToolResultBlock};
 
-/// `~/.socai` (or `$SOCAI_HOME`), the root desktop's tools are confined to.
+/// `~/.socai` (or `$SOCAI_HOME`), socai's application-data root.
 pub fn socai_home_dir() -> PathBuf {
     if let Ok(home) = std::env::var("SOCAI_HOME") {
         return PathBuf::from(home);
@@ -167,28 +158,6 @@ fn looks_like_path(token: &str) -> bool {
         || token.starts_with("..\\")
         || token.starts_with("./")
         || token.starts_with("../")
-}
-
-/// The directory trees the desktop's tools are confined to: `~/.socai` (or
-/// `$SOCAI_HOME`) plus the *actual* runs and sessions roots — which the user
-/// can point elsewhere via `runs.dir` / `SOCAI_RUNS_DIR` / `SOCAI_SESSIONS_DIR`.
-/// Without including those, a relocated runs dir would make `shell` refuse its
-/// own cwd and `read_file` reject every run artifact.
-fn desktop_tool_roots() -> Vec<PathBuf> {
-    let candidates = [
-        socai_home_dir(),
-        crate::agent::run_logging::default_runs_root(),
-        crate::agent::conversation::default_sessions_root(),
-    ];
-    let mut roots: Vec<PathBuf> = Vec::new();
-    for candidate in candidates {
-        let normalized = normalize_lexical(&candidate);
-        if !roots.iter().any(|root| normalized.starts_with(root)) {
-            roots.retain(|root| !root.starts_with(&normalized));
-            roots.push(normalized);
-        }
-    }
-    roots
 }
 
 fn roots_display(roots: &[PathBuf]) -> String {
@@ -482,11 +451,10 @@ impl Tool for ShellTool {
              those directories."
         } else {
             "Run a PowerShell command and return its stdout/stderr and exit \
-             code. Working directory is the current run dir under ~/.socai/runs, so \
-             relative paths land there; use absolute paths for other run dirs or \
-             the session dir. Use this to write output files, list/search artifacts, \
-             create directories, etc. Scope: stay within the files \
-             relevant to this task and the user's ~/.socai data — do not run \
+             code. Working directory is the current run dir, so relative paths land \
+             there; use absolute paths for other user-requested locations. Use this \
+             to write output files, list/search artifacts, create directories, etc. \
+             Scope: stay within files relevant to the user's task — do not run \
              destructive, networked, or system-wide commands."
         }
 
@@ -500,11 +468,10 @@ impl Tool for ShellTool {
              those directories."
         } else {
             "Run a POSIX shell command via `sh -c` and return its stdout/stderr and exit \
-             code. Working directory is the current run dir under ~/.socai/runs, so \
-             relative paths land there; use absolute paths for other run dirs or \
-             the session dir. Use this to write output files (e.g. printf/tee), \
-             list and grep artifacts, mkdir, etc. Scope: stay within the files \
-             relevant to this task and the user's ~/.socai data — do not run \
+             code. Working directory is the current run dir, so relative paths land \
+             there; use absolute paths for other user-requested locations. Use this \
+             to write output files (e.g. printf/tee), list and grep artifacts, mkdir, \
+             etc. Scope: stay within files relevant to the user's task — do not run \
              destructive, networked, or system-wide commands."
         }
     }
@@ -706,16 +673,10 @@ pub fn local_agent_tools() -> Vec<SharedTool> {
     ]
 }
 
-/// Local tools for the desktop app: the same `read_file`/`shell` pair, confined
-/// to socai's data directories (see module doc and `desktop_tool_roots`) since
-/// the desktop agent's primary input is untrusted Xiaohongshu content on a
-/// much wider install base than the TUI.
+/// Local tools for the desktop app. Directory access is intentionally
+/// unrestricted, matching the TUI and the user's own local process privileges.
 pub fn desktop_agent_tools() -> Vec<SharedTool> {
-    let roots = desktop_tool_roots();
-    vec![
-        std::sync::Arc::new(ReadFileTool::scoped_to(roots.clone())),
-        std::sync::Arc::new(ShellTool::scoped_to(roots)),
-    ]
+    local_agent_tools()
 }
 
 #[cfg(test)]

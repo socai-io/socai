@@ -1113,16 +1113,38 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .task-row-open:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .task-row-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 18px;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   color: var(--fg-soft);
 }
+.task-row-glyph-queued::before,
+.task-row-glyph-running::before {
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--fg-faint);
+  border-radius: 50%;
+  content: "";
+}
 .task-row-glyph-running {
   color: var(--ink-0);
-  animation: pulse 1.4s ease-in-out infinite;
+}
+.task-row-glyph-running::before {
+  border-color: var(--line-strong);
+  border-top-color: var(--ink-0);
+  animation: task-row-spin 0.8s linear infinite;
 }
 .task-row-glyph-failed { color: var(--status-error-fg); }
+@keyframes task-row-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .task-row-glyph-running::before { animation: pulse 1.4s ease-in-out infinite; }
+}
 .task-row-main {
   display: flex;
   min-width: 0;
@@ -1300,6 +1322,26 @@ body.has-paper > * { position: relative; z-index: 1; }
   display: flex;
   flex-direction: column;
   background: var(--surface);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.conversation-workspace {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  container: conversation-workspace / inline-size;
 }
 
 /* ── slim head: persistent subject + status + row-level actions ───── */
@@ -1526,6 +1568,346 @@ body.has-paper > * { position: relative; z-index: 1; }
 .conv-answer.result-md p { margin: 0 0 var(--sp-3) 0; }
 /* citation pills need to sit comfortably in the larger prose */
 .conv-answer .note-cite { font-size: 0.82em; }
+
+/* Generated-file attachments: previewable files open the right pane from the
+   main control; the separate icon action downloads first, then reveals the
+   downloaded copy in Finder/Explorer while that copy still exists. */
+.artifact-cards {
+  margin-top: var(--sp-3);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.artifact-card {
+  width: min(100%, 360px);
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  align-items: center;
+  border: var(--hairline);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  color: var(--fg);
+  overflow: hidden;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.artifact-card:hover { border-color: var(--line-strong); background: var(--surface-2); }
+.artifact-card.is-previewing { border-color: var(--ink-2); }
+.artifact-card__main {
+  appearance: none;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.artifact-card__main--static {
+  grid-template-columns: 36px minmax(0, 1fr);
+  cursor: default;
+}
+.artifact-card__main:focus-visible,
+.artifact-card__action:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.artifact-card__icon {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-2);
+  background: var(--ink-8);
+  color: var(--ink-2);
+}
+.artifact-card__copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.artifact-card__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.artifact-card__meta,
+.artifact-card__action {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--fg-faint);
+}
+.artifact-card__eye {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-soft);
+}
+.artifact-card__action {
+  appearance: none;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-left: var(--hairline);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.artifact-card__action:hover { background: var(--ink-7); color: var(--ink-0); }
+.artifact-card__action:disabled,
+.artifact-card__action[aria-disabled="true"] { cursor: wait; color: var(--fg-faint); }
+.artifact-card.is-downloaded .artifact-card__action { color: var(--ink-1); }
+.artifact-card.is-error .artifact-card__action { color: var(--status-error-fg); }
+
+/* Right-side artifact preview. It is a sibling of the conversation, so the
+   thread and composer keep their own scroll/size contract while the panel is
+   open. */
+.artifact-preview {
+  --artifact-preview-width: 560px;
+  flex: 0 0 var(--artifact-preview-width);
+  width: var(--artifact-preview-width);
+  min-width: 320px;
+  max-width: calc(100% - 360px);
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-left: var(--hairline);
+  background: var(--surface);
+}
+.artifact-preview__resize {
+  position: absolute;
+  inset: 0 auto 0 -5px;
+  z-index: 4;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.artifact-preview__resize::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 4px;
+  width: 1px;
+  background: transparent;
+  transition: background var(--t-fast) var(--ease);
+}
+.artifact-preview__resize:hover::after,
+.artifact-preview__resize:focus-visible::after,
+.artifact-preview__resize.is-resizing::after { background: var(--ink-3); }
+.artifact-preview__resize:focus-visible { outline: 0; }
+.artifact-preview__head {
+  flex: 0 0 auto;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: var(--hairline);
+}
+.artifact-preview__identity {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.artifact-preview__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.artifact-preview__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+.artifact-preview__actions { display: inline-flex; align-items: center; gap: 2px; }
+.artifact-preview__action {
+  appearance: none;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.artifact-preview__action:hover { background: var(--ink-7); color: var(--ink-0); }
+.artifact-preview__action:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.artifact-preview__action:disabled,
+.artifact-preview__action[aria-disabled="true"] { cursor: wait; color: var(--fg-faint); }
+.artifact-preview__action.is-error { color: var(--status-error-fg); }
+.artifact-preview__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--canvas);
+}
+.artifact-preview__state {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-5);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+.artifact-preview__state--error { flex-direction: column; text-align: center; }
+.artifact-preview__state--error small { max-width: 440px; color: var(--fg-faint); word-break: break-word; }
+.artifact-preview__state .spinner {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line-strong);
+  border-top-color: var(--ink-1);
+  border-radius: 50%;
+  animation: artifact-preview-spin 0.8s linear infinite;
+}
+@keyframes artifact-preview-spin { to { transform: rotate(360deg); } }
+.artifact-preview__markdown {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: var(--sp-5);
+  background: var(--surface);
+  min-height: 100%;
+  font-size: 14px;
+}
+.artifact-preview__text {
+  min-width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: var(--sp-4);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.artifact-preview__sheet { min-width: max-content; min-height: 100%; background: var(--surface); }
+.artifact-preview__sheet table { border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.artifact-preview__sheet th,
+.artifact-preview__sheet td {
+  min-width: 112px;
+  max-width: 320px;
+  padding: 5px var(--sp-2);
+  border-right: var(--hairline);
+  border-bottom: var(--hairline);
+  background: var(--surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-weight: 400;
+}
+.artifact-preview__sheet tr:first-child th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ink-7);
+  font-weight: 600;
+}
+.artifact-preview__sheet .artifact-preview__row-number {
+  min-width: 48px;
+  width: 48px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--ink-7);
+  color: var(--fg-soft);
+  text-align: right;
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+.artifact-preview__sheet tr:first-child .artifact-preview__row-number { z-index: 3; }
+.artifact-preview__limit {
+  position: sticky;
+  left: 0;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+.artifact-preview__workbook {
+  --artifact-workbook-tabs-height: 34px;
+  min-width: max-content;
+  min-height: 100%;
+  background: var(--surface);
+}
+.artifact-preview__workbook-tabs {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  display: flex;
+  height: var(--artifact-workbook-tabs-height);
+  width: max-content;
+  min-width: 100%;
+  padding: 0 var(--sp-2);
+  border-bottom: var(--hairline);
+  background: var(--surface);
+}
+.artifact-preview__workbook-tab {
+  appearance: none;
+  max-width: 240px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.artifact-preview__workbook-tab:hover { color: var(--ink-1); }
+.artifact-preview__workbook-tab.is-active { border-bottom-color: var(--ink-1); color: var(--ink-1); font-weight: 600; }
+.artifact-preview__workbook-tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.artifact-preview__workbook .artifact-preview__sheet { min-height: 0; }
+.artifact-preview__workbook .artifact-preview__sheet tr:first-child th {
+  top: var(--artifact-workbook-tabs-height);
+}
+.artifact-preview__workbook-limit {
+  position: sticky;
+  left: 0;
+  width: fit-content;
+  margin: 0;
+  padding: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+.artifact-preview__pdf { display: block; width: 100%; height: 100%; min-height: 640px; border: 0; background: var(--surface); }
+.artifact-preview__image-wrap { min-height: 100%; display: grid; place-items: center; padding: var(--sp-4); }
+.artifact-preview__image { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+
+@container conversation-workspace (max-width: 760px) {
+  .artifact-preview {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 30;
+    width: min(100%, var(--artifact-preview-width));
+    min-width: 0;
+    max-width: none;
+    border-left: var(--hairline-strong);
+  }
+}
 
 .conv-error {
   margin: var(--sp-4) 0 0;

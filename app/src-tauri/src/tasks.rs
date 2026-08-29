@@ -11,7 +11,7 @@ use tokio::task::AbortHandle;
 
 use crate::timeline::{self, AgentTaskEventKind, AgentTaskEventPayload};
 
-const MAX_CONCURRENT_AGENT_TASKS: usize = 1;
+const MAX_CONCURRENT_AGENT_TASKS: usize = 3;
 
 #[derive(Clone)]
 pub struct AgentTaskRegistry {
@@ -172,6 +172,32 @@ impl AgentTaskRegistry {
 
     pub(crate) async fn acquire_run_permit(&self) -> Option<OwnedSemaphorePermit> {
         self.runner_permits.clone().acquire_owned().await.ok()
+    }
+
+    pub(crate) async fn bind_target_if_active(
+        &self,
+        task_id: &str,
+        target_id: String,
+        page_url: Option<String>,
+        page_title_marker: String,
+    ) -> Option<(AgentTaskSnapshot, bool)> {
+        let mut guard = self.inner.lock().await;
+        let task = guard
+            .tasks
+            .iter_mut()
+            .find(|task| task.task_id == task_id)?;
+        if !matches!(task.status.as_str(), "queued" | "running") {
+            return None;
+        }
+        let target_changed = task.target_id.as_deref() != Some(target_id.as_str());
+        task.target_id = Some(target_id);
+        if page_url.is_some() {
+            task.page_url = page_url;
+        }
+        task.page_title_marker = Some(page_title_marker);
+        let snapshot = hydrate_task_snapshot(task.clone());
+        persist_task_index(&guard.tasks);
+        Some((snapshot, target_changed))
     }
 
     /// Register the task abort handle. Returns the handle back to the caller
@@ -596,5 +622,41 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
         .collect();
     if let Ok(text) = serde_json::to_string_pretty(&records) {
         let _ = std::fs::write(path, text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn empty_registry() -> AgentTaskRegistry {
+        AgentTaskRegistry {
+            inner: Arc::new(Mutex::new(AgentTaskRegistryInner::default())),
+            runner_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_AGENT_TASKS)),
+        }
+    }
+
+    #[tokio::test]
+    async fn three_tasks_run_while_the_fourth_waits_for_a_released_permit() {
+        let registry = empty_registry();
+        let first = registry.acquire_run_permit().await.unwrap();
+        let second = registry.acquire_run_permit().await.unwrap();
+        let third = registry.acquire_run_permit().await.unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), registry.acquire_run_permit())
+                .await
+                .is_err()
+        );
+
+        drop(first);
+        let fourth =
+            tokio::time::timeout(Duration::from_millis(250), registry.acquire_run_permit())
+                .await
+                .expect("the fourth task should leave the queue")
+                .expect("the runner queue should stay open");
+
+        drop((second, third, fourth));
     }
 }
