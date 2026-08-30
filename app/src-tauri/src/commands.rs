@@ -7,10 +7,11 @@ use calamine::{Data, DataRef, Reader, SheetType, Xlsx};
 use quick_xml::{events::Event as XmlEvent, Reader as XmlReader};
 use serde_json::{json, Map, Value};
 use socai_core::agent::{
-    catalog_models_for, configured_default_model_for, configured_default_provider,
-    desktop_agent_tools, load_api_key, make_run_dir, mark_agent_run_status,
-    provider_credential_kind, resolve_provider, save_default_model, AgentEvent, Conversation,
-    CredentialKind, ModelCatalogEntry, Provider, TokenUsage,
+    brief_guided_research_enabled, catalog_models_for, configured_default_model_for,
+    configured_default_provider, desktop_agent_tools, ensure_agent_mode_available, load_api_key,
+    make_run_dir, mark_agent_run_status, provider_credential_kind, resolve_provider,
+    save_default_model, AgentEvent, AgentMode, Conversation, CredentialKind, ModelCatalogEntry,
+    Provider, TokenUsage,
 };
 use socai_core::runtime::{
     create_llm_provider_for_task, ensure_llm_provider_configured_for,
@@ -578,6 +579,12 @@ fn find_codex_binary() -> Option<PathBuf> {
 }
 
 #[tauri::command]
+pub fn agent_deep_research_available() -> bool {
+    brief_guided_research_enabled()
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn agent_task_start(
     app: AppHandle,
     runtime: State<'_, SocaiRuntime>,
@@ -586,11 +593,14 @@ pub async fn agent_task_start(
     task: String,
     provider: Option<String>,
     model: Option<String>,
+    agent_mode: Option<AgentMode>,
 ) -> Result<AgentTaskSnapshot, String> {
     let task_text = task.trim().to_string();
     if task_text.is_empty() {
         return Err("task is empty".into());
     }
+    let agent_mode = agent_mode.unwrap_or_default();
+    ensure_agent_mode_available(agent_mode).map_err(|error| format!("{error:#}"))?;
     run_task_preflight(provider.as_deref(), model.as_deref()).await?;
 
     // One conversation = one folder under the runs root, named after the
@@ -608,6 +618,7 @@ pub async fn agent_task_start(
             task_text.clone(),
             provider.clone(),
             model.clone(),
+            agent_mode,
             run_dir.display().to_string(),
             session_dir,
         )
@@ -632,6 +643,7 @@ pub async fn agent_task_start(
             task_text,
             provider,
             model,
+            agent_mode,
             run_dir,
             background_media_generation,
             telemetry,
@@ -686,6 +698,8 @@ pub async fn agent_task_reply(
     };
     let provider = existing.provider.clone();
     let model = existing.model.clone();
+    let agent_mode = existing.agent_mode;
+    ensure_agent_mode_available(agent_mode).map_err(|error| format!("{error:#}"))?;
     run_task_preflight(provider.as_deref(), model.as_deref()).await?;
     if let Some(previous_run_dir) = existing.run_dir.as_deref() {
         socai_core::media::cancel_background_media_for_run(previous_run_dir);
@@ -741,6 +755,7 @@ pub async fn agent_task_reply(
             message_text,
             provider,
             model,
+            agent_mode,
             run_dir,
             background_media_generation,
             telemetry,
@@ -2285,6 +2300,7 @@ async fn run_agent_task_background(
     task: String,
     provider: Option<String>,
     model: Option<String>,
+    agent_mode: AgentMode,
     run_dir: PathBuf,
     background_media_generation: u64,
     telemetry: DesktopTelemetry,
@@ -2344,45 +2360,45 @@ async fn run_agent_task_background(
         // Held for the whole task — LLM thinking pauses between tool calls
         // included — so the remote idle reaper only fires between tasks.
         let activity = runtime.begin_activity().await;
-        let (page, mut page_guard) =
-            match acquire_session_page(&runtime, &lease, &session_id).await {
-                Ok(admitted) => admitted,
-                Err(PageAdmission::Busy(busy)) => {
-                    drop(activity);
-                    drop(lease);
-                    drop(permit);
-                    if wait_out_browser_busy(&busy, &mut connect_attempts).await {
-                        continue;
-                    }
-                    fail_task_before_run(
-                        &app,
-                        &registry,
-                        &telemetry,
-                        &task_id,
-                        provider.as_deref(),
-                        model.as_deref(),
-                        browser_preflight_error(busy.reason),
-                    )
-                    .await;
-                    return;
+        let (page, mut page_guard) = match acquire_session_page(&runtime, &lease, &session_id).await
+        {
+            Ok(admitted) => admitted,
+            Err(PageAdmission::Busy(busy)) => {
+                drop(activity);
+                drop(lease);
+                drop(permit);
+                if wait_out_browser_busy(&busy, &mut connect_attempts).await {
+                    continue;
                 }
-                Err(PageAdmission::Failed(error)) => {
-                    drop(activity);
-                    drop(lease);
-                    drop(permit);
-                    fail_task_before_run(
-                        &app,
-                        &registry,
-                        &telemetry,
-                        &task_id,
-                        provider.as_deref(),
-                        model.as_deref(),
-                        error,
-                    )
-                    .await;
-                    return;
-                }
-            };
+                fail_task_before_run(
+                    &app,
+                    &registry,
+                    &telemetry,
+                    &task_id,
+                    provider.as_deref(),
+                    model.as_deref(),
+                    browser_preflight_error(busy.reason),
+                )
+                .await;
+                return;
+            }
+            Err(PageAdmission::Failed(error)) => {
+                drop(activity);
+                drop(lease);
+                drop(permit);
+                fail_task_before_run(
+                    &app,
+                    &registry,
+                    &telemetry,
+                    &task_id,
+                    provider.as_deref(),
+                    model.as_deref(),
+                    error,
+                )
+                .await;
+                return;
+            }
+        };
         if !bind_task_page(
             &app,
             &registry,
@@ -2440,6 +2456,7 @@ async fn run_agent_task_background(
             "task_id": task_id.clone(),
             "provider": provider.clone(),
             "model": model.clone(),
+            "execution_variant": agent_mode.as_str(),
             "task_len": task.chars().count(),
             "task_text": socai_core::telemetry::redact_secrets(&task),
         }),
@@ -2452,6 +2469,7 @@ async fn run_agent_task_background(
         &task,
         provider.as_deref(),
         model.as_deref(),
+        agent_mode,
         Some(run_dir),
         Some(background_media_generation),
         Some(registry.clone()),
@@ -2507,6 +2525,7 @@ async fn run_agent_task_background(
                             "run_id": outcome.run_id.clone(),
                             "provider": provider.clone(),
                             "model": model.clone(),
+                            "execution_variant": agent_mode.as_str(),
                             "outcome": "completed",
                             "steps": outcome.steps,
                             "points_used": snapshot.points_used,
@@ -2554,6 +2573,7 @@ async fn run_agent_task_background(
                             "task_id": task_id.clone(),
                             "provider": provider.clone(),
                             "model": model.clone(),
+                            "execution_variant": agent_mode.as_str(),
                             "outcome": "failed",
                             "error": short_error(&error),
                             "points_used": snapshot.points_used,
@@ -2691,6 +2711,7 @@ async fn run_agent_task_on_session_page(
     task: &str,
     provider: Option<&str>,
     model: Option<&str>,
+    agent_mode: AgentMode,
     run_dir: Option<PathBuf>,
     background_media_generation: Option<u64>,
     registry: Option<AgentTaskRegistry>,
@@ -2772,6 +2793,7 @@ async fn run_agent_task_on_session_page(
             .unwrap_or(site.agent_instructions);
         let preamble = format!("{TAURI_AGENT_PREAMBLE}\n\n{context_note}");
         let config = AgentRunConfig {
+            agent_mode,
             extra_instructions: format!(
                 "{}{}{}",
                 agent_instructions(&preamble),

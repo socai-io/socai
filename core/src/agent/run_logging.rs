@@ -200,6 +200,100 @@ impl AgentRunRecorder {
         )
     }
 
+    pub fn set_execution_variant(&self, execution_variant: &str) -> std::io::Result<()> {
+        let mut manifest = self.manifest.lock().expect("poisoned");
+        manifest["execution_variant"] = json!(execution_variant);
+        write_json_atomic(&self.manifest_path, &manifest)
+    }
+
+    pub fn record_planning_request(&self, attempt: u32, payload: &Value) -> std::io::Result<()> {
+        let dir = self.run_dir.join("research");
+        std::fs::create_dir_all(&dir)?;
+        write_json_atomic(
+            &dir.join(format!("planning-{attempt:02}.request.json")),
+            payload,
+        )?;
+        write_json_atomic(
+            &dir.join(format!("planning-{attempt:02}.request.meta.json")),
+            &json!({
+                "schema_version": 1,
+                "wire_format": request_wire_format(&self.provider, payload),
+                "status": "prepared",
+            }),
+        )
+    }
+
+    pub fn record_planning_response(
+        &self,
+        attempt: u32,
+        response: &LLMResponse,
+        duration_ms: u64,
+    ) -> std::io::Result<()> {
+        let dir = self.run_dir.join("research");
+        let mut value = serde_json::to_value(response).map_err(std::io::Error::other)?;
+        value["duration_ms"] = json!(duration_ms);
+        value["completed_at"] = json!(timestamp());
+        write_json_atomic(
+            &dir.join(format!("planning-{attempt:02}.response.json")),
+            &value,
+        )?;
+        self.update_planning_request_status(attempt, "received", None)?;
+        let mut manifest = self.manifest.lock().expect("poisoned");
+        let mut usage =
+            serde_json::from_value::<TokenUsage>(manifest["usage"].clone()).unwrap_or_default();
+        usage += &response.usage;
+        manifest["usage"] = serde_json::to_value(usage).map_err(std::io::Error::other)?;
+        write_json_atomic(&self.manifest_path, &manifest)
+    }
+
+    pub fn record_planning_error(
+        &self,
+        attempt: u32,
+        error: &str,
+        duration_ms: u64,
+    ) -> std::io::Result<()> {
+        let dir = self.run_dir.join("research");
+        write_json_atomic(
+            &dir.join(format!("planning-{attempt:02}.response.json")),
+            &json!({
+                "duration_ms": duration_ms,
+                "completed_at": timestamp(),
+                "error": error,
+            }),
+        )?;
+        self.update_planning_request_status(attempt, "failed", Some(error))
+    }
+
+    pub fn record_research_planning_summary(
+        &self,
+        status: &str,
+        attempts: u32,
+        duration_ms: u64,
+        usage: &TokenUsage,
+        error: Option<&str>,
+    ) -> std::io::Result<()> {
+        let dir = self.run_dir.join("research");
+        std::fs::create_dir_all(&dir)?;
+        let value = json!({
+            "protocol_version": "research-brief-v1",
+            "status": status,
+            "attempts": attempts,
+            "duration_ms": duration_ms,
+            "usage": usage,
+            "failure_policy": "fallback_to_reactive",
+            "error": error,
+        });
+        write_json_atomic(&dir.join("planning-meta.json"), &value)?;
+
+        let mut manifest = self.manifest.lock().expect("poisoned");
+        manifest["research_protocol_version"] = json!("research-brief-v1");
+        manifest["research_brief_status"] = json!(status);
+        manifest["planning_calls"] = json!(attempts);
+        manifest["planning_duration_ms"] = json!(duration_ms);
+        manifest["planning_usage"] = serde_json::to_value(usage).map_err(std::io::Error::other)?;
+        write_json_atomic(&self.manifest_path, &manifest)
+    }
+
     pub fn record_llm_response(
         &self,
         step: u32,
@@ -254,6 +348,38 @@ impl AgentRunRecorder {
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .unwrap_or_else(|| json!({ "schema_version": 1 }));
         metadata["status"] = json!(status);
+        write_json_atomic(&path, &metadata)
+    }
+
+    pub fn record_planning_validation(
+        &self,
+        attempt: u32,
+        status: &str,
+        error: Option<&str>,
+    ) -> std::io::Result<()> {
+        self.update_planning_request_status(attempt, status, error)
+    }
+
+    fn update_planning_request_status(
+        &self,
+        attempt: u32,
+        status: &str,
+        error: Option<&str>,
+    ) -> std::io::Result<()> {
+        let path = self
+            .run_dir
+            .join("research")
+            .join(format!("planning-{attempt:02}.request.meta.json"));
+        let mut metadata = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or_else(|| json!({ "schema_version": 1 }));
+        metadata["status"] = json!(status);
+        if let Some(error) = error {
+            metadata["validation_error"] = json!(error);
+        } else if let Some(object) = metadata.as_object_mut() {
+            object.remove("validation_error");
+        }
         write_json_atomic(&path, &metadata)
     }
 

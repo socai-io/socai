@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentArtifact,
   AgentArtifactDownload,
+  AgentMode,
   AgentTaskEventPayload,
   AgentTaskSnapshot,
   AgentTaskStatus,
@@ -69,6 +70,8 @@ export namespace agentPanel {
   let draft = "";
   let model = "";
   let modelProvider = "";
+  let agentMode: AgentMode = "reactive_v1";
+  let deepResearchAvailable = false;
   let modelByProvider = new Map<string, string>();
   let submittingTask = false;
   let submitError = "";
@@ -182,6 +185,11 @@ export namespace agentPanel {
     const models = await invoke<ModelInfo[]>("agent_list_models");
     setModels(models);
     return models;
+  }
+
+  export async function refreshDeepResearchAvailability(): Promise<void> {
+    deepResearchAvailable = await invoke<boolean>("agent_deep_research_available");
+    if (!deepResearchAvailable) agentMode = "reactive_v1";
   }
 
   export async function selectSocaiAgent(): Promise<void> {
@@ -912,7 +920,7 @@ export namespace agentPanel {
       isActivityOpen: (turnIndex, defaultOpen) => isActivityOpen(task.task_id, turnIndex, defaultOpen),
       artifactDownloadState: (path) => artifactDownloads.get(artifactDownloadKey(task.task_id, path)),
       artifactPreviewPath: artifactPreview?.taskId === task.task_id ? artifactPreview.path : null,
-      composer: replyComposer(shell, running),
+      composer: replyComposer(shell, running, task.agent_mode),
     });
     const preview = artifactPreview?.taskId === task.task_id ? artifactPreview : null;
     const previewDownload = preview
@@ -941,12 +949,15 @@ export namespace agentPanel {
       status: shell.status,
       modelReady: !!selected && selected.has_key,
       running: false,
+      agentMode,
+      deepResearchAvailable,
+      modeMutable: true,
       remoteProfile: settingsMenu.isRemoteProfile(),
       remoteDebuggingReady,
     };
   }
 
-  function replyComposer(shell: ShellState, running: boolean): ComposerProps {
+  function replyComposer(shell: ShellState, running: boolean, taskMode: AgentMode): ComposerProps {
     return {
       mode: "reply",
       value: replyDraft,
@@ -955,6 +966,9 @@ export namespace agentPanel {
       status: shell.status,
       modelReady: true,
       running,
+      agentMode: taskMode,
+      deepResearchAvailable,
+      modeMutable: false,
       remoteProfile: settingsMenu.isRemoteProfile(),
       remoteDebuggingReady,
     };
@@ -1448,6 +1462,15 @@ export namespace agentPanel {
       if (composerTask) await submitReply(shell, composerTask.task_id);
       else await startAgentTask(shell);
     });
+    document.querySelectorAll<HTMLButtonElement>("[data-agent-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (composerTask) return;
+        const next = button.dataset.agentMode;
+        if (next !== "reactive_v1" && next !== "brief_guided_research_v1") return;
+        agentMode = next;
+        shell.rerender();
+      });
+    });
     document.getElementById("composer-connect")?.addEventListener("click", () => {
       invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
     });
@@ -1542,6 +1565,7 @@ export namespace agentPanel {
         task: value,
         provider: selected?.provider || modelProvider || null,
         model: selected ? modelId(selected) : model || null,
+        agentMode,
       });
       upsertTask(snapshot);
       selectedTaskId = snapshot.task_id;

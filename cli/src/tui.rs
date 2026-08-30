@@ -16,9 +16,9 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Cmd, CompletionType, Config, Editor, EventHandler, Helper, KeyEvent, Modifiers};
 use socai_core::agent::{
-    catalog_models_for, config_for, configured_default_model_for, provider_credential_kind,
-    resolve_provider, save_api_key, save_default_model, AgentEvent, Backend, CredentialKind,
-    ModelCatalogEntry, Provider, PROVIDERS,
+    agent_mode_from_env, catalog_models_for, config_for, configured_default_model_for,
+    provider_credential_kind, resolve_provider, save_api_key, save_default_model, AgentEvent,
+    Backend, CredentialKind, ModelCatalogEntry, Provider, PROVIDERS,
 };
 use socai_core::agent::{local_agent_tools, make_run_dir, Conversation};
 use socai_core::runtime::{
@@ -320,7 +320,10 @@ async fn slash_menu() -> Result<Option<String>> {
 fn handle_clear_command(state: &mut AppState) -> Result<()> {
     state.conversation =
         Conversation::new(state.model.clone()).context("failed to start a new session")?;
-    println!("[socai] chat cleared — new session {}", state.conversation.id);
+    println!(
+        "[socai] chat cleared — new session {}",
+        state.conversation.id
+    );
     Ok(())
 }
 
@@ -676,6 +679,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
         .default_agent_instructions
         .unwrap_or(site.agent_instructions);
     let config = AgentRunConfig {
+        agent_mode: agent_mode_from_env().context("invalid agent mode configuration")?,
         extra_instructions: agent_instructions(&preamble),
         enabled_sites: vec![site.id.to_string()],
         seed_messages: state.conversation.chat_messages(),
@@ -748,7 +752,10 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     // whole provider message in the conversation seed. Generic wording: the
     // error may also be max-token truncation or a failed forced summary.
     let (recorded, status) = if outcome.error.is_some() {
-        ("[run failed before producing a final answer]".to_string(), "failed")
+        (
+            "[run failed before producing a final answer]".to_string(),
+            "failed",
+        )
     } else {
         (outcome.final_text.clone(), "completed")
     };

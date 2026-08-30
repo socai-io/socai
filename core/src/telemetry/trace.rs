@@ -101,6 +101,8 @@ pub struct RunTraceBuilder {
     task_text: String,
     provider: String,
     model: String,
+    execution_variant: String,
+    research_brief_status: String,
     session_id: Option<String>,
     /// Prior chat messages seeding this run — non-zero marks a conversation
     /// follow-up rather than a fresh task.
@@ -148,6 +150,8 @@ impl RunTraceBuilder {
             task_text: truncate_chars(&redact_secrets(task), TASK_TEXT_MAX_CHARS),
             provider: provider.to_string(),
             model: model.to_string(),
+            execution_variant: "reactive_v1".to_string(),
+            research_brief_status: "not_applicable".to_string(),
             session_id: session_id.map(ToOwned::to_owned),
             seed_messages,
             started_ns: now_ns(),
@@ -158,6 +162,19 @@ impl RunTraceBuilder {
             last_system_hash: String::new(),
             finalized: false,
         }
+    }
+
+    pub fn set_execution_variant(&mut self, execution_variant: &str) {
+        self.execution_variant = execution_variant.to_string();
+        self.research_brief_status = if execution_variant == "brief_guided_research_v1" {
+            "planning".to_string()
+        } else {
+            "not_applicable".to_string()
+        };
+    }
+
+    pub fn set_research_brief_status(&mut self, status: &str) {
+        self.research_brief_status = status.to_string();
     }
 
     /// `new_messages` is the transcript delta: conversation messages appended
@@ -171,6 +188,18 @@ impl RunTraceBuilder {
         new_messages: &[Message],
         response: &LLMResponse,
     ) {
+        self.record_llm_phase(step, duration_ms, system, new_messages, response, None);
+    }
+
+    pub fn record_llm_phase(
+        &mut self,
+        step: u32,
+        duration_ms: u64,
+        system: &str,
+        new_messages: &[Message],
+        response: &LLMResponse,
+        phase: Option<&str>,
+    ) {
         self.steps_seen = self.steps_seen.max(step);
         self.usage += &response.usage;
         let mut attrs = vec![
@@ -181,6 +210,9 @@ impl RunTraceBuilder {
             attr_str("socai.stop_reason", stop_reason_str(response)),
             attr_int("socai.tool_calls", response.tool_calls.len() as i64),
         ];
+        if let Some(phase) = phase {
+            attrs.push(attr_str("socai.phase", phase));
+        }
         push_usage_attrs(&mut attrs, &response.usage);
         self.push_chat_attrs(&mut attrs, system, new_messages, Some(response));
         self.push_span(
@@ -200,6 +232,18 @@ impl RunTraceBuilder {
         new_messages: &[Message],
         error: &str,
     ) {
+        self.record_llm_error_phase(step, duration_ms, system, new_messages, error, None);
+    }
+
+    pub fn record_llm_error_phase(
+        &mut self,
+        step: u32,
+        duration_ms: u64,
+        system: &str,
+        new_messages: &[Message],
+        error: &str,
+        phase: Option<&str>,
+    ) {
         self.steps_seen = self.steps_seen.max(step);
         let mut attrs = vec![
             attr_str("gen_ai.operation.name", "chat"),
@@ -207,6 +251,9 @@ impl RunTraceBuilder {
             attr_str("gen_ai.request.model", &self.model),
             attr_int("socai.step", step as i64),
         ];
+        if let Some(phase) = phase {
+            attrs.push(attr_str("socai.phase", phase));
+        }
         self.push_chat_attrs(&mut attrs, system, new_messages, None);
         self.push_span(
             format!("chat {}", self.model),
@@ -326,6 +373,8 @@ impl RunTraceBuilder {
             attr_str("socai.task_text", &self.task_text),
             attr_str("socai.status", status),
             attr_int("socai.steps", steps as i64),
+            attr_str("socai.execution_variant", &self.execution_variant),
+            attr_str("socai.research_brief_status", &self.research_brief_status),
         ];
         push_usage_attrs(&mut attrs, usage);
         if let Some(session_id) = &self.session_id {

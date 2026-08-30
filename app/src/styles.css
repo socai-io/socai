@@ -1950,6 +1950,18 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex-direction: column;
   gap: var(--sp-2);
 }
+.composer__mode-row {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 var(--sp-1);
+}
+.composer__mode-current {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
 .composer__form { margin: 0; }
 /* the input is a self-contained rounded box floating in the pane — no outer
    dock divider boxing it off from the conversation above. */

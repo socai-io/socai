@@ -366,6 +366,9 @@ const messages = {
   },
 
   "task.new": { en: "new task", zh: "新任务" },
+  "task.researchModeAria": { en: "research mode", zh: "调研模式" },
+  "task.modeStandard": { en: "standard", zh: "标准" },
+  "task.modeDeepResearch": { en: "deep research", zh: "深度调研" },
   "task.history": { en: "history", zh: "历史" },
   "task.historyAria": { en: "task history", zh: "任务历史" },
   "task.viewAria": { en: "task view", zh: "任务视图" },

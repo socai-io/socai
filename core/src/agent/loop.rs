@@ -37,6 +37,11 @@ use crate::agent::memory::{
     compact_messages_for_context, DEFAULT_COMPACT_AFTER_MESSAGES, DEFAULT_KEEP_RECENT_MESSAGES,
 };
 use crate::agent::report::report_with_artifacts;
+use crate::agent::research::{
+    ensure_agent_mode_available, planner_correction_prompt, planner_system_prompt,
+    research_brief_tool_schema, AgentMode, ResearchBriefEnvelope, DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
+    SUBMIT_RESEARCH_BRIEF_TOOL,
+};
 use crate::agent::run_logging::{make_run_dir, AgentRunRecorder};
 use crate::agent::run_state::RunState;
 use crate::agent::signature::tool_call_signature;
@@ -104,6 +109,8 @@ pub enum AgentEvent {
 pub struct AgentOptions {
     pub max_steps: u32,
     pub max_tokens: u32,
+    pub agent_mode: AgentMode,
+    pub research_plan_max_tokens: u32,
     pub extra_instructions: String,
     pub run_dir: Option<PathBuf>,
     /// Site names to pre-enable in ToolContext (gates `defer_until_site` tools).
@@ -129,6 +136,8 @@ impl Default for AgentOptions {
         Self {
             max_steps: 30,
             max_tokens: 16000,
+            agent_mode: AgentMode::ReactiveV1,
+            research_plan_max_tokens: DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
             extra_instructions: String::new(),
             run_dir: None,
             enabled_sites: Vec::new(),
@@ -174,8 +183,13 @@ pub async fn run_agent_with_events(
     options: AgentOptions,
     events: broadcast::Sender<AgentEvent>,
 ) -> anyhow::Result<AgentOutcome> {
+    ensure_agent_mode_available(options.agent_mode)?;
+    let agent_mode = options.agent_mode;
     let run_id = new_run_id();
-    let run_dir = options.run_dir.unwrap_or_else(|| make_run_dir(task));
+    let run_dir = options
+        .run_dir
+        .clone()
+        .unwrap_or_else(|| make_run_dir(task));
     ensure_dir(&run_dir)?;
     let run_state = Arc::new(RunState::new(task));
     let run_recorder = AgentRunRecorder::start(
@@ -195,11 +209,13 @@ pub async fn run_agent_with_events(
         options.session_id.as_deref(),
         options.seed_messages.len(),
     );
+    run_recorder.set_execution_variant(agent_mode.as_str())?;
+    run_trace.set_execution_variant(agent_mode.as_str());
 
     let mut ctx = ToolContext::new(&run_id, &run_dir)
         .with_run_state(Arc::clone(&run_state))
         .with_background_media_generation(options.background_media_generation)
-        .with_billing_task_id(options.billing_task_id);
+        .with_billing_task_id(options.billing_task_id.clone());
     for site in &options.enabled_sites {
         ctx.enable_site(site.clone());
     }
@@ -231,14 +247,99 @@ pub async fn run_agent_with_events(
         },
     );
 
+    let mut usage = TokenUsage::default();
+    let mut effective_extra_instructions = options.extra_instructions.clone();
+
+    if agent_mode.requires_research_brief() {
+        let planning =
+            prepare_research_brief(task, &backend, &options, &run_recorder, &mut run_trace).await?;
+        usage += &planning.usage;
+
+        let mut status = "failed_fallback";
+        let mut planning_error = planning.error.clone();
+        if let Some(envelope) = planning.envelope {
+            match envelope.persist(&run_dir) {
+                Ok(()) => {
+                    if let Some(question) = envelope.clarification() {
+                        status = "clarification_required";
+                        run_trace.set_research_brief_status(status);
+                        run_recorder.record_research_planning_summary(
+                            status,
+                            planning.attempts,
+                            planning.duration_ms,
+                            &planning.usage,
+                            planning_error.as_deref(),
+                        )?;
+                        let final_text = question.to_string();
+                        emit(
+                            &events,
+                            AgentEvent::Done {
+                                run_id: run_id.clone(),
+                                steps: 0,
+                                final_text: final_text.clone(),
+                            },
+                        );
+                        let report = report_with_artifacts(&final_text, Some(&run_state));
+                        let _ = std::fs::write(run_dir.join("report.md"), report);
+                        run_recorder.finish("completed", 0, &usage, None)?;
+                        run_trace.finish("completed", 0, &usage, None);
+                        return Ok(AgentOutcome {
+                            run_id,
+                            run_dir,
+                            steps: 0,
+                            final_text,
+                            usage,
+                            error: None,
+                        });
+                    }
+                    if let Some(brief) = envelope.brief() {
+                        match brief.execution_prompt() {
+                            Ok(prompt) => {
+                                if !effective_extra_instructions.trim().is_empty() {
+                                    effective_extra_instructions.push_str("\n\n");
+                                }
+                                effective_extra_instructions.push_str(&prompt);
+                                status = "ready";
+                                planning_error = None;
+                            }
+                            Err(error) => {
+                                planning_error = Some(format!(
+                                    "could not render validated research brief: {error:#}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    planning_error = Some(format!("could not persist research brief: {error}"));
+                }
+            }
+        }
+        run_trace.set_research_brief_status(status);
+        run_recorder.record_research_planning_summary(
+            status,
+            planning.attempts,
+            planning.duration_ms,
+            &planning.usage,
+            planning_error.as_deref(),
+        )?;
+        if status == "failed_fallback" {
+            warn!(
+                error = planning_error
+                    .as_deref()
+                    .unwrap_or("unknown planning failure"),
+                "research brief planning failed; falling back to reactive execution"
+            );
+        }
+    }
+
     let mut step = 0u32;
     let mut final_text = String::new();
-    let mut usage = TokenUsage::default();
     let mut tool_call_history: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut completed = false;
     let mut terminal_error: Option<String> = None;
     let mut truncation_retries = 0u32;
-    let mut last_system: String = build_system_prompt(&[], &options.extra_instructions);
+    let mut last_system: String = build_system_prompt(&[], &effective_extra_instructions);
 
     while step < options.max_steps {
         step += 1;
@@ -248,7 +349,7 @@ pub async fn run_agent_with_events(
 
         let schemas = tool_schemas(&tools, &ctx);
         let tool_names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
-        let system = build_system_prompt(&tool_names, &options.extra_instructions);
+        let system = build_system_prompt(&tool_names, &effective_extra_instructions);
         last_system = system.clone();
         if compact_messages_for_context(
             &mut messages,
@@ -282,13 +383,24 @@ pub async fn run_agent_with_events(
             Ok(response) => {
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_response(step, &response, duration_ms)?;
-                run_trace.record_llm(
-                    step,
-                    duration_ms,
-                    &system,
-                    &messages[traced_len..],
-                    &response,
-                );
+                if agent_mode.requires_research_brief() {
+                    run_trace.record_llm_phase(
+                        step,
+                        duration_ms,
+                        &system,
+                        &messages[traced_len..],
+                        &response,
+                        Some("collecting"),
+                    );
+                } else {
+                    run_trace.record_llm(
+                        step,
+                        duration_ms,
+                        &system,
+                        &messages[traced_len..],
+                        &response,
+                    );
+                }
                 traced_len = messages.len();
                 response
             }
@@ -296,13 +408,24 @@ pub async fn run_agent_with_events(
                 let msg = format!("{e:#}");
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_error(step, &msg, duration_ms)?;
-                run_trace.record_llm_error(
-                    step,
-                    duration_ms,
-                    &system,
-                    &messages[traced_len..],
-                    &msg,
-                );
+                if agent_mode.requires_research_brief() {
+                    run_trace.record_llm_error_phase(
+                        step,
+                        duration_ms,
+                        &system,
+                        &messages[traced_len..],
+                        &msg,
+                        Some("collecting"),
+                    );
+                } else {
+                    run_trace.record_llm_error(
+                        step,
+                        duration_ms,
+                        &system,
+                        &messages[traced_len..],
+                        &msg,
+                    );
+                }
                 warn!(step, error = %msg, "backend error");
                 emit(
                     &events,
@@ -586,13 +709,24 @@ pub async fn run_agent_with_events(
             Ok(response) => {
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_response(step + 1, &response, duration_ms)?;
-                run_trace.record_llm(
-                    step + 1,
-                    duration_ms,
-                    &last_system,
-                    &messages[traced_len..],
-                    &response,
-                );
+                if agent_mode.requires_research_brief() {
+                    run_trace.record_llm_phase(
+                        step + 1,
+                        duration_ms,
+                        &last_system,
+                        &messages[traced_len..],
+                        &response,
+                        Some("writing"),
+                    );
+                } else {
+                    run_trace.record_llm(
+                        step + 1,
+                        duration_ms,
+                        &last_system,
+                        &messages[traced_len..],
+                        &response,
+                    );
+                }
                 usage += &response.usage;
                 let (visible_texts, _) = split_thinking(&response.text_blocks);
                 for text in &visible_texts {
@@ -610,13 +744,24 @@ pub async fn run_agent_with_events(
                 let msg = format!("{e:#}");
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_error(step + 1, &msg, duration_ms)?;
-                run_trace.record_llm_error(
-                    step + 1,
-                    duration_ms,
-                    &last_system,
-                    &messages[traced_len..],
-                    &msg,
-                );
+                if agent_mode.requires_research_brief() {
+                    run_trace.record_llm_error_phase(
+                        step + 1,
+                        duration_ms,
+                        &last_system,
+                        &messages[traced_len..],
+                        &msg,
+                        Some("writing"),
+                    );
+                } else {
+                    run_trace.record_llm_error(
+                        step + 1,
+                        duration_ms,
+                        &last_system,
+                        &messages[traced_len..],
+                        &msg,
+                    );
+                }
                 warn!(step = step + 1, error = %msg, "forced summary error");
                 emit(
                     &events,
@@ -661,6 +806,148 @@ pub async fn run_agent_with_events(
         final_text,
         usage,
         error: terminal_error,
+    })
+}
+
+struct ResearchPlanningResult {
+    envelope: Option<ResearchBriefEnvelope>,
+    usage: TokenUsage,
+    attempts: u32,
+    duration_ms: u64,
+    error: Option<String>,
+}
+
+async fn prepare_research_brief(
+    task: &str,
+    backend: &Arc<dyn Backend>,
+    options: &AgentOptions,
+    run_recorder: &AgentRunRecorder,
+    run_trace: &mut RunTraceBuilder,
+) -> anyhow::Result<ResearchPlanningResult> {
+    let system = planner_system_prompt();
+    let schemas = vec![research_brief_tool_schema()];
+    let max_tokens = options
+        .research_plan_max_tokens
+        .min(options.max_tokens)
+        .max(1);
+    let mut planning_messages = options.seed_messages.clone();
+    planning_messages.push(Message::user(task.to_string()));
+    let mut planning_anchor = options.seed_messages.len();
+    let is_follow_up = !options.seed_messages.is_empty();
+    compact_messages_for_context(
+        &mut planning_messages,
+        options.compact_after_messages,
+        options.keep_recent_messages,
+        &mut planning_anchor,
+        is_follow_up,
+    );
+
+    let mut usage = TokenUsage::default();
+    let mut total_duration_ms = 0u64;
+    let mut last_error = None;
+    let mut attempts = 0u32;
+
+    for attempt in 1..=2u32 {
+        attempts = attempt;
+        if attempt > 1 {
+            planning_messages.push(Message::user(planner_correction_prompt().to_string()));
+        }
+
+        let request_payload =
+            match backend.request_payload(&system, &planning_messages, &schemas, max_tokens) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    last_error = Some(format!("could not build planning request: {error:#}"));
+                    break;
+                }
+            };
+        run_recorder.record_planning_request(attempt, &request_payload)?;
+
+        let started = Instant::now();
+        let response = match send_with_retry(
+            backend,
+            &system,
+            &planning_messages,
+            &schemas,
+            max_tokens,
+            0,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let duration_ms = started.elapsed().as_millis() as u64;
+                total_duration_ms = total_duration_ms.saturating_add(duration_ms);
+                let error = format!("{error:#}");
+                run_recorder.record_planning_error(attempt, &error, duration_ms)?;
+                run_trace.record_llm_error_phase(
+                    0,
+                    duration_ms,
+                    &system,
+                    &planning_messages,
+                    &error,
+                    Some("planning"),
+                );
+                last_error = Some(error);
+                break;
+            }
+        };
+
+        let duration_ms = started.elapsed().as_millis() as u64;
+        total_duration_ms = total_duration_ms.saturating_add(duration_ms);
+        run_recorder.record_planning_response(attempt, &response, duration_ms)?;
+        run_trace.record_llm_phase(
+            0,
+            duration_ms,
+            &system,
+            &planning_messages,
+            &response,
+            Some("planning"),
+        );
+        usage += &response.usage;
+
+        let parsed = (|| -> anyhow::Result<ResearchBriefEnvelope> {
+            if response.tool_calls.len() != 1 {
+                anyhow::bail!(
+                    "planner must make exactly one {SUBMIT_RESEARCH_BRIEF_TOOL} call (got {})",
+                    response.tool_calls.len()
+                );
+            }
+            let call = &response.tool_calls[0];
+            if call.name != SUBMIT_RESEARCH_BRIEF_TOOL {
+                anyhow::bail!(
+                    "planner called '{}' instead of {SUBMIT_RESEARCH_BRIEF_TOOL}",
+                    call.name
+                );
+            }
+            ResearchBriefEnvelope::from_tool_input(call.input.clone())
+        })();
+
+        match parsed {
+            Ok(envelope) => {
+                run_recorder.record_planning_validation(attempt, "accepted", None)?;
+                return Ok(ResearchPlanningResult {
+                    envelope: Some(envelope),
+                    usage,
+                    attempts,
+                    duration_ms: total_duration_ms,
+                    error: None,
+                });
+            }
+            Err(error) => {
+                let error = format!("{error:#}");
+                run_recorder.record_planning_validation(attempt, "invalid", Some(&error))?;
+                last_error = Some(error);
+            }
+        }
+    }
+
+    Ok(ResearchPlanningResult {
+        envelope: None,
+        usage,
+        attempts,
+        duration_ms: total_duration_ms,
+        error: last_error,
     })
 }
 
