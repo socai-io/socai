@@ -18,7 +18,7 @@
 //! - `run_logging.rs` — canonical agent-run / LLM-step / tool-call records
 //! - `run_state.rs` — in-memory context compaction state
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -39,8 +39,16 @@ use crate::agent::memory::{
 use crate::agent::report::report_with_artifacts;
 use crate::agent::research::{
     ensure_agent_mode_available, planner_correction_prompt, planner_system_prompt,
-    research_brief_tool_schema, AgentMode, ResearchBriefEnvelope, DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
-    SUBMIT_RESEARCH_BRIEF_TOOL,
+    research_brief_tool_schema, AgentMode, ResearchBrief, ResearchBriefEnvelope, ResearchPriority,
+    DEFAULT_RESEARCH_PLAN_MAX_TOKENS, SUBMIT_RESEARCH_BRIEF_TOOL,
+};
+use crate::agent::research_coverage::{
+    answer_with_missing_limitations, budget_exhausted_completion_prompt,
+    completion_protocol_correction_prompt, completion_tool_result_content, evaluate_completion,
+    initial_coverage_state, research_completion_tool_schema, CompletionGateDecision,
+    EvidenceLocatorCatalog, ResearchCompletionSubmission, DEFAULT_MAX_COMPLETION_ATTEMPTS,
+    DEFAULT_MAX_COVERAGE_PROTOCOL_RETRIES, DEFAULT_MAX_RESEARCH_RECOVERY_ROUNDS,
+    RESEARCH_COVERAGE_PROTOCOL_VERSION, SUBMIT_RESEARCH_COMPLETION_TOOL,
 };
 use crate::agent::run_logging::{make_run_dir, AgentRunRecorder};
 use crate::agent::run_state::RunState;
@@ -249,6 +257,7 @@ pub async fn run_agent_with_events(
 
     let mut usage = TokenUsage::default();
     let mut effective_extra_instructions = options.extra_instructions.clone();
+    let mut validated_research_brief: Option<ResearchBrief> = None;
 
     if agent_mode.requires_research_brief() {
         let planning =
@@ -270,6 +279,27 @@ pub async fn run_agent_with_events(
                             &planning.usage,
                             planning_error.as_deref(),
                         )?;
+                        if agent_mode.requires_research_coverage() {
+                            let state = json!({
+                                "protocol_version": RESEARCH_COVERAGE_PROTOCOL_VERSION,
+                                "status": "clarification_required",
+                            });
+                            run_recorder.update_research_coverage_summary(
+                                "clarification_required",
+                                0,
+                                0,
+                                0,
+                                0,
+                                None,
+                                &state,
+                            )?;
+                            run_trace.set_research_coverage_summary(
+                                "clarification_required",
+                                0,
+                                0,
+                                0,
+                            );
+                        }
                         let final_text = question.to_string();
                         emit(
                             &events,
@@ -293,12 +323,18 @@ pub async fn run_agent_with_events(
                         });
                     }
                     if let Some(brief) = envelope.brief() {
-                        match brief.execution_prompt() {
+                        let rendered = if agent_mode.requires_research_coverage() {
+                            brief.coverage_execution_prompt()
+                        } else {
+                            brief.execution_prompt()
+                        };
+                        match rendered {
                             Ok(prompt) => {
                                 if !effective_extra_instructions.trim().is_empty() {
                                     effective_extra_instructions.push_str("\n\n");
                                 }
                                 effective_extra_instructions.push_str(&prompt);
+                                validated_research_brief = Some(brief.clone());
                                 status = "ready";
                                 planning_error = None;
                             }
@@ -333,6 +369,41 @@ pub async fn run_agent_with_events(
         }
     }
 
+    let mut coverage_runtime = if agent_mode.requires_research_coverage() {
+        match validated_research_brief {
+            Some(brief) => {
+                let state = initial_coverage_state(&brief);
+                let required_pending = brief
+                    .subquestions
+                    .iter()
+                    .filter(|question| question.priority == ResearchPriority::Required)
+                    .count();
+                run_recorder.initialize_research_coverage(&state, required_pending)?;
+                run_trace.set_research_coverage_summary("pending", 0, 0, required_pending);
+                Some(CoverageRuntime::new(brief, state))
+            }
+            None => {
+                let state = json!({
+                    "protocol_version": RESEARCH_COVERAGE_PROTOCOL_VERSION,
+                    "status": "planner_failed_fallback",
+                });
+                run_recorder.update_research_coverage_summary(
+                    "planner_failed_fallback",
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &state,
+                )?;
+                run_trace.set_research_coverage_summary("planner_failed_fallback", 0, 0, 0);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let mut step = 0u32;
     let mut final_text = String::new();
     let mut tool_call_history: BTreeMap<String, Vec<u32>> = BTreeMap::new();
@@ -347,7 +418,17 @@ pub async fn run_agent_with_events(
         emit(&events, AgentEvent::Step { step });
         debug!(step, "agent step start");
 
-        let schemas = tool_schemas(&tools, &ctx);
+        let mut schemas = if coverage_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.revise_only)
+        {
+            Vec::new()
+        } else {
+            tool_schemas(&tools, &ctx)
+        };
+        if coverage_runtime.is_some() {
+            schemas.push(research_completion_tool_schema());
+        }
         let tool_names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         let system = build_system_prompt(&tool_names, &effective_extra_instructions);
         last_system = system.clone();
@@ -384,13 +465,23 @@ pub async fn run_agent_with_events(
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_response(step, &response, duration_ms)?;
                 if agent_mode.requires_research_brief() {
+                    let phase = if coverage_runtime.is_some()
+                        && response
+                            .tool_calls
+                            .iter()
+                            .any(|call| call.name == SUBMIT_RESEARCH_COMPLETION_TOOL)
+                    {
+                        "coverage_check"
+                    } else {
+                        "collecting"
+                    };
                     run_trace.record_llm_phase(
                         step,
                         duration_ms,
                         &system,
                         &messages[traced_len..],
                         &response,
-                        Some("collecting"),
+                        Some(phase),
                     );
                 } else {
                     run_trace.record_llm(
@@ -510,11 +601,243 @@ pub async fn run_agent_with_events(
         }
         truncation_retries = 0;
 
+        let tool_call_summary: Vec<Value> = response
+            .tool_calls
+            .iter()
+            .map(|tc| json!({"name": tc.name, "input": tc.input}))
+            .collect();
+        run_state.note_assistant_step(step, &visible_texts.join("\n"), &tool_call_summary);
+
+        if let Some(runtime) = coverage_runtime.as_mut() {
+            let completion_calls: Vec<&ToolCall> = response
+                .tool_calls
+                .iter()
+                .filter(|call| call.name == SUBMIT_RESEARCH_COMPLETION_TOOL)
+                .collect();
+
+            if !completion_calls.is_empty() {
+                let assistant_blocks = build_assistant_blocks(&response, &visible_texts);
+                messages.push(Message::assistant_blocks(assistant_blocks));
+                traced_len = messages.len();
+                runtime.attempts = runtime.attempts.saturating_add(1);
+                let attempt = runtime.attempts;
+
+                if response.tool_calls.len() != 1 || completion_calls.len() != 1 {
+                    let reason = format!(
+                        "{SUBMIT_RESEARCH_COMPLETION_TOOL} must be the only tool call in its response"
+                    );
+                    let payload = json!({
+                        "tool_calls": response.tool_calls.iter().map(|call| json!({
+                            "name": call.name,
+                            "input": call.input,
+                        })).collect::<Vec<_>>(),
+                    });
+                    run_recorder.record_research_completion_attempt(
+                        attempt,
+                        "protocol_error",
+                        None,
+                        &payload,
+                        std::slice::from_ref(&reason),
+                    )?;
+                    runtime.protocol_retries = runtime.protocol_retries.saturating_add(1);
+                    runtime.state = payload;
+                    update_coverage_records(
+                        &run_recorder,
+                        &mut run_trace,
+                        runtime,
+                        "protocol_retry",
+                        None,
+                        runtime.required_subquestion_count(),
+                    )?;
+                    if coverage_protocol_can_retry(runtime, step, options.max_steps) {
+                        messages.push(Message::user_blocks(protocol_error_results(
+                            &response.tool_calls,
+                            &reason,
+                        )));
+                        continue;
+                    }
+                    final_text = best_effort_completion_text(
+                        completion_calls.first().map(|call| &call.input),
+                        &visible_texts,
+                    );
+                    complete_coverage_fail_open(
+                        &events,
+                        step,
+                        &final_text,
+                        &run_recorder,
+                        &mut run_trace,
+                        runtime,
+                    )?;
+                    completed = true;
+                    break;
+                }
+
+                let call = completion_calls[0];
+                let evidence =
+                    EvidenceLocatorCatalog::from_run(&run_dir, &run_state, &runtime.tool_locators);
+                let submission = ResearchCompletionSubmission::from_tool_input(
+                    call.input.clone(),
+                    &runtime.brief,
+                    &evidence,
+                );
+                let submission = match submission {
+                    Ok(submission) => submission,
+                    Err(error) => {
+                        let reason = format!("{error:#}");
+                        run_recorder.record_research_completion_attempt(
+                            attempt,
+                            "protocol_error",
+                            None,
+                            &call.input,
+                            std::slice::from_ref(&reason),
+                        )?;
+                        runtime.protocol_retries = runtime.protocol_retries.saturating_add(1);
+                        runtime.state = call.input.clone();
+                        update_coverage_records(
+                            &run_recorder,
+                            &mut run_trace,
+                            runtime,
+                            "protocol_retry",
+                            None,
+                            runtime.required_subquestion_count(),
+                        )?;
+                        if coverage_protocol_can_retry(runtime, step, options.max_steps) {
+                            messages.push(Message::user_blocks(vec![Block::ToolResult {
+                                tool_use_id: call.id.clone(),
+                                content: completion_tool_result_content(&json!({
+                                    "accepted": false,
+                                    "action": "protocol_error",
+                                    "error": reason,
+                                    "instruction": completion_protocol_correction_prompt(),
+                                })),
+                            }]));
+                            continue;
+                        }
+                        final_text = best_effort_completion_text(Some(&call.input), &visible_texts);
+                        complete_coverage_fail_open(
+                            &events,
+                            step,
+                            &final_text,
+                            &run_recorder,
+                            &mut run_trace,
+                            runtime,
+                        )?;
+                        completed = true;
+                        break;
+                    }
+                };
+
+                let force_finish = attempt >= DEFAULT_MAX_COMPLETION_ATTEMPTS
+                    || runtime.recovery_rounds >= DEFAULT_MAX_RESEARCH_RECOVERY_ROUNDS;
+                let gate = evaluate_completion(&runtime.brief, &submission, force_finish);
+                let mut decision = gate.decision;
+                if force_finish
+                    && matches!(
+                        decision,
+                        CompletionGateDecision::ResearchMore | CompletionGateDecision::ReviseOnly
+                    )
+                {
+                    decision = CompletionGateDecision::FinishWithLimitations;
+                }
+                let status = match decision {
+                    CompletionGateDecision::Accept => "accepted",
+                    CompletionGateDecision::ResearchMore => "research_more",
+                    CompletionGateDecision::ReviseOnly => "revise_only",
+                    CompletionGateDecision::FinishWithLimitations => "finished_with_limitations",
+                };
+                match decision {
+                    CompletionGateDecision::ResearchMore => {
+                        runtime.recovery_rounds = runtime.recovery_rounds.saturating_add(1);
+                        runtime.revise_only = false;
+                    }
+                    CompletionGateDecision::ReviseOnly => runtime.revise_only = true,
+                    CompletionGateDecision::Accept
+                    | CompletionGateDecision::FinishWithLimitations => {}
+                }
+                let state = serde_json::to_value(&submission).map_err(anyhow::Error::from)?;
+                runtime.state = state.clone();
+                run_recorder.record_research_completion_attempt(
+                    attempt,
+                    status,
+                    Some(decision.as_str()),
+                    &state,
+                    &gate.reasons,
+                )?;
+                update_coverage_records(
+                    &run_recorder,
+                    &mut run_trace,
+                    runtime,
+                    status,
+                    Some(decision.as_str()),
+                    gate.required_uncovered,
+                )?;
+
+                match decision {
+                    CompletionGateDecision::Accept
+                    | CompletionGateDecision::FinishWithLimitations => {
+                        let limitations = completion_limitations(&submission, decision);
+                        final_text =
+                            answer_with_missing_limitations(&submission.final_answer, &limitations);
+                        emit_final_text(&events, step, &final_text);
+                        completed = true;
+                        break;
+                    }
+                    CompletionGateDecision::ResearchMore => {
+                        let value = gate.tool_result_value(&runtime.brief, &submission);
+                        messages.push(Message::user_blocks(vec![Block::ToolResult {
+                            tool_use_id: call.id.clone(),
+                            content: completion_tool_result_content(&value),
+                        }]));
+                        continue;
+                    }
+                    CompletionGateDecision::ReviseOnly => {
+                        let value = gate.tool_result_value(&runtime.brief, &submission);
+                        messages.push(Message::user_blocks(vec![Block::ToolResult {
+                            tool_use_id: call.id.clone(),
+                            content: completion_tool_result_content(&value),
+                        }]));
+                        continue;
+                    }
+                }
+            }
+
+            if response.tool_calls.is_empty() {
+                let assistant_blocks = build_assistant_blocks(&response, &visible_texts);
+                messages.push(Message::assistant_blocks(assistant_blocks));
+                traced_len = messages.len();
+                runtime.protocol_retries = runtime.protocol_retries.saturating_add(1);
+                runtime.state = json!({
+                    "ordinary_prose_attempt": visible_texts,
+                });
+                update_coverage_records(
+                    &run_recorder,
+                    &mut run_trace,
+                    runtime,
+                    "protocol_retry",
+                    None,
+                    runtime.required_subquestion_count(),
+                )?;
+                if coverage_protocol_can_retry(runtime, step, options.max_steps) {
+                    messages.push(Message::user(completion_protocol_correction_prompt()));
+                    continue;
+                }
+                final_text = best_effort_completion_text(None, &visible_texts);
+                complete_coverage_fail_open(
+                    &events,
+                    step,
+                    &final_text,
+                    &run_recorder,
+                    &mut run_trace,
+                    runtime,
+                )?;
+                completed = true;
+                break;
+            }
+        }
+
         // Build the assistant block list manually instead of using
-        // LLMResponse::to_assistant_blocks() so we can:
-        // - drop [Thinking]-prefixed text from history
-        // - truncate visible text to ASSISTANT_TEXT_MAX_CHARS, matching
-        //   ASSISTANT_TEXT_MAX_CHARS (320 chars)
+        // LLMResponse::to_assistant_blocks() so we can drop synthetic thinking
+        // text and keep long-running histories bounded.
         let assistant_blocks = build_assistant_blocks(&response, &visible_texts);
         messages.push(Message::assistant_blocks(assistant_blocks));
         // The assistant turn is already on the trace as the previous span's
@@ -532,12 +855,6 @@ pub async fn run_agent_with_events(
             final_text = text.clone();
         }
 
-        let tool_call_summary: Vec<Value> = response
-            .tool_calls
-            .iter()
-            .map(|tc| json!({"name": tc.name, "input": tc.input}))
-            .collect();
-        run_state.note_assistant_step(step, &visible_texts.join("\n"), &tool_call_summary);
         if response.tool_calls.is_empty() {
             completed = true;
             break;
@@ -627,6 +944,13 @@ pub async fn run_agent_with_events(
                 &content,
                 error.as_deref(),
             );
+            if error.is_none() {
+                if let Some(runtime) = coverage_runtime.as_mut() {
+                    runtime
+                        .tool_locators
+                        .insert(format!("tool:{step}:{sequence}"));
+                }
+            }
             let flat = result.flat_text();
             let summary = truncate_summary(&flat, 240);
             emit(
@@ -674,14 +998,22 @@ pub async fn run_agent_with_events(
 
     if !completed && terminal_error.is_none() && step >= options.max_steps {
         info!(step, "reached max_steps, forcing final summary");
-        messages.push(Message::user(format!(
-            "You have reached the maximum of {} tool-using steps. Do not call any \
-             more tools. Based on the evidence already gathered, produce the best \
-             possible final answer for the user now in the same language as the \
-             original task. If information is incomplete, state what is known, \
-             what is missing, and give your best-effort conclusion.",
-            options.max_steps
-        )));
+        let forced_schemas = if coverage_runtime.is_some() {
+            messages.push(Message::user(budget_exhausted_completion_prompt(
+                options.max_steps,
+            )));
+            vec![research_completion_tool_schema()]
+        } else {
+            messages.push(Message::user(format!(
+                "You have reached the maximum of {} tool-using steps. Do not call any \
+                 more tools. Based on the evidence already gathered, produce the best \
+                 possible final answer for the user now in the same language as the \
+                 original task. If information is incomplete, state what is known, \
+                 what is missing, and give your best-effort conclusion.",
+                options.max_steps
+            )));
+            Vec::new()
+        };
         if compact_messages_for_context(
             &mut messages,
             options.compact_after_messages,
@@ -692,15 +1024,27 @@ pub async fn run_agent_with_events(
             traced_len = messages.len();
         }
         let request_messages = messages.clone();
-        let request_payload =
-            backend.request_payload(&last_system, &request_messages, &[], options.max_tokens)?;
+        let forced_system = if coverage_runtime.is_some() {
+            build_system_prompt(
+                &[SUBMIT_RESEARCH_COMPLETION_TOOL],
+                &effective_extra_instructions,
+            )
+        } else {
+            last_system.clone()
+        };
+        let request_payload = backend.request_payload(
+            &forced_system,
+            &request_messages,
+            &forced_schemas,
+            options.max_tokens,
+        )?;
         run_recorder.record_llm_request(step + 1, &request_payload)?;
         let llm_started = Instant::now();
         match send_with_retry(
             &backend,
-            &last_system,
+            &forced_system,
             &request_messages,
-            &[],
+            &forced_schemas,
             options.max_tokens,
             step + 1,
         )
@@ -713,31 +1057,143 @@ pub async fn run_agent_with_events(
                     run_trace.record_llm_phase(
                         step + 1,
                         duration_ms,
-                        &last_system,
+                        &forced_system,
                         &messages[traced_len..],
                         &response,
-                        Some("writing"),
+                        Some(if coverage_runtime.is_some() {
+                            "coverage_check"
+                        } else {
+                            "writing"
+                        }),
                     );
                 } else {
                     run_trace.record_llm(
                         step + 1,
                         duration_ms,
-                        &last_system,
+                        &forced_system,
                         &messages[traced_len..],
                         &response,
                     );
                 }
                 usage += &response.usage;
                 let (visible_texts, _) = split_thinking(&response.text_blocks);
-                for text in &visible_texts {
-                    emit(
-                        &events,
-                        AgentEvent::AssistantText {
-                            step: step + 1,
-                            text: text.clone(),
-                        },
-                    );
-                    final_text = text.clone();
+                if let Some(runtime) = coverage_runtime.as_mut() {
+                    runtime.attempts = runtime.attempts.saturating_add(1);
+                    let attempt = runtime.attempts;
+                    let completion_call = (response.tool_calls.len() == 1
+                        && response.tool_calls[0].name == SUBMIT_RESEARCH_COMPLETION_TOOL)
+                        .then(|| &response.tool_calls[0]);
+                    if let Some(call) = completion_call {
+                        let evidence = EvidenceLocatorCatalog::from_run(
+                            &run_dir,
+                            &run_state,
+                            &runtime.tool_locators,
+                        );
+                        match ResearchCompletionSubmission::from_tool_input(
+                            call.input.clone(),
+                            &runtime.brief,
+                            &evidence,
+                        ) {
+                            Ok(submission) => {
+                                let gate = evaluate_completion(&runtime.brief, &submission, true);
+                                let decision = gate.decision;
+                                let status = match decision {
+                                    CompletionGateDecision::Accept => "accepted",
+                                    CompletionGateDecision::FinishWithLimitations => {
+                                        "finished_with_limitations"
+                                    }
+                                    CompletionGateDecision::ResearchMore
+                                    | CompletionGateDecision::ReviseOnly => {
+                                        "finished_with_limitations"
+                                    }
+                                };
+                                let state = serde_json::to_value(&submission)
+                                    .map_err(anyhow::Error::from)?;
+                                runtime.state = state.clone();
+                                run_recorder.record_research_completion_attempt(
+                                    attempt,
+                                    status,
+                                    Some(decision.as_str()),
+                                    &state,
+                                    &gate.reasons,
+                                )?;
+                                update_coverage_records(
+                                    &run_recorder,
+                                    &mut run_trace,
+                                    runtime,
+                                    status,
+                                    Some(decision.as_str()),
+                                    gate.required_uncovered,
+                                )?;
+                                let limitations = completion_limitations(&submission, decision);
+                                final_text = answer_with_missing_limitations(
+                                    &submission.final_answer,
+                                    &limitations,
+                                );
+                            }
+                            Err(error) => {
+                                let reason = format!("{error:#}");
+                                runtime.state = call.input.clone();
+                                run_recorder.record_research_completion_attempt(
+                                    attempt,
+                                    "budget_forced_fallback",
+                                    None,
+                                    &call.input,
+                                    std::slice::from_ref(&reason),
+                                )?;
+                                update_coverage_records(
+                                    &run_recorder,
+                                    &mut run_trace,
+                                    runtime,
+                                    "budget_forced_fallback",
+                                    None,
+                                    runtime.required_subquestion_count(),
+                                )?;
+                                final_text =
+                                    best_effort_completion_text(Some(&call.input), &visible_texts);
+                            }
+                        }
+                    } else {
+                        let reason = format!(
+                            "budget finalization requires exactly one {SUBMIT_RESEARCH_COMPLETION_TOOL} call"
+                        );
+                        let payload = json!({
+                            "tool_calls": response.tool_calls.iter().map(|call| json!({
+                                "name": call.name,
+                                "input": call.input,
+                            })).collect::<Vec<_>>(),
+                            "visible_text": visible_texts,
+                        });
+                        runtime.state = payload.clone();
+                        run_recorder.record_research_completion_attempt(
+                            attempt,
+                            "budget_forced_fallback",
+                            None,
+                            &payload,
+                            std::slice::from_ref(&reason),
+                        )?;
+                        update_coverage_records(
+                            &run_recorder,
+                            &mut run_trace,
+                            runtime,
+                            "budget_forced_fallback",
+                            None,
+                            runtime.required_subquestion_count(),
+                        )?;
+                        final_text = best_effort_completion_text(None, &visible_texts);
+                    }
+                    emit_final_text(&events, step + 1, &final_text);
+                } else {
+                    for text in &visible_texts {
+                        emit(
+                            &events,
+                            AgentEvent::AssistantText {
+                                step: step + 1,
+                                text: text.clone(),
+                            },
+                        );
+                        final_text = text.clone();
+                    }
                 }
             }
             Err(e) => {
@@ -748,7 +1204,7 @@ pub async fn run_agent_with_events(
                     run_trace.record_llm_error_phase(
                         step + 1,
                         duration_ms,
-                        &last_system,
+                        &forced_system,
                         &messages[traced_len..],
                         &msg,
                         Some("writing"),
@@ -757,7 +1213,7 @@ pub async fn run_agent_with_events(
                     run_trace.record_llm_error(
                         step + 1,
                         duration_ms,
-                        &last_system,
+                        &forced_system,
                         &messages[traced_len..],
                         &msg,
                     );
@@ -807,6 +1263,177 @@ pub async fn run_agent_with_events(
         usage,
         error: terminal_error,
     })
+}
+
+struct CoverageRuntime {
+    brief: ResearchBrief,
+    attempts: u32,
+    protocol_retries: u32,
+    recovery_rounds: u32,
+    revise_only: bool,
+    tool_locators: BTreeSet<String>,
+    state: Value,
+}
+
+impl CoverageRuntime {
+    fn new(brief: ResearchBrief, state: Value) -> Self {
+        Self {
+            brief,
+            attempts: 0,
+            protocol_retries: 0,
+            recovery_rounds: 0,
+            revise_only: false,
+            tool_locators: BTreeSet::new(),
+            state,
+        }
+    }
+
+    fn required_subquestion_count(&self) -> usize {
+        self.brief
+            .subquestions
+            .iter()
+            .filter(|question| question.priority == ResearchPriority::Required)
+            .count()
+    }
+}
+
+fn update_coverage_records(
+    recorder: &AgentRunRecorder,
+    trace: &mut RunTraceBuilder,
+    runtime: &CoverageRuntime,
+    status: &str,
+    final_decision: Option<&str>,
+    required_uncovered: usize,
+) -> anyhow::Result<()> {
+    recorder.update_research_coverage_summary(
+        status,
+        runtime.attempts,
+        runtime.protocol_retries,
+        runtime.recovery_rounds,
+        required_uncovered,
+        final_decision,
+        &runtime.state,
+    )?;
+    trace.set_research_coverage_summary(
+        status,
+        runtime.attempts,
+        runtime.recovery_rounds,
+        required_uncovered,
+    );
+    Ok(())
+}
+
+fn coverage_protocol_can_retry(runtime: &CoverageRuntime, step: u32, max_steps: u32) -> bool {
+    runtime.protocol_retries <= DEFAULT_MAX_COVERAGE_PROTOCOL_RETRIES
+        && runtime.attempts < DEFAULT_MAX_COMPLETION_ATTEMPTS
+        && step < max_steps
+}
+
+fn protocol_error_results(tool_calls: &[ToolCall], reason: &str) -> Vec<Block> {
+    tool_calls
+        .iter()
+        .map(|call| Block::ToolResult {
+            tool_use_id: call.id.clone(),
+            content: completion_tool_result_content(&json!({
+                "accepted": false,
+                "action": "protocol_error",
+                "error": reason,
+                "instruction": completion_protocol_correction_prompt(),
+            })),
+        })
+        .collect()
+}
+
+fn best_effort_completion_text(input: Option<&Value>, visible_texts: &[String]) -> String {
+    input
+        .and_then(|value| value.get("final_answer"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            let text = visible_texts.join("\n").trim().to_string();
+            (!text.is_empty()).then_some(text)
+        })
+        .unwrap_or_else(|| {
+            "The research run ended without a schema-valid final answer.".to_string()
+        })
+}
+
+fn complete_coverage_fail_open(
+    events: &broadcast::Sender<AgentEvent>,
+    step: u32,
+    final_text: &str,
+    recorder: &AgentRunRecorder,
+    trace: &mut RunTraceBuilder,
+    runtime: &mut CoverageRuntime,
+) -> anyhow::Result<()> {
+    update_coverage_records(
+        recorder,
+        trace,
+        runtime,
+        "protocol_failed_open",
+        None,
+        runtime.required_subquestion_count(),
+    )?;
+    emit_final_text(events, step, final_text);
+    Ok(())
+}
+
+fn emit_final_text(events: &broadcast::Sender<AgentEvent>, step: u32, text: &str) {
+    emit(
+        events,
+        AgentEvent::AssistantText {
+            step,
+            text: text.to_string(),
+        },
+    );
+}
+
+fn completion_limitations(
+    submission: &ResearchCompletionSubmission,
+    decision: CompletionGateDecision,
+) -> Vec<String> {
+    let mut limitations = submission.limitations.clone();
+    if decision != CompletionGateDecision::FinishWithLimitations {
+        return limitations;
+    }
+    for gap in &submission.unresolved_gaps {
+        if !limitations.contains(gap) {
+            limitations.push(gap.clone());
+        }
+    }
+    for question in &submission.subquestions {
+        if matches!(
+            question.status,
+            crate::agent::research_coverage::SubquestionCoverageStatus::Partial
+                | crate::agent::research_coverage::SubquestionCoverageStatus::Missing
+                | crate::agent::research_coverage::SubquestionCoverageStatus::Blocked
+        ) && !question.material_gap.is_empty()
+        {
+            let limitation = format!("{}: {}", question.id, question.material_gap);
+            if !limitations.contains(&limitation) {
+                limitations.push(limitation);
+            }
+        }
+    }
+    if !submission.hard_constraints_satisfied
+        && !limitations
+            .iter()
+            .any(|item| item.contains("constraint") || item.contains("约束"))
+    {
+        limitations.push(
+            "One or more requested hard constraints could not be fully satisfied.".to_string(),
+        );
+    }
+    if !submission.stop_conditions_satisfied
+        && !limitations
+            .iter()
+            .any(|item| item.contains("stop condition") || item.contains("停止条件"))
+    {
+        limitations.push("The planned evidence stop conditions were not fully met.".to_string());
+    }
+    limitations
 }
 
 struct ResearchPlanningResult {

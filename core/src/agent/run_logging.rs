@@ -294,6 +294,87 @@ impl AgentRunRecorder {
         write_json_atomic(&self.manifest_path, &manifest)
     }
 
+    pub fn initialize_research_coverage(
+        &self,
+        state: &Value,
+        required_uncovered: usize,
+    ) -> std::io::Result<()> {
+        let dir = self.run_dir.join("research");
+        std::fs::create_dir_all(&dir)?;
+        write_json_atomic(&dir.join("coverage-state.json"), state)?;
+
+        let mut manifest = self.manifest.lock().expect("poisoned");
+        manifest["coverage_protocol_version"] = json!("research-coverage-v1");
+        manifest["coverage_status"] = json!("pending");
+        manifest["coverage_attempts"] = json!(0);
+        manifest["coverage_protocol_retries"] = json!(0);
+        manifest["coverage_research_recovery_rounds"] = json!(0);
+        manifest["coverage_required_uncovered"] = json!(required_uncovered as u64);
+        write_json_atomic(&self.manifest_path, &manifest)
+    }
+
+    pub fn record_research_completion_attempt(
+        &self,
+        attempt: u32,
+        status: &str,
+        decision: Option<&str>,
+        payload: &Value,
+        reasons: &[String],
+    ) -> std::io::Result<()> {
+        let dir = self.run_dir.join("research");
+        std::fs::create_dir_all(&dir)?;
+        write_json_atomic(
+            &dir.join(format!("completion-{attempt:02}.json")),
+            &json!({
+                "protocol_version": "research-coverage-v1",
+                "recorded_at": timestamp(),
+                "attempt": attempt,
+                "status": status,
+                "decision": decision,
+                "reasons": reasons,
+                "submission": payload,
+            }),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_research_coverage_summary(
+        &self,
+        status: &str,
+        attempts: u32,
+        protocol_retries: u32,
+        recovery_rounds: u32,
+        required_uncovered: usize,
+        final_decision: Option<&str>,
+        state: &Value,
+    ) -> std::io::Result<()> {
+        let dir = self.run_dir.join("research");
+        std::fs::create_dir_all(&dir)?;
+        let value = json!({
+            "protocol_version": "research-coverage-v1",
+            "status": status,
+            "attempts": attempts,
+            "protocol_retries": protocol_retries,
+            "research_recovery_rounds": recovery_rounds,
+            "required_uncovered": required_uncovered,
+            "final_decision": final_decision,
+            "updated_at": timestamp(),
+            "state": state,
+        });
+        write_json_atomic(&dir.join("coverage-state.json"), &value)?;
+        write_json_atomic(&dir.join("completion-meta.json"), &value)?;
+
+        let mut manifest = self.manifest.lock().expect("poisoned");
+        manifest["coverage_protocol_version"] = json!("research-coverage-v1");
+        manifest["coverage_status"] = json!(status);
+        manifest["coverage_attempts"] = json!(attempts);
+        manifest["coverage_protocol_retries"] = json!(protocol_retries);
+        manifest["coverage_research_recovery_rounds"] = json!(recovery_rounds);
+        manifest["coverage_required_uncovered"] = json!(required_uncovered as u64);
+        manifest["coverage_final_decision"] = json!(final_decision);
+        write_json_atomic(&self.manifest_path, &manifest)
+    }
+
     pub fn record_llm_response(
         &self,
         step: u32,

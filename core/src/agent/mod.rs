@@ -15,6 +15,7 @@ pub mod note_store;
 pub mod provider;
 pub mod report;
 pub mod research;
+pub mod research_coverage;
 pub mod run_logging;
 pub mod run_state;
 pub mod signature;
@@ -39,8 +40,9 @@ pub use self::provider::{
 };
 pub use self::r#loop::{run_agent, run_agent_with_events, AgentEvent, AgentOptions, AgentOutcome};
 pub use self::research::{
-    agent_mode_from_env, brief_guided_research_enabled, ensure_agent_mode_available, AgentMode,
-    ResearchBrief, ResearchBriefEnvelope, DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
+    agent_mode_from_env, brief_guided_research_enabled, coverage_guided_research_enabled,
+    ensure_agent_mode_available, AgentMode, ResearchBrief, ResearchBriefEnvelope,
+    DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
 };
 pub use self::run_logging::{
     default_runs_root, make_run_dir, mark_agent_run_status, AgentRunRecorder, ToolCallRecorder,

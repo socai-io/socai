@@ -32,6 +32,7 @@ pub enum AgentMode {
     #[default]
     ReactiveV1,
     BriefGuidedResearchV1,
+    BriefCoverageResearchV2,
 }
 
 impl AgentMode {
@@ -39,11 +40,16 @@ impl AgentMode {
         match self {
             Self::ReactiveV1 => "reactive_v1",
             Self::BriefGuidedResearchV1 => "brief_guided_research_v1",
+            Self::BriefCoverageResearchV2 => "brief_coverage_research_v2",
         }
     }
 
     pub fn requires_research_brief(self) -> bool {
-        self == Self::BriefGuidedResearchV1
+        self != Self::ReactiveV1
+    }
+
+    pub fn requires_research_coverage(self) -> bool {
+        self == Self::BriefCoverageResearchV2
     }
 }
 
@@ -62,22 +68,31 @@ impl FromStr for AgentMode {
             "brief_guided_research_v1" | "deep_research" | "deep" => {
                 Ok(Self::BriefGuidedResearchV1)
             }
+            "brief_coverage_research_v2" | "deep_research_v2" | "deep_v2" => {
+                Ok(Self::BriefCoverageResearchV2)
+            }
             other => anyhow::bail!(
-                "unknown agent mode '{other}' (expected reactive_v1 or brief_guided_research_v1)"
+                "unknown agent mode '{other}' (expected reactive_v1, brief_guided_research_v1, or brief_coverage_research_v2)"
             ),
         }
     }
 }
 
 pub fn brief_guided_research_enabled() -> bool {
-    std::env::var("SOCAI_DEEP_RESEARCH_V1")
-        .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "on" | "true" | "yes"
-            )
-        })
+    env_flag("SOCAI_DEEP_RESEARCH_V1")
+}
+
+pub fn coverage_guided_research_enabled() -> bool {
+    env_flag("SOCAI_RESEARCH_COVERAGE_V2")
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "on" | "true" | "yes"
+        )
+    })
 }
 
 pub fn agent_mode_from_env() -> anyhow::Result<AgentMode> {
@@ -92,7 +107,13 @@ pub fn agent_mode_from_env() -> anyhow::Result<AgentMode> {
 pub fn ensure_agent_mode_available(mode: AgentMode) -> anyhow::Result<()> {
     if mode.requires_research_brief() && !brief_guided_research_enabled() {
         anyhow::bail!(
-            "brief_guided_research_v1 is unavailable; set SOCAI_DEEP_RESEARCH_V1=on to enable it"
+            "{} is unavailable; set SOCAI_DEEP_RESEARCH_V1=on to enable deep research",
+            mode.as_str()
+        );
+    }
+    if mode.requires_research_coverage() && !coverage_guided_research_enabled() {
+        anyhow::bail!(
+            "brief_coverage_research_v2 is unavailable; set SOCAI_RESEARCH_COVERAGE_V2=on to enable it"
         );
     }
     Ok(())
@@ -273,6 +294,24 @@ impl ResearchBrief {
              - Distinguish official or first-party facts, user note bodies, top comments, author-profile facts, OCR, and audio transcripts.\n\
              - Before ending, check each required subquestion and the brief's stop conditions against tool results. If evidence is missing or the site is blocked, state the limitation instead of inventing an answer.\n\
              - Do not repeat the brief in the final answer. Produce the requested deliverable.\n\n\
+             <research_brief protocol=\"{RESEARCH_BRIEF_PROTOCOL_VERSION}\">\n\
+             {rendered}\n\
+             </research_brief>"
+        ))
+    }
+
+    pub fn coverage_execution_prompt(&self) -> anyhow::Result<String> {
+        let rendered = serde_json::to_string_pretty(self).map_err(anyhow::Error::from)?;
+        Ok(format!(
+            "## Coverage-guided research execution\n\n\
+             The validated research brief below is the task contract for this run. It is a plan, not evidence.\n\n\
+             - Research the required subquestions with the existing Xiaohongshu tools. You may address them in any efficient order, and one tool result may support more than one subquestion.\n\
+             - Keep track of which required subquestions are covered, partial, missing, or blocked. Do not call a subquestion covered merely because the brief mentions it or because the answer sounds plausible.\n\
+             - A covered subquestion needs evidence actually obtained in this run and an answer that uses that evidence to satisfy the requested deliverable.\n\
+             - Preserve the user's hard constraints and scope. Distinguish first-party facts, note-body claims, comments, author-profile facts, OCR, and transcripts.\n\
+             - For recommendation, comparison, or planning tasks, use the evidence to select, rank, or reject candidates against the user's important constraints; do not merely collect independent facts.\n\
+             - Do not finish with ordinary prose. When ready to finish, call submit_research_completion exactly once and do not combine it with another tool call.\n\
+             - In submit_research_completion, report every brief subquestion exactly once, use only evidence locators from this run, disclose material unresolved limitations, and include the complete user-facing final answer.\n\n\
              <research_brief protocol=\"{RESEARCH_BRIEF_PROTOCOL_VERSION}\">\n\
              {rendered}\n\
              </research_brief>"

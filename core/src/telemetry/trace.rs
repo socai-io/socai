@@ -103,6 +103,10 @@ pub struct RunTraceBuilder {
     model: String,
     execution_variant: String,
     research_brief_status: String,
+    coverage_status: String,
+    coverage_attempts: u32,
+    coverage_recovery_rounds: u32,
+    coverage_required_uncovered: usize,
     session_id: Option<String>,
     /// Prior chat messages seeding this run — non-zero marks a conversation
     /// follow-up rather than a fresh task.
@@ -152,6 +156,10 @@ impl RunTraceBuilder {
             model: model.to_string(),
             execution_variant: "reactive_v1".to_string(),
             research_brief_status: "not_applicable".to_string(),
+            coverage_status: "not_applicable".to_string(),
+            coverage_attempts: 0,
+            coverage_recovery_rounds: 0,
+            coverage_required_uncovered: 0,
             session_id: session_id.map(ToOwned::to_owned),
             seed_messages,
             started_ns: now_ns(),
@@ -166,8 +174,16 @@ impl RunTraceBuilder {
 
     pub fn set_execution_variant(&mut self, execution_variant: &str) {
         self.execution_variant = execution_variant.to_string();
-        self.research_brief_status = if execution_variant == "brief_guided_research_v1" {
+        self.research_brief_status = if matches!(
+            execution_variant,
+            "brief_guided_research_v1" | "brief_coverage_research_v2"
+        ) {
             "planning".to_string()
+        } else {
+            "not_applicable".to_string()
+        };
+        self.coverage_status = if execution_variant == "brief_coverage_research_v2" {
+            "pending".to_string()
         } else {
             "not_applicable".to_string()
         };
@@ -175,6 +191,19 @@ impl RunTraceBuilder {
 
     pub fn set_research_brief_status(&mut self, status: &str) {
         self.research_brief_status = status.to_string();
+    }
+
+    pub fn set_research_coverage_summary(
+        &mut self,
+        status: &str,
+        attempts: u32,
+        recovery_rounds: u32,
+        required_uncovered: usize,
+    ) {
+        self.coverage_status = status.to_string();
+        self.coverage_attempts = attempts;
+        self.coverage_recovery_rounds = recovery_rounds;
+        self.coverage_required_uncovered = required_uncovered;
     }
 
     /// `new_messages` is the transcript delta: conversation messages appended
@@ -375,6 +404,16 @@ impl RunTraceBuilder {
             attr_int("socai.steps", steps as i64),
             attr_str("socai.execution_variant", &self.execution_variant),
             attr_str("socai.research_brief_status", &self.research_brief_status),
+            attr_str("socai.coverage_status", &self.coverage_status),
+            attr_int("socai.coverage_attempts", self.coverage_attempts as i64),
+            attr_int(
+                "socai.coverage_recovery_rounds",
+                self.coverage_recovery_rounds as i64,
+            ),
+            attr_int(
+                "socai.coverage_required_uncovered",
+                self.coverage_required_uncovered as i64,
+            ),
         ];
         push_usage_attrs(&mut attrs, usage);
         if let Some(session_id) = &self.session_id {
