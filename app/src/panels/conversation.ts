@@ -49,6 +49,7 @@ export interface ComposerProps {
   running: boolean;
   agentMode: AgentMode;
   deepResearchAvailable: boolean;
+  coverageResearchAvailable: boolean;
   modeMutable: boolean;
   /**
    * Configured browser source is the remote hosted browser. Disconnected is
@@ -734,10 +735,11 @@ function renderComposer(c: ComposerProps): string {
         <div class="seg-toggle" role="group" aria-label="${esc(t("task.researchModeAria"))}">
           <button type="button" class="seg-toggle__button" data-agent-mode="reactive_v1" aria-pressed="${c.agentMode === "reactive_v1"}">${esc(t("task.modeStandard"))}</button>
           <button type="button" class="seg-toggle__button" data-agent-mode="brief_guided_research_v1" aria-pressed="${c.agentMode === "brief_guided_research_v1"}">${esc(t("task.modeDeepResearch"))}</button>
+          ${c.coverageResearchAvailable ? `<button type="button" class="seg-toggle__button" data-agent-mode="brief_coverage_research_v2" aria-pressed="${c.agentMode === "brief_coverage_research_v2"}">${esc(t("task.modeDeepResearchV2"))}</button>` : ""}
         </div>
       </div>`
-    : c.agentMode === "brief_guided_research_v1"
-      ? `<div class="composer__mode-row"><span class="composer__mode-current">${esc(t("task.modeDeepResearch"))}</span></div>`
+    : c.agentMode !== "reactive_v1"
+      ? `<div class="composer__mode-row"><span class="composer__mode-current">${esc(t(c.agentMode === "brief_coverage_research_v2" ? "task.modeDeepResearchV2" : "task.modeDeepResearch"))}</span></div>`
       : "";
   return `
     <div class="composer">

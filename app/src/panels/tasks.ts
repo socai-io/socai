@@ -72,6 +72,7 @@ export namespace agentPanel {
   let modelProvider = "";
   let agentMode: AgentMode = "reactive_v1";
   let deepResearchAvailable = false;
+  let coverageResearchAvailable = false;
   let modelByProvider = new Map<string, string>();
   let submittingTask = false;
   let submitError = "";
@@ -188,8 +189,14 @@ export namespace agentPanel {
   }
 
   export async function refreshDeepResearchAvailability(): Promise<void> {
-    deepResearchAvailable = await invoke<boolean>("agent_deep_research_available");
+    [deepResearchAvailable, coverageResearchAvailable] = await Promise.all([
+      invoke<boolean>("agent_deep_research_available"),
+      invoke<boolean>("agent_coverage_research_available"),
+    ]);
     if (!deepResearchAvailable) agentMode = "reactive_v1";
+    if (!coverageResearchAvailable && agentMode === "brief_coverage_research_v2") {
+      agentMode = deepResearchAvailable ? "brief_guided_research_v1" : "reactive_v1";
+    }
   }
 
   export async function selectSocaiAgent(): Promise<void> {
@@ -951,6 +958,7 @@ export namespace agentPanel {
       running: false,
       agentMode,
       deepResearchAvailable,
+      coverageResearchAvailable,
       modeMutable: true,
       remoteProfile: settingsMenu.isRemoteProfile(),
       remoteDebuggingReady,
@@ -968,6 +976,7 @@ export namespace agentPanel {
       running,
       agentMode: taskMode,
       deepResearchAvailable,
+      coverageResearchAvailable,
       modeMutable: false,
       remoteProfile: settingsMenu.isRemoteProfile(),
       remoteDebuggingReady,
@@ -1466,7 +1475,10 @@ export namespace agentPanel {
       button.addEventListener("click", () => {
         if (composerTask) return;
         const next = button.dataset.agentMode;
-        if (next !== "reactive_v1" && next !== "brief_guided_research_v1") return;
+        if (next !== "reactive_v1"
+          && next !== "brief_guided_research_v1"
+          && next !== "brief_coverage_research_v2") return;
+        if (next === "brief_coverage_research_v2" && !coverageResearchAvailable) return;
         agentMode = next;
         shell.rerender();
       });

@@ -8,10 +8,10 @@ use quick_xml::{events::Event as XmlEvent, Reader as XmlReader};
 use serde_json::{json, Map, Value};
 use socai_core::agent::{
     brief_guided_research_enabled, catalog_models_for, configured_default_model_for,
-    configured_default_provider, desktop_agent_tools, ensure_agent_mode_available, load_api_key,
-    make_run_dir, mark_agent_run_status, provider_credential_kind, resolve_provider,
-    save_default_model, AgentEvent, AgentMode, Conversation, CredentialKind, ModelCatalogEntry,
-    Provider, TokenUsage,
+    configured_default_provider, coverage_guided_research_enabled, desktop_agent_tools,
+    ensure_agent_mode_available, load_api_key, make_run_dir, mark_agent_run_status,
+    provider_credential_kind, resolve_provider, save_default_model, AgentEvent, AgentMode,
+    Conversation, CredentialKind, ModelCatalogEntry, Provider, TokenUsage,
 };
 use socai_core::runtime::{
     create_llm_provider_for_task, ensure_llm_provider_configured_for,
@@ -581,6 +581,11 @@ fn find_codex_binary() -> Option<PathBuf> {
 #[tauri::command]
 pub fn agent_deep_research_available() -> bool {
     brief_guided_research_enabled()
+}
+
+#[tauri::command]
+pub fn agent_coverage_research_available() -> bool {
+    brief_guided_research_enabled() && coverage_guided_research_enabled()
 }
 
 #[tauri::command]

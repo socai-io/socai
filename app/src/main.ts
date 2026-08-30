@@ -53,7 +53,7 @@ export interface ModelInfo {
 }
 
 export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
-export type AgentMode = "reactive_v1" | "brief_guided_research_v1";
+export type AgentMode = "reactive_v1" | "brief_guided_research_v1" | "brief_coverage_research_v2";
 
 export interface AgentTaskSnapshot {
   task_id: string;
