@@ -13,8 +13,10 @@ use crate::agent::run_state::RunState;
 
 pub const RESEARCH_COVERAGE_PROTOCOL_VERSION: &str = "research-coverage-v1";
 pub const SUBMIT_RESEARCH_COMPLETION_TOOL: &str = "submit_research_completion";
+pub const FORCED_FINALIZATION_VERSION: &str = "forced-finalization-v1";
 pub const DEFAULT_MAX_COMPLETION_ATTEMPTS: u32 = 3;
 pub const DEFAULT_MAX_COVERAGE_PROTOCOL_RETRIES: u32 = 1;
+pub const DEFAULT_MAX_FORCED_WRITER_ATTEMPTS: u32 = 2;
 pub const DEFAULT_MAX_RESEARCH_RECOVERY_ROUNDS: u32 = 2;
 
 const MAX_EVIDENCE_REFS: usize = 12;
@@ -22,6 +24,61 @@ const MAX_GAPS: usize = 12;
 const MAX_LIMITATIONS: usize = 12;
 const MAX_FIELD_CHARS: usize = 1_000;
 const MAX_FINAL_ANSWER_CHARS: usize = 50_000;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalizationTrigger {
+    MaxSteps,
+    ProtocolRetriesExhausted,
+    CompletionAttemptsExhausted,
+    ResearchBudgetUnavailable,
+}
+
+impl FinalizationTrigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MaxSteps => "max_steps",
+            Self::ProtocolRetriesExhausted => "protocol_retries_exhausted",
+            Self::CompletionAttemptsExhausted => "completion_attempts_exhausted",
+            Self::ResearchBudgetUnavailable => "research_budget_unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalAnswerSource {
+    StructuredCompletion,
+    SchemaSalvage,
+    VisibleTextSalvage,
+    ForcedWriter,
+    TruncatedWriterSalvage,
+}
+
+impl FinalAnswerSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StructuredCompletion => "structured_completion",
+            Self::SchemaSalvage => "schema_salvage",
+            Self::VisibleTextSalvage => "visible_text_salvage",
+            Self::ForcedWriter => "forced_writer",
+            Self::TruncatedWriterSalvage => "truncated_writer_salvage",
+        }
+    }
+}
+
+/// Forced finalization is part of V2 by default. The explicit off switch
+/// exists only to reproduce the pre-fix behavior during controlled regressions.
+pub fn forced_finalization_enabled() -> bool {
+    !std::env::var("SOCAI_V2_FORCED_FINALIZATION")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "off" | "false" | "no"
+            )
+        })
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -460,8 +517,64 @@ pub fn completion_protocol_correction_prompt() -> &'static str {
 
 pub fn budget_exhausted_completion_prompt(max_steps: u32) -> String {
     format!(
-        "You have reached the maximum of {max_steps} research steps. Do not call external research tools. Submit one final submit_research_completion call using only the evidence already gathered. Mark unresolved required subquestions as blocked rather than covered. State the concrete reason in material_gap, add a clear user-facing disclosure to limitations, and keep unsupported claims out of final_answer. Produce the most useful complete answer possible within those limits."
+        "You have reached the maximum of {max_steps} research steps. The research phase is over and no additional action is allowed. Do not call shell, browser, filesystem, Xiaohongshu, or any other tool. Your only permitted action is exactly one submit_research_completion call using only the evidence already present in the conversation. If a fact is missing, mark the corresponding required subquestion blocked rather than trying to retrieve or inspect anything else. State the concrete reason in material_gap, add a clear user-facing disclosure to limitations, keep unsupported claims out of final_answer, and produce the most useful complete answer possible within those limits."
     )
+}
+
+pub fn forced_final_writer_system_prompt(
+    brief: &ResearchBrief,
+    extra_instructions: &str,
+) -> anyhow::Result<String> {
+    let rendered = serde_json::to_string_pretty(brief).map_err(anyhow::Error::from)?;
+    let extra = extra_instructions.trim();
+    let extra = if extra.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nAdditional task instructions that still apply to the final answer:\n{extra}")
+    };
+    Ok(format!(
+        "You are the final-answer writer for a completed socai research run.\n\n\
+         The research phase has ended. You have no tools and must not request, describe, or simulate another tool action. Write the final answer now using only evidence already present in the supplied conversation and research brief.\n\n\
+         Requirements:\n\
+         1. Answer the user's original request directly and in the same language.\n\
+         2. Preserve the requested deliverable and hard constraints.\n\
+         3. Prefer concrete findings and evidence links already obtained in this run.\n\
+         4. Do not invent missing facts or imply that an unverified constraint was met.\n\
+         5. Clearly disclose material gaps caused by missing evidence or exhausted budget.\n\
+         6. Produce only the complete user-facing answer in Markdown. Do not output JSON, coverage bookkeeping, planning commentary, or a tool call.\n\n\
+         <research_brief protocol=\"research-brief-v1\">\n\
+         {rendered}\n\
+         </research_brief>{extra}"
+    ))
+}
+
+pub fn forced_final_writer_prompt(attempt: u32) -> &'static str {
+    if attempt <= 1 {
+        "Research is finished. Write the best complete final answer now. Do not perform another action. Where the collected evidence is incomplete, give the useful supported portion and state the limitation explicitly."
+    } else {
+        "Your previous final-answer attempt was unusable. Return only a concise, complete user-facing answer now. No tools, no JSON, no planning, and no preamble. Prioritize covering the requested deliverable over detail; state missing evidence briefly."
+    }
+}
+
+pub fn salvage_completion_text(
+    input: Option<&Value>,
+    visible_texts: &[String],
+) -> Option<(String, FinalAnswerSource)> {
+    if let Some(answer) = input
+        .and_then(|value| value.get("final_answer"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| is_usable_final_answer(value))
+    {
+        return Some((answer.to_string(), FinalAnswerSource::SchemaSalvage));
+    }
+    let text = visible_texts.join("\n").trim().to_string();
+    is_usable_final_answer(&text).then_some((text, FinalAnswerSource::VisibleTextSalvage))
+}
+
+pub fn is_usable_final_answer(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && value != "The research run ended without a schema-valid final answer."
 }
 
 pub fn completion_tool_result_content(value: &Value) -> Vec<crate::agent::llm::ToolResultContent> {
@@ -552,4 +665,53 @@ fn normalize_list(values: &mut Vec<String>, name: &str, max_items: usize) -> any
 
 fn is_cjk(ch: char) -> bool {
     matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn budget_prompt_forbids_all_follow_on_tools() {
+        let prompt = budget_exhausted_completion_prompt(30);
+        assert!(prompt.contains("Do not call shell, browser, filesystem, Xiaohongshu"));
+        assert!(prompt.contains("exactly one submit_research_completion"));
+        assert!(!prompt.contains("Do not call external research tools"));
+    }
+
+    #[test]
+    fn salvage_prefers_embedded_final_answer() {
+        let input = json!({"final_answer": "  supported answer  "});
+        let visible = vec!["fallback prose".to_string()];
+        let (answer, source) =
+            salvage_completion_text(Some(&input), &visible).expect("answer should be salvaged");
+        assert_eq!(answer, "supported answer");
+        assert_eq!(source, FinalAnswerSource::SchemaSalvage);
+    }
+
+    #[test]
+    fn salvage_uses_visible_text_when_schema_has_no_answer() {
+        let input = json!({"subquestions": []});
+        let visible = vec!["first".to_string(), "second".to_string()];
+        let (answer, source) =
+            salvage_completion_text(Some(&input), &visible).expect("text should be salvaged");
+        assert_eq!(answer, "first\nsecond");
+        assert_eq!(source, FinalAnswerSource::VisibleTextSalvage);
+    }
+
+    #[test]
+    fn legacy_placeholder_is_not_a_usable_answer() {
+        let placeholder = "The research run ended without a schema-valid final answer.";
+        assert!(!is_usable_final_answer(placeholder));
+        assert!(salvage_completion_text(None, &[placeholder.to_string()]).is_none());
+    }
+
+    #[test]
+    fn writer_retry_prompt_requires_plain_final_text() {
+        let prompt = forced_final_writer_prompt(2);
+        assert!(prompt.contains("No tools, no JSON, no planning"));
+        assert!(prompt.contains("complete user-facing answer"));
+    }
 }

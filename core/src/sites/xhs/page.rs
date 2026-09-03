@@ -1591,7 +1591,8 @@ impl<'a> XhsPageRuntime<'a> {
 
         if options.include_media {
             let t_enrich = Instant::now();
-            self.enrich_note_media(&mut note, options.max_images).await?;
+            self.enrich_note_media(&mut note, options.max_images)
+                .await?;
             perf.insert(
                 "enrich_ms".into(),
                 json!(t_enrich.elapsed().as_millis() as u64),

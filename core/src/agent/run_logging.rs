@@ -375,6 +375,44 @@ impl AgentRunRecorder {
         write_json_atomic(&self.manifest_path, &manifest)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_research_finalization_summary(
+        &self,
+        version: &str,
+        trigger: &str,
+        status: &str,
+        answer_source: Option<&str>,
+        structured_attempts: u32,
+        writer_attempts: u32,
+        coverage_schema_valid: Option<bool>,
+        failure_reasons: &[String],
+    ) -> std::io::Result<()> {
+        let dir = self.run_dir.join("research");
+        std::fs::create_dir_all(&dir)?;
+        let value = json!({
+            "version": version,
+            "trigger": trigger,
+            "status": status,
+            "answer_source": answer_source,
+            "structured_attempts": structured_attempts,
+            "writer_attempts": writer_attempts,
+            "coverage_schema_valid": coverage_schema_valid,
+            "failure_reasons": failure_reasons,
+            "updated_at": timestamp(),
+        });
+        write_json_atomic(&dir.join("finalization-meta.json"), &value)?;
+
+        let mut manifest = self.manifest.lock().expect("poisoned");
+        manifest["forced_finalization_version"] = json!(version);
+        manifest["finalization_trigger"] = json!(trigger);
+        manifest["finalization_status"] = json!(status);
+        manifest["final_answer_source"] = json!(answer_source);
+        manifest["finalization_structured_attempts"] = json!(structured_attempts);
+        manifest["finalization_writer_attempts"] = json!(writer_attempts);
+        manifest["finalization_coverage_schema_valid"] = json!(coverage_schema_valid);
+        write_json_atomic(&self.manifest_path, &manifest)
+    }
+
     pub fn record_llm_response(
         &self,
         step: u32,

@@ -572,7 +572,6 @@ impl DaemonState {
         self.telemetry
             .capture("socai_tool_call", Value::Object(props));
     }
-
 }
 
 fn base_trace_props(

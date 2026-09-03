@@ -107,6 +107,11 @@ pub struct RunTraceBuilder {
     coverage_attempts: u32,
     coverage_recovery_rounds: u32,
     coverage_required_uncovered: usize,
+    finalization_version: String,
+    finalization_trigger: String,
+    finalization_status: String,
+    final_answer_source: String,
+    finalization_attempts: u32,
     session_id: Option<String>,
     /// Prior chat messages seeding this run — non-zero marks a conversation
     /// follow-up rather than a fresh task.
@@ -160,6 +165,11 @@ impl RunTraceBuilder {
             coverage_attempts: 0,
             coverage_recovery_rounds: 0,
             coverage_required_uncovered: 0,
+            finalization_version: "not_applicable".to_string(),
+            finalization_trigger: "not_applicable".to_string(),
+            finalization_status: "not_applicable".to_string(),
+            final_answer_source: "none".to_string(),
+            finalization_attempts: 0,
             session_id: session_id.map(ToOwned::to_owned),
             seed_messages,
             started_ns: now_ns(),
@@ -204,6 +214,21 @@ impl RunTraceBuilder {
         self.coverage_attempts = attempts;
         self.coverage_recovery_rounds = recovery_rounds;
         self.coverage_required_uncovered = required_uncovered;
+    }
+
+    pub fn set_research_finalization_summary(
+        &mut self,
+        version: &str,
+        trigger: &str,
+        status: &str,
+        answer_source: Option<&str>,
+        attempts: u32,
+    ) {
+        self.finalization_version = version.to_string();
+        self.finalization_trigger = trigger.to_string();
+        self.finalization_status = status.to_string();
+        self.final_answer_source = answer_source.unwrap_or("none").to_string();
+        self.finalization_attempts = attempts;
     }
 
     /// `new_messages` is the transcript delta: conversation messages appended
@@ -413,6 +438,14 @@ impl RunTraceBuilder {
             attr_int(
                 "socai.coverage_required_uncovered",
                 self.coverage_required_uncovered as i64,
+            ),
+            attr_str("socai.finalization_version", &self.finalization_version),
+            attr_str("socai.finalization_trigger", &self.finalization_trigger),
+            attr_str("socai.finalization_status", &self.finalization_status),
+            attr_str("socai.final_answer_source", &self.final_answer_source),
+            attr_int(
+                "socai.finalization_attempts",
+                self.finalization_attempts as i64,
             ),
         ];
         push_usage_attrs(&mut attrs, usage);

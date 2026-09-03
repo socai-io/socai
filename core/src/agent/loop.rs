@@ -45,9 +45,12 @@ use crate::agent::research::{
 use crate::agent::research_coverage::{
     answer_with_missing_limitations, budget_exhausted_completion_prompt,
     completion_protocol_correction_prompt, completion_tool_result_content, evaluate_completion,
-    initial_coverage_state, research_completion_tool_schema, CompletionGateDecision,
-    EvidenceLocatorCatalog, ResearchCompletionSubmission, DEFAULT_MAX_COMPLETION_ATTEMPTS,
-    DEFAULT_MAX_COVERAGE_PROTOCOL_RETRIES, DEFAULT_MAX_RESEARCH_RECOVERY_ROUNDS,
+    forced_final_writer_prompt, forced_final_writer_system_prompt, forced_finalization_enabled,
+    initial_coverage_state, research_completion_tool_schema, salvage_completion_text,
+    CompletionGateDecision, EvidenceLocatorCatalog, FinalAnswerSource, FinalizationTrigger,
+    ResearchCompletionSubmission, DEFAULT_MAX_COMPLETION_ATTEMPTS,
+    DEFAULT_MAX_COVERAGE_PROTOCOL_RETRIES, DEFAULT_MAX_FORCED_WRITER_ATTEMPTS,
+    DEFAULT_MAX_RESEARCH_RECOVERY_ROUNDS, FORCED_FINALIZATION_VERSION,
     RESEARCH_COVERAGE_PROTOCOL_VERSION, SUBMIT_RESEARCH_COMPLETION_TOOL,
 };
 use crate::agent::run_logging::{make_run_dir, AgentRunRecorder};
@@ -219,6 +222,40 @@ pub async fn run_agent_with_events(
     );
     run_recorder.set_execution_variant(agent_mode.as_str())?;
     run_trace.set_execution_variant(agent_mode.as_str());
+    let forced_finalization_active =
+        agent_mode.requires_research_coverage() && forced_finalization_enabled();
+    if agent_mode.requires_research_coverage() {
+        let finalization_version = if forced_finalization_active {
+            FORCED_FINALIZATION_VERSION
+        } else {
+            "disabled"
+        };
+        run_recorder.record_research_finalization_summary(
+            finalization_version,
+            "not_triggered",
+            if forced_finalization_active {
+                "not_triggered"
+            } else {
+                "disabled"
+            },
+            None,
+            0,
+            0,
+            None,
+            &[],
+        )?;
+        run_trace.set_research_finalization_summary(
+            finalization_version,
+            "not_triggered",
+            if forced_finalization_active {
+                "not_triggered"
+            } else {
+                "disabled"
+            },
+            None,
+            0,
+        );
+    }
 
     let mut ctx = ToolContext::new(&run_id, &run_dir)
         .with_run_state(Arc::clone(&run_state))
@@ -656,19 +693,72 @@ pub async fn run_agent_with_events(
                         )));
                         continue;
                     }
-                    final_text = best_effort_completion_text(
-                        completion_calls.first().map(|call| &call.input),
-                        &visible_texts,
-                    );
-                    complete_coverage_fail_open(
-                        &events,
-                        step,
-                        &final_text,
-                        &run_recorder,
-                        &mut run_trace,
-                        runtime,
-                    )?;
-                    completed = true;
+                    if forced_finalization_active {
+                        messages.push(Message::user_blocks(protocol_error_results(
+                            &response.tool_calls,
+                            &reason,
+                        )));
+                        let trigger = exhausted_finalization_trigger(runtime);
+                        if let Some((answer, source)) = salvage_completion_text(
+                            completion_calls.first().map(|call| &call.input),
+                            &visible_texts,
+                        ) {
+                            final_text = answer;
+                            record_coverage_finalization(
+                                &run_recorder,
+                                &mut run_trace,
+                                runtime,
+                                trigger,
+                                "answer_salvaged",
+                                Some(source),
+                                0,
+                                0,
+                                Some(false),
+                                std::slice::from_ref(&reason),
+                            )?;
+                            emit_final_text(&events, step, &final_text);
+                            completed = true;
+                        } else {
+                            let outcome = force_finalize_coverage_with_writer(
+                                &backend,
+                                &messages,
+                                runtime,
+                                trigger,
+                                0,
+                                vec![reason],
+                                &options.extra_instructions,
+                                options.max_tokens,
+                                step + 1,
+                                &run_recorder,
+                                &mut run_trace,
+                                &mut usage,
+                                &events,
+                            )
+                            .await?;
+                            finish_forced_writer_outcome(
+                                outcome,
+                                &events,
+                                step + 1,
+                                &mut final_text,
+                                &mut completed,
+                                &mut terminal_error,
+                            );
+                        }
+                    } else {
+                        final_text = best_effort_completion_text(
+                            completion_calls.first().map(|call| &call.input),
+                            &visible_texts,
+                        );
+                        complete_coverage_fail_open(
+                            &events,
+                            step,
+                            &final_text,
+                            &run_recorder,
+                            &mut run_trace,
+                            runtime,
+                        )?;
+                        completed = true;
+                    }
                     break;
                 }
 
@@ -713,16 +803,74 @@ pub async fn run_agent_with_events(
                             }]));
                             continue;
                         }
-                        final_text = best_effort_completion_text(Some(&call.input), &visible_texts);
-                        complete_coverage_fail_open(
-                            &events,
-                            step,
-                            &final_text,
-                            &run_recorder,
-                            &mut run_trace,
-                            runtime,
-                        )?;
-                        completed = true;
+                        if forced_finalization_active {
+                            messages.push(Message::user_blocks(vec![Block::ToolResult {
+                                tool_use_id: call.id.clone(),
+                                content: completion_tool_result_content(&json!({
+                                    "accepted": false,
+                                    "action": "protocol_error",
+                                    "error": reason,
+                                    "instruction": "Research has ended. A final-answer writer will produce the user-facing answer without tools.",
+                                })),
+                            }]));
+                            let trigger = exhausted_finalization_trigger(runtime);
+                            if let Some((answer, source)) =
+                                salvage_completion_text(Some(&call.input), &visible_texts)
+                            {
+                                final_text = answer;
+                                record_coverage_finalization(
+                                    &run_recorder,
+                                    &mut run_trace,
+                                    runtime,
+                                    trigger,
+                                    "answer_salvaged",
+                                    Some(source),
+                                    0,
+                                    0,
+                                    Some(false),
+                                    std::slice::from_ref(&reason),
+                                )?;
+                                emit_final_text(&events, step, &final_text);
+                                completed = true;
+                            } else {
+                                let outcome = force_finalize_coverage_with_writer(
+                                    &backend,
+                                    &messages,
+                                    runtime,
+                                    trigger,
+                                    0,
+                                    vec![reason],
+                                    &options.extra_instructions,
+                                    options.max_tokens,
+                                    step + 1,
+                                    &run_recorder,
+                                    &mut run_trace,
+                                    &mut usage,
+                                    &events,
+                                )
+                                .await?;
+                                finish_forced_writer_outcome(
+                                    outcome,
+                                    &events,
+                                    step + 1,
+                                    &mut final_text,
+                                    &mut completed,
+                                    &mut terminal_error,
+                                );
+                            }
+                        } else {
+                            final_text =
+                                best_effort_completion_text(Some(&call.input), &visible_texts);
+                            complete_coverage_fail_open(
+                                &events,
+                                step,
+                                &final_text,
+                                &run_recorder,
+                                &mut run_trace,
+                                runtime,
+                            )?;
+                            completed = true;
+                        }
                         break;
                     }
                 };
@@ -821,16 +969,65 @@ pub async fn run_agent_with_events(
                     messages.push(Message::user(completion_protocol_correction_prompt()));
                     continue;
                 }
-                final_text = best_effort_completion_text(None, &visible_texts);
-                complete_coverage_fail_open(
-                    &events,
-                    step,
-                    &final_text,
-                    &run_recorder,
-                    &mut run_trace,
-                    runtime,
-                )?;
-                completed = true;
+                if forced_finalization_active {
+                    let reason =
+                        "coverage completion protocol retries exhausted after ordinary prose"
+                            .to_string();
+                    let trigger = exhausted_finalization_trigger(runtime);
+                    if let Some((answer, source)) = salvage_completion_text(None, &visible_texts) {
+                        final_text = answer;
+                        record_coverage_finalization(
+                            &run_recorder,
+                            &mut run_trace,
+                            runtime,
+                            trigger,
+                            "answer_salvaged",
+                            Some(source),
+                            0,
+                            0,
+                            Some(false),
+                            std::slice::from_ref(&reason),
+                        )?;
+                        emit_final_text(&events, step, &final_text);
+                        completed = true;
+                    } else {
+                        let outcome = force_finalize_coverage_with_writer(
+                            &backend,
+                            &messages,
+                            runtime,
+                            trigger,
+                            0,
+                            vec![reason],
+                            &options.extra_instructions,
+                            options.max_tokens,
+                            step + 1,
+                            &run_recorder,
+                            &mut run_trace,
+                            &mut usage,
+                            &events,
+                        )
+                        .await?;
+                        finish_forced_writer_outcome(
+                            outcome,
+                            &events,
+                            step + 1,
+                            &mut final_text,
+                            &mut completed,
+                            &mut terminal_error,
+                        );
+                    }
+                } else {
+                    final_text = best_effort_completion_text(None, &visible_texts);
+                    complete_coverage_fail_open(
+                        &events,
+                        step,
+                        &final_text,
+                        &run_recorder,
+                        &mut run_trace,
+                        runtime,
+                    )?;
+                    completed = true;
+                }
                 break;
             }
         }
@@ -1083,6 +1280,9 @@ pub async fn run_agent_with_events(
                     let completion_call = (response.tool_calls.len() == 1
                         && response.tool_calls[0].name == SUBMIT_RESEARCH_COMPLETION_TOOL)
                         .then(|| &response.tool_calls[0]);
+                    let mut forced_failure_reasons = Vec::new();
+                    let mut salvage: Option<(String, FinalAnswerSource)> = None;
+
                     if let Some(call) = completion_call {
                         let evidence = EvidenceLocatorCatalog::from_run(
                             &run_dir,
@@ -1096,16 +1296,21 @@ pub async fn run_agent_with_events(
                         ) {
                             Ok(submission) => {
                                 let gate = evaluate_completion(&runtime.brief, &submission, true);
-                                let decision = gate.decision;
+                                let mut decision = gate.decision;
+                                if matches!(
+                                    decision,
+                                    CompletionGateDecision::ResearchMore
+                                        | CompletionGateDecision::ReviseOnly
+                                ) {
+                                    decision = CompletionGateDecision::FinishWithLimitations;
+                                }
                                 let status = match decision {
                                     CompletionGateDecision::Accept => "accepted",
                                     CompletionGateDecision::FinishWithLimitations => {
                                         "finished_with_limitations"
                                     }
                                     CompletionGateDecision::ResearchMore
-                                    | CompletionGateDecision::ReviseOnly => {
-                                        "finished_with_limitations"
-                                    }
+                                    | CompletionGateDecision::ReviseOnly => unreachable!(),
                                 };
                                 let state = serde_json::to_value(&submission)
                                     .map_err(anyhow::Error::from)?;
@@ -1130,6 +1335,27 @@ pub async fn run_agent_with_events(
                                     &submission.final_answer,
                                     &limitations,
                                 );
+                                if forced_finalization_active {
+                                    run_recorder.record_research_finalization_summary(
+                                        FORCED_FINALIZATION_VERSION,
+                                        FinalizationTrigger::MaxSteps.as_str(),
+                                        "structured_completion_succeeded",
+                                        Some(FinalAnswerSource::StructuredCompletion.as_str()),
+                                        1,
+                                        0,
+                                        Some(true),
+                                        &[],
+                                    )?;
+                                    run_trace.set_research_finalization_summary(
+                                        FORCED_FINALIZATION_VERSION,
+                                        FinalizationTrigger::MaxSteps.as_str(),
+                                        "structured_completion_succeeded",
+                                        Some(FinalAnswerSource::StructuredCompletion.as_str()),
+                                        1,
+                                    );
+                                }
+                                emit_final_text(&events, step + 1, &final_text);
+                                completed = true;
                             }
                             Err(error) => {
                                 let reason = format!("{error:#}");
@@ -1141,16 +1367,9 @@ pub async fn run_agent_with_events(
                                     &call.input,
                                     std::slice::from_ref(&reason),
                                 )?;
-                                update_coverage_records(
-                                    &run_recorder,
-                                    &mut run_trace,
-                                    runtime,
-                                    "budget_forced_fallback",
-                                    None,
-                                    runtime.required_subquestion_count(),
-                                )?;
-                                final_text =
-                                    best_effort_completion_text(Some(&call.input), &visible_texts);
+                                salvage =
+                                    salvage_completion_text(Some(&call.input), &visible_texts);
+                                forced_failure_reasons.push(reason);
                             }
                         }
                     } else {
@@ -1172,17 +1391,67 @@ pub async fn run_agent_with_events(
                             &payload,
                             std::slice::from_ref(&reason),
                         )?;
-                        update_coverage_records(
-                            &run_recorder,
-                            &mut run_trace,
-                            runtime,
-                            "budget_forced_fallback",
-                            None,
-                            runtime.required_subquestion_count(),
-                        )?;
-                        final_text = best_effort_completion_text(None, &visible_texts);
+                        salvage = salvage_completion_text(None, &visible_texts);
+                        forced_failure_reasons.push(reason);
                     }
-                    emit_final_text(&events, step + 1, &final_text);
+
+                    if !completed {
+                        if let Some((answer, source)) = salvage {
+                            final_text = answer;
+                            record_coverage_finalization(
+                                &run_recorder,
+                                &mut run_trace,
+                                runtime,
+                                FinalizationTrigger::MaxSteps,
+                                "answer_salvaged",
+                                Some(source),
+                                1,
+                                0,
+                                Some(false),
+                                &forced_failure_reasons,
+                            )?;
+                            emit_final_text(&events, step + 1, &final_text);
+                        } else if forced_finalization_active {
+                            let outcome = force_finalize_coverage_with_writer(
+                                &backend,
+                                &messages,
+                                runtime,
+                                FinalizationTrigger::MaxSteps,
+                                1,
+                                forced_failure_reasons,
+                                &options.extra_instructions,
+                                options.max_tokens,
+                                step + 2,
+                                &run_recorder,
+                                &mut run_trace,
+                                &mut usage,
+                                &events,
+                            )
+                            .await?;
+                            finish_forced_writer_outcome(
+                                outcome,
+                                &events,
+                                step + 2,
+                                &mut final_text,
+                                &mut completed,
+                                &mut terminal_error,
+                            );
+                        } else {
+                            final_text = best_effort_completion_text(
+                                completion_call.map(|c| &c.input),
+                                &visible_texts,
+                            );
+                            update_coverage_records(
+                                &run_recorder,
+                                &mut run_trace,
+                                runtime,
+                                "budget_forced_fallback",
+                                None,
+                                runtime.required_subquestion_count(),
+                            )?;
+                            emit_final_text(&events, step + 1, &final_text);
+                        }
+                    }
                 } else {
                     for text in &visible_texts {
                         emit(
@@ -1265,6 +1534,254 @@ pub async fn run_agent_with_events(
     })
 }
 
+struct ForcedWriterOutcome {
+    final_text: Option<String>,
+    answer_source: Option<FinalAnswerSource>,
+    attempts: u32,
+    failure_reasons: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_coverage_finalization(
+    recorder: &AgentRunRecorder,
+    trace: &mut RunTraceBuilder,
+    runtime: &CoverageRuntime,
+    trigger: FinalizationTrigger,
+    status: &str,
+    answer_source: Option<FinalAnswerSource>,
+    structured_attempts: u32,
+    writer_attempts: u32,
+    coverage_schema_valid: Option<bool>,
+    failure_reasons: &[String],
+) -> anyhow::Result<()> {
+    let coverage_status = match answer_source {
+        Some(FinalAnswerSource::SchemaSalvage) => "schema_salvaged",
+        Some(FinalAnswerSource::VisibleTextSalvage) => "visible_text_salvaged",
+        Some(FinalAnswerSource::ForcedWriter) => "forced_writer_completed",
+        Some(FinalAnswerSource::TruncatedWriterSalvage) => "forced_writer_truncated_salvage",
+        Some(FinalAnswerSource::StructuredCompletion) => status,
+        None => "finalization_failed",
+    };
+    update_coverage_records(
+        recorder,
+        trace,
+        runtime,
+        coverage_status,
+        None,
+        runtime.required_subquestion_count(),
+    )?;
+    recorder.record_research_finalization_summary(
+        FORCED_FINALIZATION_VERSION,
+        trigger.as_str(),
+        status,
+        answer_source.map(FinalAnswerSource::as_str),
+        structured_attempts,
+        writer_attempts,
+        coverage_schema_valid,
+        failure_reasons,
+    )?;
+    trace.set_research_finalization_summary(
+        FORCED_FINALIZATION_VERSION,
+        trigger.as_str(),
+        status,
+        answer_source.map(FinalAnswerSource::as_str),
+        structured_attempts.saturating_add(writer_attempts),
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn force_write_final_answer(
+    backend: &Arc<dyn Backend>,
+    messages: &[Message],
+    brief: &ResearchBrief,
+    extra_instructions: &str,
+    max_tokens: u32,
+    first_request_step: u32,
+    recorder: &AgentRunRecorder,
+    trace: &mut RunTraceBuilder,
+    usage: &mut TokenUsage,
+    events: &broadcast::Sender<AgentEvent>,
+) -> anyhow::Result<ForcedWriterOutcome> {
+    let system = forced_final_writer_system_prompt(brief, extra_instructions)?;
+    let schemas: Vec<ToolSchema> = Vec::new();
+    let mut failure_reasons = Vec::new();
+    let mut partial_text: Option<String> = None;
+    let mut attempts = 0;
+
+    for attempt in 1..=DEFAULT_MAX_FORCED_WRITER_ATTEMPTS {
+        attempts = attempt;
+        let request_step = first_request_step + attempt - 1;
+        let mut request_messages = messages.to_vec();
+        request_messages.push(Message::user(forced_final_writer_prompt(attempt)));
+        let delta_start = request_messages.len().saturating_sub(1);
+        let request_payload =
+            backend.request_payload(&system, &request_messages, &schemas, max_tokens)?;
+        recorder.record_llm_request(request_step, &request_payload)?;
+
+        let started = Instant::now();
+        let response = match send_with_retry(
+            backend,
+            &system,
+            &request_messages,
+            &schemas,
+            max_tokens,
+            request_step,
+        )
+        .await
+        {
+            Ok(response) => {
+                let duration_ms = started.elapsed().as_millis() as u64;
+                recorder.record_llm_response(request_step, &response, duration_ms)?;
+                trace.record_llm_phase(
+                    request_step,
+                    duration_ms,
+                    &system,
+                    &request_messages[delta_start..],
+                    &response,
+                    Some("forced_writing"),
+                );
+                response
+            }
+            Err(error) => {
+                let reason = format!("forced final writer API error: {error:#}");
+                let duration_ms = started.elapsed().as_millis() as u64;
+                recorder.record_llm_error(request_step, &reason, duration_ms)?;
+                trace.record_llm_error_phase(
+                    request_step,
+                    duration_ms,
+                    &system,
+                    &request_messages[delta_start..],
+                    &reason,
+                    Some("forced_writing"),
+                );
+                failure_reasons.push(reason);
+                break;
+            }
+        };
+        *usage += &response.usage;
+
+        if !response.reasoning_content.trim().is_empty() {
+            emit(
+                events,
+                AgentEvent::Reasoning {
+                    step: request_step,
+                    text: response.reasoning_content.clone(),
+                },
+            );
+        }
+        let (visible_texts, thinking_texts) = split_thinking(&response.text_blocks);
+        if !thinking_texts.is_empty() {
+            emit(
+                events,
+                AgentEvent::Reasoning {
+                    step: request_step,
+                    text: thinking_texts.join("\n"),
+                },
+            );
+        }
+        let visible = visible_texts.join("\n").trim().to_string();
+
+        if !response.tool_calls.is_empty() {
+            failure_reasons.push(format!(
+                "forced writer attempt {attempt} returned {} tool call(s) even though tools were disabled",
+                response.tool_calls.len()
+            ));
+            continue;
+        }
+        if response.stop_reason == StopReason::MaxTokens {
+            failure_reasons.push(format!(
+                "forced writer attempt {attempt} was truncated by max_tokens"
+            ));
+            if crate::agent::research_coverage::is_usable_final_answer(&visible) {
+                partial_text = Some(visible);
+            }
+            if attempt < DEFAULT_MAX_FORCED_WRITER_ATTEMPTS {
+                continue;
+            }
+            break;
+        }
+        if crate::agent::research_coverage::is_usable_final_answer(&visible) {
+            return Ok(ForcedWriterOutcome {
+                final_text: Some(visible),
+                answer_source: Some(FinalAnswerSource::ForcedWriter),
+                attempts: attempt,
+                failure_reasons,
+            });
+        }
+        failure_reasons.push(format!(
+            "forced writer attempt {attempt} returned no usable visible text"
+        ));
+    }
+
+    if let Some(text) = partial_text {
+        return Ok(ForcedWriterOutcome {
+            final_text: Some(text),
+            answer_source: Some(FinalAnswerSource::TruncatedWriterSalvage),
+            attempts,
+            failure_reasons,
+        });
+    }
+    Ok(ForcedWriterOutcome {
+        final_text: None,
+        answer_source: None,
+        attempts,
+        failure_reasons,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn force_finalize_coverage_with_writer(
+    backend: &Arc<dyn Backend>,
+    messages: &[Message],
+    runtime: &mut CoverageRuntime,
+    trigger: FinalizationTrigger,
+    structured_attempts: u32,
+    mut failure_reasons: Vec<String>,
+    extra_instructions: &str,
+    max_tokens: u32,
+    first_request_step: u32,
+    recorder: &AgentRunRecorder,
+    trace: &mut RunTraceBuilder,
+    usage: &mut TokenUsage,
+    events: &broadcast::Sender<AgentEvent>,
+) -> anyhow::Result<ForcedWriterOutcome> {
+    let mut outcome = force_write_final_answer(
+        backend,
+        messages,
+        &runtime.brief,
+        extra_instructions,
+        max_tokens,
+        first_request_step,
+        recorder,
+        trace,
+        usage,
+        events,
+    )
+    .await?;
+    failure_reasons.append(&mut outcome.failure_reasons);
+    outcome.failure_reasons = failure_reasons;
+    let status = match outcome.answer_source {
+        Some(FinalAnswerSource::ForcedWriter) => "forced_writer_succeeded",
+        Some(FinalAnswerSource::TruncatedWriterSalvage) => "truncated_writer_salvaged",
+        Some(_) => "answer_salvaged",
+        None => "finalization_failed",
+    };
+    record_coverage_finalization(
+        recorder,
+        trace,
+        runtime,
+        trigger,
+        status,
+        outcome.answer_source,
+        structured_attempts,
+        outcome.attempts,
+        Some(false),
+        &outcome.failure_reasons,
+    )?;
+    Ok(outcome)
+}
+
 struct CoverageRuntime {
     brief: ResearchBrief,
     attempts: u32,
@@ -1327,6 +1844,39 @@ fn coverage_protocol_can_retry(runtime: &CoverageRuntime, step: u32, max_steps: 
     runtime.protocol_retries <= DEFAULT_MAX_COVERAGE_PROTOCOL_RETRIES
         && runtime.attempts < DEFAULT_MAX_COMPLETION_ATTEMPTS
         && step < max_steps
+}
+
+fn exhausted_finalization_trigger(runtime: &CoverageRuntime) -> FinalizationTrigger {
+    if runtime.attempts >= DEFAULT_MAX_COMPLETION_ATTEMPTS {
+        FinalizationTrigger::CompletionAttemptsExhausted
+    } else {
+        FinalizationTrigger::ProtocolRetriesExhausted
+    }
+}
+
+fn finish_forced_writer_outcome(
+    outcome: ForcedWriterOutcome,
+    events: &broadcast::Sender<AgentEvent>,
+    step: u32,
+    final_text: &mut String,
+    completed: &mut bool,
+    terminal_error: &mut Option<String>,
+) {
+    if let Some(text) = outcome.final_text {
+        *final_text = text;
+        emit_final_text(events, step, final_text);
+        *completed = true;
+        return;
+    }
+    let detail = if outcome.failure_reasons.is_empty() {
+        "the model returned no usable final answer".to_string()
+    } else {
+        outcome.failure_reasons.join("; ")
+    };
+    let message = format!("forced finalization failed: {detail}");
+    *final_text = format!("Error: {message}");
+    *terminal_error = Some(message.clone());
+    emit(events, AgentEvent::ApiError { step, message });
 }
 
 fn protocol_error_results(tool_calls: &[ToolCall], reason: &str) -> Vec<Block> {
@@ -1869,4 +2419,205 @@ fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> V
 pub(crate) fn assistant_blocks_for_history(response: &LLMResponse) -> Vec<Block> {
     let (visible_texts, _) = split_thinking(&response.text_blocks);
     build_assistant_blocks(response, &visible_texts)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::agent::research::{ResearchScope, ResearchSubquestion};
+
+    struct SequenceBackend {
+        responses: Mutex<VecDeque<LLMResponse>>,
+        request_tool_counts: Mutex<Vec<usize>>,
+    }
+
+    impl SequenceBackend {
+        fn new(responses: Vec<LLMResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into()),
+                request_tool_counts: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Backend for SequenceBackend {
+        fn label(&self) -> String {
+            "test/mock".to_string()
+        }
+
+        fn provider(&self) -> &str {
+            "test"
+        }
+
+        fn model(&self) -> &str {
+            "mock"
+        }
+
+        fn request_payload(
+            &self,
+            system: &str,
+            messages: &[Message],
+            tools: &[ToolSchema],
+            max_tokens: u32,
+        ) -> anyhow::Result<Value> {
+            self.request_tool_counts
+                .lock()
+                .expect("tool counts")
+                .push(tools.len());
+            Ok(json!({
+                "model": self.model(),
+                "system": system,
+                "messages": messages,
+                "tools": tools,
+                "max_tokens": max_tokens,
+            }))
+        }
+
+        async fn send(
+            &self,
+            _system: &str,
+            _messages: &[Message],
+            tools: &[ToolSchema],
+            _max_tokens: u32,
+        ) -> anyhow::Result<LLMResponse> {
+            assert!(tools.is_empty(), "forced writer must not expose tools");
+            self.responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("mock response queue exhausted"))
+        }
+    }
+
+    fn response(text: &str, stop_reason: StopReason, tool_calls: Vec<ToolCall>) -> LLMResponse {
+        LLMResponse {
+            text_blocks: (!text.is_empty())
+                .then(|| text.to_string())
+                .into_iter()
+                .collect(),
+            tool_calls,
+            stop_reason,
+            usage: TokenUsage::default(),
+            provider_usage: None,
+            reasoning_content: String::new(),
+            thinking_blocks: Vec::new(),
+            reasoning_items: Vec::new(),
+        }
+    }
+
+    fn brief() -> ResearchBrief {
+        ResearchBrief {
+            objective: "回答问题".to_string(),
+            deliverable: "结构化报告".to_string(),
+            scope: ResearchScope {
+                time_range: "当前".to_string(),
+                location: "不限".to_string(),
+                subjects: vec!["测试对象".to_string()],
+                language: "中文".to_string(),
+            },
+            subquestions: vec![ResearchSubquestion {
+                id: "Q1".to_string(),
+                question: "证据是什么".to_string(),
+                priority: ResearchPriority::Required,
+                evidence_requirements: vec!["本次工具结果".to_string()],
+            }],
+            hard_constraints: Vec::new(),
+            assumptions: Vec::new(),
+            initial_search_angles: vec!["测试".to_string()],
+            stop_conditions: vec!["已取得证据或明确说明缺口".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn forced_writer_retries_tool_call_without_exposing_tools() {
+        let backend = Arc::new(SequenceBackend::new(vec![
+            response(
+                "",
+                StopReason::ToolUse,
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: "shell".to_string(),
+                    input: json!({"command": "inspect"}),
+                }],
+            ),
+            response("这是最终答案。", StopReason::EndTurn, Vec::new()),
+        ]));
+        let temp = tempdir().expect("tempdir");
+        let recorder =
+            AgentRunRecorder::start(temp.path(), "run-test", None, "测试任务", "test", "mock")
+                .expect("recorder");
+        let mut trace =
+            RunTraceBuilder::new(temp.path(), "run-test", "测试任务", "test", "mock", None, 0);
+        let mut usage = TokenUsage::default();
+        let (events, _rx) = broadcast::channel(8);
+        let outcome = force_write_final_answer(
+            &(Arc::clone(&backend) as Arc<dyn Backend>),
+            &[Message::user("已有证据")],
+            &brief(),
+            "",
+            1024,
+            31,
+            &recorder,
+            &mut trace,
+            &mut usage,
+            &events,
+        )
+        .await
+        .expect("writer outcome");
+
+        assert_eq!(outcome.final_text.as_deref(), Some("这是最终答案。"));
+        assert_eq!(outcome.answer_source, Some(FinalAnswerSource::ForcedWriter));
+        assert_eq!(outcome.attempts, 2);
+        assert_eq!(
+            *backend.request_tool_counts.lock().expect("tool counts"),
+            vec![0, 0]
+        );
+    }
+
+    #[tokio::test]
+    async fn forced_writer_rewrites_a_truncated_first_answer() {
+        let backend = Arc::new(SequenceBackend::new(vec![
+            response("不完整答案", StopReason::MaxTokens, Vec::new()),
+            response("精简但完整的答案。", StopReason::EndTurn, Vec::new()),
+        ]));
+        let temp = tempdir().expect("tempdir");
+        let recorder =
+            AgentRunRecorder::start(temp.path(), "run-test", None, "测试任务", "test", "mock")
+                .expect("recorder");
+        let mut trace =
+            RunTraceBuilder::new(temp.path(), "run-test", "测试任务", "test", "mock", None, 0);
+        let mut usage = TokenUsage::default();
+        let (events, _rx) = broadcast::channel(8);
+        let outcome = force_write_final_answer(
+            &(Arc::clone(&backend) as Arc<dyn Backend>),
+            &[Message::user("已有证据")],
+            &brief(),
+            "",
+            1024,
+            31,
+            &recorder,
+            &mut trace,
+            &mut usage,
+            &events,
+        )
+        .await
+        .expect("writer outcome");
+
+        assert_eq!(outcome.final_text.as_deref(), Some("精简但完整的答案。"));
+        assert_eq!(outcome.answer_source, Some(FinalAnswerSource::ForcedWriter));
+        assert_eq!(outcome.attempts, 2);
+        assert!(outcome
+            .failure_reasons
+            .iter()
+            .any(|reason| reason.contains("truncated")));
+    }
 }
