@@ -29,7 +29,7 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.4",
     "@tauri-apps/cli": "^2.11.1",
     "@types/papaparse": "^5.5.2",
     "@types/qrcode": "^1.5.6",
