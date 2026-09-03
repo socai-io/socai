@@ -16,9 +16,9 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Cmd, CompletionType, Config, Editor, EventHandler, Helper, KeyEvent, Modifiers};
 use socai_core::agent::{
-    agent_mode_from_env, catalog_models_for, config_for, configured_default_model_for,
-    provider_credential_kind, resolve_provider, save_api_key, save_default_model, AgentEvent,
-    Backend, CredentialKind, ModelCatalogEntry, Provider, PROVIDERS,
+    catalog_models_for, config_for, configured_default_model_for, provider_credential_kind,
+    resolve_provider, save_api_key, save_default_model, AgentEvent, Backend, CredentialKind,
+    ModelCatalogEntry, Provider, PROVIDERS,
 };
 use socai_core::agent::{local_agent_tools, make_run_dir, Conversation};
 use socai_core::runtime::{
@@ -679,7 +679,6 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
         .default_agent_instructions
         .unwrap_or(site.agent_instructions);
     let config = AgentRunConfig {
-        agent_mode: agent_mode_from_env().context("invalid agent mode configuration")?,
         extra_instructions: agent_instructions(&preamble),
         enabled_sites: vec![site.id.to_string()],
         seed_messages: state.conversation.chat_messages(),

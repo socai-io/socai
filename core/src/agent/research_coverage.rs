@@ -67,10 +67,10 @@ impl FinalAnswerSource {
     }
 }
 
-/// Forced finalization is part of V2 by default. The explicit off switch
+/// Forced finalization is part of the default workflow. The explicit off switch
 /// exists only to reproduce the pre-fix behavior during controlled regressions.
 pub fn forced_finalization_enabled() -> bool {
-    !std::env::var("SOCAI_V2_FORCED_FINALIZATION")
+    !std::env::var("SOCAI_FORCED_FINALIZATION")
         .ok()
         .is_some_and(|value| {
             matches!(

@@ -7,9 +7,8 @@ use calamine::{Data, DataRef, Reader, SheetType, Xlsx};
 use quick_xml::{events::Event as XmlEvent, Reader as XmlReader};
 use serde_json::{json, Map, Value};
 use socai_core::agent::{
-    brief_guided_research_enabled, catalog_models_for, configured_default_model_for,
-    configured_default_provider, coverage_guided_research_enabled, desktop_agent_tools,
-    ensure_agent_mode_available, load_api_key, make_run_dir, mark_agent_run_status,
+    catalog_models_for, configured_default_model_for, configured_default_provider,
+    desktop_agent_tools, load_api_key, make_run_dir, mark_agent_run_status,
     provider_credential_kind, resolve_provider, save_default_model, AgentEvent, AgentMode,
     Conversation, CredentialKind, ModelCatalogEntry, Provider, TokenUsage,
 };
@@ -579,16 +578,6 @@ fn find_codex_binary() -> Option<PathBuf> {
 }
 
 #[tauri::command]
-pub fn agent_deep_research_available() -> bool {
-    brief_guided_research_enabled()
-}
-
-#[tauri::command]
-pub fn agent_coverage_research_available() -> bool {
-    brief_guided_research_enabled() && coverage_guided_research_enabled()
-}
-
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn agent_task_start(
     app: AppHandle,
@@ -605,7 +594,6 @@ pub async fn agent_task_start(
         return Err("task is empty".into());
     }
     let agent_mode = agent_mode.unwrap_or_default();
-    ensure_agent_mode_available(agent_mode).map_err(|error| format!("{error:#}"))?;
     run_task_preflight(provider.as_deref(), model.as_deref()).await?;
 
     // One conversation = one folder under the runs root, named after the
@@ -704,7 +692,6 @@ pub async fn agent_task_reply(
     let provider = existing.provider.clone();
     let model = existing.model.clone();
     let agent_mode = existing.agent_mode;
-    ensure_agent_mode_available(agent_mode).map_err(|error| format!("{error:#}"))?;
     run_task_preflight(provider.as_deref(), model.as_deref()).await?;
     if let Some(previous_run_dir) = existing.run_dir.as_deref() {
         socai_core::media::cancel_background_media_for_run(previous_run_dir);
@@ -2474,7 +2461,6 @@ async fn run_agent_task_background(
         &task,
         provider.as_deref(),
         model.as_deref(),
-        agent_mode,
         Some(run_dir),
         Some(background_media_generation),
         Some(registry.clone()),
@@ -2716,7 +2702,6 @@ async fn run_agent_task_on_session_page(
     task: &str,
     provider: Option<&str>,
     model: Option<&str>,
-    agent_mode: AgentMode,
     run_dir: Option<PathBuf>,
     background_media_generation: Option<u64>,
     registry: Option<AgentTaskRegistry>,
@@ -2798,7 +2783,6 @@ async fn run_agent_task_on_session_page(
             .unwrap_or(site.agent_instructions);
         let preamble = format!("{TAURI_AGENT_PREAMBLE}\n\n{context_note}");
         let config = AgentRunConfig {
-            agent_mode,
             extra_instructions: format!(
                 "{}{}{}",
                 agent_instructions(&preamble),

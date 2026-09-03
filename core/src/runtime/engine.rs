@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use crate::agent::{
     config_for, configured_default_model_for, load_provider_credential, resolve_provider,
-    run_agent_with_events, AgentEvent, AgentMode, AgentOptions, AgentOutcome, AnthropicBackend,
-    Backend, Message, OpenAICompatBackend, Provider, Tool, DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
+    run_agent_with_events, AgentEvent, AgentOptions, AgentOutcome, AnthropicBackend, Backend,
+    Message, OpenAICompatBackend, Provider, Tool, DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
 };
 use crate::cdp::{
     BrowserEvent, Cdp, ChromeConnectOptions, ChromeProfile, PageSession, PageSessionManager,
@@ -887,7 +887,6 @@ pub fn ensure_llm_provider_configured_for(
 pub struct AgentRunConfig {
     pub max_steps: u32,
     pub max_tokens: u32,
-    pub agent_mode: AgentMode,
     pub research_plan_max_tokens: u32,
     pub compact_after_messages: usize,
     pub keep_recent_messages: usize,
@@ -909,7 +908,6 @@ impl Default for AgentRunConfig {
             // models (Sonnet 5 thinks by default), so 4096 starves the final
             // report. 16000 is the recommended non-streaming ceiling.
             max_tokens: 16000,
-            agent_mode: AgentMode::ReactiveV1,
             research_plan_max_tokens: DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
             compact_after_messages: crate::agent::memory::DEFAULT_COMPACT_AFTER_MESSAGES,
             keep_recent_messages: crate::agent::memory::DEFAULT_KEEP_RECENT_MESSAGES,
@@ -938,7 +936,6 @@ pub async fn run_agent_task(
     let options = AgentOptions {
         max_steps: config.max_steps,
         max_tokens: config.max_tokens,
-        agent_mode: config.agent_mode,
         research_plan_max_tokens: config.research_plan_max_tokens,
         extra_instructions: config.extra_instructions,
         run_dir: config.run_dir,

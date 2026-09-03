@@ -336,8 +336,6 @@ pub fn run() {
             commands::agent_set_default_model,
             commands::agent_open_codex_login,
             commands::agent_save_api_key,
-            commands::agent_deep_research_available,
-            commands::agent_coverage_research_available,
             commands::agent_task_start,
             commands::agent_task_reply,
             commands::agent_task_list,

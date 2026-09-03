@@ -159,7 +159,7 @@ impl RunTraceBuilder {
             task_text: truncate_chars(&redact_secrets(task), TASK_TEXT_MAX_CHARS),
             provider: provider.to_string(),
             model: model.to_string(),
-            execution_variant: "reactive_v1".to_string(),
+            execution_variant: "baseline".to_string(),
             research_brief_status: "not_applicable".to_string(),
             coverage_status: "not_applicable".to_string(),
             coverage_attempts: 0,
@@ -184,19 +184,8 @@ impl RunTraceBuilder {
 
     pub fn set_execution_variant(&mut self, execution_variant: &str) {
         self.execution_variant = execution_variant.to_string();
-        self.research_brief_status = if matches!(
-            execution_variant,
-            "brief_guided_research_v1" | "brief_coverage_research_v2"
-        ) {
-            "planning".to_string()
-        } else {
-            "not_applicable".to_string()
-        };
-        self.coverage_status = if execution_variant == "brief_coverage_research_v2" {
-            "pending".to_string()
-        } else {
-            "not_applicable".to_string()
-        };
+        self.research_brief_status = "planning".to_string();
+        self.coverage_status = "pending".to_string();
     }
 
     pub fn set_research_brief_status(&mut self, status: &str) {

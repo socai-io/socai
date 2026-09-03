@@ -16,7 +16,7 @@
 //!
 //! Rendering only; state and bindings live in tasks.ts.
 
-import type { AgentArtifact, AgentMode, AgentTaskEventPayload, AgentTaskSnapshot, Status } from "../main";
+import type { AgentArtifact, AgentTaskEventPayload, AgentTaskSnapshot, Status } from "../main";
 import { esc } from "../lib/html";
 import {
   formatStepCount,
@@ -47,10 +47,6 @@ export interface ComposerProps {
   modelReady: boolean;
   /** True while the shown task runs — the composer waits for the slot. */
   running: boolean;
-  agentMode: AgentMode;
-  deepResearchAvailable: boolean;
-  coverageResearchAvailable: boolean;
-  modeMutable: boolean;
   /**
    * Configured browser source is the remote hosted browser. Disconnected is
    * routine there (hosted sessions expire between runs) and submitting a run
@@ -730,20 +726,8 @@ function renderComposer(c: ComposerProps): string {
       </p>`;
   const keyHint =
     connected && !c.modelReady ? `<p class="composer__hint">${esc(t("task.addKeyHint"))}</p>` : "";
-  const modeControl = c.deepResearchAvailable && c.modeMutable
-    ? `<div class="composer__mode-row">
-        <div class="seg-toggle" role="group" aria-label="${esc(t("task.researchModeAria"))}">
-          <button type="button" class="seg-toggle__button" data-agent-mode="reactive_v1" aria-pressed="${c.agentMode === "reactive_v1"}">${esc(t("task.modeStandard"))}</button>
-          <button type="button" class="seg-toggle__button" data-agent-mode="brief_guided_research_v1" aria-pressed="${c.agentMode === "brief_guided_research_v1"}">${esc(t("task.modeDeepResearch"))}</button>
-          ${c.coverageResearchAvailable ? `<button type="button" class="seg-toggle__button" data-agent-mode="brief_coverage_research_v2" aria-pressed="${c.agentMode === "brief_coverage_research_v2"}">${esc(t("task.modeDeepResearchV2"))}</button>` : ""}
-        </div>
-      </div>`
-    : c.agentMode !== "reactive_v1"
-      ? `<div class="composer__mode-row"><span class="composer__mode-current">${esc(t(c.agentMode === "brief_coverage_research_v2" ? "task.modeDeepResearchV2" : "task.modeDeepResearch"))}</span></div>`
-      : "";
   return `
     <div class="composer">
-      ${modeControl}
       <form id="composer-form" class="composer__form">
         <div class="composer__row ${disabled ? "is-disabled" : ""}">
           <textarea

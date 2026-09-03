@@ -53,7 +53,7 @@ export interface ModelInfo {
 }
 
 export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
-export type AgentMode = "reactive_v1" | "brief_guided_research_v1" | "brief_coverage_research_v2";
+export type AgentMode = "baseline";
 
 export interface AgentTaskSnapshot {
   task_id: string;
@@ -775,11 +775,6 @@ async function main(): Promise<void> {
     agentPanel.setModels(models);
   } catch (e) {
     console.error("agent_list_models failed:", e);
-  }
-  try {
-    await agentPanel.refreshDeepResearchAvailability();
-  } catch (e) {
-    console.error("agent_deep_research_available failed:", e);
   }
   try {
     initialTasks = await invoke<AgentTaskSnapshot[]>("agent_task_list");

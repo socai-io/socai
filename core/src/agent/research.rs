@@ -1,4 +1,4 @@
-//! Brief-guided research planning for the opt-in deep-research variant.
+//! Research brief planning for the default agent workflow.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -30,26 +30,17 @@ const MAX_SUBJECTS: usize = 8;
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
     #[default]
-    ReactiveV1,
-    BriefGuidedResearchV1,
-    BriefCoverageResearchV2,
+    #[serde(
+        alias = "reactive_v1",
+        alias = "brief_guided_research_v1",
+        alias = "brief_coverage_research_v2"
+    )]
+    Baseline,
 }
 
 impl AgentMode {
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ReactiveV1 => "reactive_v1",
-            Self::BriefGuidedResearchV1 => "brief_guided_research_v1",
-            Self::BriefCoverageResearchV2 => "brief_coverage_research_v2",
-        }
-    }
-
-    pub fn requires_research_brief(self) -> bool {
-        self != Self::ReactiveV1
-    }
-
-    pub fn requires_research_coverage(self) -> bool {
-        self == Self::BriefCoverageResearchV2
+        "baseline"
     }
 }
 
@@ -64,59 +55,19 @@ impl FromStr for AgentMode {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "reactive_v1" | "reactive" | "standard" => Ok(Self::ReactiveV1),
-            "brief_guided_research_v1" | "deep_research" | "deep" => {
-                Ok(Self::BriefGuidedResearchV1)
-            }
-            "brief_coverage_research_v2" | "deep_research_v2" | "deep_v2" => {
-                Ok(Self::BriefCoverageResearchV2)
-            }
-            other => anyhow::bail!(
-                "unknown agent mode '{other}' (expected reactive_v1, brief_guided_research_v1, or brief_coverage_research_v2)"
-            ),
+            "baseline"
+            | "reactive_v1"
+            | "reactive"
+            | "standard"
+            | "brief_guided_research_v1"
+            | "deep_research"
+            | "deep"
+            | "brief_coverage_research_v2"
+            | "deep_research_v2"
+            | "deep_v2" => Ok(Self::Baseline),
+            other => anyhow::bail!("unknown agent mode '{other}' (expected baseline)"),
         }
     }
-}
-
-pub fn brief_guided_research_enabled() -> bool {
-    env_flag("SOCAI_DEEP_RESEARCH_V1")
-}
-
-pub fn coverage_guided_research_enabled() -> bool {
-    env_flag("SOCAI_RESEARCH_COVERAGE_V2")
-}
-
-fn env_flag(name: &str) -> bool {
-    std::env::var(name).ok().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "on" | "true" | "yes"
-        )
-    })
-}
-
-pub fn agent_mode_from_env() -> anyhow::Result<AgentMode> {
-    let Some(value) = std::env::var("SOCAI_AGENT_MODE").ok() else {
-        return Ok(AgentMode::ReactiveV1);
-    };
-    let mode = AgentMode::from_str(&value)?;
-    ensure_agent_mode_available(mode)?;
-    Ok(mode)
-}
-
-pub fn ensure_agent_mode_available(mode: AgentMode) -> anyhow::Result<()> {
-    if mode.requires_research_brief() && !brief_guided_research_enabled() {
-        anyhow::bail!(
-            "{} is unavailable; set SOCAI_DEEP_RESEARCH_V1=on to enable deep research",
-            mode.as_str()
-        );
-    }
-    if mode.requires_research_coverage() && !coverage_guided_research_enabled() {
-        anyhow::bail!(
-            "brief_coverage_research_v2 is unavailable; set SOCAI_RESEARCH_COVERAGE_V2=on to enable it"
-        );
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -287,22 +238,6 @@ impl ResearchBrief {
     pub fn execution_prompt(&self) -> anyhow::Result<String> {
         let rendered = serde_json::to_string_pretty(self).map_err(anyhow::Error::from)?;
         Ok(format!(
-            "## Brief-guided research execution\n\n\
-             The validated research brief below is the task contract for this run. It is a plan, not evidence.\n\n\
-             - Use the existing Xiaohongshu tool playbook to gather real evidence for the required subquestions.\n\
-             - Preserve the user's hard constraints and scope. You may adapt search queries and tool order when real results require it, but do not silently change the requested deliverable.\n\
-             - Distinguish official or first-party facts, user note bodies, top comments, author-profile facts, OCR, and audio transcripts.\n\
-             - Before ending, check each required subquestion and the brief's stop conditions against tool results. If evidence is missing or the site is blocked, state the limitation instead of inventing an answer.\n\
-             - Do not repeat the brief in the final answer. Produce the requested deliverable.\n\n\
-             <research_brief protocol=\"{RESEARCH_BRIEF_PROTOCOL_VERSION}\">\n\
-             {rendered}\n\
-             </research_brief>"
-        ))
-    }
-
-    pub fn coverage_execution_prompt(&self) -> anyhow::Result<String> {
-        let rendered = serde_json::to_string_pretty(self).map_err(anyhow::Error::from)?;
-        Ok(format!(
             "## Coverage-guided research execution\n\n\
              The validated research brief below is the task contract for this run. It is a plan, not evidence.\n\n\
              - Research the required subquestions with the existing Xiaohongshu tools. You may address them in any efficient order, and one tool result may support more than one subquestion.\n\
@@ -469,6 +404,45 @@ pub fn research_brief_tool_schema() -> ToolSchema {
             },
             "required": ["decision"]
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn baseline_is_the_only_serialized_agent_mode() {
+        assert_eq!(
+            serde_json::to_string(&AgentMode::default()).ok().as_deref(),
+            Some("\"baseline\"")
+        );
+    }
+
+    #[test]
+    fn legacy_agent_modes_deserialize_as_baseline() {
+        for value in [
+            "reactive_v1",
+            "brief_guided_research_v1",
+            "brief_coverage_research_v2",
+        ] {
+            let json = format!("\"{value}\"");
+            let parsed = serde_json::from_str::<AgentMode>(&json);
+            assert_eq!(parsed.ok(), Some(AgentMode::Baseline));
+        }
+    }
+
+    #[test]
+    fn legacy_cli_names_parse_as_baseline() {
+        for value in [
+            "baseline",
+            "reactive_v1",
+            "deep_research",
+            "deep_research_v2",
+        ] {
+            assert_eq!(value.parse::<AgentMode>().ok(), Some(AgentMode::Baseline));
+        }
+        assert!("unknown".parse::<AgentMode>().is_err());
     }
 }
 

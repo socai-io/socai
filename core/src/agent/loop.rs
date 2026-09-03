@@ -38,9 +38,9 @@ use crate::agent::memory::{
 };
 use crate::agent::report::report_with_artifacts;
 use crate::agent::research::{
-    ensure_agent_mode_available, planner_correction_prompt, planner_system_prompt,
-    research_brief_tool_schema, AgentMode, ResearchBrief, ResearchBriefEnvelope, ResearchPriority,
-    DEFAULT_RESEARCH_PLAN_MAX_TOKENS, SUBMIT_RESEARCH_BRIEF_TOOL,
+    planner_correction_prompt, planner_system_prompt, research_brief_tool_schema, ResearchBrief,
+    ResearchBriefEnvelope, ResearchPriority, DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
+    SUBMIT_RESEARCH_BRIEF_TOOL,
 };
 use crate::agent::research_coverage::{
     answer_with_missing_limitations, budget_exhausted_completion_prompt,
@@ -120,7 +120,6 @@ pub enum AgentEvent {
 pub struct AgentOptions {
     pub max_steps: u32,
     pub max_tokens: u32,
-    pub agent_mode: AgentMode,
     pub research_plan_max_tokens: u32,
     pub extra_instructions: String,
     pub run_dir: Option<PathBuf>,
@@ -147,7 +146,6 @@ impl Default for AgentOptions {
         Self {
             max_steps: 30,
             max_tokens: 16000,
-            agent_mode: AgentMode::ReactiveV1,
             research_plan_max_tokens: DEFAULT_RESEARCH_PLAN_MAX_TOKENS,
             extra_instructions: String::new(),
             run_dir: None,
@@ -194,8 +192,6 @@ pub async fn run_agent_with_events(
     options: AgentOptions,
     events: broadcast::Sender<AgentEvent>,
 ) -> anyhow::Result<AgentOutcome> {
-    ensure_agent_mode_available(options.agent_mode)?;
-    let agent_mode = options.agent_mode;
     let run_id = new_run_id();
     let run_dir = options
         .run_dir
@@ -220,42 +216,39 @@ pub async fn run_agent_with_events(
         options.session_id.as_deref(),
         options.seed_messages.len(),
     );
-    run_recorder.set_execution_variant(agent_mode.as_str())?;
-    run_trace.set_execution_variant(agent_mode.as_str());
-    let forced_finalization_active =
-        agent_mode.requires_research_coverage() && forced_finalization_enabled();
-    if agent_mode.requires_research_coverage() {
-        let finalization_version = if forced_finalization_active {
-            FORCED_FINALIZATION_VERSION
+    run_recorder.set_execution_variant("baseline")?;
+    run_trace.set_execution_variant("baseline");
+    let forced_finalization_active = forced_finalization_enabled();
+    let finalization_version = if forced_finalization_active {
+        FORCED_FINALIZATION_VERSION
+    } else {
+        "disabled"
+    };
+    run_recorder.record_research_finalization_summary(
+        finalization_version,
+        "not_triggered",
+        if forced_finalization_active {
+            "not_triggered"
         } else {
             "disabled"
-        };
-        run_recorder.record_research_finalization_summary(
-            finalization_version,
-            "not_triggered",
-            if forced_finalization_active {
-                "not_triggered"
-            } else {
-                "disabled"
-            },
-            None,
-            0,
-            0,
-            None,
-            &[],
-        )?;
-        run_trace.set_research_finalization_summary(
-            finalization_version,
-            "not_triggered",
-            if forced_finalization_active {
-                "not_triggered"
-            } else {
-                "disabled"
-            },
-            None,
-            0,
-        );
-    }
+        },
+        None,
+        0,
+        0,
+        None,
+        &[],
+    )?;
+    run_trace.set_research_finalization_summary(
+        finalization_version,
+        "not_triggered",
+        if forced_finalization_active {
+            "not_triggered"
+        } else {
+            "disabled"
+        },
+        None,
+        0,
+    );
 
     let mut ctx = ToolContext::new(&run_id, &run_dir)
         .with_run_state(Arc::clone(&run_state))
@@ -296,149 +289,132 @@ pub async fn run_agent_with_events(
     let mut effective_extra_instructions = options.extra_instructions.clone();
     let mut validated_research_brief: Option<ResearchBrief> = None;
 
-    if agent_mode.requires_research_brief() {
-        let planning =
-            prepare_research_brief(task, &backend, &options, &run_recorder, &mut run_trace).await?;
-        usage += &planning.usage;
+    let planning =
+        prepare_research_brief(task, &backend, &options, &run_recorder, &mut run_trace).await?;
+    usage += &planning.usage;
 
-        let mut status = "failed_fallback";
-        let mut planning_error = planning.error.clone();
-        if let Some(envelope) = planning.envelope {
-            match envelope.persist(&run_dir) {
-                Ok(()) => {
-                    if let Some(question) = envelope.clarification() {
-                        status = "clarification_required";
-                        run_trace.set_research_brief_status(status);
-                        run_recorder.record_research_planning_summary(
-                            status,
-                            planning.attempts,
-                            planning.duration_ms,
-                            &planning.usage,
-                            planning_error.as_deref(),
-                        )?;
-                        if agent_mode.requires_research_coverage() {
-                            let state = json!({
-                                "protocol_version": RESEARCH_COVERAGE_PROTOCOL_VERSION,
-                                "status": "clarification_required",
-                            });
-                            run_recorder.update_research_coverage_summary(
-                                "clarification_required",
-                                0,
-                                0,
-                                0,
-                                0,
-                                None,
-                                &state,
-                            )?;
-                            run_trace.set_research_coverage_summary(
-                                "clarification_required",
-                                0,
-                                0,
-                                0,
-                            );
-                        }
-                        let final_text = question.to_string();
-                        emit(
-                            &events,
-                            AgentEvent::Done {
-                                run_id: run_id.clone(),
-                                steps: 0,
-                                final_text: final_text.clone(),
-                            },
-                        );
-                        let report = report_with_artifacts(&final_text, Some(&run_state));
-                        let _ = std::fs::write(run_dir.join("report.md"), report);
-                        run_recorder.finish("completed", 0, &usage, None)?;
-                        run_trace.finish("completed", 0, &usage, None);
-                        return Ok(AgentOutcome {
-                            run_id,
-                            run_dir,
+    let mut status = "failed_fallback";
+    let mut planning_error = planning.error.clone();
+    if let Some(envelope) = planning.envelope {
+        match envelope.persist(&run_dir) {
+            Ok(()) => {
+                if let Some(question) = envelope.clarification() {
+                    status = "clarification_required";
+                    run_trace.set_research_brief_status(status);
+                    run_recorder.record_research_planning_summary(
+                        status,
+                        planning.attempts,
+                        planning.duration_ms,
+                        &planning.usage,
+                        planning_error.as_deref(),
+                    )?;
+                    let state = json!({
+                        "protocol_version": RESEARCH_COVERAGE_PROTOCOL_VERSION,
+                        "status": "clarification_required",
+                    });
+                    run_recorder.update_research_coverage_summary(
+                        "clarification_required",
+                        0,
+                        0,
+                        0,
+                        0,
+                        None,
+                        &state,
+                    )?;
+                    run_trace.set_research_coverage_summary("clarification_required", 0, 0, 0);
+                    let final_text = question.to_string();
+                    emit(
+                        &events,
+                        AgentEvent::Done {
+                            run_id: run_id.clone(),
                             steps: 0,
-                            final_text,
-                            usage,
-                            error: None,
-                        });
-                    }
-                    if let Some(brief) = envelope.brief() {
-                        let rendered = if agent_mode.requires_research_coverage() {
-                            brief.coverage_execution_prompt()
-                        } else {
-                            brief.execution_prompt()
-                        };
-                        match rendered {
-                            Ok(prompt) => {
-                                if !effective_extra_instructions.trim().is_empty() {
-                                    effective_extra_instructions.push_str("\n\n");
-                                }
-                                effective_extra_instructions.push_str(&prompt);
-                                validated_research_brief = Some(brief.clone());
-                                status = "ready";
-                                planning_error = None;
+                            final_text: final_text.clone(),
+                        },
+                    );
+                    let report = report_with_artifacts(&final_text, Some(&run_state));
+                    let _ = std::fs::write(run_dir.join("report.md"), report);
+                    run_recorder.finish("completed", 0, &usage, None)?;
+                    run_trace.finish("completed", 0, &usage, None);
+                    return Ok(AgentOutcome {
+                        run_id,
+                        run_dir,
+                        steps: 0,
+                        final_text,
+                        usage,
+                        error: None,
+                    });
+                }
+                if let Some(brief) = envelope.brief() {
+                    let rendered = brief.execution_prompt();
+                    match rendered {
+                        Ok(prompt) => {
+                            if !effective_extra_instructions.trim().is_empty() {
+                                effective_extra_instructions.push_str("\n\n");
                             }
-                            Err(error) => {
-                                planning_error = Some(format!(
-                                    "could not render validated research brief: {error:#}"
-                                ));
-                            }
+                            effective_extra_instructions.push_str(&prompt);
+                            validated_research_brief = Some(brief.clone());
+                            status = "ready";
+                            planning_error = None;
+                        }
+                        Err(error) => {
+                            planning_error = Some(format!(
+                                "could not render validated research brief: {error:#}"
+                            ));
                         }
                     }
-                }
-                Err(error) => {
-                    planning_error = Some(format!("could not persist research brief: {error}"));
                 }
             }
-        }
-        run_trace.set_research_brief_status(status);
-        run_recorder.record_research_planning_summary(
-            status,
-            planning.attempts,
-            planning.duration_ms,
-            &planning.usage,
-            planning_error.as_deref(),
-        )?;
-        if status == "failed_fallback" {
-            warn!(
-                error = planning_error
-                    .as_deref()
-                    .unwrap_or("unknown planning failure"),
-                "research brief planning failed; falling back to reactive execution"
-            );
+            Err(error) => {
+                planning_error = Some(format!("could not persist research brief: {error}"));
+            }
         }
     }
+    run_trace.set_research_brief_status(status);
+    run_recorder.record_research_planning_summary(
+        status,
+        planning.attempts,
+        planning.duration_ms,
+        &planning.usage,
+        planning_error.as_deref(),
+    )?;
+    if status == "failed_fallback" {
+        warn!(
+            error = planning_error
+                .as_deref()
+                .unwrap_or("unknown planning failure"),
+            "research brief planning failed; falling back to reactive execution"
+        );
+    }
 
-    let mut coverage_runtime = if agent_mode.requires_research_coverage() {
-        match validated_research_brief {
-            Some(brief) => {
-                let state = initial_coverage_state(&brief);
-                let required_pending = brief
-                    .subquestions
-                    .iter()
-                    .filter(|question| question.priority == ResearchPriority::Required)
-                    .count();
-                run_recorder.initialize_research_coverage(&state, required_pending)?;
-                run_trace.set_research_coverage_summary("pending", 0, 0, required_pending);
-                Some(CoverageRuntime::new(brief, state))
-            }
-            None => {
-                let state = json!({
-                    "protocol_version": RESEARCH_COVERAGE_PROTOCOL_VERSION,
-                    "status": "planner_failed_fallback",
-                });
-                run_recorder.update_research_coverage_summary(
-                    "planner_failed_fallback",
-                    0,
-                    0,
-                    0,
-                    0,
-                    None,
-                    &state,
-                )?;
-                run_trace.set_research_coverage_summary("planner_failed_fallback", 0, 0, 0);
-                None
-            }
+    let mut coverage_runtime = match validated_research_brief {
+        Some(brief) => {
+            let state = initial_coverage_state(&brief);
+            let required_pending = brief
+                .subquestions
+                .iter()
+                .filter(|question| question.priority == ResearchPriority::Required)
+                .count();
+            run_recorder.initialize_research_coverage(&state, required_pending)?;
+            run_trace.set_research_coverage_summary("pending", 0, 0, required_pending);
+            Some(CoverageRuntime::new(brief, state))
         }
-    } else {
-        None
+        None => {
+            let state = json!({
+                "protocol_version": RESEARCH_COVERAGE_PROTOCOL_VERSION,
+                "status": "planner_failed_fallback",
+            });
+            run_recorder.update_research_coverage_summary(
+                "planner_failed_fallback",
+                0,
+                0,
+                0,
+                0,
+                None,
+                &state,
+            )?;
+            run_trace.set_research_coverage_summary("planner_failed_fallback", 0, 0, 0);
+            None
+        }
     };
 
     let mut step = 0u32;
@@ -501,34 +477,24 @@ pub async fn run_agent_with_events(
             Ok(response) => {
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_response(step, &response, duration_ms)?;
-                if agent_mode.requires_research_brief() {
-                    let phase = if coverage_runtime.is_some()
-                        && response
-                            .tool_calls
-                            .iter()
-                            .any(|call| call.name == SUBMIT_RESEARCH_COMPLETION_TOOL)
-                    {
-                        "coverage_check"
-                    } else {
-                        "collecting"
-                    };
-                    run_trace.record_llm_phase(
-                        step,
-                        duration_ms,
-                        &system,
-                        &messages[traced_len..],
-                        &response,
-                        Some(phase),
-                    );
+                let phase = if coverage_runtime.is_some()
+                    && response
+                        .tool_calls
+                        .iter()
+                        .any(|call| call.name == SUBMIT_RESEARCH_COMPLETION_TOOL)
+                {
+                    "coverage_check"
                 } else {
-                    run_trace.record_llm(
-                        step,
-                        duration_ms,
-                        &system,
-                        &messages[traced_len..],
-                        &response,
-                    );
-                }
+                    "collecting"
+                };
+                run_trace.record_llm_phase(
+                    step,
+                    duration_ms,
+                    &system,
+                    &messages[traced_len..],
+                    &response,
+                    Some(phase),
+                );
                 traced_len = messages.len();
                 response
             }
@@ -536,24 +502,14 @@ pub async fn run_agent_with_events(
                 let msg = format!("{e:#}");
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_error(step, &msg, duration_ms)?;
-                if agent_mode.requires_research_brief() {
-                    run_trace.record_llm_error_phase(
-                        step,
-                        duration_ms,
-                        &system,
-                        &messages[traced_len..],
-                        &msg,
-                        Some("collecting"),
-                    );
-                } else {
-                    run_trace.record_llm_error(
-                        step,
-                        duration_ms,
-                        &system,
-                        &messages[traced_len..],
-                        &msg,
-                    );
-                }
+                run_trace.record_llm_error_phase(
+                    step,
+                    duration_ms,
+                    &system,
+                    &messages[traced_len..],
+                    &msg,
+                    Some("collecting"),
+                );
                 warn!(step, error = %msg, "backend error");
                 emit(
                     &events,
@@ -1250,28 +1206,18 @@ pub async fn run_agent_with_events(
             Ok(response) => {
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_response(step + 1, &response, duration_ms)?;
-                if agent_mode.requires_research_brief() {
-                    run_trace.record_llm_phase(
-                        step + 1,
-                        duration_ms,
-                        &forced_system,
-                        &messages[traced_len..],
-                        &response,
-                        Some(if coverage_runtime.is_some() {
-                            "coverage_check"
-                        } else {
-                            "writing"
-                        }),
-                    );
-                } else {
-                    run_trace.record_llm(
-                        step + 1,
-                        duration_ms,
-                        &forced_system,
-                        &messages[traced_len..],
-                        &response,
-                    );
-                }
+                run_trace.record_llm_phase(
+                    step + 1,
+                    duration_ms,
+                    &forced_system,
+                    &messages[traced_len..],
+                    &response,
+                    Some(if coverage_runtime.is_some() {
+                        "coverage_check"
+                    } else {
+                        "writing"
+                    }),
+                );
                 usage += &response.usage;
                 let (visible_texts, _) = split_thinking(&response.text_blocks);
                 if let Some(runtime) = coverage_runtime.as_mut() {
@@ -1469,24 +1415,14 @@ pub async fn run_agent_with_events(
                 let msg = format!("{e:#}");
                 let duration_ms = llm_started.elapsed().as_millis() as u64;
                 run_recorder.record_llm_error(step + 1, &msg, duration_ms)?;
-                if agent_mode.requires_research_brief() {
-                    run_trace.record_llm_error_phase(
-                        step + 1,
-                        duration_ms,
-                        &forced_system,
-                        &messages[traced_len..],
-                        &msg,
-                        Some("writing"),
-                    );
-                } else {
-                    run_trace.record_llm_error(
-                        step + 1,
-                        duration_ms,
-                        &forced_system,
-                        &messages[traced_len..],
-                        &msg,
-                    );
-                }
+                run_trace.record_llm_error_phase(
+                    step + 1,
+                    duration_ms,
+                    &forced_system,
+                    &messages[traced_len..],
+                    &msg,
+                    Some("writing"),
+                );
                 warn!(step = step + 1, error = %msg, "forced summary error");
                 emit(
                     &events,
