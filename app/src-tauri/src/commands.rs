@@ -9,8 +9,8 @@ use serde_json::{json, Map, Value};
 use socai_core::agent::{
     catalog_models_for, configured_default_model_for, configured_default_provider,
     desktop_agent_tools, load_api_key, make_run_dir, mark_agent_run_status,
-    provider_credential_kind, resolve_provider, save_default_model, AgentEvent, Conversation,
-    CredentialKind, ModelCatalogEntry, Provider, TokenUsage,
+    provider_credential_kind, resolve_provider, save_default_model, AgentEvent, AgentMode,
+    Conversation, CredentialKind, ModelCatalogEntry, Provider, TokenUsage,
 };
 use socai_core::runtime::{
     create_llm_provider_for_task, ensure_llm_provider_configured_for,
@@ -578,6 +578,7 @@ fn find_codex_binary() -> Option<PathBuf> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn agent_task_start(
     app: AppHandle,
     runtime: State<'_, SocaiRuntime>,
@@ -586,11 +587,13 @@ pub async fn agent_task_start(
     task: String,
     provider: Option<String>,
     model: Option<String>,
+    agent_mode: Option<AgentMode>,
 ) -> Result<AgentTaskSnapshot, String> {
     let task_text = task.trim().to_string();
     if task_text.is_empty() {
         return Err("task is empty".into());
     }
+    let agent_mode = agent_mode.unwrap_or_default();
     run_task_preflight(provider.as_deref(), model.as_deref()).await?;
 
     // One conversation = one folder under the runs root, named after the
@@ -608,6 +611,7 @@ pub async fn agent_task_start(
             task_text.clone(),
             provider.clone(),
             model.clone(),
+            agent_mode,
             run_dir.display().to_string(),
             session_dir,
         )
@@ -632,6 +636,7 @@ pub async fn agent_task_start(
             task_text,
             provider,
             model,
+            agent_mode,
             run_dir,
             background_media_generation,
             telemetry,
@@ -686,6 +691,7 @@ pub async fn agent_task_reply(
     };
     let provider = existing.provider.clone();
     let model = existing.model.clone();
+    let agent_mode = existing.agent_mode;
     run_task_preflight(provider.as_deref(), model.as_deref()).await?;
     if let Some(previous_run_dir) = existing.run_dir.as_deref() {
         socai_core::media::cancel_background_media_for_run(previous_run_dir);
@@ -741,6 +747,7 @@ pub async fn agent_task_reply(
             message_text,
             provider,
             model,
+            agent_mode,
             run_dir,
             background_media_generation,
             telemetry,
@@ -2245,10 +2252,14 @@ pub async fn agent_task_delete(
     // durable staging before their source run directory disappears.
     let telemetry = telemetry.inner().clone();
     tauri::async_runtime::spawn(async move {
-        if matches!(terminal_status.as_str(), "cancelled" | "interrupted") {
-            if let Some(run_dir) = trace_run_dir.as_deref() {
-                wait_for_trace_staging(run_dir).await;
-                upload_terminal_run_trace(run_dir, &terminal_status, &telemetry).await;
+        if let Some(run_dir) = trace_run_dir.as_deref() {
+            wait_for_observability_staging(run_dir).await;
+            if !upload_terminal_run_trace(run_dir, &terminal_status, &telemetry).await {
+                eprintln!(
+                    "preserving deleted task artifacts at {} because observability staging failed",
+                    run_dir.display()
+                );
+                return;
             }
         }
         let _ = tokio::task::spawn_blocking(move || {
@@ -2281,6 +2292,7 @@ async fn run_agent_task_background(
     task: String,
     provider: Option<String>,
     model: Option<String>,
+    agent_mode: AgentMode,
     run_dir: PathBuf,
     background_media_generation: u64,
     telemetry: DesktopTelemetry,
@@ -2340,45 +2352,45 @@ async fn run_agent_task_background(
         // Held for the whole task — LLM thinking pauses between tool calls
         // included — so the remote idle reaper only fires between tasks.
         let activity = runtime.begin_activity().await;
-        let (page, mut page_guard) =
-            match acquire_session_page(&runtime, &lease, &session_id).await {
-                Ok(admitted) => admitted,
-                Err(PageAdmission::Busy(busy)) => {
-                    drop(activity);
-                    drop(lease);
-                    drop(permit);
-                    if wait_out_browser_busy(&busy, &mut connect_attempts).await {
-                        continue;
-                    }
-                    fail_task_before_run(
-                        &app,
-                        &registry,
-                        &telemetry,
-                        &task_id,
-                        provider.as_deref(),
-                        model.as_deref(),
-                        browser_preflight_error(busy.reason),
-                    )
-                    .await;
-                    return;
+        let (page, mut page_guard) = match acquire_session_page(&runtime, &lease, &session_id).await
+        {
+            Ok(admitted) => admitted,
+            Err(PageAdmission::Busy(busy)) => {
+                drop(activity);
+                drop(lease);
+                drop(permit);
+                if wait_out_browser_busy(&busy, &mut connect_attempts).await {
+                    continue;
                 }
-                Err(PageAdmission::Failed(error)) => {
-                    drop(activity);
-                    drop(lease);
-                    drop(permit);
-                    fail_task_before_run(
-                        &app,
-                        &registry,
-                        &telemetry,
-                        &task_id,
-                        provider.as_deref(),
-                        model.as_deref(),
-                        error,
-                    )
-                    .await;
-                    return;
-                }
-            };
+                fail_task_before_run(
+                    &app,
+                    &registry,
+                    &telemetry,
+                    &task_id,
+                    provider.as_deref(),
+                    model.as_deref(),
+                    browser_preflight_error(busy.reason),
+                )
+                .await;
+                return;
+            }
+            Err(PageAdmission::Failed(error)) => {
+                drop(activity);
+                drop(lease);
+                drop(permit);
+                fail_task_before_run(
+                    &app,
+                    &registry,
+                    &telemetry,
+                    &task_id,
+                    provider.as_deref(),
+                    model.as_deref(),
+                    error,
+                )
+                .await;
+                return;
+            }
+        };
         if !bind_task_page(
             &app,
             &registry,
@@ -2436,6 +2448,7 @@ async fn run_agent_task_background(
             "task_id": task_id.clone(),
             "provider": provider.clone(),
             "model": model.clone(),
+            "execution_variant": agent_mode.as_str(),
             "task_len": task.chars().count(),
             "task_text": socai_core::telemetry::redact_secrets(&task),
         }),
@@ -2503,6 +2516,7 @@ async fn run_agent_task_background(
                             "run_id": outcome.run_id.clone(),
                             "provider": provider.clone(),
                             "model": model.clone(),
+                            "execution_variant": agent_mode.as_str(),
                             "outcome": "completed",
                             "steps": outcome.steps,
                             "points_used": snapshot.points_used,
@@ -2540,7 +2554,7 @@ async fn run_agent_task_background(
                 if let Some(run_dir) = snapshot.run_dir.as_deref() {
                     let _ = mark_agent_run_status(run_dir, "failed", Some(&error));
                     let _ = mark_run_trace_status(run_dir, "failed");
-                    telemetry.upload_run_trace(run_dir);
+                    telemetry.upload_run_trace(run_dir).await;
                 }
                 record_desktop_session(&snapshot, &format!("[task failed: {error}]"), "failed");
                 telemetry.capture(
@@ -2550,6 +2564,7 @@ async fn run_agent_task_background(
                             "task_id": task_id.clone(),
                             "provider": provider.clone(),
                             "model": model.clone(),
+                            "execution_variant": agent_mode.as_str(),
                             "outcome": "failed",
                             "error": short_error(&error),
                             "points_used": snapshot.points_used,
@@ -2611,7 +2626,7 @@ pub(crate) fn record_interrupted_run(snapshot: &AgentTaskSnapshot, message: &str
 }
 
 /// Wait for an aborted agent future's trace drop guard, patch the precise
-/// terminal state, then stage the trace durably before the task can be deleted.
+/// terminal state, then stage trace and evidence durably before deletion.
 /// AbortHandle::abort() only schedules cancellation; without this wait the
 /// telemetry worker can race `trace.json` creation and silently miss the run.
 pub(crate) async fn upload_terminal_run_trace(
@@ -2623,14 +2638,14 @@ pub(crate) async fn upload_terminal_run_trace(
     const READY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
     let run_dir = run_dir.as_ref();
-    let staged_marker = run_dir.join(".trace-staged");
+    let staged_marker = run_dir.join(".observability-staged");
     if staged_marker.is_file() {
         return true;
     }
     for attempt in 0..READY_RETRIES {
         match mark_run_trace_status(run_dir, status) {
             Ok(()) => {
-                if telemetry.upload_run_trace(run_dir) {
+                if telemetry.upload_run_trace(run_dir).await {
                     let _ = std::fs::write(staged_marker, b"");
                     return true;
                 }
@@ -2647,11 +2662,11 @@ pub(crate) async fn upload_terminal_run_trace(
     false
 }
 
-async fn wait_for_trace_staging(run_dir: &std::path::Path) {
+async fn wait_for_observability_staging(run_dir: &std::path::Path) {
     const WAIT_RETRIES: usize = 50;
     const WAIT_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
-    let marker = run_dir.join(".trace-staged");
+    let marker = run_dir.join(".observability-staged");
     for attempt in 0..WAIT_RETRIES {
         if marker.is_file() {
             return;
@@ -2793,7 +2808,7 @@ async fn run_agent_task_on_session_page(
             // and uploads the trace — instead of reporting a completed task.
             anyhow::bail!(error);
         }
-        telemetry.upload_run_trace(&outcome.run_dir);
+        telemetry.upload_run_trace(&outcome.run_dir).await;
 
         let usage = outcome.usage;
         let estimated_cost = usage.cost.as_ref().map(|cost| cost.total);

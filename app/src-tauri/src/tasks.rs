@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use socai_core::agent::{mark_agent_run_status, Conversation};
+use socai_core::agent::{mark_agent_run_status, AgentMode, Conversation};
 use socai_core::runtime::BrowserTargetInfo;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::AbortHandle;
@@ -34,6 +34,8 @@ pub struct AgentTaskSnapshot {
     pub(crate) task: String,
     pub(crate) provider: Option<String>,
     pub(crate) model: Option<String>,
+    #[serde(default)]
+    pub(crate) agent_mode: AgentMode,
     pub(crate) status: String,
     pub(crate) created_at: u64,
     pub(crate) started_at: Option<u64>,
@@ -132,6 +134,7 @@ impl AgentTaskRegistry {
         task: String,
         provider: Option<String>,
         model: Option<String>,
+        agent_mode: AgentMode,
         run_dir: String,
         session_dir: String,
     ) -> AgentTaskSnapshot {
@@ -144,6 +147,7 @@ impl AgentTaskRegistry {
             task,
             provider,
             model,
+            agent_mode,
             status: "queued".into(),
             created_at: now_ms(),
             started_at: None,

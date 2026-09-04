@@ -22,9 +22,9 @@
 use std::path::{Path, PathBuf};
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 use std::time::Instant;
-use std::time::Duration;
 
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 use anyhow::{anyhow, Context, Result};
@@ -379,7 +379,13 @@ mod tests {
         let per = |d: std::time::Duration| d.as_secs_f64() * 1000.0 / b as f64;
         eprintln!("EP=cpu B={b} threads={threads}");
         eprintln!("  serial:     {serial:>8.2?}  ({:.1} ms/img)", per(serial));
-        eprintln!("  batch:      {batched:>8.2?}  ({:.1} ms/img)", per(batched));
-        eprintln!("  concurrent: {concurrent:>8.2?}  ({:.1} ms/img)", per(concurrent));
+        eprintln!(
+            "  batch:      {batched:>8.2?}  ({:.1} ms/img)",
+            per(batched)
+        );
+        eprintln!(
+            "  concurrent: {concurrent:>8.2?}  ({:.1} ms/img)",
+            per(concurrent)
+        );
     }
 }

@@ -296,7 +296,12 @@ fn default_chrome_executables() -> Vec<PathBuf> {
         "microsoft-edge",
         "brave-browser",
     ];
-    let roots = ["/usr/bin", "/usr/local/bin", "/snap/bin", "/opt/google/chrome"];
+    let roots = [
+        "/usr/bin",
+        "/usr/local/bin",
+        "/snap/bin",
+        "/opt/google/chrome",
+    ];
     let mut out = Vec::new();
     for root in roots {
         for name in names {

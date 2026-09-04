@@ -43,6 +43,7 @@ use crate::agent::llm::{
     Block, LLMResponse, Message, MessageContent, MessageRole, TokenUsage, ToolResultContent,
 };
 use crate::agent::r#loop::THINKING_TEXT_PREFIX;
+use crate::agent::run_logging::write_bytes_atomic;
 use crate::agent::signature::md5_hex;
 
 /// Safety net for pathological runs; a default run (30 steps) stays far below.
@@ -100,6 +101,17 @@ pub struct RunTraceBuilder {
     task_text: String,
     provider: String,
     model: String,
+    execution_variant: String,
+    research_brief_status: String,
+    coverage_status: String,
+    coverage_attempts: u32,
+    coverage_recovery_rounds: u32,
+    coverage_required_uncovered: usize,
+    finalization_version: String,
+    finalization_trigger: String,
+    finalization_status: String,
+    final_answer_source: String,
+    finalization_attempts: u32,
     session_id: Option<String>,
     /// Prior chat messages seeding this run — non-zero marks a conversation
     /// follow-up rather than a fresh task.
@@ -147,6 +159,17 @@ impl RunTraceBuilder {
             task_text: truncate_chars(&redact_secrets(task), TASK_TEXT_MAX_CHARS),
             provider: provider.to_string(),
             model: model.to_string(),
+            execution_variant: "baseline".to_string(),
+            research_brief_status: "not_applicable".to_string(),
+            coverage_status: "not_applicable".to_string(),
+            coverage_attempts: 0,
+            coverage_recovery_rounds: 0,
+            coverage_required_uncovered: 0,
+            finalization_version: "not_applicable".to_string(),
+            finalization_trigger: "not_applicable".to_string(),
+            finalization_status: "not_applicable".to_string(),
+            final_answer_source: "none".to_string(),
+            finalization_attempts: 0,
             session_id: session_id.map(ToOwned::to_owned),
             seed_messages,
             started_ns: now_ns(),
@@ -157,6 +180,44 @@ impl RunTraceBuilder {
             last_system_hash: String::new(),
             finalized: false,
         }
+    }
+
+    pub fn set_execution_variant(&mut self, execution_variant: &str) {
+        self.execution_variant = execution_variant.to_string();
+        self.research_brief_status = "planning".to_string();
+        self.coverage_status = "pending".to_string();
+    }
+
+    pub fn set_research_brief_status(&mut self, status: &str) {
+        self.research_brief_status = status.to_string();
+    }
+
+    pub fn set_research_coverage_summary(
+        &mut self,
+        status: &str,
+        attempts: u32,
+        recovery_rounds: u32,
+        required_uncovered: usize,
+    ) {
+        self.coverage_status = status.to_string();
+        self.coverage_attempts = attempts;
+        self.coverage_recovery_rounds = recovery_rounds;
+        self.coverage_required_uncovered = required_uncovered;
+    }
+
+    pub fn set_research_finalization_summary(
+        &mut self,
+        version: &str,
+        trigger: &str,
+        status: &str,
+        answer_source: Option<&str>,
+        attempts: u32,
+    ) {
+        self.finalization_version = version.to_string();
+        self.finalization_trigger = trigger.to_string();
+        self.finalization_status = status.to_string();
+        self.final_answer_source = answer_source.unwrap_or("none").to_string();
+        self.finalization_attempts = attempts;
     }
 
     /// `new_messages` is the transcript delta: conversation messages appended
@@ -170,6 +231,18 @@ impl RunTraceBuilder {
         new_messages: &[Message],
         response: &LLMResponse,
     ) {
+        self.record_llm_phase(step, duration_ms, system, new_messages, response, None);
+    }
+
+    pub fn record_llm_phase(
+        &mut self,
+        step: u32,
+        duration_ms: u64,
+        system: &str,
+        new_messages: &[Message],
+        response: &LLMResponse,
+        phase: Option<&str>,
+    ) {
         self.steps_seen = self.steps_seen.max(step);
         self.usage += &response.usage;
         let mut attrs = vec![
@@ -180,6 +253,9 @@ impl RunTraceBuilder {
             attr_str("socai.stop_reason", stop_reason_str(response)),
             attr_int("socai.tool_calls", response.tool_calls.len() as i64),
         ];
+        if let Some(phase) = phase {
+            attrs.push(attr_str("socai.phase", phase));
+        }
         push_usage_attrs(&mut attrs, &response.usage);
         self.push_chat_attrs(&mut attrs, system, new_messages, Some(response));
         self.push_span(
@@ -199,6 +275,18 @@ impl RunTraceBuilder {
         new_messages: &[Message],
         error: &str,
     ) {
+        self.record_llm_error_phase(step, duration_ms, system, new_messages, error, None);
+    }
+
+    pub fn record_llm_error_phase(
+        &mut self,
+        step: u32,
+        duration_ms: u64,
+        system: &str,
+        new_messages: &[Message],
+        error: &str,
+        phase: Option<&str>,
+    ) {
         self.steps_seen = self.steps_seen.max(step);
         let mut attrs = vec![
             attr_str("gen_ai.operation.name", "chat"),
@@ -206,6 +294,9 @@ impl RunTraceBuilder {
             attr_str("gen_ai.request.model", &self.model),
             attr_int("socai.step", step as i64),
         ];
+        if let Some(phase) = phase {
+            attrs.push(attr_str("socai.phase", phase));
+        }
         self.push_chat_attrs(&mut attrs, system, new_messages, None);
         self.push_span(
             format!("chat {}", self.model),
@@ -325,6 +416,26 @@ impl RunTraceBuilder {
             attr_str("socai.task_text", &self.task_text),
             attr_str("socai.status", status),
             attr_int("socai.steps", steps as i64),
+            attr_str("socai.execution_variant", &self.execution_variant),
+            attr_str("socai.research_brief_status", &self.research_brief_status),
+            attr_str("socai.coverage_status", &self.coverage_status),
+            attr_int("socai.coverage_attempts", self.coverage_attempts as i64),
+            attr_int(
+                "socai.coverage_recovery_rounds",
+                self.coverage_recovery_rounds as i64,
+            ),
+            attr_int(
+                "socai.coverage_required_uncovered",
+                self.coverage_required_uncovered as i64,
+            ),
+            attr_str("socai.finalization_version", &self.finalization_version),
+            attr_str("socai.finalization_trigger", &self.finalization_trigger),
+            attr_str("socai.finalization_status", &self.finalization_status),
+            attr_str("socai.final_answer_source", &self.final_answer_source),
+            attr_int(
+                "socai.finalization_attempts",
+                self.finalization_attempts as i64,
+            ),
         ];
         push_usage_attrs(&mut attrs, usage);
         if let Some(session_id) = &self.session_id {
@@ -424,7 +535,7 @@ impl RunTraceBuilder {
 
     fn write_trace_file(&self, payload: &Value) {
         if let Ok(bytes) = serde_json::to_vec(payload) {
-            let _ = std::fs::write(self.run_dir.join("trace.json"), bytes);
+            let _ = write_bytes_atomic(&self.run_dir.join("trace.json"), &bytes);
         }
     }
 }
@@ -471,10 +582,8 @@ pub fn mark_run_trace_status(run_dir: impl AsRef<Path>, status: &str) -> std::io
             attribute["value"] = json!({ "stringValue": status });
         }
     }
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&payload).map_err(std::io::Error::other)?,
-    )
+    let bytes = serde_json::to_vec(&payload).map_err(std::io::Error::other)?;
+    write_bytes_atomic(&path, &bytes)
 }
 
 /// Flatten a summarizer map (`summarize_tool_args` / `summarize_tool_result`)
@@ -832,7 +941,8 @@ const SECRET_JSON_FIELDS: [&str; 11] = [
 /// - `Bearer <token>` header values
 pub fn redact_secrets(text: &str) -> String {
     let text = redact_json_secret_fields(text);
-    redact_token_runs(&text)
+    let text = redact_token_runs(&text);
+    redact_secret_query_values(&text)
 }
 
 /// Recursively scrub every string inside a JSON value — used for structured
@@ -963,6 +1073,60 @@ fn redact_token_runs(text: &str) -> String {
         i += step;
     }
     out
+}
+
+/// Scrub credentials embedded in URLs. These commonly appear in model-visible
+/// browser tool results as query parameters rather than structured JSON keys.
+fn redact_secret_query_values(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let match_at = SECRET_JSON_FIELDS
+            .iter()
+            .filter_map(|field| {
+                let parameter = format!("{field}=");
+                lower[cursor..]
+                    .match_indices(&parameter)
+                    .map(|(offset, _)| cursor + offset)
+                    .find(|&start| query_parameter_boundary(text.as_bytes(), start))
+                    .map(|start| (start, parameter))
+            })
+            .min_by_key(|(index, _)| *index);
+        let Some((start, parameter)) = match_at else {
+            out.push_str(&text[cursor..]);
+            break;
+        };
+        out.push_str(&text[cursor..start + parameter.len()]);
+        let value_start = start + parameter.len();
+        let value_len = text.as_bytes()[value_start..]
+            .iter()
+            .take_while(|&&byte| secret_query_value_byte(byte))
+            .count();
+        if value_len == 0 {
+            cursor = value_start;
+            continue;
+        }
+        out.push_str("[redacted]");
+        cursor = value_start + value_len;
+    }
+    out
+}
+
+fn query_parameter_boundary(bytes: &[u8], start: usize) -> bool {
+    start == 0
+        || matches!(
+            bytes[start - 1],
+            b'?' | b'&' | b';' | b',' | b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'' | b'\\'
+        )
+}
+
+fn secret_query_value_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'.' | b'_' | b'~' | b'+' | b'/' | b'-' | b'=' | b'%' | b':' | b'@'
+        )
 }
 
 fn token_run_len(bytes: &[u8], accept: impl Fn(u8) -> bool) -> usize {
@@ -1103,4 +1267,30 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     }
     let truncated: String = text.chars().take(max_chars).collect();
     format!("{truncated}…")
+}
+
+#[cfg(test)]
+mod evidence_redaction_tests {
+    use super::redact_secrets;
+
+    #[test]
+    fn query_secret_redaction_preserves_adjacent_fields() {
+        assert_eq!(
+            redact_secrets("access_token=abc,expires_in=3600,scope=read"),
+            "access_token=[redacted],expires_in=3600,scope=read"
+        );
+        assert_eq!(
+            redact_secrets(r#"xsec_token=abc\",\"next\":1"#),
+            r#"xsec_token=[redacted]\",\"next\":1"#
+        );
+    }
+
+    #[test]
+    fn query_secret_redaction_uses_the_structured_secret_field_set() {
+        let input = "client_secret=one&refresh_token=two&password=three&safe=four";
+        assert_eq!(
+            redact_secrets(input),
+            "client_secret=[redacted]&refresh_token=[redacted]&password=[redacted]&safe=four"
+        );
+    }
 }

@@ -53,12 +53,14 @@ export interface ModelInfo {
 }
 
 export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type AgentMode = "baseline";
 
 export interface AgentTaskSnapshot {
   task_id: string;
   task: string;
   provider: string | null;
   model: string | null;
+  agent_mode: AgentMode;
   status: AgentTaskStatus;
   created_at: number;
   started_at: number | null;

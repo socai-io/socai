@@ -320,7 +320,10 @@ async fn slash_menu() -> Result<Option<String>> {
 fn handle_clear_command(state: &mut AppState) -> Result<()> {
     state.conversation =
         Conversation::new(state.model.clone()).context("failed to start a new session")?;
-    println!("[socai] chat cleared — new session {}", state.conversation.id);
+    println!(
+        "[socai] chat cleared — new session {}",
+        state.conversation.id
+    );
     Ok(())
 }
 
@@ -748,7 +751,10 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
     // whole provider message in the conversation seed. Generic wording: the
     // error may also be max-token truncation or a failed forced summary.
     let (recorded, status) = if outcome.error.is_some() {
-        ("[run failed before producing a final answer]".to_string(), "failed")
+        (
+            "[run failed before producing a final answer]".to_string(),
+            "failed",
+        )
     } else {
         (outcome.final_text.clone(), "completed")
     };
