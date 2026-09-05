@@ -20,6 +20,7 @@ dirs = "5"
 libc.workspace = true
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
 # Image compositing/resizing for batching note images into 2x2 vision grids.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # Pure-Rust mp4 demux for transcription: the AAC track is repacked as ADTS and

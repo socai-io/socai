@@ -18,6 +18,13 @@ reasoning. Each macro tool should contain all inputs needed to navigate and
 collect evidence internally, then return structured results and artifact
 references.
 
+The exception is an explicit `recovery.action:"browser_script"` result. It
+means the macro's browser contract no longer matches the live page. Follow the
+system-level local browser self-repair protocol, activate a verified local
+override for that exact macro, retry it once, and continue the original task.
+Do not use browser scripts for login, captcha, security, rate-limit, permission,
+or confirmed empty-result conditions.
+
 The default interactive XHS tools are intentionally high level:
 
 - `search` — the topic/keyword search macro, and the single XHS search tool.

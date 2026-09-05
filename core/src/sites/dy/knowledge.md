@@ -20,3 +20,8 @@
   cards. The extractor filters obvious live cards and keeps cards with video
   signals; fields absent from the search card, such as comments/shares, are
   returned as empty strings.
+- When a tool explicitly returns `recovery.action:"browser_script"`, follow the
+  system-level local browser self-repair protocol, save a verified override for
+  that exact tool, retry it once, and continue the task. Do not use browser
+  scripts to bypass login, captcha, security verification, rate limits,
+  permissions, or a confirmed valid empty result.

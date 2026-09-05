@@ -9,6 +9,18 @@ use serde_json::{json, Map, Value};
 
 use crate::cdp::PageSession;
 
+pub(crate) async fn browser_override_blocker(page: &PageSession) -> Option<String> {
+    let mut diagnostic = json!({ "ok": false });
+    attach(page, &mut diagnostic).await;
+    match diagnostic.get("reason").and_then(Value::as_str) {
+        Some("rate_limited" | "security_verification") => diagnostic
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        _ => None,
+    }
+}
+
 /// Read the center of the current viewport so XHS's header and side navigation
 /// do not drown out the actual error page or missing-control state.
 const OCR_VIEWPORT_PERCENT: u32 = 70;

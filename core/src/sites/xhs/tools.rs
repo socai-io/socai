@@ -32,6 +32,7 @@ use crate::sites::runner::{
     get_bool, get_f64, get_i64, get_str, json_result, run_tool_command, trimmed_required, PageHook,
     ToolCommand,
 };
+use crate::sites::with_browser_script;
 use crate::sites::xhs::entities::{parse_posted_at_ms, parse_stat_count};
 use crate::sites::xhs::media_manifest::{
     ensure_entity_note_id, fill_entity_from_card, search_media_manifest, write_media_manifest_file,
@@ -178,7 +179,8 @@ pub async fn xhs_agent_tools(
     llm_provider: Arc<dyn LlmProvider>,
 ) -> anyhow::Result<Vec<Arc<dyn Tool>>> {
     XhsPageRuntime::new(&page).ensure_xhs(false).await.ok();
-    Ok(xhs_tools_with_llm_provider(page, Some(llm_provider)))
+    let tools = xhs_tools_with_llm_provider(page.clone(), Some(llm_provider));
+    with_browser_script("xhs", page, tools)
 }
 
 pub async fn xhs_default_agent_tools(
@@ -188,7 +190,8 @@ pub async fn xhs_default_agent_tools(
     // Macro tools are self-contained and perform their own navigation/typed
     // failure handling, so the default agent factory should not require the
     // current tab to already be on XHS.
-    Ok(xhs_macro_tools_with_llm_provider(page, Some(llm_provider)))
+    let tools = xhs_macro_tools_with_llm_provider(page.clone(), Some(llm_provider));
+    with_browser_script("xhs", page, tools)
 }
 
 pub fn xhs_agent_instructions(extra: &str) -> String {

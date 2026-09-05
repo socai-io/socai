@@ -31,6 +31,7 @@ pub struct PageSession {
     /// could report a different browser's mode.
     remote_browser: bool,
     recorder: StdMutex<Option<Arc<SnapshotRecorder>>>,
+    close_on_drop: bool,
 }
 
 const PAGE_INFO_JS: &str = r#"
@@ -54,6 +55,7 @@ impl PageSession {
         session_id: String,
         owner: Cdp,
         remote_browser: bool,
+        close_on_drop: bool,
     ) -> Self {
         Self {
             target_id,
@@ -62,6 +64,7 @@ impl PageSession {
             session_id: Some(session_id),
             remote_browser,
             recorder: StdMutex::new(None),
+            close_on_drop,
         }
     }
 
@@ -171,20 +174,120 @@ impl PageSession {
         self.evaluate_json_raw(expression).await
     }
 
-    /// Uninstrumented `evaluate_json`. Used internally by the snapshot recorder
-    /// so its own DOM reads don't recurse back into capture.
-    pub(crate) async fn evaluate_json_raw(&self, expression: &str) -> anyhow::Result<Value> {
-        let wrapped = wrap_expression(expression);
-        let resp = self
+    /// Evaluate JavaScript with a caller-selected CDP response timeout. The
+    /// default CDP command timeout remains appropriate for page probes; a
+    /// browser-script control program can legitimately span several awaited
+    /// navigation and extraction operations.
+    pub async fn evaluate_json_with_timeout(
+        &self,
+        expression: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<Value> {
+        self.snapshot_before().await;
+        self.evaluate_json_raw_with_timeout(expression, Some(timeout))
+            .await
+    }
+
+    /// Evaluate in a fresh isolated world for the main frame. DOM nodes remain
+    /// visible, but page scripts cannot replace the JavaScript intrinsics used
+    /// by the browser-script result envelope and size checks.
+    pub async fn evaluate_json_in_isolated_world_with_timeout(
+        &self,
+        expression: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<Value> {
+        self.snapshot_before().await;
+        let frame_tree = self.execute("Page.getFrameTree", json!({})).await?;
+        let frame_id = frame_tree
+            .pointer("/frameTree/frame/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("Page.getFrameTree missing main frame id"))?;
+        let world = self
             .execute(
-                "Runtime.evaluate",
+                "Page.createIsolatedWorld",
                 json!({
-                    "expression": wrapped,
-                    "awaitPromise": true,
-                    "returnByValue": true,
+                    "frameId": frame_id,
+                    "worldName": "socai-browser-script",
+                    "grantUniveralAccess": false,
                 }),
             )
             .await?;
+        let context_id = world
+            .get("executionContextId")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| anyhow!("Page.createIsolatedWorld missing executionContextId"))?;
+        self.evaluate_json_raw_with_timeout_in_context(expression, Some(timeout), Some(context_id))
+            .await
+    }
+
+    /// Stop JavaScript currently running in this target. Used by the local
+    /// browser-script escape hatch when its own shorter timeout expires, so a
+    /// runaway loop cannot leave the controlled tab permanently frozen.
+    pub async fn terminate_javascript(&self) -> anyhow::Result<()> {
+        self.execute("Runtime.terminateExecution", json!({}))
+            .await?;
+        Ok(())
+    }
+
+    /// Create a sibling tab on the same browser connection. Browser-script
+    /// programs use a short-lived blank sibling as their stable JavaScript
+    /// control context, so the program survives navigation in the site tab.
+    pub async fn create_sibling(&self, start_url: &str) -> anyhow::Result<PageSession> {
+        super::pages::PageSessionManager::new(self.owner.clone())
+            .create_page(start_url)
+            .await
+    }
+
+    /// Create a sibling target without focusing it.
+    pub async fn create_background_sibling(&self, start_url: &str) -> anyhow::Result<PageSession> {
+        super::pages::PageSessionManager::new(self.owner.clone())
+            .create_background_page(start_url)
+            .await
+    }
+
+    /// Uninstrumented `evaluate_json`. Used internally by the snapshot recorder
+    /// so its own DOM reads don't recurse back into capture.
+    pub(crate) async fn evaluate_json_raw(&self, expression: &str) -> anyhow::Result<Value> {
+        self.evaluate_json_raw_with_timeout(expression, None).await
+    }
+
+    async fn evaluate_json_raw_with_timeout(
+        &self,
+        expression: &str,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Value> {
+        self.evaluate_json_raw_with_timeout_in_context(expression, timeout, None)
+            .await
+    }
+
+    async fn evaluate_json_raw_with_timeout_in_context(
+        &self,
+        expression: &str,
+        timeout: Option<Duration>,
+        context_id: Option<i64>,
+    ) -> anyhow::Result<Value> {
+        let wrapped = wrap_expression(expression);
+        let mut params = json!({
+            "expression": wrapped,
+            "awaitPromise": true,
+            "returnByValue": true,
+        });
+        if let Some(context_id) = context_id {
+            params["contextId"] = json!(context_id);
+        }
+        let resp = match timeout {
+            Some(timeout) => {
+                self.client
+                    .execute_for_session_with_timeout(
+                        self.session_id.as_deref(),
+                        "Runtime.evaluate",
+                        params,
+                        timeout,
+                    )
+                    .await?
+            }
+            None => self.execute("Runtime.evaluate", params).await?,
+        };
         if let Some(exception) = resp.get("exceptionDetails") {
             anyhow::bail!("javascript exception: {}", summarize_exception(exception));
         }
@@ -372,7 +475,7 @@ impl PageSession {
     }
 
     /// Close the underlying tab. Consumes the session.
-    pub async fn close(self) -> anyhow::Result<()> {
+    pub async fn close(mut self) -> anyhow::Result<()> {
         let target_id = self.target_id.clone();
         // Use the browser websocket that created/attached this PageSession, not
         // whatever browser client the runtime currently holds. The runtime may
@@ -383,8 +486,41 @@ impl PageSession {
             .client
             .execute("Target.closeTarget", json!({ "targetId": target_id }))
             .await;
+        result?;
         self.owner.unregister_owned_target(&target_id).await;
-        result.map(|_| ())
+        self.close_on_drop = false;
+        Ok(())
+    }
+}
+
+impl Drop for PageSession {
+    fn drop(&mut self) {
+        if !self.close_on_drop || self.target_id.is_empty() {
+            return;
+        }
+        let target_id = self.target_id.clone();
+        let client = self.client.clone();
+        let owner = self.owner.clone();
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // The owner still tracks this target; an explicit disconnect can
+            // sweep it even when no async runtime is available during drop.
+            return;
+        };
+        handle.spawn(async move {
+            match client
+                .execute("Target.closeTarget", json!({ "targetId": &target_id }))
+                .await
+            {
+                Ok(_) => owner.unregister_owned_target(&target_id).await,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        target_id,
+                        "failed to close dropped page session"
+                    );
+                }
+            }
+        });
     }
 }
 
