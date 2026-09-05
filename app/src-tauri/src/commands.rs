@@ -2245,10 +2245,14 @@ pub async fn agent_task_delete(
     // durable staging before their source run directory disappears.
     let telemetry = telemetry.inner().clone();
     tauri::async_runtime::spawn(async move {
-        if matches!(terminal_status.as_str(), "cancelled" | "interrupted") {
-            if let Some(run_dir) = trace_run_dir.as_deref() {
-                wait_for_trace_staging(run_dir).await;
-                upload_terminal_run_trace(run_dir, &terminal_status, &telemetry).await;
+        if let Some(run_dir) = trace_run_dir.as_deref() {
+            wait_for_observability_staging(run_dir).await;
+            if !upload_terminal_run_trace(run_dir, &terminal_status, &telemetry).await {
+                eprintln!(
+                    "preserving deleted task artifacts at {} because observability staging failed",
+                    run_dir.display()
+                );
+                return;
             }
         }
         let _ = tokio::task::spawn_blocking(move || {
@@ -2540,7 +2544,7 @@ async fn run_agent_task_background(
                 if let Some(run_dir) = snapshot.run_dir.as_deref() {
                     let _ = mark_agent_run_status(run_dir, "failed", Some(&error));
                     let _ = mark_run_trace_status(run_dir, "failed");
-                    telemetry.upload_run_trace(run_dir);
+                    telemetry.upload_run_trace(run_dir).await;
                 }
                 record_desktop_session(&snapshot, &format!("[task failed: {error}]"), "failed");
                 telemetry.capture(
@@ -2611,7 +2615,7 @@ pub(crate) fn record_interrupted_run(snapshot: &AgentTaskSnapshot, message: &str
 }
 
 /// Wait for an aborted agent future's trace drop guard, patch the precise
-/// terminal state, then stage the trace durably before the task can be deleted.
+/// terminal state, then stage trace and evidence durably before deletion.
 /// AbortHandle::abort() only schedules cancellation; without this wait the
 /// telemetry worker can race `trace.json` creation and silently miss the run.
 pub(crate) async fn upload_terminal_run_trace(
@@ -2623,14 +2627,14 @@ pub(crate) async fn upload_terminal_run_trace(
     const READY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
     let run_dir = run_dir.as_ref();
-    let staged_marker = run_dir.join(".trace-staged");
+    let staged_marker = run_dir.join(".observability-staged");
     if staged_marker.is_file() {
         return true;
     }
     for attempt in 0..READY_RETRIES {
         match mark_run_trace_status(run_dir, status) {
             Ok(()) => {
-                if telemetry.upload_run_trace(run_dir) {
+                if telemetry.upload_run_trace(run_dir).await {
                     let _ = std::fs::write(staged_marker, b"");
                     return true;
                 }
@@ -2647,11 +2651,11 @@ pub(crate) async fn upload_terminal_run_trace(
     false
 }
 
-async fn wait_for_trace_staging(run_dir: &std::path::Path) {
+async fn wait_for_observability_staging(run_dir: &std::path::Path) {
     const WAIT_RETRIES: usize = 50;
     const WAIT_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
-    let marker = run_dir.join(".trace-staged");
+    let marker = run_dir.join(".observability-staged");
     for attempt in 0..WAIT_RETRIES {
         if marker.is_file() {
             return;
@@ -2793,7 +2797,7 @@ async fn run_agent_task_on_session_page(
             // and uploads the trace — instead of reporting a completed task.
             anyhow::bail!(error);
         }
-        telemetry.upload_run_trace(&outcome.run_dir);
+        telemetry.upload_run_trace(&outcome.run_dir).await;
 
         let usage = outcome.usage;
         let estimated_cost = usage.cost.as_ref().map(|cost| cost.total);
