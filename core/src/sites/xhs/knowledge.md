@@ -6,7 +6,9 @@ counts, comments, media, and author/profile context.
 
 ## Runtime Assumption
 
-socai prepares the browser/session/login state before the app/TUI agent run.
+The desktop starts from a blank conversation tab. It opens Xiaohongshu only
+after the user request selects a Xiaohongshu tool; login recovery stays inside
+the selected site workflow rather than running as a task precheck.
 You may assume an authenticated XHS session is available, but you must not
 assume any current page, modal, scroll position, selected filter state, or
 clicked card.
@@ -56,10 +58,10 @@ persistent sidebar, so a dismissed QR modal is never mistaken for a session).
 
 **On `reason:"login_required"`, do NOT retry the tool.** Retrying just hits the
 same wall. Instead: tell the user to scan the QR / sign in to Xiaohongshu in the
-browser, and call `wait_for_login` (which opens the login page and blocks until
-they're in). When it returns `logged_in:true`, re-run the original tool once and
-continue. If it returns `logged_in:false`, remind the user and call
-`wait_for_login` again.
+browser, and call `wait_for_login` once. It opens the login page and polls the
+same tab for up to ten minutes. When it returns `logged_in:true`, re-run the
+original tool once and continue. When it returns `timed_out:true`, fail the task
+instead of starting another wait.
 
 **Exception — `remote_browser:true` on the result:** the session runs in socai's
 remote hosted browser and its login is operated by socai, not the user. Tell the

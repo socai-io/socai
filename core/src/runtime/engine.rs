@@ -540,9 +540,9 @@ impl SocaiRuntime {
             .await
     }
 
-    /// Return one reusable site page owned by a conversation session. Different
+    /// Return one reusable page owned by a conversation session. Different
     /// sessions always use different Chrome targets; later turns in the same
-    /// conversation keep using that session's target while it remains open.
+    /// conversation keep using that target even when the selected site changes.
     ///
     /// Takes the run's [`BrowserLease`] because acquiring a page can require
     /// re-connecting the shared browser, which is only safe while no other run
@@ -552,7 +552,7 @@ impl SocaiRuntime {
         &self,
         _lease: &BrowserLease,
         session_id: &str,
-        site_id: &str,
+        _site_id: &str,
         start_url: &str,
         options: ChromeConnectOptions,
     ) -> Result<Arc<PageSession>> {
@@ -560,7 +560,7 @@ impl SocaiRuntime {
         if session_id.is_empty() {
             anyhow::bail!("session_id is empty");
         }
-        let page_key = format!("session:{session_id}:{site_id}");
+        let page_key = format!("session:{session_id}");
         self.ensure_site_page_inner(&page_key, start_url, Some(options))
             .await
     }

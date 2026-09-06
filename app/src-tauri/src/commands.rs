@@ -18,7 +18,7 @@ use socai_core::runtime::{
     BrowserLease, BrowserStatus, ChromeConnectOptions, ChromeProfile, RuntimePageSession,
     SocaiRuntime,
 };
-use socai_core::sites::xhs::{XhsHistoryStore, XhsPageRuntime};
+use socai_core::sites::xhs::XhsHistoryStore;
 use socai_core::sites::{find_site, SiteSpec};
 use socai_core::telemetry::query_text_enabled;
 use socai_core::telemetry::tool_call::{summarize_tool_args, summarize_tool_result};
@@ -33,7 +33,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 const TAURI_AGENT_PREAMBLE: &str =
     "You are running inside the socai desktop app as a conversational, multi-turn agent. \
-     Besides the Xiaohongshu site tools you have unrestricted local environment tools: \
+     Besides the selected content-platform site tools you have unrestricted local environment tools: \
      `read_file` (read text, or view image/screenshot files) and `shell` (PowerShell on \
      Windows, `sh` on macOS/Linux; use absolute paths to work outside the current run \
      directory). Only access files relevant to the user's request. Maintain continuity \
@@ -60,13 +60,46 @@ const TAURI_ARTIFACT_RULES: &str = "\n\n## Deliverable files\n\
     alone does not display a download card. Only tell the user the file is \
     downloadable after `publish_artifact` succeeds.";
 
-/// Site the desktop agent runner drives. Becomes a runtime choice once the
-/// app grows a site switcher.
-const APP_SITE_ID: &str = "xhs";
+const DEFAULT_APP_SITE_ID: &str = "xhs";
 
-fn app_site() -> Result<&'static SiteSpec> {
-    find_site(APP_SITE_ID)
-        .ok_or_else(|| anyhow::anyhow!("app default site {APP_SITE_ID} is not registered"))
+fn app_site_id_for_intent(message: &str, fallback: Option<&str>) -> &'static str {
+    const DOUYIN_MARKERS: &[&str] = &["抖音", "douyin.com", "v.douyin.com", "douyin"];
+    const XHS_MARKERS: &[&str] = &["小红书", "xiaohongshu.com", "xhslink.com", "rednote", "xhs"];
+
+    let message = message.to_lowercase();
+    let first_match = |markers: &[&str]| {
+        markers
+            .iter()
+            .filter_map(|marker| message.find(marker))
+            .min()
+    };
+    match (first_match(DOUYIN_MARKERS), first_match(XHS_MARKERS)) {
+        (Some(douyin), Some(xhs)) if douyin < xhs => "dy",
+        (Some(_), Some(_)) => "xhs",
+        (Some(_), None) => "dy",
+        (None, Some(_)) => "xhs",
+        (None, None) if fallback == Some("dy") => "dy",
+        (None, None) => DEFAULT_APP_SITE_ID,
+    }
+}
+
+fn app_site_for_intent(message: &str, fallback: Option<&str>) -> Result<&'static SiteSpec> {
+    let site_id = app_site_id_for_intent(message, fallback);
+    find_site(site_id).ok_or_else(|| anyhow::anyhow!("desktop site {site_id} is not registered"))
+}
+
+/// Conversation tabs start blank. The selected site tool owns navigation once
+/// the agent has interpreted the user's request.
+fn app_site_start_url() -> &'static str {
+    ""
+}
+
+fn tauri_citation_rules(site_id: &str) -> &'static str {
+    if site_id == "xhs" {
+        TAURI_CITATION_RULES
+    } else {
+        ""
+    }
 }
 
 // ── CDP connect tests (existing) ───────────────────────────────────────────
@@ -595,7 +628,9 @@ pub async fn agent_task_start(
 
     // One conversation = one folder under the runs root, named after the
     // first task; each turn's run dir nests inside it (turn-01_…, turn-02_…).
-    let site_id = app_site().map(|site| site.id).unwrap_or("agent");
+    let site_id = app_site_for_intent(&task_text, None)
+        .map_err(|error| task_preflight_error("preflight_site", format!("{error:#}")))?
+        .id;
     let conversation_dir = make_run_dir(&format!("{site_id} {task_text}"));
     let conversation = Conversation::create_at(&conversation_dir, model.clone())
         .map_err(|err| format!("failed to create desktop conversation session for task: {err}"))?;
@@ -608,6 +643,7 @@ pub async fn agent_task_start(
             task_text.clone(),
             provider.clone(),
             model.clone(),
+            site_id.to_string(),
             run_dir.display().to_string(),
             session_dir,
         )
@@ -629,6 +665,7 @@ pub async fn agent_task_start(
             registry_for_task,
             runtime,
             task_id_for_spawn,
+            site_id.to_string(),
             task_text,
             provider,
             model,
@@ -686,6 +723,11 @@ pub async fn agent_task_reply(
     };
     let provider = existing.provider.clone();
     let model = existing.model.clone();
+    let inherited_site_id = existing
+        .site_id
+        .as_deref()
+        .unwrap_or_else(|| app_site_id_for_intent(&existing.task, None));
+    let site_id = app_site_id_for_intent(&message_text, Some(inherited_site_id)).to_string();
     run_task_preflight(provider.as_deref(), model.as_deref()).await?;
     if let Some(previous_run_dir) = existing.run_dir.as_deref() {
         socai_core::media::cancel_background_media_for_run(previous_run_dir);
@@ -718,6 +760,7 @@ pub async fn agent_task_reply(
             snapshot.cost_currency = None;
             snapshot.points_used = None;
             snapshot.current_message = Some(message_text.clone());
+            snapshot.site_id = Some(site_id.clone());
         })
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
@@ -738,6 +781,7 @@ pub async fn agent_task_reply(
             registry_for_task,
             runtime,
             task_id_for_spawn,
+            site_id,
             message_text,
             provider,
             model,
@@ -780,25 +824,6 @@ async fn run_task_preflight(provider: Option<&str>, model: Option<&str>) -> Resu
         validate_preflight_balance(wallet.balance_points)?;
     }
 
-    Ok(())
-}
-
-async fn run_session_login_preflight(page: &RuntimePageSession) -> Result<(), String> {
-    let login_error_code = if page.is_remote_browser() {
-        "preflight_xhs_session"
-    } else {
-        "preflight_xhs_login"
-    };
-    let login = XhsPageRuntime::new(page)
-        .login_gate(true)
-        .await
-        .map_err(|error| task_preflight_error(login_error_code, format!("{error:#}")))?;
-    if login == socai_core::sites::xhs::page::LoginGate::Required {
-        return Err(task_preflight_error(
-            login_error_code,
-            "Xiaohongshu login is required in this conversation's browser session",
-        ));
-    }
     Ok(())
 }
 
@@ -872,10 +897,8 @@ async fn acquire_session_page(
     runtime: &SocaiRuntime,
     lease: &BrowserLease,
     session_id: &str,
+    site: &'static SiteSpec,
 ) -> Result<(Arc<RuntimePageSession>, UnboundPageGuard), PageAdmission> {
-    let site = app_site().map_err(|error| {
-        PageAdmission::Failed(task_preflight_error("preflight_site", format!("{error:#}")))
-    })?;
     let options = ChromeConnectOptions::from_config().map_err(|error| {
         PageAdmission::Failed(task_preflight_error(
             "preflight_browser_config",
@@ -890,7 +913,7 @@ async fn acquire_session_page(
             lease,
             session_id,
             site.id,
-            site.home_url,
+            app_site_start_url(),
             options,
         )
         .await
@@ -2278,6 +2301,7 @@ async fn run_agent_task_background(
     registry: AgentTaskRegistry,
     runtime: SocaiRuntime,
     task_id: String,
+    site_id: String,
     task: String,
     provider: Option<String>,
     model: Option<String>,
@@ -2285,6 +2309,22 @@ async fn run_agent_task_background(
     background_media_generation: u64,
     telemetry: DesktopTelemetry,
 ) {
+    let site = match find_site(&site_id) {
+        Some(site) => site,
+        None => {
+            fail_task_before_run(
+                &app,
+                &registry,
+                &telemetry,
+                &task_id,
+                provider.as_deref(),
+                model.as_deref(),
+                task_preflight_error("preflight_site", format!("unknown site: {site_id}")),
+            )
+            .await;
+            return;
+        }
+    };
     let Some(session_id) = task_session_id(&registry, &task_id).await else {
         fail_task_before_run(
             &app,
@@ -2341,7 +2381,7 @@ async fn run_agent_task_background(
         // included — so the remote idle reaper only fires between tasks.
         let activity = runtime.begin_activity().await;
         let (page, mut page_guard) =
-            match acquire_session_page(&runtime, &lease, &session_id).await {
+            match acquire_session_page(&runtime, &lease, &session_id, site).await {
                 Ok(admitted) => admitted,
                 Err(PageAdmission::Busy(busy)) => {
                     drop(activity);
@@ -2391,24 +2431,6 @@ async fn run_agent_task_background(
             return;
         }
         page_guard.disarm();
-        // Every conversation owns its own tab. Validate login on that exact
-        // page before the task is marked running or sends its first LLM request.
-        if let Err(error) = run_session_login_preflight(&page).await {
-            drop(activity);
-            drop(lease);
-            drop(permit);
-            fail_task_before_run(
-                &app,
-                &registry,
-                &telemetry,
-                &task_id,
-                provider.as_deref(),
-                model.as_deref(),
-                error,
-            )
-            .await;
-            return;
-        }
         break (permit, lease, activity, page);
     };
 
@@ -2445,6 +2467,7 @@ async fn run_agent_task_background(
         app.clone(),
         task_id.clone(),
         page,
+        site,
         &task,
         provider.as_deref(),
         model.as_deref(),
@@ -2684,6 +2707,7 @@ async fn run_agent_task_on_session_page(
     app: AppHandle,
     task_id: String,
     page: Arc<RuntimePageSession>,
+    site: &'static SiteSpec,
     task: &str,
     provider: Option<&str>,
     model: Option<&str>,
@@ -2721,32 +2745,8 @@ async fn run_agent_task_on_session_page(
 
     ensure_llm_provider_configured_for(provider, model)?;
     let llm_provider = create_llm_provider_for_task(provider, model, &task_id)?;
-    let site = app_site()?;
     let session_id =
         session_id.ok_or_else(|| anyhow::anyhow!("task has no conversation session"))?;
-    // The tab was opened and bound to this task during admission. The browser
-    // lease and activity guard that keep it alive are held by the caller.
-    // Login is checked in the conversation's own tab rather than in a shared
-    // site tab, so a run never opens a second target just to look at the gate.
-    // Both outcomes carry a code the UI translates — a hosted browser's shared
-    // login is socai-operated, so its message differs from the local one.
-    let login_error_code = if page.is_remote_browser() {
-        "preflight_xhs_session"
-    } else {
-        "preflight_xhs_login"
-    };
-    let login = XhsPageRuntime::new(&page)
-        .login_gate(true)
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!(task_preflight_error(login_error_code, format!("{error:#}")))
-        })?;
-    if login == socai_core::sites::xhs::page::LoginGate::Required {
-        anyhow::bail!(task_preflight_error(
-            login_error_code,
-            "Xiaohongshu login is required in this conversation's Chrome tab",
-        ));
-    }
     let outcome = async {
         let agent_tools = site.default_agent_tools.unwrap_or(site.agent_tools);
         let mut tools = agent_tools(page.clone(), llm_provider.clone()).await?;
@@ -2771,7 +2771,7 @@ async fn run_agent_task_on_session_page(
             extra_instructions: format!(
                 "{}{}{}",
                 agent_instructions(&preamble),
-                TAURI_CITATION_RULES,
+                tauri_citation_rules(site.id),
                 TAURI_ARTIFACT_RULES
             ),
             enabled_sites: vec![site.id.to_string()],
@@ -3307,5 +3307,23 @@ mod tests {
             "insufficient Socai points; recharge or switch provider"
         );
         assert!(validate_preflight_balance(-1).is_err());
+    }
+
+    #[test]
+    fn desktop_routes_explicit_platform_intent_without_preloading_a_site() {
+        assert_eq!(app_site_id_for_intent("在抖音搜索 OpenAI", None), "dy");
+        assert_eq!(
+            app_site_id_for_intent("https://www.douyin.com/video/123", None),
+            "dy"
+        );
+        assert_eq!(app_site_id_for_intent("搜索小红书露营帖子", None), "xhs");
+        assert_eq!(
+            app_site_id_for_intent("https://www.xiaohongshu.com/explore/abc", None),
+            "xhs"
+        );
+        assert_eq!(app_site_id_for_intent("继续读取评论", Some("dy")), "dy");
+        assert_eq!(app_site_id_for_intent("继续读取评论", None), "xhs");
+
+        assert_eq!(app_site_start_url(), "");
     }
 }

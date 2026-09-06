@@ -3663,9 +3663,8 @@ pub struct WaitForLoginTool {
     page: Arc<PageSession>,
 }
 
-/// How long `wait_for_login` polls before giving up so the agent can re-prompt.
-const WAIT_FOR_LOGIN_DEFAULT_SECS: i64 = 180;
-const WAIT_FOR_LOGIN_MAX_SECS: i64 = 600;
+/// Login recovery keeps the selected site's tab alive for at most ten minutes.
+const WAIT_FOR_LOGIN_SECS: i64 = 600;
 
 #[async_trait]
 impl Tool for WaitForLoginTool {
@@ -3676,20 +3675,12 @@ impl Tool for WaitForLoginTool {
     fn description(&self) -> &str {
         "Recover from a login wall: after a tool returns `reason:login_required`, \
          call this (don't retry) to open the login page and block until the user \
-         signs in. Returns `logged_in:true` when done, else `logged_in:false` on \
-         timeout. See the login protocol in the instructions."
+         signs in. Returns `logged_in:true` when done, else `logged_in:false` after \
+         the fixed ten-minute timeout. See the login protocol in the instructions."
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "timeout_seconds": {
-                    "type": "integer",
-                    "description": "Seconds to wait before returning (default 180, max 600)."
-                }
-            }
-        })
+        json!({"type": "object", "properties": {}})
     }
 
     async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
@@ -3713,8 +3704,8 @@ impl Tool for WaitForLoginTool {
         // Bring the XHS login wall on screen so the user has a QR to scan.
         xhs.ensure_xhs(true).await?;
 
-        let timeout = get_i64(&input, "timeout_seconds", WAIT_FOR_LOGIN_DEFAULT_SECS)
-            .clamp(10, WAIT_FOR_LOGIN_MAX_SECS);
+        let _ = input;
+        let timeout = WAIT_FOR_LOGIN_SECS;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout as u64);
         loop {
             if xhs.is_logged_in().await.unwrap_or(false) {
@@ -3728,9 +3719,8 @@ impl Tool for WaitForLoginTool {
                     "logged_in": false,
                     "timed_out": true,
                     "message": format!(
-                        "Still not logged in after {timeout}s. Ask the user to scan \
-                         the QR / sign in on xiaohongshu.com in the browser, then \
-                         call wait_for_login again."
+                        "Still not logged in after {timeout}s. The login wait timed \
+                         out; fail the task instead of starting another wait."
                     ),
                 })));
             }
