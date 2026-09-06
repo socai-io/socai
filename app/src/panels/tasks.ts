@@ -16,6 +16,7 @@ import type {
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
 import { isSendShortcut } from "../lib/shortcuts";
+import { voiceInput } from "../lib/voice-input";
 import { settingsMenu } from "./settings";
 import { renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup } from "./task_history";
 import {
@@ -943,6 +944,7 @@ export namespace agentPanel {
       running: false,
       remoteProfile: settingsMenu.isRemoteProfile(),
       remoteDebuggingReady,
+      voice: voiceInput.composerState(),
     };
   }
 
@@ -957,6 +959,7 @@ export namespace agentPanel {
       running,
       remoteProfile: settingsMenu.isRemoteProfile(),
       remoteDebuggingReady,
+      voice: voiceInput.composerState(),
     };
   }
 
@@ -967,6 +970,7 @@ export namespace agentPanel {
       return task ? answerTextForTurn(task, turnIndex) : null;
     });
     document.getElementById("sidebar-new")?.addEventListener("click", () => {
+      voiceInput.cancelRecording();
       clearArtifactPreview();
       view = "compose";
       shell.rerender();
@@ -1049,6 +1053,7 @@ export namespace agentPanel {
       const select = (): void => {
         const taskId = button.dataset.taskId;
         if (!taskId) return;
+        voiceInput.cancelRecording();
         if (artifactPreview?.taskId !== taskId) clearArtifactPreview();
         selectedTaskId = taskId;
         view = "detail";
@@ -1448,6 +1453,25 @@ export namespace agentPanel {
       if (composerTask) await submitReply(shell, composerTask.task_id);
       else await startAgentTask(shell);
     });
+    document.getElementById("composer-voice")?.addEventListener("click", async () => {
+      const replyTaskId = composerTask?.task_id ?? null;
+      const applyTranscript = (transcript: string): void => {
+        if (replyTaskId && selectedTaskId === replyTaskId && view === "detail") {
+          replyDraft = appendTranscript(replyDraft, transcript);
+        } else if (!replyTaskId && view === "compose") {
+          draft = appendTranscript(draft, transcript);
+        }
+        shell.rerender();
+        const refreshedInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+        refreshedInput?.focus();
+        if (refreshedInput) {
+          refreshedInput.selectionStart = refreshedInput.value.length;
+          refreshedInput.selectionEnd = refreshedInput.value.length;
+        }
+      };
+      const transcript = await voiceInput.toggle(applyTranscript);
+      if (transcript) applyTranscript(transcript);
+    });
     document.getElementById("composer-connect")?.addEventListener("click", () => {
       invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
     });
@@ -1519,7 +1543,12 @@ export namespace agentPanel {
       shell.status.state !== "connected" && !settingsMenu.isRemoteProfile();
     const selected = selectedModel();
     const modelReady = task ? true : !!selected && selected.has_key;
-    button.disabled = submitting || running || !value.trim() || needsConnection || !modelReady;
+    button.disabled = submitting
+      || running
+      || !value.trim()
+      || needsConnection
+      || !modelReady
+      || voiceInput.isBusy();
   }
 
   // Grows the composer textarea with its content instead of leaving multi-line
@@ -1528,6 +1557,11 @@ export namespace agentPanel {
   function autosizeComposerInput(el: HTMLTextAreaElement): void {
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
+  }
+
+  function appendTranscript(current: string, transcript: string): string {
+    const prefix = current.trimEnd();
+    return prefix ? `${prefix}\n${transcript.trim()}` : transcript.trim();
   }
 
   async function startAgentTask(shell: ShellState): Promise<void> {
@@ -1687,6 +1721,7 @@ export namespace agentPanel {
       if (key.startsWith(`${taskId}#`)) activityOpen.delete(key);
     }
     if (selectedTaskId === taskId) {
+      voiceInput.cancelRecording();
       const next = sorted[idx + 1] ?? sorted[idx - 1];
       selectedTaskId = next?.task_id ?? null;
       if (!selectedTaskId) view = "compose";

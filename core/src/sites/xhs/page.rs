@@ -102,8 +102,8 @@ pub struct ReadNoteOptions {
     /// Implies `download_media` (the caller forces it on), since OCR reads the
     /// saved files.
     pub ocr: bool,
-    /// Transcribe downloaded video notes through the configured cloud ASR
-    /// server. Implies `download_media` and `download_video_file` at the caller.
+    /// Transcribe downloaded video notes through the selected local or managed
+    /// ASR route. Implies `download_media` and `download_video_file` at the caller.
     pub transcribe_audio: bool,
     /// Optional additional hydration settle after body content first appears.
     /// The page script always applies a small baseline settle because XHS can

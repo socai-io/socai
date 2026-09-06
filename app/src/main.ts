@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import { voiceInput, type VoiceRoute } from "./lib/voice-input";
 
 import {
   applyLanguageToDocument,
@@ -137,7 +138,7 @@ export interface NoteData {
   comments?: NoteComment[]; // top comments captured with the read
   media?: NoteMedia[]; // media[0] === cover
   media_dir?: string; // run-relative folder, when src paths are relative
-  transcript?: string; // video audio transcript (cloud ASR)
+  transcript?: string; // video audio transcript (local or managed ASR)
   saved?: boolean;
   // Tolerate extra fields the archive may carry.
   [key: string]: unknown;
@@ -297,6 +298,7 @@ function render(): void {
         settingsMenu.loadConfig(),
         agentPanel.refreshModels(),
         subscriptionMenu.refresh(authMenu.isLoggedIn()),
+        voiceInput.refresh(),
       ]);
       if (authMenu.isLoggedIn()) await agentPanel.selectSocaiAgent();
     },
@@ -304,6 +306,7 @@ function render(): void {
   subscriptionMenu.bind(state, async () => {
     const alreadyHadPro = authMenu.hasProAccess();
     await authMenu.refreshWallet();
+    await voiceInput.refresh();
     if (!alreadyHadPro && authMenu.hasProAccess()) {
       await settingsMenu.selectRemoteForNewPro(state);
     }
@@ -317,6 +320,7 @@ function render(): void {
       await Promise.all([
         authMenu.refreshWallet(),
         subscriptionMenu.refresh(authMenu.isLoggedIn()),
+        voiceInput.refresh(),
       ]);
     },
   );
@@ -755,11 +759,14 @@ async function main(): Promise<void> {
       void agentPanel.loadTaskNotes(event.payload.task_id, shell());
       void agentPanel.loadTaskArtifacts(event.payload.task_id, shell());
       maybeRelaunchReadyUpdate();
-      void authMenu.refreshWallet().then(render);
+      void authMenu.refreshWallet().then(() => voiceInput.refresh());
     }
   });
   await listen<BackgroundMediaEvent>("agent_task:notes_updated", (event) => {
     agentPanel.handleBackgroundMediaUpdate(event.payload.run_dir, shell());
+  });
+  await listen<VoiceRoute>("voice_input:route", (event) => {
+    voiceInput.setTranscriptionRoute(event.payload);
   });
 
   let initialTasks: AgentTaskSnapshot[] = [];
@@ -790,6 +797,9 @@ async function main(): Promise<void> {
   await subscriptionMenu.refresh(authMenu.isLoggedIn());
   await agentPanel.prepareArtifactDownloads();
   render();
+  // Account/local-model inspection may hash the installed Whisper model on
+  // the first check. Keep that work off the initial-render critical path.
+  void voiceInput.initialize(() => render());
   bindGlobalDismiss();
   bindExternalLinks();
   installUpdatePreviewHook();
@@ -803,6 +813,7 @@ async function main(): Promise<void> {
     agentPanel.refreshModels()
       .then(() => render())
       .catch((e) => console.error("agent_list_models refresh failed:", e));
+    void voiceInput.refresh();
     // Foreground is the primary update-check trigger; the check throttles itself.
     void maybeCheckForUpdate();
   };

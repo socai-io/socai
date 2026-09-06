@@ -4,6 +4,7 @@ mod connectors;
 mod tasks;
 mod telemetry;
 mod timeline;
+mod voice_input;
 
 use std::collections::HashSet;
 use std::sync::{
@@ -363,6 +364,9 @@ pub fn run() {
             commands::billing_create_alipay_order,
             commands::billing_order_status,
             commands::billing_mock_recharge,
+            voice_input::voice_input_status,
+            voice_input::voice_input_local_status,
+            voice_input::voice_input_transcribe,
             connectors::feishu::feishu_status,
             connectors::feishu::feishu_accounts,
             connectors::feishu::feishu_account_identity,

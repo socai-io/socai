@@ -99,7 +99,10 @@ socai xhs search "初心者向けキャンプ用品" --num-notes 10 --num-commen
 git clone https://github.com/socai-io/socai.git
 cd socai
 cargo install --path cli --force
+cargo install --path asr --force
 ```
+
+2 番目のコマンドはローカル Whisper helper を `socai` と同じ場所にインストールします。非課金またはオフラインの文字起こしで内蔵モデルを使うために必要です。
 
 ### ターミナル UI
 

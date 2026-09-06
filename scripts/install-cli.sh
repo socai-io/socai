@@ -73,8 +73,13 @@ if [ ! -f "$unpack_dir/socai" ]; then
   echo "release archive did not contain ./socai" >&2
   exit 1
 fi
+if [ ! -f "$unpack_dir/socai-asr" ]; then
+  echo "release archive did not contain ./socai-asr" >&2
+  exit 1
+fi
 
 install -m 0755 "$unpack_dir/socai" "$install_dir/socai"
+install -m 0755 "$unpack_dir/socai-asr" "$install_dir/socai-asr"
 
 printf 'installed socai to %s\n' "$install_dir/socai"
 "$install_dir/socai" --version

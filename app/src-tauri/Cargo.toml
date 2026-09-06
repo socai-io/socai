@@ -33,6 +33,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 cap-std = "4"
 tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
 dirs = "5"
 dunce = "1"
 calamine = "0.36.1"

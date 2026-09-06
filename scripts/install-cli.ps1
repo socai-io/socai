@@ -48,8 +48,12 @@ try {
     Expand-Archive -Force -Path $ArchivePath -DestinationPath $UnpackDir
 
     $SourceExe = Join-Path $UnpackDir 'socai.exe'
+    $SourceAsrExe = Join-Path $UnpackDir 'socai-asr.exe'
     if (-not (Test-Path -LiteralPath $SourceExe)) {
         throw 'release archive did not contain socai.exe'
+    }
+    if (-not (Test-Path -LiteralPath $SourceAsrExe)) {
+        throw 'release archive did not contain socai-asr.exe'
     }
 
     $DestExe = Join-Path $InstallDir 'socai.exe'
@@ -71,6 +75,7 @@ try {
         }
     }
     Copy-Item -Force -LiteralPath $SourceExe -Destination $DestExe
+    Copy-Item -Force -LiteralPath $SourceAsrExe -Destination (Join-Path $InstallDir 'socai-asr.exe')
 
     Write-Host "installed socai to $DestExe"
     & $DestExe --version

@@ -101,7 +101,11 @@ If a prebuilt binary is unavailable for your platform, or you need a source buil
 git clone https://github.com/socai-io/socai.git
 cd socai
 cargo install --path cli --force
+cargo install --path asr --force
 ```
+
+The second command installs the local Whisper helper next to `socai`; it is
+required when unpaid or offline transcription routes to the bundled model.
 
 ### Terminal interface
 

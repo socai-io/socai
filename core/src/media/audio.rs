@@ -10,12 +10,13 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
+use crate::media::asr::transcribe_local_file_with_timeout;
 use crate::media::common::{ensure_dir, url_suffix, MediaUnavailable};
 use crate::media::processor::MediaProcessor;
 
 impl MediaProcessor {
-    /// Transcribe a video/audio source through socai's managed cloud ASR — the
-    /// only transcription path (local whisper was removed as uncontrollable).
+    /// Transcribe a video/audio source through managed cloud ASR for paid
+    /// sessions, or through the bundled local Whisper small worker otherwise.
     pub async fn transcribe_audio(&self, source: &str, referer: &str) -> Result<String> {
         let t0 = Instant::now();
         let result = self.transcribe_audio_inner(source, referer).await;
@@ -26,21 +27,42 @@ impl MediaProcessor {
     async fn transcribe_audio_inner(&self, source: &str, referer: &str) -> Result<String> {
         if !self.config.use_cloud_asr {
             anyhow::bail!(MediaUnavailable(
-                "video transcription requires a signed-in account with socai agent selected".into()
+                "video transcription is disabled for this media request".into()
             ));
         }
         let source_path = self.local_audio_source(source, referer).await?;
+        // Cloud ASR is a paid account capability, independent of the selected
+        // LLM provider. If the live wallet cannot be checked, stay functional
+        // and private by falling back to the bundled local model.
+        let cloud_ready = match crate::cloud::paid_asr_access().await {
+            Ok(access) => access.ready,
+            Err(error) => {
+                tracing::warn!(%error, "cloud ASR access check failed; using local ASR");
+                false
+            }
+        };
+        if !cloud_ready || self.billing_task_id.is_none() {
+            return self.transcribe_local_source(&source_path).await;
+        }
         // Real clip duration (the clip is already capped at
         // max_audio_seconds); the server uses it for usage accounting.
         let (aac, duration) = self.extract_audio_aac(&source_path).await?;
         let duration_s = duration.ceil() as i64;
-        let result = crate::cloud::transcribe_audio_file(
+        let result = match crate::cloud::transcribe_audio_file(
             &aac,
             duration_s,
             Duration::from_secs(self.config.asr_timeout_s.max(60)),
             self.billing_task_id.as_deref(),
         )
-        .await?;
+        .await
+        {
+            Ok(result) => result,
+            Err(error) if crate::cloud::cloud_asr_access_rejected(&error) => {
+                tracing::warn!(%error, "cloud ASR access changed before upload; using local ASR");
+                return self.transcribe_local_source(&source_path).await;
+            }
+            Err(error) => return Err(error),
+        };
         self.timing.record(
             "cloud_asr_total",
             Duration::from_millis(result.total_latency_ms as u64),
@@ -52,6 +74,15 @@ impl MediaProcessor {
             );
         }
         Ok(result.transcript.trim().to_string())
+    }
+
+    async fn transcribe_local_source(&self, source_path: &Path) -> Result<String> {
+        transcribe_local_file_with_timeout(
+            source_path,
+            self.config.max_audio_seconds,
+            Duration::from_secs(self.config.asr_timeout_s.max(60)),
+        )
+        .await
     }
 
     async fn local_audio_source(&self, source: &str, referer: &str) -> Result<PathBuf> {

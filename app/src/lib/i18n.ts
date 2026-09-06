@@ -269,6 +269,86 @@ const messages = {
     zh: "暂时无法发起支付，请稍后重试。",
   },
 
+  "voice.startCloud": { en: "start cloud voice input", zh: "开始云端语音输入" },
+  "voice.startLocal": { en: "start local voice input", zh: "开始本地语音输入" },
+  "voice.stop": { en: "stop recording and transcribe", zh: "停止录音并转写" },
+  "voice.requesting": { en: "requesting microphone access…", zh: "正在请求麦克风权限…" },
+  "voice.transcribingCloud": { en: "transcribing with cloud ASR…", zh: "正在使用云端 ASR 转写…" },
+  "voice.transcribingLocal": { en: "transcribing with local Whisper small…", zh: "正在使用本地 Whisper small 转写…" },
+  "voice.unavailable.taskBusy": {
+    en: "voice input is unavailable while this task is running.",
+    zh: "任务运行期间无法使用语音输入。",
+  },
+  "voice.unavailable.browser": {
+    en: "voice input is unavailable in this webview.",
+    zh: "当前 WebView 不支持语音输入。",
+  },
+  "voice.unavailable.checking": {
+    en: "checking voice input availability…",
+    zh: "正在检测语音输入状态…",
+  },
+  "voice.unavailable.login": {
+    en: "you are not signed in, so voice input uses local Whisper small.",
+    zh: "当前未登录，语音输入使用本地 Whisper small。",
+  },
+  "voice.unavailable.subscription": {
+    en: "this account has no active paid subscription, so voice input uses local Whisper small.",
+    zh: "当前账号未开通有效付费服务，语音输入使用本地 Whisper small。",
+  },
+  "voice.unavailable.credits": {
+    en: "this account has no remaining credits, so voice input uses local Whisper small.",
+    zh: "当前账号 credits 已用完，语音输入使用本地 Whisper small。",
+  },
+  "voice.unavailable.billing": {
+    en: "cloud ASR access could not be verified, so voice input uses local Whisper small.",
+    zh: "暂时无法确认云端 ASR 付费状态，语音输入使用本地 Whisper small。",
+  },
+  "voice.unavailable.localOnly": {
+    en: "voice input uses local Whisper small.",
+    zh: "语音输入使用本地 Whisper small。",
+  },
+  "voice.local.modelMissing": {
+    en: "The first local transcription downloads the fixed {size} model.",
+    zh: "首次执行本地转写时将下载固定的 {size} 模型。",
+  },
+  "voice.local.downloading": {
+    en: "The local model is downloading ({percent}%).",
+    zh: "本地模型正在下载（{percent}%）。",
+  },
+  "voice.local.ready": {
+    en: "The local model is ready.",
+    zh: "本地模型已就绪。",
+  },
+  "voice.local.helperMissing": {
+    en: "The bundled local ASR helper is unavailable; reinstall socai to restore it.",
+    zh: "内置本地 ASR 组件不可用，请重新安装 socai。",
+  },
+  "voice.local.failed": {
+    en: "The local model setup failed and will retry on the next audio task.",
+    zh: "本地模型准备失败，将在下次音频任务中重试。",
+  },
+  "voice.error.permission": {
+    en: "microphone permission was denied. allow it in system settings and try again.",
+    zh: "麦克风权限被拒绝，请在系统设置中允许后重试。",
+  },
+  "voice.error.noDevice": { en: "no microphone was found.", zh: "未找到可用的麦克风。" },
+  "voice.error.capture": {
+    en: "the microphone could not be started.",
+    zh: "无法启动麦克风。",
+  },
+  "voice.error.tooShort": {
+    en: "the recording is too short. speak for a little longer and try again.",
+    zh: "录音太短，请多说一会儿后重试。",
+  },
+  "voice.error.maxDuration": {
+    en: "recording stopped after two minutes. start a new recording to continue.",
+    zh: "录音已在两分钟后自动停止，请重新开始录音。",
+  },
+  "voice.error.noSpeech": {
+    en: "no speech was recognized.",
+    zh: "没有识别到语音内容。",
+  },
+
   "settings.aria": { en: "settings", zh: "设置" },
   "settings.title": { en: "settings", zh: "设置" },
   "settings.general": { en: "general", zh: "通用" },

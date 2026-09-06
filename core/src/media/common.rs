@@ -12,7 +12,7 @@ AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36";
 pub struct MediaConfig {
     pub base_dir: PathBuf,
     pub request_timeout_s: u64,
-    /// Wall-clock cap for one cloud ASR round trip (upload + poll).
+    /// Wall-clock cap for one local or managed ASR transcription.
     pub asr_timeout_s: u64,
     pub max_audio_seconds: u64,
     pub use_ocr: bool,

@@ -1,0 +1,19 @@
+[package]
+name = "socai-asr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "socai-asr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sherpa-onnx = "=1.13.7"
+symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4", "mp3", "pcm", "wav"] }
+
+[lints]
+workspace = true

@@ -182,8 +182,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          node scripts/prepare-sherpa-onnx-libs.mjs aarch64-apple-darwin x86_64-apple-darwin
+          export SHERPA_ONNX_ARCHIVE_DIR="$PWD/target/sherpa-onnx-archives"
           cargo build -p socai-cli --release --target aarch64-apple-darwin
           cargo build -p socai-cli --release --target x86_64-apple-darwin
+          cargo build -p socai-asr --release --target aarch64-apple-darwin
+          cargo build -p socai-asr --release --target x86_64-apple-darwin
 
           cli_dir="target/socai-cli-macos-universal"
           mkdir -p "${cli_dir}"
@@ -191,15 +195,22 @@ jobs:
             target/aarch64-apple-darwin/release/socai \
             target/x86_64-apple-darwin/release/socai \
             -output "${cli_dir}/socai"
+          lipo -create \
+            target/aarch64-apple-darwin/release/socai-asr \
+            target/x86_64-apple-darwin/release/socai-asr \
+            -output "${cli_dir}/socai-asr"
           chmod 0755 "${cli_dir}/socai"
+          chmod 0755 "${cli_dir}/socai-asr"
 
-          actual_archs="$(lipo -archs "${cli_dir}/socai")"
-          echo "${cli_dir}/socai architectures: ${actual_archs}"
-          for expected_arch in arm64 x86_64; do
-            if [[ " ${actual_archs} " != *" ${expected_arch} "* ]]; then
-              echo "expected ${cli_dir}/socai to include ${expected_arch}, got: ${actual_archs}" >&2
-              exit 1
-            fi
+          for binary in socai socai-asr; do
+            actual_archs="$(lipo -archs "${cli_dir}/${binary}")"
+            echo "${cli_dir}/${binary} architectures: ${actual_archs}"
+            for expected_arch in arm64 x86_64; do
+              if [[ " ${actual_archs} " != *" ${expected_arch} "* ]]; then
+                echo "expected ${cli_dir}/${binary} to include ${expected_arch}, got: ${actual_archs}" >&2
+                exit 1
+              fi
+            done
           done
 
           version_output="$("${cli_dir}/socai" --version)"
@@ -219,10 +230,15 @@ jobs:
 
           BUILD_SHA="${SOCAI_BUILD_SHA:?SOCAI_BUILD_SHA not set by apply release version step}"
           cli_binary="target/socai-cli-macos-universal/socai"
+          asr_binary="target/socai-cli-macos-universal/socai-asr"
           mkdir -p dist-artifacts
 
           if [ ! -x "${cli_binary}" ]; then
             echo "no CLI binary found at ${cli_binary}" >&2
+            exit 1
+          fi
+          if [ ! -x "${asr_binary}" ]; then
+            echo "no local ASR helper found at ${asr_binary}" >&2
             exit 1
           fi
 
@@ -230,7 +246,9 @@ jobs:
           rm -rf "${package_dir}"
           mkdir -p "${package_dir}"
           cp "${cli_binary}" "${package_dir}/socai"
+          cp "${asr_binary}" "${package_dir}/socai-asr"
           chmod 0755 "${package_dir}/socai"
+          chmod 0755 "${package_dir}/socai-asr"
           created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           cat > "${package_dir}/manifest.json" <<EOF
           {
@@ -242,14 +260,14 @@ jobs:
           }
           EOF
 
-          tar -C "${package_dir}" -czf dist-artifacts/socai-cli-macos-universal.tar.gz socai manifest.json
+          tar -C "${package_dir}" -czf dist-artifacts/socai-cli-macos-universal.tar.gz socai socai-asr manifest.json
           (cd dist-artifacts && shasum -a 256 socai-cli-macos-universal.tar.gz > socai-cli-macos-universal.tar.gz.sha256)
           cp scripts/install-cli.sh dist-artifacts/install.sh
 
           (cd dist-artifacts && shasum -a 256 -c socai-cli-macos-universal.tar.gz.sha256)
           archive_listing="${RUNNER_TEMP}/socai-cli-archive-files.txt"
           tar -tzf dist-artifacts/socai-cli-macos-universal.tar.gz > "${archive_listing}"
-          for required_file in socai manifest.json; do
+          for required_file in socai socai-asr manifest.json; do
             if ! grep -Fxq "${required_file}" "${archive_listing}"; then
               echo "CLI archive missing ${required_file}" >&2
               exit 1
@@ -700,7 +718,9 @@ jobs:
           SOCAI_PRO_BASE_URL: ${{ secrets.SOCAI_PRO_BASE_URL }}
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo build -p socai-cli --release
+          node scripts/prepare-sherpa-onnx-libs.mjs x86_64-pc-windows-msvc
+          $env:SHERPA_ONNX_ARCHIVE_DIR = Join-Path $PWD 'target/sherpa-onnx-archives'
+          cargo build -p socai-cli -p socai-asr --release
           $versionOutput = & .\target\release\socai.exe --version
           $versionOutput
           if ($versionOutput -ne "socai $env:VERSION") {
@@ -762,6 +782,7 @@ jobs:
           Remove-Item -Recurse -Force $dist, $packageDir -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $dist, $packageDir | Out-Null
           Copy-Item .\target\release\socai.exe (Join-Path $packageDir 'socai.exe')
+          Copy-Item .\target\release\socai-asr.exe (Join-Path $packageDir 'socai-asr.exe')
           $createdAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
           [ordered]@{
             base_sha = $env:BASE_SHA
@@ -772,7 +793,7 @@ jobs:
           } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $packageDir 'manifest.json')
 
           $archive = Join-Path $dist 'socai-cli-windows-x86_64.zip'
-          Compress-Archive -Path (Join-Path $packageDir 'socai.exe'), (Join-Path $packageDir 'manifest.json') -DestinationPath $archive
+          Compress-Archive -Path (Join-Path $packageDir 'socai.exe'), (Join-Path $packageDir 'socai-asr.exe'), (Join-Path $packageDir 'manifest.json') -DestinationPath $archive
           $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
           $checksumPath = "$archive.sha256"
           [System.IO.File]::WriteAllText($checksumPath, "$hash  socai-cli-windows-x86_64.zip`n", [System.Text.Encoding]::ASCII)
@@ -788,6 +809,9 @@ jobs:
           $versionOutput = & (Join-Path $verifyDir 'socai.exe') --version
           if ($versionOutput -ne "socai $env:VERSION") {
             throw "expected archive CLI version 'socai $env:VERSION', got: $versionOutput"
+          }
+          if (-not (Test-Path (Join-Path $verifyDir 'socai-asr.exe'))) {
+            throw 'archive missing socai-asr.exe'
           }
           $manifest = Get-Content -Raw (Join-Path $verifyDir 'manifest.json') | ConvertFrom-Json
           if ($manifest.version -ne $env:VERSION) { throw 'manifest version mismatch' }

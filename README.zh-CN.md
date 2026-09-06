@@ -101,7 +101,10 @@ socai xhs search "露营装备新手避坑" --num-notes 10 --num-comments 8 --pr
 git clone https://github.com/socai-io/socai.git
 cd socai
 cargo install --path cli --force
+cargo install --path asr --force
 ```
+
+第二条命令会把本地 Whisper helper 安装到 `socai` 同一目录；非付费或离线转写使用内置模型时需要该组件。
 
 ### 终端交互界面
 

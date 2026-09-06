@@ -2000,6 +2000,40 @@ body.has-paper > * { position: relative; z-index: 1; }
   cursor: pointer;
   transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
+.composer__voice-wrap {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+}
+.composer__voice {
+  appearance: none;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--fg-soft);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.composer__voice:hover:not(:disabled) { color: var(--ink-0); background: var(--ink-7); }
+.composer__voice:disabled { color: var(--fg-faint); cursor: not-allowed; }
+.composer__voice.is-recording {
+  color: var(--ink-9);
+  background: var(--ink-0);
+}
+.composer__voice.is-recording:hover:not(:disabled) { color: var(--ink-9); background: var(--ink-1); }
+.composer__voice-glyph { display: block; }
+.composer__voice-stop {
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  background: currentColor;
+}
 .composer__send:hover:not(:disabled) { color: var(--ink-0); background: var(--ink-7); }
 .composer__send:disabled { color: var(--fg-faint); cursor: not-allowed; }
 .composer__send-glyph { display: block; }

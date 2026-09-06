@@ -99,7 +99,10 @@ socai xhs search "초보 캠핑 장비" --num-notes 10 --num-comments 8 --pretty
 git clone https://github.com/socai-io/socai.git
 cd socai
 cargo install --path cli --force
+cargo install --path asr --force
 ```
+
+두 번째 명령은 로컬 Whisper helper를 `socai`와 같은 위치에 설치합니다. 비유료 또는 오프라인 음성 변환에서 내장 모델을 사용할 때 필요합니다.
 
 ### 터미널 UI
 

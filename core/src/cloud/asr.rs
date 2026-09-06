@@ -14,6 +14,30 @@ const MAX_AUDIO_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 /// Consecutive poll failures tolerated before giving up on a submitted task.
 const MAX_POLL_FAILURES: u32 = 3;
 
+#[derive(Debug)]
+struct CloudAsrAccessRejected(reqwest::StatusCode);
+
+impl std::fmt::Display for CloudAsrAccessRejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "cloud ASR access was rejected before upload ({})",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for CloudAsrAccessRejected {}
+
+/// True only when the server rejected authorization before any audio upload or
+/// provider submission. Callers may safely retry these requests with local ASR
+/// without risking a duplicate cloud transcription or charge.
+pub fn cloud_asr_access_rejected(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<CloudAsrAccessRejected>().is_some())
+}
+
 #[derive(Debug, Deserialize)]
 struct UploadUrlResponse {
     task_id: String,
@@ -44,11 +68,10 @@ pub async fn transcribe_audio_file(
 ) -> Result<CloudAsrResult> {
     let base_url = configured_base_url()
         .ok_or_else(|| anyhow::anyhow!("socai server URL is not configured"))?;
-    let creds = load_credentials().ok_or_else(|| {
-        anyhow::anyhow!("sign in and select socai agent before requesting video transcription")
-    })?;
-    if creds.user_id.trim().is_empty() || !creds.hosted_llm_selected {
-        anyhow::bail!("sign in and select socai agent before requesting video transcription");
+    let creds = load_credentials()
+        .ok_or_else(|| anyhow::anyhow!("sign in before requesting cloud transcription"))?;
+    if creds.user_id.trim().is_empty() || creds.device_token.trim().is_empty() {
+        anyhow::bail!("sign in before requesting cloud transcription");
     }
     // The extension matters: the server passes the filename through to
     // DashScope, which detects the audio format from it.
@@ -56,6 +79,7 @@ pub async fn transcribe_audio_file(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("audio.aac");
+    let content_type = audio_content_type(path);
     let size_bytes = tokio::fs::metadata(path)
         .await
         .with_context(|| format!("failed to read metadata for {}", path.display()))?
@@ -68,12 +92,12 @@ pub async fn transcribe_audio_file(
     }
     let client = http_client()?;
     let started = Instant::now();
-    let upload: UploadUrlResponse = bearer(
+    let upload_response = bearer(
         client
             .post(format!("{base_url}/v1/asr/upload-url"))
             .json(&json!({
                 "filename": filename,
-                "content_type": "audio/aac",
+                "content_type": content_type,
                 "size_bytes": size_bytes,
                 "duration_s": duration_s.max(0),
                 "client_task_id": client_task_id.unwrap_or(""),
@@ -81,10 +105,11 @@ pub async fn transcribe_audio_file(
         &creds.device_token,
     )
     .send()
-    .await?
-    .error_for_status()?
-    .json()
     .await?;
+    if matches!(upload_response.status().as_u16(), 401 | 402 | 403) {
+        return Err(CloudAsrAccessRejected(upload_response.status()).into());
+    }
+    let upload: UploadUrlResponse = upload_response.error_for_status()?.json().await?;
 
     let file = tokio::fs::File::open(path)
         .await
@@ -163,6 +188,22 @@ pub async fn transcribe_audio_file(
     }
 }
 
+fn audio_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("wav") => "audio/wav",
+        Some("mp3") => "audio/mpeg",
+        Some("m4a") => "audio/mp4",
+        Some("flac") => "audio/flac",
+        Some("ogg") | Some("opus") => "audio/ogg",
+        _ => "audio/aac",
+    }
+}
+
 async fn poll_task(
     client: &reqwest::Client,
     base_url: &str,
@@ -191,4 +232,17 @@ fn short_error(error: &str) -> String {
     }
     let head: String = trimmed.chars().take(MAX).collect();
     format!("{head}… (truncated)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::audio_content_type;
+    use std::path::Path;
+
+    #[test]
+    fn upload_content_type_follows_audio_extension() {
+        assert_eq!(audio_content_type(Path::new("voice.wav")), "audio/wav");
+        assert_eq!(audio_content_type(Path::new("clip.aac")), "audio/aac");
+        assert_eq!(audio_content_type(Path::new("speech.MP3")), "audio/mpeg");
+    }
 }

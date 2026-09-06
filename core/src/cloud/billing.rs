@@ -15,6 +15,27 @@ pub struct WalletBalance {
     pub active_until: Option<String>,
 }
 
+impl WalletBalance {
+    pub fn has_active_subscription(&self) -> bool {
+        self.active_until
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .is_some_and(|until| until > chrono::Utc::now())
+    }
+
+    pub fn has_paid_asr_access(&self) -> bool {
+        self.has_active_subscription() && self.balance_points > 0
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PaidAsrAccess {
+    pub logged_in: bool,
+    pub active_subscription: bool,
+    pub balance_points: i64,
+    pub ready: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentPlan {
     pub enabled: bool,
@@ -83,6 +104,29 @@ pub async fn wallet_balance() -> Result<WalletBalance> {
         .await?;
     cache_wallet_snapshot(wallet.balance_points, wallet.active_until.clone());
     Ok(wallet)
+}
+
+/// Resolve cloud-ASR access against the live wallet. A saved login or the
+/// signup credit gift alone is not paid access: the subscription must still be
+/// active and at least one credit must remain.
+pub async fn paid_asr_access() -> Result<PaidAsrAccess> {
+    let session = super::auth::auth_session()?;
+    if !session.logged_in {
+        return Ok(PaidAsrAccess {
+            logged_in: false,
+            active_subscription: false,
+            balance_points: 0,
+            ready: false,
+        });
+    }
+    let wallet = wallet_balance().await?;
+    let active_subscription = wallet.has_active_subscription();
+    Ok(PaidAsrAccess {
+        logged_in: true,
+        active_subscription,
+        balance_points: wallet.balance_points,
+        ready: wallet.has_paid_asr_access(),
+    })
 }
 
 pub async fn payment_plan() -> Result<PaymentPlan> {
