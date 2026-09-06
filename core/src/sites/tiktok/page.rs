@@ -254,21 +254,9 @@ impl<'a> TikTokPageRuntime<'a> {
             let _ = self.start_player_media().await;
         }
         let raw = self.wait_for_video_detail(wait_seconds).await?;
-        let has_author = raw
-            .get("author_id")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty());
-        if !has_author {
-            return Ok(json!({
-                "ok": false,
-                "reason": "video_detail_incomplete",
-                "state": state,
-                "has_author": has_author,
-            }));
-        }
         let mut entity: TikTokVideo = serde_json::from_value(raw)
             .context("TikTok video detail returned an invalid entity")?;
-        let landed_on_player = self
+        let mut landed_on_player = self
             .current_url()
             .await
             .unwrap_or_default()
@@ -282,6 +270,52 @@ impl<'a> TikTokPageRuntime<'a> {
                 "ok": false,
                 "reason": "video_navigation_mismatch",
                 "state": state,
+            }));
+        }
+        if landed_on_player {
+            match self
+                .open_canonical_video_from_player(&entity, wait_seconds)
+                .await
+            {
+                Ok(CanonicalVideoOpen::Opened(canonical)) => {
+                    entity = merge_video_entities(*canonical, entity)?;
+                }
+                Ok(CanonicalVideoOpen::Failed { reason, state }) => {
+                    return Ok(json!({
+                        "ok": false,
+                        "reason": reason,
+                        "state": state,
+                        "entity": entity,
+                    }));
+                }
+                Err(error) => {
+                    return Ok(json!({
+                        "ok": false,
+                        "reason": "video_canonical_navigation_failed",
+                        "error": format!("{error:#}"),
+                        "entity": entity,
+                    }));
+                }
+            }
+            landed_on_player = match self.current_url().await {
+                Ok(url) => url.contains("/player/v1/"),
+                Err(error) => {
+                    return Ok(json!({
+                        "ok": false,
+                        "reason": "video_canonical_status_failed",
+                        "error": format!("{error:#}"),
+                        "entity": entity,
+                    }));
+                }
+            };
+        }
+        if entity.author_id.trim().is_empty() {
+            return Ok(json!({
+                "ok": false,
+                "reason": "video_detail_incomplete",
+                "state": state,
+                "has_author": false,
+                "entity": entity,
             }));
         }
         let comments_error = if num_comments > 0 && !landed_on_player {
@@ -328,6 +362,66 @@ impl<'a> TikTokPageRuntime<'a> {
             }));
         }
         Ok(json!({ "ok": true, "entity": entity }))
+    }
+
+    async fn open_canonical_video_from_player(
+        &self,
+        entity: &TikTokVideo,
+        wait_seconds: f64,
+    ) -> Result<CanonicalVideoOpen> {
+        // The embed player can expose the video and media while omitting the
+        // author. TikTok still resolves the canonical detail for the neutral
+        // `@_` handle, after which videoDetail reads the real author from the
+        // page's initial state.
+        let author_url = tiktok_author_url(&entity.author_id)
+            .unwrap_or_else(|_| "https://www.tiktok.com/@_".to_string());
+        let target = format!("{author_url}/video/{}", entity.video_id);
+        let navigation = self.navigate_to(&target).await?;
+        let state = self
+            .wait_for_named_state(
+                "videoState",
+                wait_seconds.max(TRANSITION_TIMEOUT_S),
+                "video_id",
+                &entity.video_id,
+                &navigation,
+            )
+            .await?;
+        if let Some(reason) = state_failure_reason(&state) {
+            return Ok(CanonicalVideoOpen::Failed {
+                reason: reason.to_string(),
+                state,
+            });
+        }
+        if !script_ok(&state) {
+            return Ok(CanonicalVideoOpen::Failed {
+                reason: "not_video_detail".to_string(),
+                state,
+            });
+        }
+        let raw = self.wait_for_video_detail(wait_seconds).await?;
+        let canonical: TikTokVideo = serde_json::from_value(raw)
+            .context("canonical TikTok video detail returned an invalid entity")?;
+        if canonical.video_id != entity.video_id {
+            return Ok(CanonicalVideoOpen::Failed {
+                reason: "video_navigation_mismatch".to_string(),
+                state: json!({
+                    "expected_video_id": entity.video_id,
+                    "observed_video_id": canonical.video_id,
+                    "url": self.current_url().await.unwrap_or_default(),
+                }),
+            });
+        }
+        if canonical.author_id.trim().is_empty() {
+            return Ok(CanonicalVideoOpen::Failed {
+                reason: "video_detail_incomplete".to_string(),
+                state: json!({
+                    "video_id": canonical.video_id,
+                    "has_author": false,
+                    "url": self.current_url().await.unwrap_or_default(),
+                }),
+            });
+        }
+        Ok(CanonicalVideoOpen::Opened(Box::new(canonical)))
     }
 
     async fn start_player_media(&self) -> Result<()> {
@@ -424,6 +518,14 @@ impl<'a> TikTokPageRuntime<'a> {
                     })),
                 )
                 .await?;
+            let latest_state = self.expect_object("authorState", None).await?;
+            if let Some(reason) = state_failure_reason(&latest_state) {
+                return Ok(json!({
+                    "ok": false,
+                    "reason": reason,
+                    "state": latest_state,
+                }));
+            }
             let parsed: TikTokAuthorProfile = serde_json::from_value(raw_profile.clone())
                 .context("TikTok author page returned an invalid entity")?;
             let before = cards.len();
@@ -462,6 +564,14 @@ impl<'a> TikTokPageRuntime<'a> {
             cards.truncate(target_count.max(1));
         }
         profile.video_cards = cards;
+        if num_videos.is_some() && profile.video_cards.is_empty() {
+            return Ok(json!({
+                "ok": false,
+                "reason": "author_videos_incomplete",
+                "missing": ["video_cards"],
+                "profile": profile,
+            }));
+        }
         Ok(json!({ "ok": true, "profile": profile }))
     }
 
@@ -769,6 +879,54 @@ struct NavigationExpectation {
     navigated: bool,
 }
 
+enum CanonicalVideoOpen {
+    Opened(Box<TikTokVideo>),
+    Failed { reason: String, state: Value },
+}
+
+fn merge_video_entities(canonical: TikTokVideo, player: TikTokVideo) -> Result<TikTokVideo> {
+    let mut canonical = serde_json::to_value(canonical)?;
+    let player = serde_json::to_value(player)?;
+    fill_missing_json(&mut canonical, &player);
+    serde_json::from_value(canonical).context("merged TikTok video detail is invalid")
+}
+
+fn fill_missing_json(value: &mut Value, fallback: &Value) {
+    match (value, fallback) {
+        (Value::Object(value), Value::Object(fallback)) => {
+            for (key, fallback_value) in fallback {
+                match value.get_mut(key) {
+                    Some(value) => fill_missing_json(value, fallback_value),
+                    None => {
+                        value.insert(key.clone(), fallback_value.clone());
+                    }
+                }
+            }
+        }
+        (Value::Array(value), Value::Array(fallback)) => {
+            for item in fallback {
+                if !value.contains(item) {
+                    value.push(item.clone());
+                }
+            }
+        }
+        (Value::String(value), Value::String(fallback)) if value.trim().is_empty() => {
+            *value = fallback.clone();
+        }
+        (Value::Number(value), Value::Number(fallback))
+            if number_is_zero(value) && !number_is_zero(fallback) =>
+        {
+            *value = fallback.clone();
+        }
+        (value @ Value::Null, fallback) => *value = fallback.clone(),
+        _ => {}
+    }
+}
+
+fn number_is_zero(value: &serde_json::Number) -> bool {
+    value.as_i64() == Some(0) || value.as_u64() == Some(0) || value.as_f64() == Some(0.0)
+}
+
 fn is_tiktok_page(value: &str) -> bool {
     is_tiktok_page_url(value)
 }
@@ -864,4 +1022,48 @@ fn value_type(value: &Value) -> &'static str {
 
 async fn sleep_ms(ms: u64) {
     tokio::time::sleep(Duration::from_millis(ms)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_video_entities_preserves_complementary_player_media() {
+        let canonical = TikTokVideo {
+            video_id: "123".into(),
+            author_id: "creator".into(),
+            duration_seconds: 0,
+            video: json!({
+                "resolved_url": "https://canonical.example/video.mp4",
+                "source_urls": ["https://canonical.example/video.mp4"],
+                "candidates": [{"url": "https://canonical.example/video.mp4"}],
+            }),
+            ..TikTokVideo::default()
+        };
+        let player = TikTokVideo {
+            video_id: "123".into(),
+            author_id: "creator".into(),
+            duration_seconds: 18,
+            video: json!({
+                "resolved_url": "https://player.example/video.mp4",
+                "source_urls": [
+                    "https://canonical.example/video.mp4",
+                    "https://player.example/video.mp4"
+                ],
+                "candidates": [{"url": "https://player.example/video.mp4"}],
+            }),
+            ..TikTokVideo::default()
+        };
+
+        let merged = merge_video_entities(canonical, player).unwrap();
+
+        assert_eq!(merged.duration_seconds, 18);
+        assert_eq!(
+            merged.video["resolved_url"],
+            "https://canonical.example/video.mp4"
+        );
+        assert_eq!(merged.video["source_urls"].as_array().unwrap().len(), 2);
+        assert_eq!(merged.video["candidates"].as_array().unwrap().len(), 2);
+    }
 }

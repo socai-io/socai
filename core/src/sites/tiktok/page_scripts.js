@@ -127,14 +127,15 @@
   }
 
   function challengeRequired() {
+    const bodyText = text(document.body);
     const challenge = firstVisible([
       '#captcha-verify-container',
       '.verify-captcha',
       '[class*="captcha"]',
       '[data-e2e*="captcha"]',
     ]);
-    if (!challenge) return false;
-    return /verify|puzzle|slider|captcha|安全验证|验证码/i.test(text(challenge)) || !!challenge;
+    return !!challenge ||
+      /drag the slider to fit the puzzle|complete the puzzle to continue|安全验证|拖动滑块|验证码/i.test(bodyText);
   }
 
   function loginBlocked(hasContent) {
