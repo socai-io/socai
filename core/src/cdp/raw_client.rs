@@ -77,6 +77,17 @@ impl RawCdpClient {
         method: impl Into<String>,
         params: Value,
     ) -> Result<Value> {
+        self.execute_for_session_with_timeout(session_id, method, params, COMMAND_TIMEOUT)
+            .await
+    }
+
+    pub(crate) async fn execute_for_session_with_timeout(
+        &self,
+        session_id: Option<&str>,
+        method: impl Into<String>,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
         let method = method.into();
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx
@@ -89,7 +100,7 @@ impl RawCdpClient {
             .await
             .map_err(|_| anyhow!("CDP session is closed"))?;
 
-        let response = tokio::time::timeout(COMMAND_TIMEOUT, resp_rx)
+        let response = tokio::time::timeout(timeout, resp_rx)
             .await
             .map_err(|_| anyhow!("CDP command timed out: {method}"))?
             .map_err(|_| anyhow!("CDP session closed while waiting for: {method}"))?;

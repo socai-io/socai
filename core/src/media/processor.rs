@@ -112,6 +112,10 @@ impl MediaProcessor {
         save_named_bytes(&self.config.base_dir, payload, label, filename)
     }
 
+    pub fn named_path(&self, label: &str, filename: &str) -> Result<PathBuf> {
+        named_file_path(&self.config.base_dir, label, filename)
+    }
+
     pub async fn download_file(
         &self,
         url: &str,

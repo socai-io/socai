@@ -174,15 +174,27 @@ impl PageSession {
     /// Uninstrumented `evaluate_json`. Used internally by the snapshot recorder
     /// so its own DOM reads don't recurse back into capture.
     pub(crate) async fn evaluate_json_raw(&self, expression: &str) -> anyhow::Result<Value> {
+        self.evaluate_json_raw_with_timeout(expression, Duration::from_secs(30))
+            .await
+    }
+
+    async fn evaluate_json_raw_with_timeout(
+        &self,
+        expression: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<Value> {
         let wrapped = wrap_expression(expression);
         let resp = self
-            .execute(
+            .client
+            .execute_for_session_with_timeout(
+                self.session_id.as_deref(),
                 "Runtime.evaluate",
                 json!({
                     "expression": wrapped,
                     "awaitPromise": true,
                     "returnByValue": true,
                 }),
+                timeout,
             )
             .await?;
         if let Some(exception) = resp.get("exceptionDetails") {
@@ -209,6 +221,191 @@ impl PageSession {
 
     pub async fn page_info(&self) -> anyhow::Result<Value> {
         self.evaluate_json(PAGE_INFO_JS).await
+    }
+
+    /// Fetch a same-session resource through the attached page and stream it
+    /// into `destination` in bounded chunks. This preserves browser cookies,
+    /// Origin and other session state for CDNs that reject an independent HTTP
+    /// client without holding the whole response in memory.
+    pub async fn fetch_file_with_browser(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        destination: &Path,
+    ) -> anyhow::Result<(String, String)> {
+        const CHUNK_BYTES: usize = 1024 * 1024;
+
+        if max_bytes == 0 {
+            anyhow::bail!("browser resource byte limit must be greater than zero");
+        }
+        let encoded_url = serde_json::to_string(url)?;
+        let fetch_id = uuid::Uuid::new_v4().to_string();
+        let encoded_id = serde_json::to_string(&fetch_id)?;
+        let result = async {
+            let start_expression = format!(
+                r#"
+return (async () => {{
+  const key = {encoded_id};
+  const registry = globalThis.__socaiResourceFetches ||= new Map();
+  const response = await fetch({encoded_url}, {{
+    credentials: "include",
+    signal: AbortSignal.timeout(115000),
+  }});
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > {max_bytes}) {{
+    if (response.body) await response.body.cancel();
+    return {{ status: response.status, too_large: true, content_length: contentLength }};
+  }}
+  if (!response.body) {{
+    return {{ status: response.status, error: "response body is not streamable" }};
+  }}
+  const state = {{ reader: response.body.getReader(), total: 0, expiry: 0 }};
+  state.expiry = setTimeout(async () => {{
+    if (registry.get(key) !== state) return;
+    try {{ await state.reader.cancel(); }} catch (_) {{}}
+    registry.delete(key);
+  }}, 120000);
+  registry.set(key, state);
+  return {{
+    status: response.status,
+    content_type: response.headers.get("content-type") || "",
+    final_url: response.url || "",
+  }};
+}})();
+"#
+            );
+            let metadata = self
+                .evaluate_json_raw_with_timeout(&start_expression, Duration::from_secs(120))
+                .await?;
+            let status = metadata.get("status").and_then(Value::as_u64).unwrap_or(0);
+            if !matches!(status, 200 | 206) {
+                anyhow::bail!("browser resource fetch returned HTTP {status}");
+            }
+            if metadata.get("too_large").and_then(Value::as_bool) == Some(true) {
+                anyhow::bail!("browser resource exceeds the {max_bytes} byte limit");
+            }
+            if let Some(error) = metadata.get("error").and_then(Value::as_str) {
+                anyhow::bail!("browser resource fetch failed: {error}");
+            }
+            let content_type = metadata
+                .get("content_type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let final_url = metadata
+                .get("final_url")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(url)
+                .to_string();
+
+            let mut file = tokio::fs::File::create(destination)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to create browser resource file {}",
+                        destination.display()
+                    )
+                })?;
+            let mut written = 0usize;
+            loop {
+                let read_expression = format!(
+                    r#"
+return (async () => {{
+  const key = {encoded_id};
+  const registry = globalThis.__socaiResourceFetches;
+  const state = registry && registry.get(key);
+  if (!state) return {{ ok: false, error: "browser fetch state is unavailable" }};
+  const chunks = [];
+  let length = 0;
+  let done = false;
+  while (length < {CHUNK_BYTES}) {{
+    const item = await state.reader.read();
+    if (item.done) {{ done = true; break; }}
+    const value = item.value || new Uint8Array();
+    if (state.total + value.byteLength > {max_bytes}) {{
+      try {{ await state.reader.cancel(); }} catch (_) {{}}
+      clearTimeout(state.expiry);
+      registry.delete(key);
+      return {{ ok: false, too_large: true }};
+    }}
+    state.total += value.byteLength;
+    length += value.byteLength;
+    chunks.push(value);
+  }}
+  const payload = new Uint8Array(length);
+  let cursor = 0;
+  for (const chunk of chunks) {{ payload.set(chunk, cursor); cursor += chunk.byteLength; }}
+  let binary = "";
+  for (let offset = 0; offset < payload.length; offset += 0x8000) {{
+    binary += String.fromCharCode(...payload.subarray(offset, offset + 0x8000));
+  }}
+  if (done) {{
+    clearTimeout(state.expiry);
+    registry.delete(key);
+  }}
+  return {{ ok: true, done, body: btoa(binary) }};
+}})();
+"#
+                );
+                let response = self
+                    .evaluate_json_raw_with_timeout(&read_expression, Duration::from_secs(120))
+                    .await?;
+                if response.get("too_large").and_then(Value::as_bool) == Some(true) {
+                    anyhow::bail!("browser resource exceeds the {max_bytes} byte limit");
+                }
+                if response.get("ok").and_then(Value::as_bool) != Some(true) {
+                    let error = response
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("browser resource stream failed");
+                    anyhow::bail!("browser resource fetch failed: {error}");
+                }
+                let body = response
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("browser resource fetch omitted response bytes"))?;
+                let chunk = BASE64
+                    .decode(body)
+                    .context("failed to decode browser resource bytes")?;
+                if written.saturating_add(chunk.len()) > max_bytes {
+                    anyhow::bail!("browser resource exceeds the {max_bytes} byte limit");
+                }
+                tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
+                written += chunk.len();
+                if response.get("done").and_then(Value::as_bool) == Some(true) {
+                    break;
+                }
+            }
+            if written == 0 {
+                anyhow::bail!("browser resource fetch returned an empty body");
+            }
+            tokio::io::AsyncWriteExt::flush(&mut file).await?;
+            drop(file);
+            Ok((content_type, final_url))
+        }
+        .await;
+
+        // Best-effort cleanup for HTTP/type/decoding errors. Successful reads
+        // remove themselves when the stream reaches EOF.
+        let cleanup_expression = format!(
+            r#"
+return (async () => {{
+  const registry = globalThis.__socaiResourceFetches;
+  const state = registry && registry.get({encoded_id});
+  if (state) {{
+    try {{ await state.reader.cancel(); }} catch (_) {{}}
+    clearTimeout(state.expiry);
+    registry.delete({encoded_id});
+  }}
+  return true;
+}})();
+"#
+        );
+        let _ = self
+            .evaluate_json_raw_with_timeout(&cleanup_expression, Duration::from_secs(5))
+            .await;
+        result
     }
 
     pub async fn click(&self, x: f64, y: f64) -> anyhow::Result<()> {

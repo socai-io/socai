@@ -1,6 +1,7 @@
 pub mod dy;
 pub mod registry;
 pub mod runner;
+pub mod tiktok;
 pub mod xhs;
 
 pub use registry::{
