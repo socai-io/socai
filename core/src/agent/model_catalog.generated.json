@@ -3,6 +3,23 @@
   "providers": {
     "anthropic": [
       {
+        "id": "claude-fable-5-1",
+        "display_name": "Claude Fable 5.1",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 10,
+              "output_per_million": 50,
+              "cache_read_per_million": 0.25,
+              "cache_write_per_million": 12.5
+            }
+          ]
+        }
+      },
+      {
         "id": "claude-opus-5",
         "display_name": "Claude Opus 5",
         "source": "pi-ai",
@@ -226,6 +243,23 @@
       }
     ],
     "openai": [
+      {
+        "id": "gpt-6-astra",
+        "display_name": "GPT-6 Astra",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 10,
+              "output_per_million": 50,
+              "cache_read_per_million": 1,
+              "cache_write_per_million": 12.5
+            }
+          ]
+        }
+      },
       {
         "id": "gpt-5.6-terra",
         "display_name": "GPT-5.6 Terra",
