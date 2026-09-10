@@ -128,6 +128,7 @@ fn contains_tool_result(message: &Message) -> bool {
 
 fn compact_older_messages(messages: &[Message]) -> String {
     let mut inherited = Vec::new();
+    let mut evidence_refs: BTreeMap<String, String> = BTreeMap::new();
     let mut artifacts: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
     let mut turns = Vec::new();
     let mut pending_user: Option<String> = None;
@@ -170,6 +171,7 @@ fn compact_older_messages(messages: &[Message]) -> String {
                 let Ok(value) = serde_json::from_str::<Value>(text) else {
                     continue;
                 };
+                collect_evidence_reference(&value, &mut evidence_refs);
                 collect_artifact_evidence(&value, &mut artifacts);
             }
         }
@@ -193,6 +195,15 @@ fn compact_older_messages(messages: &[Message]) -> String {
             rendered.push_str(&format!("\n### Turn {}\n{}", index + 1, turn));
         }
     }
+    if !evidence_refs.is_empty() {
+        rendered.push_str("\n\n## Evidence references from earlier tool results\n");
+        rendered.push_str(
+            "Use these short IDs in submit_research_completion.evidence_refs; do not reconstruct locators.\n",
+        );
+        for (id, locator) in evidence_refs {
+            rendered.push_str(&format!("- {id} = {locator}\n"));
+        }
+    }
     if !artifacts.is_empty() {
         rendered.push_str("\n\n## Earlier tool evidence\n");
         rendered.push_str("Full data is available in the listed artifacts.\n");
@@ -208,6 +219,26 @@ fn compact_older_messages(messages: &[Message]) -> String {
         }
     }
     rendered
+}
+
+fn collect_evidence_reference(value: &Value, evidence_refs: &mut BTreeMap<String, String>) {
+    let Some(id) = value
+        .get("evidence_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    let Some(locator) = value
+        .get("canonical_locator")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|locator| !locator.is_empty())
+    else {
+        return;
+    };
+    evidence_refs.insert(id.to_string(), locator.to_string());
 }
 
 fn assistant_report_markdown(message: &Message) -> Option<String> {

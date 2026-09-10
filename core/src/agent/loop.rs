@@ -1465,19 +1465,6 @@ impl CoverageRuntime {
 
     fn system_instructions(&self, base: &str) -> String {
         let mut instructions = base.trim_end().to_string();
-        instructions.push_str(
-            "\n\n# System-generated evidence references\n\
-             For submit_research_completion.evidence_refs, prefer the stable evidence IDs below. \
-             Do not invent paths or reconstruct tool locators from directory names. The system \
-             resolves these IDs to canonical current-run locators.\n",
-        );
-        if self.evidence_ids.is_empty() {
-            instructions.push_str("- No evidence IDs have been issued yet.\n");
-        } else {
-            for (id, locator) in &self.evidence_ids {
-                instructions.push_str(&format!("- {id} = {locator}\n"));
-            }
-        }
         if self.last_mile_active {
             instructions.push_str(
                 "\n# Last-mile recovery is active\n\
