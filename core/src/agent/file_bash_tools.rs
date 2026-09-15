@@ -14,6 +14,7 @@
 //! leading `~` expands to the home directory. `shell` also runs with its
 //! working directory set to the current run dir.
 
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -217,6 +218,40 @@ fn truncate_output(text: &str, limit: usize) -> String {
     format!("{head}\n…[output truncated at {limit} chars]")
 }
 
+fn read_text_window(path: &Path, start: usize, limit: usize) -> std::io::Result<String> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    if limit == 0 {
+        return Ok(String::new());
+    }
+
+    // Skip without allocating even when a preceding line is very large.
+    for _ in 0..start {
+        if reader.skip_until(b'\n')? == 0 {
+            return Ok(String::new());
+        }
+    }
+
+    // Bound the selected bytes as well as the line count: a single line can
+    // exceed the text limit. The extra byte lets us detect overflow.
+    let mut reader = reader.take(MAX_TEXT_BYTES + 1);
+    let mut bytes = Vec::new();
+    for _ in 0..limit {
+        if reader.read_until(b'\n', &mut bytes)? == 0 {
+            break;
+        }
+        if bytes.len() as u64 > MAX_TEXT_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("requested line window exceeds the {MAX_TEXT_BYTES}-byte text limit"),
+            ));
+        }
+    }
+
+    let content = String::from_utf8(bytes)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    Ok(content.lines().collect::<Vec<_>>().join("\n"))
+}
+
 /// `read_file` — read a text file (optionally a line window) or an image.
 /// A non-empty `roots` confines it to those directory trees (see module doc).
 pub struct ReadFileTool {
@@ -319,16 +354,6 @@ impl Tool for ReadFileTool {
             ]));
         }
 
-        if meta.len() > MAX_TEXT_BYTES {
-            anyhow::bail!(
-                "{} is {} bytes — too large to read; use offset/limit",
-                path.display(),
-                meta.len()
-            );
-        }
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
-
         let offset = input
             .get("offset")
             .and_then(Value::as_u64)
@@ -338,22 +363,32 @@ impl Tool for ReadFileTool {
             .and_then(Value::as_u64)
             .map(|l| l as usize);
 
-        if offset.is_none() && limit.is_none() {
-            let lines: Vec<&str> = content.lines().collect();
-            if lines.len() > DEFAULT_READ_LIMIT {
-                let shown = lines[..DEFAULT_READ_LIMIT].join("\n");
-                return Ok(ToolResult::text(format!(
-                    "{shown}\n\n[truncated at {DEFAULT_READ_LIMIT} of {} lines; use offset/limit for more]",
-                    lines.len()
-                )));
-            }
-            return Ok(ToolResult::text(content));
+        if offset.is_some() || limit.is_some() {
+            let start = offset.unwrap_or(1).saturating_sub(1);
+            let take = limit.unwrap_or(DEFAULT_READ_LIMIT);
+            let windowed = read_text_window(&path, start, take)
+                .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+            return Ok(ToolResult::text(windowed));
         }
 
-        let start = offset.unwrap_or(1).saturating_sub(1);
-        let take = limit.unwrap_or(DEFAULT_READ_LIMIT);
-        let windowed: Vec<&str> = content.lines().skip(start).take(take).collect();
-        Ok(ToolResult::text(windowed.join("\n")))
+        if meta.len() > MAX_TEXT_BYTES {
+            anyhow::bail!(
+                "{} is {} bytes — too large to read; use offset/limit",
+                path.display(),
+                meta.len()
+            );
+        }
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.len() > DEFAULT_READ_LIMIT {
+            let shown = lines[..DEFAULT_READ_LIMIT].join("\n");
+            return Ok(ToolResult::text(format!(
+                "{shown}\n\n[truncated at {DEFAULT_READ_LIMIT} of {} lines; use offset/limit for more]",
+                lines.len()
+            )));
+        }
+        Ok(ToolResult::text(content))
     }
 }
 
@@ -702,6 +737,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read.flat_text(), "b\nc");
+
+        // A small line window is readable even when the file exceeds 2 MiB.
+        let content = format!(
+            "first\r\n{}\r\n你好\r\nlast\n",
+            "x".repeat(MAX_TEXT_BYTES as usize)
+        );
+        std::fs::write(&file, content).unwrap();
+        let tool = ReadFileTool::unrestricted();
+        for (offset, limit, expected) in [
+            (1, 1, "first"),
+            (0, 1, "first"),
+            (3, 2, "你好\nlast"),
+            (2, 0, ""),
+            (100, 1, ""),
+        ] {
+            let read = tool
+                .call(
+                    json!({"path": file.to_string_lossy(), "offset": offset, "limit": limit}),
+                    &ctx(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(read.flat_text(), expected);
+        }
+        let read = tool
+            .call(json!({"path": file.to_string_lossy(), "limit": 1}), &ctx())
+            .await
+            .unwrap();
+        assert_eq!(read.flat_text(), "first");
+        let read = tool
+            .call(json!({"path": file.to_string_lossy(), "offset": 3}), &ctx())
+            .await
+            .unwrap();
+        assert_eq!(read.flat_text(), "你好\nlast");
+
+        let oversized = tool
+            .call(
+                json!({"path": file.to_string_lossy(), "offset": 2, "limit": 1}),
+                &ctx(),
+            )
+            .await;
+        assert!(oversized
+            .unwrap_err()
+            .to_string()
+            .contains("line window exceeds"));
+        let whole = tool
+            .call(json!({"path": file.to_string_lossy()}), &ctx())
+            .await;
+        assert!(whole.unwrap_err().to_string().contains("use offset/limit"));
+
+        // The byte boundary is inclusive, and EOF need not end in a newline.
+        let content = "x".repeat(MAX_TEXT_BYTES as usize);
+        std::fs::write(&file, &content).unwrap();
+        let read = tool
+            .call(json!({"path": file.to_string_lossy(), "limit": 1}), &ctx())
+            .await
+            .unwrap();
+        assert_eq!(read.flat_text(), content);
+
+        // Supplying only an offset retains the default line limit.
+        std::fs::write(&file, "x\n".repeat(DEFAULT_READ_LIMIT + 1)).unwrap();
+        let read = tool
+            .call(json!({"path": file.to_string_lossy(), "offset": 1}), &ctx())
+            .await
+            .unwrap();
+        assert_eq!(read.flat_text(), vec!["x"; DEFAULT_READ_LIMIT].join("\n"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
