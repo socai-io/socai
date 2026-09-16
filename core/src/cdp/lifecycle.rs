@@ -489,7 +489,7 @@ async fn open_managed_endpoint(options: &ChromeConnectOptions) -> anyhow::Result
     // it rather than spawning a second chrome against the same profile dir. We
     // didn't launch that process, so it gets no `ChromeProcess` guard — we must
     // not kill a browser we don't own.
-    if let Some(endpoint) = endpoint::endpoint_from_active_port(&user_data_dir).await {
+    if let Some(endpoint) = endpoint::endpoint_from_active_port(&user_data_dir).await? {
         let endpoint = endpoint::mark_managed_endpoint(endpoint, &user_data_dir);
         if reachable(&endpoint).await {
             return Ok(OpenEndpoint {

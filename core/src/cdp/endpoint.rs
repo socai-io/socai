@@ -10,6 +10,14 @@ const INSPECT_URL: &str = "chrome://inspect/#remote-debugging";
 const DEFAULT_DEVTOOLS_PORTS: &[u16] = &[9222, 9223];
 const HTTP_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[derive(Debug, thiserror::Error)]
+#[error("permission denied reading chrome debugging marker {}: {source}", marker.display())]
+pub struct ChromeProfileAccessDenied {
+    marker: PathBuf,
+    #[source]
+    source: std::io::Error,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Endpoint {
     pub source: String,
@@ -89,9 +97,12 @@ pub async fn discover_existing_chrome_endpoint() -> anyhow::Result<Option<Endpoi
 /// SOCAI_CDP_* overrides; callers that need explicit endpoints should resolve
 /// them first.
 pub(crate) async fn discover_running_chrome_endpoint() -> anyhow::Result<Option<Endpoint>> {
+    let mut access_error = None;
     for profile in chrome_profile_roots() {
-        if let Some(endpoint) = endpoint_from_active_port(&profile).await {
-            return Ok(Some(endpoint));
+        match endpoint_from_active_port(&profile).await {
+            Ok(Some(endpoint)) => return Ok(Some(endpoint)),
+            Ok(None) => {}
+            Err(err) => access_error = Some(err),
         }
     }
     for port in DEFAULT_DEVTOOLS_PORTS {
@@ -100,7 +111,12 @@ pub(crate) async fn discover_running_chrome_endpoint() -> anyhow::Result<Option<
             return Ok(Some(endpoint));
         }
     }
-    Ok(None)
+    // An inaccessible profile is not evidence that remote debugging is off.
+    // Keep trying other profiles and ports before surfacing the permission error.
+    match access_error {
+        Some(err) => Err(err),
+        None => Ok(None),
+    }
 }
 
 /// Poll `discover_existing_chrome_endpoint` until it succeeds or `timeout`
@@ -161,11 +177,22 @@ async fn endpoint_from_http_url(url: &str, source: &str) -> anyhow::Result<Endpo
     })
 }
 
-pub(crate) async fn endpoint_from_active_port(profile: &Path) -> Option<Endpoint> {
+pub(crate) async fn endpoint_from_active_port(profile: &Path) -> anyhow::Result<Option<Endpoint>> {
     let marker = profile.join("DevToolsActivePort");
-    let contents = fs::read_to_string(&marker).ok()?;
+    let contents = match fs::read_to_string(&marker) {
+        Ok(contents) => contents,
+        Err(source) if source.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(ChromeProfileAccessDenied { marker, source }.into());
+        }
+        Err(_) => return Ok(None),
+    };
     let mut lines = contents.lines();
-    let port: u16 = lines.next()?.trim().parse().ok()?;
+    let Some(port) = lines
+        .next()
+        .and_then(|line| line.trim().parse::<u16>().ok())
+    else {
+        return Ok(None);
+    };
     let ws_path = lines.next().map(str::trim).unwrap_or("").to_string();
 
     // `DevToolsActivePort` already contains the browser websocket path. Use it
@@ -174,18 +201,18 @@ pub(crate) async fn endpoint_from_active_port(profile: &Path) -> Option<Endpoint
     // the runtime's target inventory/lifecycle now uses raw browser-websocket
     // `Target.*` commands for both existing and managed Chrome.
     if ws_path.is_empty() {
-        return None;
+        return Ok(None);
     }
     let source = format!("active_port:{}", marker.display());
     let browser_ws_url = format!("ws://127.0.0.1:{port}{ws_path}");
-    Some(Endpoint {
+    Ok(Some(Endpoint {
         source,
         browser_ws_url,
         http_version_url: None,
         version: None,
         managed: false,
         user_data_dir: None,
-    })
+    }))
 }
 
 pub fn managed_chrome_user_data_dir() -> anyhow::Result<PathBuf> {

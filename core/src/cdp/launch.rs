@@ -125,7 +125,7 @@ async fn wait_for_active_port(
 ) -> anyhow::Result<Endpoint> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(endpoint) = endpoint::endpoint_from_active_port(user_data_dir).await {
+        if let Some(endpoint) = endpoint::endpoint_from_active_port(user_data_dir).await? {
             return Ok(endpoint);
         }
         if let Some(status) = child

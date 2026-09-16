@@ -106,34 +106,53 @@ pub async fn cdp_status(runtime: State<'_, SocaiRuntime>) -> Result<BrowserStatu
     Ok(runtime.browser_status().await)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChromeDebuggingStatus {
+    Waiting,
+    Ready,
+    PermissionRequired,
+}
+
 #[tauri::command]
-pub async fn cdp_remote_debugging_ready() -> Result<bool, String> {
-    let Some(endpoint) = socai_core::cdp::discover_existing_chrome_endpoint()
-        .await
-        .map_err(|err| format!("{err:#}"))?
-    else {
-        return Ok(false);
+pub async fn cdp_remote_debugging_status() -> Result<ChromeDebuggingStatus, String> {
+    let endpoint = match socai_core::cdp::discover_existing_chrome_endpoint().await {
+        Ok(Some(endpoint)) => endpoint,
+        Ok(None) => return Ok(ChromeDebuggingStatus::Waiting),
+        Err(err) => {
+            if cfg!(target_os = "macos")
+                && err.is::<socai_core::cdp::endpoint::ChromeProfileAccessDenied>()
+            {
+                return Ok(ChromeDebuggingStatus::PermissionRequired);
+            }
+            return Err(format!("{err:#}"));
+        }
     };
     let url = url::Url::parse(&endpoint.browser_ws_url)
         .map_err(|err| format!("invalid chrome debugging endpoint: {err}"))?;
     let Some(host) = url.host_str() else {
-        return Ok(false);
+        return Ok(ChromeDebuggingStatus::Waiting);
     };
     let Some(port) = url.port_or_known_default() else {
-        return Ok(false);
+        return Ok(ChromeDebuggingStatus::Waiting);
     };
 
     // DevToolsActivePort can remain after the user disables remote debugging.
     // A short TCP probe verifies the local listener without opening a CDP
     // websocket, which would itself trigger chrome's Allow confirmation.
-    Ok(matches!(
+    let ready = matches!(
         tokio::time::timeout(
             std::time::Duration::from_millis(350),
             tokio::net::TcpStream::connect((host, port)),
         )
         .await,
         Ok(Ok(_))
-    ))
+    );
+    Ok(if ready {
+        ChromeDebuggingStatus::Ready
+    } else {
+        ChromeDebuggingStatus::Waiting
+    })
 }
 
 #[tauri::command]
@@ -521,6 +540,24 @@ pub fn open_external(url: String) -> Result<(), String> {
 #[tauri::command]
 pub fn open_chrome_remote_debugging() -> Result<(), String> {
     socai_core::cdp::open_remote_debugging_page().map_err(|err| format!("{err:#}"))
+}
+
+/// Fixed destination: do not expose arbitrary system-settings URLs to the webview.
+#[tauri::command]
+pub fn open_chrome_data_access_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
+            .status()
+            .map_err(|err| format!("failed to open macOS privacy settings: {err}"))?;
+        if !status.success() {
+            return Err("macOS could not open Files & Folders settings".into());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err("chrome data access settings are only available on macOS".into())
 }
 
 #[tauri::command]

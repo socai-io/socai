@@ -38,6 +38,8 @@ import { renderNoteAnswer, renderNoteCards } from "./notes";
 import { artifactFileIcon, downloadIcon, eyeIcon, formatArtifactSize } from "./artifact_preview";
 import type { AgentTaskView } from "./tasks";
 
+export type ChromeSetupState = "waiting" | "ready" | "permission_required";
+
 export interface ComposerProps {
   mode: "new" | "reply";
   /** Existing task controlled by the reply composer. */
@@ -58,8 +60,8 @@ export interface ComposerProps {
    * reconnects on demand, so the connect overlay and send gating don't apply.
    */
   remoteProfile: boolean;
-  /** Existing Chrome has exposed its CDP endpoint after the user opted in. */
-  remoteDebuggingReady: boolean;
+  chromeSetupState: ChromeSetupState;
+  chromeSetupError: string;
   /** Cloud microphone availability and the current recording phase. */
   voice: ComposerVoiceState;
 }
@@ -132,16 +134,17 @@ export function renderComposePane(composer: ComposerProps): string {
           <div class="compose-form-inner" aria-hidden="${gated ? "true" : "false"}">
             ${renderComposer(composer)}
           </div>
-          ${gated ? renderConnectOverlay(composer.status, composer.remoteDebuggingReady) : ""}
+          ${gated ? renderConnectOverlay(composer) : ""}
         </div>
       </div>
     </div>
   `;
 }
 
-function renderConnectOverlay(status: Status, remoteDebuggingReady: boolean): string {
-  const connecting = status.state === "connecting";
-  const ready = remoteDebuggingReady;
+function renderConnectOverlay(composer: ComposerProps): string {
+  const connecting = composer.status.state === "connecting";
+  const ready = composer.chromeSetupState === "ready";
+  const permissionRequired = composer.chromeSetupState === "permission_required";
   return `
     <div class="connect-overlay" role="dialog" aria-label="${esc(t("chrome.requiredAria"))}">
       <h3 class="connect-overlay-head">${esc(t("chrome.setupTitle"))}</h3>
@@ -149,10 +152,21 @@ function renderConnectOverlay(status: Status, remoteDebuggingReady: boolean): st
         <section class="connect-setup-step ${ready ? "is-complete" : "is-active"}">
           <div class="connect-setup-step-head">
             <span class="connect-setup-index">${ready ? "✓" : "1"}</span>
-            <h4 class="connect-setup-title">${esc(t("chrome.setupEnableTitle"))}</h4>
+            <h4 class="connect-setup-title">${esc(t(permissionRequired ? "chrome.setupPermissionTitle" : "chrome.setupEnableTitle"))}</h4>
             <span class="connect-setup-state">${esc(t(ready ? "chrome.setupDone" : "chrome.setupWaiting"))}</span>
           </div>
-          <img
+          ${permissionRequired ? `
+          <p class="t-small subtle">${esc(t("chrome.setupPermissionHelp"))}</p>
+          <details class="t-small subtle">
+            <summary>${esc(t("chrome.setupPermissionDevTitle"))}</summary>
+            <p>${esc(t("chrome.setupPermissionDevHelp"))}</p>
+          </details>
+          <button
+            id="overlay-chrome-data-access"
+            type="button"
+            class="btn-primary connect-setup-action"
+          >${esc(t("chrome.setupOpenPrivacy"))}</button>
+          ` : `<img
             class="connect-setup-image"
             src="${chromeRemoteDebuggingImage}"
             alt="${esc(t("chrome.setupEnableImageAlt"))}"
@@ -162,7 +176,7 @@ function renderConnectOverlay(status: Status, remoteDebuggingReady: boolean): st
             type="button"
             class="btn-primary connect-setup-action"
             ${ready ? "disabled" : ""}
-          >${esc(t("chrome.setupOpenSettings"))}</button>
+          >${esc(t("chrome.setupOpenSettings"))}</button>`}
         </section>
         <section class="connect-setup-step ${ready ? "is-active" : ""}">
           <div class="connect-setup-step-head">
@@ -183,6 +197,7 @@ function renderConnectOverlay(status: Status, remoteDebuggingReady: boolean): st
           >${esc(t(connecting ? "chrome.connectingCta" : "chrome.setupConnect"))}</button>
         </section>
       </div>
+      ${composer.chromeSetupError ? `<p class="t-small" role="alert">${esc(composer.chromeSetupError)}</p>` : ""}
     </div>
   `;
 }

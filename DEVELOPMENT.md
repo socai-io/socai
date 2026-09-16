@@ -72,6 +72,18 @@ names, and pinned checksums together in
 
 `dev:desktop:local` points `SOCAI_HOME` / `SOCAI_RUNS_DIR` at the repo's
 `.socai/` directory, so runs and the task index land alongside the checkout.
+
+On macOS, attaching to your existing Chrome reads its `DevToolsActivePort`
+file. If onboarding reports that Chrome data access is blocked, use its
+button to open **System Settings → Privacy & Security → Files & Folders**
+and enable **Google Chrome** under the responsible app. With `tauri dev`
+(including `dev:desktop:local -- --release`), this may be the terminal or
+editor that launched it, such as Cursor, rather than the installed socai app.
+The installed and development apps do not necessarily share permission grants.
+Detection resumes after granting access; restart the development app if needed.
+This file-access permission is separate from Automation and from Chrome's
+own remote-debugging checkbox and Allow dialog.
+
 For normal CLI usage, the equivalent persistent run-artifact setting is
 `socai config set runs.dir <path>`; the environment variable remains the highest
 precedence override for local/dev scripts:

@@ -31,7 +31,7 @@ import {
   renderLiveNotesGroup,
   renderSearchGroupForEvent,
 } from "./conversation";
-import type { ArtifactDownloadState, ComposerProps } from "./conversation";
+import type { ArtifactDownloadState, ChromeSetupState, ComposerProps } from "./conversation";
 import { artifactPreviewMime, renderArtifactPreview } from "./artifact_preview";
 import type { ArtifactPreviewPaneState } from "./artifact_preview";
 import { bindNoteInteractions, setNoteRegistry } from "./notes";
@@ -90,7 +90,9 @@ export namespace agentPanel {
   // opens the centered dialog by setting this; the delete only runs on confirm.
   let deleteRequestTaskId: string | null = null;
   let modelsCache: ModelInfo[] = [];
-  let remoteDebuggingReady = false;
+  let chromeSetupState: ChromeSetupState = "waiting";
+  let chromeSetupError = "";
+  let chromeSetupDetectionError = "";
   let chromeSetupPollTimer: number | null = null;
   let chromeSetupPollInFlight = false;
   let chromeSetupStatus: ShellState["status"] = { state: "disconnected", reason: "starting" };
@@ -948,7 +950,8 @@ export namespace agentPanel {
       modelReady: !!selected && selected.has_key,
       running: false,
       remoteProfile: settingsMenu.isRemoteProfile(),
-      remoteDebuggingReady,
+      chromeSetupState,
+      chromeSetupError: chromeSetupError || chromeSetupDetectionError,
       voice: voiceInput.composerState(),
     };
   }
@@ -965,7 +968,8 @@ export namespace agentPanel {
       modelReady: true,
       running,
       remoteProfile: settingsMenu.isRemoteProfile(),
-      remoteDebuggingReady,
+      chromeSetupState,
+      chromeSetupError: chromeSetupError || chromeSetupDetectionError,
       voice: voiceInput.composerState(),
     };
   }
@@ -1504,21 +1508,36 @@ export namespace agentPanel {
     // privileged remote-debugging page.
     document.getElementById("overlay-remote-debugging-help")?.addEventListener("click", (event) => {
       event.preventDefault();
-      remoteDebuggingReady = false;
+      chromeSetupError = "";
+      shell.rerender();
       invoke("open_chrome_remote_debugging")
         .then(() => pollChromeSetup(shell))
-        .catch((e) => console.error("open_chrome_remote_debugging failed:", e));
+        .catch((e) => {
+          chromeSetupError = `${e}`;
+          shell.rerender();
+        });
+    });
+    document.getElementById("overlay-chrome-data-access")?.addEventListener("click", () => {
+      chromeSetupError = "";
+      shell.rerender();
+      invoke("open_chrome_data_access_settings")
+        .catch(() => {
+          chromeSetupError = t("chrome.setupOpenPrivacyFailed");
+          shell.rerender();
+        });
     });
   }
 
   function syncChromeSetupDetection(shell: ShellState): void {
     chromeSetupStatus = shell.status;
 
-    const overlayVisible = document.getElementById("overlay-remote-debugging-help") !== null;
+    const overlayVisible = document.querySelector(".connect-overlay") !== null;
     if (!overlayVisible || shell.status.state === "connected" || settingsMenu.isRemoteProfile()) {
       stopChromeSetupPolling();
       if (shell.status.state === "connected") {
-        remoteDebuggingReady = true;
+        chromeSetupState = "ready";
+        chromeSetupError = "";
+        chromeSetupDetectionError = "";
       }
       return;
     }
@@ -1538,12 +1557,18 @@ export namespace agentPanel {
     if (chromeSetupPollInFlight || chromeSetupStatus.state === "connected") return;
     chromeSetupPollInFlight = true;
     try {
-      const ready = await invoke<boolean>("cdp_remote_debugging_ready");
-      const changed = ready !== remoteDebuggingReady;
-      remoteDebuggingReady = ready;
+      const state = await invoke<ChromeSetupState>("cdp_remote_debugging_status");
+      const changed = state !== chromeSetupState || chromeSetupDetectionError !== "";
+      chromeSetupState = state;
+      chromeSetupDetectionError = "";
+      if (changed) chromeSetupError = "";
       if (changed) shell.rerender();
     } catch (e) {
-      console.error("cdp_remote_debugging_ready failed:", e);
+      const error = `${e}`;
+      const changed = chromeSetupDetectionError !== error || chromeSetupState !== "waiting";
+      chromeSetupState = "waiting";
+      chromeSetupDetectionError = error;
+      if (changed) shell.rerender();
     } finally {
       chromeSetupPollInFlight = false;
     }

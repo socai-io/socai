@@ -74,6 +74,30 @@ const messages = {
     en: "enable remote debugging and check the box",
     zh: "开启远程调试，在方框里打钩",
   },
+  "chrome.setupPermissionTitle": {
+    en: "allow access to chrome data",
+    zh: "允许访问 chrome 数据",
+  },
+  "chrome.setupPermissionHelp": {
+    en: "macOS blocked access to chrome’s connection information. In Privacy & Security → Files & Folders, expand socai and enable Google Chrome. Detection resumes automatically after permission is granted.",
+    zh: "macOS 阻止了读取 chrome 连接信息。请在「隐私与安全性 → 文件与文件夹」展开 socai，开启 Google Chrome。授权后会自动重新检测。",
+  },
+  "chrome.setupPermissionDevTitle": {
+    en: "using a development build?",
+    zh: "使用本地开发版？",
+  },
+  "chrome.setupPermissionDevHelp": {
+    en: "Running a development build? Check the terminal or editor that launched it (such as Terminal, iTerm, or Cursor); its permission is separate from the installed app. Restart the development app if needed.",
+    zh: "本地开发版：请检查启动它的终端或编辑器（如 Terminal、iTerm、Cursor），权限与安装版分开；必要时重启开发版。",
+  },
+  "chrome.setupOpenPrivacy": {
+    en: "open macOS Files & Folders ↗",
+    zh: "打开 macOS「文件与文件夹」↗",
+  },
+  "chrome.setupOpenPrivacyFailed": {
+    en: "Could not open settings. Open System Settings → Privacy & Security → Files & Folders manually.",
+    zh: "无法打开设置，请手动进入「系统设置 → 隐私与安全性 → 文件与文件夹」。",
+  },
   "chrome.setupAllowTitle": {
     en: "click Allow in chrome",
     zh: "在 chrome 弹窗中点击 Allow",
