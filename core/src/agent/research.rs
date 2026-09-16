@@ -195,6 +195,7 @@ impl ResearchBrief {
         Ok(format!(
             "## Coverage-guided research execution\n\n\
              The validated research brief below is the task contract for this run. It is a plan, not evidence.\n\n\
+             - Before the first research action, call read_skill with name `insight-research` and follow that workflow for evidence selection, links, considerations, and report delivery.\n\
              - Research the required subquestions with the existing Xiaohongshu tools. You may address them in any efficient order, and one tool result may support more than one subquestion.\n\
              - Keep track of which required subquestions are covered, partial, missing, or blocked. Do not call a subquestion covered merely because the brief mentions it or because the answer sounds plausible.\n\
              - A covered subquestion needs evidence actually obtained in this run and an answer that uses that evidence to satisfy the requested deliverable.\n\

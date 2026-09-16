@@ -23,14 +23,16 @@ use crate::agent::r#loop::{
 use crate::agent::research::ResearchBrief;
 use crate::agent::research_coverage::{
     answer_with_missing_limitations, budget_exhausted_completion_prompt, completion_limitations,
-    completion_protocol_correction_prompt, completion_tool_result_content, evaluate_completion,
-    initial_coverage_state, research_completion_tool_schema, salvage_completion_text,
-    CompletionGateDecision, EvidenceLocatorCatalog, ResearchCompletionSubmission,
-    DEFAULT_MAX_COMPLETION_ATTEMPTS, DEFAULT_MAX_COVERAGE_PROTOCOL_RETRIES,
-    DEFAULT_MAX_RESEARCH_RECOVERY_ROUNDS, SUBMIT_RESEARCH_COMPLETION_TOOL,
+    completion_protocol_correction_prompt, completion_tool_result_content, coverage_checkpoint,
+    evaluate_completion, initial_coverage_state, research_completion_tool_schema,
+    salvage_completion_text, CompletionGateDecision, EvidenceLocatorCatalog,
+    ResearchCompletionSubmission, DEFAULT_MAX_COMPLETION_ATTEMPTS,
+    DEFAULT_MAX_COVERAGE_PROTOCOL_RETRIES, DEFAULT_MAX_RESEARCH_RECOVERY_ROUNDS,
+    SUBMIT_RESEARCH_COMPLETION_TOOL,
 };
 use crate::agent::research_finalizer::{run_forced_final_writer, ForcedWriterOutcome};
 use crate::agent::research_planner::prepare_research_brief;
+use crate::agent::research_workspace::{persist_research_workspace, ResearchWorkspaceStatus};
 use crate::agent::run_logging::AgentRunRecorder;
 use crate::agent::run_state::RunState;
 use crate::agent::system_prompt::build_system_prompt;
@@ -206,6 +208,24 @@ impl ResearchWorkflow {
         self.runtime.is_some()
     }
 
+    pub fn persist_workspace(
+        &self,
+        run_dir: &Path,
+        run_state: &RunState,
+        status: ResearchWorkspaceStatus,
+    ) -> std::io::Result<()> {
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        persist_research_workspace(
+            run_dir,
+            &runtime.evidence_ids,
+            &runtime.coverage_state,
+            run_state,
+            status,
+        )
+    }
+
     /// Hook 2: adjust the next main-loop request without exposing coverage
     /// internals to the generic loop.
     pub fn before_step(&self, schemas: &mut Vec<ToolSchema>) {
@@ -254,12 +274,6 @@ impl ResearchWorkflow {
                     "{SUBMIT_RESEARCH_COMPLETION_TOOL} must be the only tool call in its response"
                 );
                 runtime.protocol_retries = runtime.protocol_retries.saturating_add(1);
-                runtime.state = json!({
-                    "tool_calls": response.tool_calls.iter().map(|call| json!({
-                        "name": call.name,
-                        "input": call.input,
-                    })).collect::<Vec<_>>(),
-                });
                 io.messages
                     .push(Message::user_blocks(protocol_error_results(
                         &response.tool_calls,
@@ -299,7 +313,6 @@ impl ResearchWorkflow {
                 Err(error) => {
                     let reason = format!("{error:#}");
                     runtime.protocol_retries = runtime.protocol_retries.saturating_add(1);
-                    runtime.state = call.input.clone();
                     let instruction = if coverage_protocol_can_retry(runtime, step, io.max_steps) {
                         completion_protocol_correction_prompt()
                     } else {
@@ -370,7 +383,7 @@ impl ResearchWorkflow {
                 CompletionGateDecision::ReviseOnly => runtime.revise_only = true,
                 CompletionGateDecision::Accept | CompletionGateDecision::FinishWithLimitations => {}
             }
-            runtime.state = serde_json::to_value(&submission).map_err(anyhow::Error::from)?;
+            runtime.coverage_state = coverage_checkpoint(&submission, decision);
 
             match decision {
                 CompletionGateDecision::Accept | CompletionGateDecision::FinishWithLimitations => {
@@ -395,7 +408,6 @@ impl ResearchWorkflow {
         } else if response.tool_calls.is_empty() {
             push_assistant(response, visible_texts, io);
             runtime.protocol_retries = runtime.protocol_retries.saturating_add(1);
-            runtime.state = json!({ "ordinary_prose_attempt": visible_texts });
             if coverage_protocol_can_retry(runtime, step, io.max_steps) {
                 io.messages
                     .push(Message::user(completion_protocol_correction_prompt()));
@@ -430,10 +442,6 @@ impl ResearchWorkflow {
                 )));
             runtime.last_mile_active = false;
             runtime.revise_only = true;
-            runtime.state = json!({
-                "last_mile_protocol_error": reason,
-                "requested_tool_calls": response.tool_calls.len(),
-            });
             Ok(ResponseDirective::Continue)
         } else {
             Ok(ResponseDirective::UseDefaultLoop)
@@ -454,6 +462,9 @@ impl ResearchWorkflow {
             return;
         };
         if error.is_some() {
+            return;
+        }
+        if !tool_result_can_support_research(tool_name) {
             return;
         }
         let (evidence_id, canonical_locator) =
@@ -628,8 +639,7 @@ impl ResearchWorkflow {
                         }
                         decision => decision,
                     };
-                    runtime.state =
-                        serde_json::to_value(&submission).map_err(anyhow::Error::from)?;
+                    runtime.coverage_state = coverage_checkpoint(&submission, decision);
                     let limitations = completion_limitations(&submission, decision);
                     let answer =
                         answer_with_missing_limitations(&submission.final_answer, &limitations);
@@ -637,19 +647,11 @@ impl ResearchWorkflow {
                     return Ok(Some(WorkflowOutcome::Complete(answer)));
                 }
                 Err(error) => {
-                    runtime.state = call.input.clone();
                     salvage = salvage_completion_text(Some(&call.input), &visible_texts);
                     failure_reasons.push(format!("{error:#}"));
                 }
             }
         } else {
-            runtime.state = json!({
-                "tool_calls": response.tool_calls.iter().map(|call| json!({
-                    "name": call.name,
-                    "input": call.input,
-                })).collect::<Vec<_>>(),
-                "visible_text": visible_texts,
-            });
             salvage = salvage_completion_text(None, &visible_texts);
             failure_reasons.push(format!(
                 "budget finalization requires exactly one {SUBMIT_RESEARCH_COMPLETION_TOOL} call"
@@ -673,6 +675,17 @@ impl ResearchWorkflow {
     }
 }
 
+fn tool_result_can_support_research(tool_name: &str) -> bool {
+    !matches!(
+        tool_name,
+        "read_skill"
+            | "record_skill_learning"
+            | "update_plan"
+            | "publish_artifact"
+            | SUBMIT_RESEARCH_COMPLETION_TOOL
+    )
+}
+
 fn research_workflow_enabled(enabled_sites: &[String]) -> bool {
     enabled_sites.len() == 1 && enabled_sites.first().is_some_and(|site| site == "xhs")
 }
@@ -686,11 +699,11 @@ struct CoverageRuntime {
     last_mile_active: bool,
     revise_only: bool,
     evidence_ids: BTreeMap<String, String>,
-    state: Value,
+    coverage_state: Value,
 }
 
 impl CoverageRuntime {
-    fn new(brief: ResearchBrief, state: Value) -> Self {
+    fn new(brief: ResearchBrief, coverage_state: Value) -> Self {
         Self {
             brief,
             attempts: 0,
@@ -700,7 +713,7 @@ impl CoverageRuntime {
             last_mile_active: false,
             revise_only: false,
             evidence_ids: BTreeMap::new(),
-            state,
+            coverage_state,
         }
     }
 

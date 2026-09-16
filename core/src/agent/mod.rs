@@ -19,6 +19,7 @@ pub(crate) mod research_coverage;
 pub(crate) mod research_finalizer;
 pub(crate) mod research_planner;
 pub(crate) mod research_workflow;
+pub(crate) mod research_workspace;
 pub mod run_logging;
 pub mod run_state;
 pub mod signature;

@@ -494,8 +494,10 @@ pub fn evaluate_completion(
 
 pub fn initial_coverage_state(brief: &ResearchBrief) -> Value {
     json!({
+        "schema_version": 1,
         "protocol_version": RESEARCH_COVERAGE_PROTOCOL_VERSION,
         "status": "pending",
+        "decision": null,
         "subquestions": brief.subquestions.iter().map(|question| json!({
             "id": question.id,
             "status": "pending",
@@ -503,6 +505,25 @@ pub fn initial_coverage_state(brief: &ResearchBrief) -> Value {
             "support_summary": "",
             "gap": null,
         })).collect::<Vec<_>>(),
+        "hard_constraints_satisfied": null,
+        "stop_conditions_satisfied": null,
+        "unmet_requirements": [],
+    })
+}
+
+pub fn coverage_checkpoint(
+    submission: &ResearchCompletionSubmission,
+    decision: CompletionGateDecision,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "protocol_version": RESEARCH_COVERAGE_PROTOCOL_VERSION,
+        "status": "evaluated",
+        "decision": decision,
+        "subquestions": submission.subquestions,
+        "hard_constraints_satisfied": submission.hard_constraints_satisfied,
+        "stop_conditions_satisfied": submission.stop_conditions_satisfied,
+        "unmet_requirements": submission.unmet_requirements,
     })
 }
 

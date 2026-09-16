@@ -40,6 +40,7 @@ use crate::agent::report::report_with_artifacts;
 use crate::agent::research_workflow::{
     ResearchPrepareContext, ResearchWorkflow, ResponseDirective, WorkflowIo,
 };
+use crate::agent::research_workspace::{ResearchWorkspaceStatus, ResearchWorkspaceStatusGuard};
 use crate::agent::run_logging::{make_run_dir, AgentRunRecorder};
 use crate::agent::run_state::RunState;
 use crate::agent::signature::tool_call_signature;
@@ -273,6 +274,13 @@ pub async fn run_agent_with_events(
     let mut terminal_finalize_reason: Option<String> = None;
     let mut truncation_retries = 0u32;
     let mut last_system: String = build_system_prompt(&[], &workflow.system_instructions());
+    if let Err(error) =
+        workflow.persist_workspace(&run_dir, &run_state, ResearchWorkspaceStatus::Running)
+    {
+        warn!(%error, "failed to persist initial research workspace");
+    }
+    let mut workspace_status_guard =
+        ResearchWorkspaceStatusGuard::new(&run_dir, workflow.is_active());
 
     macro_rules! workflow_io {
         () => {
@@ -695,6 +703,11 @@ pub async fn run_agent_with_events(
         }
         messages.push(Message::user_blocks(tool_result_blocks));
         workflow.finish_tool_step();
+        if let Err(error) =
+            workflow.persist_workspace(&run_dir, &run_state, ResearchWorkspaceStatus::Running)
+        {
+            warn!(%error, "failed to persist research workspace checkpoint");
+        }
         if degraded_reason.is_some() {
             break;
         }
@@ -911,13 +924,96 @@ pub async fn run_agent_with_events(
         }
     }
 
+    let enriched_report = report_with_artifacts(&final_text, Some(&run_state));
+    if let Err(error) = std::fs::write(run_dir.join("report.md"), &enriched_report) {
+        let message = format!("failed to persist final report: {error}");
+        warn!(%error, "failed to persist final report");
+        if terminal_error.is_none() {
+            emit(
+                &events,
+                AgentEvent::ApiError {
+                    step,
+                    message: message.clone(),
+                },
+            );
+            terminal_error = Some(message);
+        }
+    }
+
+    // Stage the complete indexes while retaining a non-terminal status. The
+    // final workspace status and Done event are committed only after the
+    // canonical run manifest has finalized successfully.
+    if let Err(error) =
+        workflow.persist_workspace(&run_dir, &run_state, ResearchWorkspaceStatus::Running)
+    {
+        let message = format!("failed to persist final research workspace: {error}");
+        warn!(%error, "failed to persist final research workspace");
+        if terminal_error.is_none() {
+            emit(
+                &events,
+                AgentEvent::ApiError {
+                    step,
+                    message: message.clone(),
+                },
+            );
+            terminal_error = Some(message);
+        }
+    }
+
     // A degraded reason represents a successfully delivered partial answer,
     // not merely the browser failure that caused us to attempt one. If the
-    // summary itself failed, persist and return only the terminal error.
-    let completed_degraded_reason = terminal_error
+    // summary or required final persistence failed, persist and return only
+    // the terminal error.
+    let mut completed_degraded_reason = terminal_error
         .is_none()
         .then(|| degraded_reason.clone())
         .flatten();
+    let mut status = if terminal_error.is_some() {
+        "failed"
+    } else {
+        "completed"
+    };
+    run_recorder.finish(
+        status,
+        step,
+        &usage,
+        terminal_error.as_deref(),
+        completed_degraded_reason.as_deref(),
+    )?;
+
+    let workspace_status = if terminal_error.is_some() {
+        ResearchWorkspaceStatus::Failed
+    } else if completed_degraded_reason.is_some() {
+        ResearchWorkspaceStatus::Partial
+    } else {
+        ResearchWorkspaceStatus::Completed
+    };
+    match workflow.persist_workspace(&run_dir, &run_state, workspace_status) {
+        Ok(()) => workspace_status_guard.disarm(),
+        Err(error) => {
+            let message = format!("failed to commit final research workspace: {error}");
+            warn!(%error, "failed to commit final research workspace");
+            emit(
+                &events,
+                AgentEvent::ApiError {
+                    step,
+                    message: message.clone(),
+                },
+            );
+            if terminal_error.is_none() {
+                terminal_error = Some(message);
+            }
+            completed_degraded_reason = None;
+            status = "failed";
+            run_recorder.finish(
+                status,
+                step,
+                &usage,
+                terminal_error.as_deref(),
+                completed_degraded_reason.as_deref(),
+            )?;
+        }
+    }
 
     // Failed runs already signalled ApiError; a Done event on top would give
     // subscribers contradictory success ("✓ done") and failure signals.
@@ -934,21 +1030,6 @@ pub async fn run_agent_with_events(
         );
     }
 
-    let enriched_report = report_with_artifacts(&final_text, Some(&run_state));
-    let _ = std::fs::write(run_dir.join("report.md"), &enriched_report);
-
-    let status = if terminal_error.is_some() {
-        "failed"
-    } else {
-        "completed"
-    };
-    run_recorder.finish(
-        status,
-        step,
-        &usage,
-        terminal_error.as_deref(),
-        completed_degraded_reason.as_deref(),
-    )?;
     run_trace.finish(
         status,
         step,
