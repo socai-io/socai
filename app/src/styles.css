@@ -1068,6 +1068,7 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex: 1;
   min-width: 0;
   min-height: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1319,8 +1320,11 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex: 1;
   min-width: 0;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
+  /* Give the scrollport a definite row instead of repeatedly measuring its
+     nested flex/media content when WebKit lays out a composer text edit. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--surface);
 }
 .sr-only {
@@ -1335,10 +1339,12 @@ body.has-paper > * { position: relative; z-index: 1; }
   border: 0;
 }
 .conversation-workspace {
-  flex: 1;
+  /* The shell determines this viewport's size. Keep text edits from making
+     WebKit remeasure the history through the shell's nested flex items. */
+  position: absolute;
+  inset: 0;
   min-width: 0;
   min-height: 0;
-  position: relative;
   display: flex;
   overflow: hidden;
   container: conversation-workspace / inline-size;
@@ -2387,6 +2393,11 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
 /* hover = hairline strengthens; --shadow-pop stays reserved for popovers */
 .note-card:hover { border-color: var(--line-strong); }
 .note-card__cover { position: relative; flex: 0 0 auto; }
+.note-card__cover > .note-media {
+  /* The cover's aspect ratio owns its size; media only fills that box. */
+  position: absolute;
+  inset: 0;
+}
 .note-card__body { min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 10px 12px 11px; }
 .note-card__title {
   font-family: var(--font-sans); font-size: 13px; font-weight: 500; line-height: 1.34;

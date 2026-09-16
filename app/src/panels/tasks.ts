@@ -17,6 +17,7 @@ import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
 import { isSendShortcut } from "../lib/shortcuts";
 import { voiceInput } from "../lib/voice-input";
+import { bindTextareaAutosize } from "../lib/autosize";
 import { settingsMenu } from "./settings";
 import { renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup } from "./task_history";
 import {
@@ -78,6 +79,7 @@ export namespace agentPanel {
   let replyError = "";
   const cancellingTaskIds = new Set<string>();
   const cancellationErrors = new Map<string, string>();
+  let disposeComposerAutosize: (() => void) | undefined;
   let tasks: AgentTaskView[] = [];
   let pendingEvents = new Map<string, AgentTaskEventPayload[]>();
   let selectedTaskId: string | null = null;
@@ -1452,12 +1454,12 @@ export namespace agentPanel {
     syncChromeSetupDetection(shell);
     const composerTask = view === "compose" ? undefined : selectedTask();
     const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-    if (input) autosizeComposerInput(input);
+    disposeComposerAutosize?.();
+    disposeComposerAutosize = input ? bindTextareaAutosize(input) : undefined;
     updateComposerButton(shell);
     input?.addEventListener("input", () => {
       if (composerTask) replyDraft = input.value;
       else draft = input.value;
-      autosizeComposerInput(input);
       updateComposerButton(shell);
     });
     // Enter sends; routed through the button so its disabled state (empty
@@ -1562,20 +1564,13 @@ export namespace agentPanel {
       shell.status.state !== "connected" && !settingsMenu.isRemoteProfile();
     const selected = selectedModel();
     const modelReady = task ? true : !!selected && selected.has_key;
-    button.disabled = submitting
+    const disabled = submitting
       || running
       || !value.trim()
       || needsConnection
       || !modelReady
       || voiceInput.isBusy();
-  }
-
-  // Grows the composer textarea with its content instead of leaving multi-line
-  // input scrollable in a short box; capped by the CSS max-height (the browser
-  // clips `height` to it, so no separate JS cap is needed).
-  function autosizeComposerInput(el: HTMLTextAreaElement): void {
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
+    if (button.disabled !== disabled) button.disabled = disabled;
   }
 
   function appendTranscript(current: string, transcript: string): string {
