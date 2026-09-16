@@ -35,11 +35,21 @@ impl DesktopTelemetry {
 
     /// Upload a run's `trace.json` to the traces proxy. No-op when telemetry
     /// is off or the file is missing.
-    pub(crate) fn upload_run_trace(&self, run_dir: impl AsRef<Path>) -> bool {
-        if let Some(telemetry) = &self.0 {
-            return telemetry.upload_run_trace(run_dir.as_ref());
+    pub(crate) async fn upload_run_trace(&self, run_dir: impl AsRef<Path>) -> bool {
+        let run_dir = run_dir.as_ref().to_path_buf();
+        let staged = match self.0.clone() {
+            Some(telemetry) => tokio::task::spawn_blocking({
+                let run_dir = run_dir.clone();
+                move || telemetry.upload_run_trace(&run_dir)
+            })
+            .await
+            .unwrap_or(false),
+            None => true,
+        };
+        if staged {
+            let _ = std::fs::write(run_dir.join(".observability-staged"), b"");
         }
-        false
+        staged
     }
 }
 
