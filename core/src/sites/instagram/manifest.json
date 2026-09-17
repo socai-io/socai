@@ -1,0 +1,95 @@
+{
+  "id": "instagram",
+  "name": "Instagram",
+  "domains": ["instagram.com", "*.instagram.com"],
+  "notes": ["knowledge.md"],
+  "browserTools": {
+    "pageState": {
+      "description": "Read the current Instagram route, authentication gate, challenge, rate-limit, and hydration state.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "pageState",
+      "args": {},
+      "returns": { "type": "object", "description": "Current Instagram page state." }
+    },
+    "searchState": {
+      "description": "Verify that Instagram reached an active keyword search surface and distinguish results, an explicit empty state, and login or challenge gates.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "searchState",
+      "args": {
+        "query": { "type": "string", "required": false, "description": "Expected search keywords." }
+      },
+      "returns": { "type": "object", "description": "Search route, query, gate, and result state." }
+    },
+    "setSearchQuery": {
+      "description": "Set a query in the visible Instagram search input and dispatch input events; this never follows, likes, comments, or sends messages.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "setSearchQuery",
+      "args": {
+        "query": { "type": "string", "required": true, "description": "Search keywords to enter." }
+      },
+      "returns": { "type": "object", "description": "Whether the visible search input accepted the query." }
+    },
+    "searchResults": {
+      "description": "Extract visible Instagram profile, hashtag, location, post, or reel search candidates without interacting with them.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "searchResults",
+      "args": {
+        "limit": { "type": "integer", "required": false, "description": "Maximum results to return." },
+        "viewport_only": { "type": "boolean", "required": false, "description": "Only include results intersecting the viewport." }
+      },
+      "returns": { "type": "array", "description": "Visible Instagram search candidates." }
+    },
+    "scrollResults": {
+      "description": "Scroll an Instagram search surface by one bounded viewport step to hydrate more candidates.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "scrollResults",
+      "args": {
+        "nudge_up": { "type": "boolean", "required": false, "description": "Scroll slightly upward instead of down." },
+        "to_top": { "type": "boolean", "required": false, "description": "Reset the search surface to the top." }
+      },
+      "returns": { "type": "object", "description": "Search scroll and candidate-count state." }
+    },
+    "profileDetail": {
+      "description": "Extract the active Instagram profile, biography, visible counts, external URL, and canonical identity.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "profileDetail",
+      "args": {},
+      "returns": { "type": "object", "description": "Visible Instagram profile details or an explicit gate state." }
+    },
+    "profilePosts": {
+      "description": "Extract visible post and reel cards from the active Instagram profile.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "profilePosts",
+      "args": {
+        "limit": { "type": "integer", "required": false, "description": "Maximum post or reel cards to return." },
+        "viewport_only": { "type": "boolean", "required": false, "description": "Only include cards intersecting the viewport." }
+      },
+      "returns": { "type": "array", "description": "Visible Instagram profile posts and reels." }
+    },
+    "postDetail": {
+      "description": "Extract the active Instagram post or reel, caption, author, media, publication time, and visible engagement metadata.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "postDetail",
+      "args": {},
+      "returns": { "type": "object", "description": "Visible Instagram post details or an explicit gate state." }
+    },
+    "comments": {
+      "description": "Extract comments currently visible on the active Instagram post or reel; never likes, replies, or submits anything.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "comments",
+      "args": {
+        "limit": { "type": "integer", "required": false, "description": "Maximum visible comments to return." }
+      },
+      "returns": { "type": "array", "description": "Visible Instagram comments." }
+    }
+  }
+}
