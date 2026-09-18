@@ -6,6 +6,9 @@
     },
     "api/traces.js": {
       "maxDuration": 10
+    },
+    "api/evidence.js": {
+      "maxDuration": 10
     }
   },
   "rewrites": [
@@ -16,6 +19,10 @@
     {
       "source": "/v1/traces",
       "destination": "/api/traces"
+    },
+    {
+      "source": "/v1/evidence",
+      "destination": "/api/evidence"
     }
   ],
   "redirects": [
