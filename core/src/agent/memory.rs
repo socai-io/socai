@@ -128,6 +128,7 @@ fn contains_tool_result(message: &Message) -> bool {
 
 fn compact_older_messages(messages: &[Message]) -> String {
     let mut inherited = Vec::new();
+    let mut evidence_refs: BTreeMap<String, String> = BTreeMap::new();
     let mut artifacts: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
     let mut turns = Vec::new();
     let mut pending_user: Option<String> = None;
@@ -170,6 +171,14 @@ fn compact_older_messages(messages: &[Message]) -> String {
                 let Ok(value) = serde_json::from_str::<Value>(text) else {
                     continue;
                 };
+                if let (Some(id), Some(locator)) = (
+                    value.get("evidence_id").and_then(Value::as_str),
+                    value.get("canonical_locator").and_then(Value::as_str),
+                ) {
+                    if !id.trim().is_empty() && !locator.trim().is_empty() {
+                        evidence_refs.insert(id.to_string(), locator.to_string());
+                    }
+                }
                 collect_artifact_evidence(&value, &mut artifacts);
             }
         }
@@ -191,6 +200,12 @@ fn compact_older_messages(messages: &[Message]) -> String {
         rendered.push_str("\n\n## Earlier conversation turns\n");
         for (index, turn) in turns.iter().enumerate() {
             rendered.push_str(&format!("\n### Turn {}\n{}", index + 1, turn));
+        }
+    }
+    if !evidence_refs.is_empty() {
+        rendered.push_str("\n\n## Earlier evidence references\n");
+        for (id, locator) in evidence_refs {
+            rendered.push_str(&format!("- {id} -> {locator}\n"));
         }
     }
     if !artifacts.is_empty() {
