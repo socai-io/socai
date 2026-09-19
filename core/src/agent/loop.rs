@@ -36,6 +36,7 @@ use crate::agent::llm::{
 use crate::agent::memory::{
     compact_messages_for_context, DEFAULT_COMPACT_AFTER_MESSAGES, DEFAULT_KEEP_RECENT_MESSAGES,
 };
+use crate::agent::reactive_workflow::ReactivePlugin;
 use crate::agent::report::report_with_artifacts;
 use crate::agent::run_logging::{make_run_dir, AgentRunRecorder};
 use crate::agent::run_state::RunState;
@@ -45,6 +46,7 @@ use crate::agent::tool::{
     SharedTool, SharedToolFailureRecovery, ToolContext, ToolProgressEvent, ToolRecoveryOutcome,
     ToolResult, ToolResultBlock,
 };
+use crate::agent::workflow::{TerminalCause, WorkflowPlugin};
 use crate::telemetry::trace::RunTraceBuilder;
 
 /// Events streamed to subscribers while the agent is running.
@@ -245,6 +247,9 @@ pub async fn run_agent_with_events(
         },
     );
 
+    let mut workflow: Box<dyn WorkflowPlugin> =
+        Box::new(ReactivePlugin::new(&options.extra_instructions));
+    workflow.prepare().await?;
     let mut step = 0u32;
     let mut final_text = String::new();
     let mut usage = TokenUsage::default();
@@ -253,7 +258,7 @@ pub async fn run_agent_with_events(
     let mut terminal_error: Option<String> = None;
     let mut degraded_reason: Option<String> = None;
     let mut truncation_retries = 0u32;
-    let mut last_system: String = build_system_prompt(&[], &options.extra_instructions);
+    let mut last_system: String = build_system_prompt(&[], workflow.system_instructions());
 
     while step < options.max_steps {
         step += 1;
@@ -261,9 +266,10 @@ pub async fn run_agent_with_events(
         emit(&events, AgentEvent::Step { step });
         debug!(step, "agent step start");
 
-        let schemas = tool_schemas(&tools, &ctx);
+        let mut schemas = tool_schemas(&tools, &ctx);
+        workflow.before_step(&mut schemas);
         let tool_names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
-        let system = build_system_prompt(&tool_names, &options.extra_instructions);
+        let system = build_system_prompt(&tool_names, workflow.system_instructions());
         last_system = system.clone();
         if compact_messages_for_context(
             &mut messages,
@@ -322,6 +328,7 @@ pub async fn run_agent_with_events(
                     &msg,
                 );
                 warn!(step, error = %msg, "backend error");
+                workflow.on_terminal(TerminalCause::ModelError).await?;
                 emit(
                     &events,
                     AgentEvent::ApiError {
@@ -383,6 +390,7 @@ pub async fn run_agent_with_events(
                     "model output was truncated by the max_tokens limit ({}) {} times in a row",
                     options.max_tokens, truncation_retries
                 );
+                workflow.on_terminal(TerminalCause::Truncated).await?;
                 emit(
                     &events,
                     AgentEvent::ApiError {
@@ -404,6 +412,8 @@ pub async fn run_agent_with_events(
             continue;
         }
         truncation_retries = 0;
+
+        workflow.inspect_response(&response).await?;
 
         // Build the assistant block list manually instead of using
         // LLMResponse::to_assistant_blocks() so we can:
@@ -588,6 +598,14 @@ pub async fn run_agent_with_events(
             );
             run_state.note_tool_result(step, name, &effective_input, &summary, duration_s);
             let mut history_content = bound_content_for_history(&result_content);
+            workflow.decorate_tool_result(
+                step,
+                sequence,
+                idx + 1 == response.tool_calls.len(),
+                name,
+                error.as_deref(),
+                &mut history_content,
+            )?;
             // Break tight loops: when the model fires the *same* call with the
             // same args repeatedly, the bare result won't change its mind. Tell
             // it explicitly to stop and work with what it already has.
@@ -616,6 +634,10 @@ pub async fn run_agent_with_events(
         if degraded_reason.is_some() {
             break;
         }
+    }
+
+    if !completed && terminal_error.is_none() && step >= options.max_steps {
+        workflow.on_terminal(TerminalCause::MaxSteps).await?;
     }
 
     let forced_summary_prompt = degraded_reason
