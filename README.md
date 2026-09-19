@@ -319,6 +319,12 @@ To add another site or custom capability, follow the [site extension guide](core
 
 Local development, build instructions, repository conventions, and the reference-document index live in [DEVELOPMENT.md](DEVELOPMENT.md).
 
+## Built with socai
+
+[Jev Social](https://github.com/socai-io/jev-social) is a local-first demo that lets Jev choose bounded socai CLI operations for Instagram, TikTok, and LinkedIn, streams the browser evidence into post cards, and produces a source-linked research report.
+
+[![Jev Social demo](https://raw.githubusercontent.com/socai-io/jev-social/main/docs/jev-social.gif)](https://github.com/socai-io/jev-social)
+
 ## Community
 
 [Join the Discord](https://discord.gg/CpQdA7bwt8) · or scan the WeChat group QR:
