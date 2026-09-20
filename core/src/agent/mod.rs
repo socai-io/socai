@@ -27,6 +27,7 @@ pub mod skills;
 pub mod system_prompt;
 pub mod tool;
 pub(crate) mod workflow;
+pub(crate) mod workflow_router;
 
 pub use self::conversation::{default_sessions_root, Conversation, Run};
 pub use self::file_bash_tools::{
@@ -55,3 +56,4 @@ pub use self::tool::{
     ToolFailureRecovery, ToolProgressEvent, ToolProgressPhase, ToolProgressStatus,
     ToolRecoveryOutcome, ToolResult, ToolResultBlock,
 };
+pub use self::workflow::WorkflowPreference;

@@ -53,6 +53,10 @@ use crate::telemetry::trace::RunTraceBuilder;
 /// Events streamed to subscribers while the agent is running.
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    /// Host status only, never appended to model history or the final answer.
+    WorkflowSelected {
+        text: String,
+    },
     Started {
         run_id: String,
         task: String,
@@ -110,6 +114,7 @@ pub enum AgentEvent {
 
 #[derive(Debug, Clone)]
 pub struct AgentOptions {
+    pub workflow_preference: Option<crate::agent::WorkflowPreference>,
     pub max_steps: u32,
     pub max_tokens: u32,
     pub extra_instructions: String,
@@ -139,6 +144,7 @@ pub struct AgentOptions {
 impl Default for AgentOptions {
     fn default() -> Self {
         Self {
+            workflow_preference: None,
             max_steps: 30,
             max_tokens: 16000,
             extra_instructions: String::new(),
@@ -249,6 +255,9 @@ pub async fn run_agent_with_events(
     );
 
     let prepared = prepare_selected_workflow(WorkflowPrepareContext {
+        preference: options.workflow_preference,
+        first_step: 1,
+        max_steps: options.max_steps,
         task,
         backend: &backend,
         seed_messages: &options.seed_messages,
@@ -260,15 +269,27 @@ pub async fn run_agent_with_events(
         extra_instructions: &options.extra_instructions,
         recorder: &run_recorder,
         trace: &mut run_trace,
+        events: &events,
     })
     .await?;
     let mut workflow = prepared.workflow;
     let mut step = prepared.planning_steps;
     let mut completed = prepared.immediate_text.is_some();
-    let mut final_text = prepared.immediate_text.unwrap_or_default();
+    let mut final_text = prepared
+        .immediate_text
+        .unwrap_or_else(|| prepared.error.clone().unwrap_or_default());
     let mut usage = prepared.usage;
     let mut tool_call_history: BTreeMap<String, Vec<u32>> = BTreeMap::new();
-    let mut terminal_error: Option<String> = None;
+    let mut terminal_error = prepared.error;
+    if let Some(message) = &terminal_error {
+        emit(
+            &events,
+            AgentEvent::ApiError {
+                step,
+                message: message.clone(),
+            },
+        );
+    }
     let mut degraded_reason: Option<String> = None;
     let mut terminal_finalize_reason: Option<String> = None;
     let mut truncation_retries = 0u32;
@@ -296,7 +317,7 @@ pub async fn run_agent_with_events(
         };
     }
 
-    while !completed && step < options.max_steps {
+    while !completed && terminal_error.is_none() && step < options.max_steps {
         step += 1;
         ctx.step = step;
         emit(&events, AgentEvent::Step { step });

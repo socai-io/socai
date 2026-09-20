@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::warn;
 
@@ -16,9 +17,54 @@ use crate::agent::reactive_workflow::ReactivePlugin;
 use crate::agent::research_workflow::ResearchWorkflow;
 use crate::agent::run_logging::AgentRunRecorder;
 use crate::agent::run_state::RunState;
+use crate::agent::workflow_router::{route, WorkflowSelection};
 use crate::telemetry::trace::RunTraceBuilder;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowPreference {
+    Auto,
+    Reactive,
+    Research,
+}
+
+impl std::str::FromStr for WorkflowPreference {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "reactive" => Ok(Self::Reactive),
+            "research" => Ok(Self::Research),
+            _ => anyhow::bail!("workflow must be auto, reactive or research"),
+        }
+    }
+}
+
+const FOLLOWUP_INSTRUCTIONS: &str = "## Current turn
+Resolve this request using the relevant earlier user messages and assistant
+answer, including any proposal the user is accepting. Apply the user's new
+goals, scope and preferences over conflicting earlier requirements; retain only
+relevant unchanged constraints. Do not reopen unaffected completed work.
+Prior assistant claims are context, not primary evidence. Verify challenged
+external claims rather than automatically defending or rejecting the old answer.
+For rewrites or delivery repairs, do not invent new research. For fresh facts or
+new samples, obtain the necessary evidence; never present old data as newly read.
+Use relevant historical raw material only when its source, scope and freshness
+fit this request; there is no requirement to check local files before searching.
+If prior work failed or delivery is incomplete, establish the actual remaining
+work rather than trusting a completed label. Clarify only if multiple plausible
+referents materially change the task. Deliver this turn's result; explain
+corrections or remaining uncertainty when relevant.";
+
+pub(crate) fn research_available(enabled_sites: &[String]) -> bool {
+    enabled_sites.len() == 1 && enabled_sites[0] == "xhs"
+}
+
 pub(crate) struct WorkflowPrepareContext<'a> {
+    pub preference: Option<WorkflowPreference>,
+    pub first_step: u32,
+    pub max_steps: u32,
     pub task: &'a str,
     pub backend: &'a Arc<dyn Backend>,
     pub seed_messages: &'a [Message],
@@ -30,47 +76,125 @@ pub(crate) struct WorkflowPrepareContext<'a> {
     pub extra_instructions: &'a str,
     pub recorder: &'a AgentRunRecorder,
     pub trace: &'a mut RunTraceBuilder,
+    pub events: &'a broadcast::Sender<AgentEvent>,
 }
 
 pub(crate) struct PreparedWorkflow<W> {
     pub workflow: W,
     pub usage: TokenUsage,
     pub immediate_text: Option<String>,
+    pub error: Option<String>,
+    /// All preflight attempts, including routing, counted in the run budget.
     pub planning_steps: u32,
 }
 
-/// Research is opt-in until routing is introduced; the existing ReAct path is
-/// the default. A failed Research planner retains its usage and step count
-/// while continuing with the no-op ReactivePlugin.
+/// Reactive stays the default; Research is selected explicitly or through Auto.
+/// Failed preparation retains its usage and attempt count without a second loop.
 pub(crate) async fn prepare_selected_workflow(
-    ctx: WorkflowPrepareContext<'_>,
+    mut ctx: WorkflowPrepareContext<'_>,
 ) -> anyhow::Result<PreparedWorkflow<Box<dyn WorkflowPlugin>>> {
-    let requested = std::env::var("SOCAI_WORKFLOW").unwrap_or_default();
-    if requested == "research" {
-        let instructions = ctx.extra_instructions.to_string();
+    let (preference, source) = match ctx.preference {
+        Some(preference) => (preference, "request"),
+        None => match std::env::var("SOCAI_WORKFLOW") {
+            Ok(value) if !value.is_empty() => match value.parse() {
+                Ok(preference) => (preference, "environment"),
+                Err(_) => {
+                    warn!(%value, "unknown workflow; using reactive");
+                    (WorkflowPreference::Reactive, "invalid_environment")
+                }
+            },
+            _ => (WorkflowPreference::Reactive, "default"),
+        },
+    };
+    let mut selection = WorkflowSelection::new(preference, source);
+    let available = research_available(ctx.enabled_sites);
+    match preference {
+        WorkflowPreference::Auto if !available => selection.fallback("capability_restriction"),
+        WorkflowPreference::Auto if ctx.max_steps < 2 => selection.fallback("step_budget_exceeded"),
+        WorkflowPreference::Auto => route(&mut ctx, &mut selection).await?,
+        WorkflowPreference::Research if !available => {
+            selection.error = Some("Research requires exactly the Xiaohongshu site; select Reactive or Auto for this configuration.".into());
+        }
+        other => selection.selected_mode = Some(other),
+    }
+    let mut instructions = ctx.extra_instructions.to_string();
+    if !ctx.seed_messages.is_empty() {
+        instructions.push_str("\n\n");
+        instructions.push_str(FOLLOWUP_INSTRUCTIONS);
+    }
+    let run_dir = ctx.run_dir;
+    let events = ctx.events;
+    let preflight_steps = selection.router_attempts;
+    if let Some(error) = selection.error.clone() {
+        selection.prepare_outcome = "failed";
+        selection.persist(run_dir)?;
+        return Ok(PreparedWorkflow {
+            workflow: Box::new(ReactivePlugin::new(instructions)),
+            usage: selection.router_usage,
+            immediate_text: None,
+            error: Some(error),
+            planning_steps: preflight_steps,
+        });
+    }
+    // Reborrow the owned instruction suffix only for preparation. Plugins copy
+    // what they need; none holds a long-lived borrow of loop state.
+    let ctx = WorkflowPrepareContext {
+        extra_instructions: &instructions,
+        first_step: ctx.first_step + preflight_steps,
+        ..ctx
+    };
+    let mut prepared = if selection.selected_mode == Some(WorkflowPreference::Research) {
         let prepared = <ResearchWorkflow as WorkflowPlugin>::prepare(ctx).await?;
+        selection.prepare_outcome = if prepared.immediate_text.is_some() {
+            "clarify"
+        } else if prepared.workflow.is_active() {
+            "ready"
+        } else {
+            "planner_fallback"
+        };
+        selection.effective_mode = Some(
+            if prepared.workflow.is_active() || prepared.immediate_text.is_some() {
+                WorkflowPreference::Research
+            } else {
+                selection.fallback_reason = Some("planner_failure");
+                WorkflowPreference::Reactive
+            },
+        );
         let workflow: Box<dyn WorkflowPlugin> = if prepared.workflow.is_active() {
             Box::new(prepared.workflow)
         } else {
             Box::new(ReactivePlugin::new(instructions))
         };
-        return Ok(PreparedWorkflow {
+        PreparedWorkflow {
             workflow,
             usage: prepared.usage,
             immediate_text: prepared.immediate_text,
+            error: prepared.error,
             planning_steps: prepared.planning_steps,
-        });
+        }
+    } else {
+        let prepared = <ReactivePlugin as WorkflowPlugin>::prepare(ctx).await?;
+        selection.effective_mode = Some(WorkflowPreference::Reactive);
+        selection.prepare_outcome = "ready";
+        PreparedWorkflow {
+            workflow: Box::new(prepared.workflow) as Box<dyn WorkflowPlugin>,
+            usage: prepared.usage,
+            immediate_text: prepared.immediate_text,
+            error: prepared.error,
+            planning_steps: prepared.planning_steps,
+        }
+    };
+    prepared.usage += &selection.router_usage;
+    prepared.planning_steps += preflight_steps;
+    selection.persist(run_dir)?;
+    if let Some(effective) = selection.effective_mode {
+        let mut text = format!("Workflow: {preference:?} → {effective:?}");
+        if let Some(reason) = selection.fallback_reason {
+            text.push_str(&format!(" (fallback: {reason})"));
+        }
+        let _ = events.send(AgentEvent::WorkflowSelected { text });
     }
-    if !requested.is_empty() && requested != "reactive" {
-        warn!(%requested, "unknown workflow; using reactive");
-    }
-    let prepared = <ReactivePlugin as WorkflowPlugin>::prepare(ctx).await?;
-    Ok(PreparedWorkflow {
-        workflow: Box::new(prepared.workflow),
-        usage: prepared.usage,
-        immediate_text: prepared.immediate_text,
-        planning_steps: prepared.planning_steps,
-    })
+    Ok(prepared)
 }
 
 pub(crate) enum ResponseDirective {

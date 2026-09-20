@@ -251,7 +251,42 @@ impl ResearchSubquestion {
     }
 }
 
-pub fn planner_system_prompt() -> String {
+pub(crate) const FOLLOWUP_EVIDENCE_INSTRUCTIONS: &str = "## Follow-up evidence
+Evidence IDs belong to this run. Never reuse an earlier turn's E-ID or assume
+an identical ID denotes the same evidence. When historical raw material is
+needed, read the relevant material with an available tool and cite the NEW ID
+for that read. Traceability does not establish truth or freshness. An old
+report alone cannot certify its external claims. Fetch fresh evidence when
+required; do not perform dummy tool calls just to obtain an ID. Unsupported
+claims must remain non-covered with honest limitations.";
+
+const FOLLOWUP_PLANNING_RULES: &str = "\n\nFollow-up planning rules:
+1. Resolve the current request using relevant prior user messages AND the
+assistant answer, including a proposal the user is accepting. Short replies
+are not automatically ambiguous. Clarify once only when multiple plausible
+referents materially change the task.
+2. Plan the CURRENT deliverable. Carry forward only relevant unchanged user
+constraints; new user goals, scope and preferences replace conflicting old
+requirements. A new topic must not inherit unrelated old requirements.
+3. Include only subquestions needed for this turn. Do not reopen completed,
+unaffected research. Narrower scope can need new evidence; more examples may
+only need continuation under existing criteria. Answer length is not depth.
+4. Old assistant conclusions are background, not verified evidence. For an
+objection identify the affected claim, criterion or source. Do not defend or
+discard the whole prior answer; a user's preferred external conclusion is not
+proof. Preserve unaffected findings only as provisional background.
+5. Express inherited constraints, changes and exclusions in existing brief
+fields, not extra history/schema fields. Distinguish user requirements from
+assumptions; never promote an old assistant claim to a hard constraint.
+6. Search angles and stop conditions serve this turn's remaining needs. For
+mixed requests retain the synthesis/rewrite in deliverable while investigating
+only necessary new evidence. Preserve explicit prohibitions on new searches;
+do not invent research merely to satisfy the workflow.
+7. For interrupted or incomplete work, plan only what is still needed based on
+available context. Do not infer success from a status or claimed filename.
+Disclose uncertainty when the earlier progress cannot be established.";
+
+pub fn planner_system_prompt(is_follow_up: bool) -> String {
     format!(
         "You are the planning stage of socai's Xiaohongshu research workflow.\n\n\
          Your only job is to convert the user's current request and relevant prior conversation into one decision-complete research brief. Do not research the topic, answer the user's question, browse Xiaohongshu, inspect local files, or invent facts.\n\n\
@@ -267,7 +302,8 @@ pub fn planner_system_prompt() -> String {
          8. Ask one concise clarification question only when missing user-owned information would materially change the research scope or deliverable. Do not ask for facts that socai can discover with its tools.\n\
          9. The brief is a plan, not evidence. Do not include unverified claims about the subject.\n\
          10. Use the same language as the user's current request for all brief fields and any clarification question.\n\n\
-         Today's date is {}.",
+         {}\n\nToday's date is {}.",
+        if is_follow_up { FOLLOWUP_PLANNING_RULES } else { "" },
         chrono::Local::now().format("%Y-%m-%d (%A)")
     )
 }
@@ -293,8 +329,8 @@ pub fn research_brief_tool_schema() -> ToolSchema {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "objective": { "type": "string" },
-                        "deliverable": { "type": "string" },
+                        "objective": { "type": "string", "description": "The current turn's goal, not a full restatement of conversation history." },
+                        "deliverable": { "type": "string", "description": "The complete current deliverable, including synthesis or revisions as well as new research." },
                         "scope": {
                             "type": "object",
                             "additionalProperties": false,
@@ -313,6 +349,7 @@ pub fn research_brief_tool_schema() -> ToolSchema {
                         },
                         "subquestions": {
                             "type": "array",
+                            "description": "Only questions needed for this turn; do not reopen completed, unaffected earlier questions.",
                             "minItems": 1,
                             "maxItems": MAX_SUBQUESTIONS,
                             "items": {
@@ -337,6 +374,7 @@ pub fn research_brief_tool_schema() -> ToolSchema {
                         },
                         "hard_constraints": {
                             "type": "array",
+                            "description": "Currently valid user constraints, not prior assistant conclusions or desired external facts.",
                             "maxItems": MAX_HARD_CONSTRAINTS,
                             "items": { "type": "string" }
                         },
@@ -347,11 +385,13 @@ pub fn research_brief_tool_schema() -> ToolSchema {
                         },
                         "initial_search_angles": {
                             "type": "array",
+                            "description": "Starting angles for current evidence gaps; may be empty and are not a search quota.",
                             "maxItems": MAX_SEARCH_ANGLES,
                             "items": { "type": "string" }
                         },
                         "stop_conditions": {
                             "type": "array",
+                            "description": "When the current deliverable is adequately supported; do not require reopening unaffected history.",
                             "minItems": 1,
                             "maxItems": MAX_STOP_CONDITIONS,
                             "items": { "type": "string" }
