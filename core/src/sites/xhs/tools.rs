@@ -2491,20 +2491,23 @@ fn attach_note_ocr_summary(entity: &mut Value) {
                 .map(|image| image.get("ocr_text").and_then(Value::as_str).unwrap_or("")),
         )
         .collect();
-    let available = all_texts.iter().filter(|text| !text.is_empty()).count();
+    let available = all_texts
+        .iter()
+        .filter(|text| !text.trim().is_empty())
+        .count();
     if available == 0 {
         return;
     }
     let shown = all_texts
         .iter()
         .take(LEAN_NOTE_OCR_MAX_IMAGES)
-        .filter(|text| !text.is_empty())
+        .filter(|text| !text.trim().is_empty())
         .count();
     let truncated = available > shown
         || all_texts
             .iter()
             .take(LEAN_NOTE_OCR_MAX_IMAGES)
-            .any(|text| text.chars().count() > 1200);
+            .any(|text| text.trim().chars().count() > 1200);
     let texts: Vec<Value> = all_texts
         .iter()
         .take(LEAN_NOTE_OCR_MAX_IMAGES)
