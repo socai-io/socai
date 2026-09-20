@@ -604,6 +604,93 @@ html[data-language="zh"] .hero h1 {
   white-space: nowrap;
 }
 
+.project-feature {
+  width: min(100%, 1080px);
+  padding: 0 clamp(20px, 4vw, 40px) 80px;
+}
+
+.project-feature__panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.project-feature__copy,
+.project-feature__quickstart {
+  padding: clamp(28px, 4vw, 44px);
+}
+
+.project-feature__eyebrow,
+.project-feature__label {
+  color: var(--fg-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.project-feature h2 {
+  max-width: 13em;
+  margin: 14px 0 14px;
+  color: var(--ink-0);
+  font-size: clamp(26px, 4vw, 40px);
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+.project-feature__copy p {
+  max-width: 40em;
+  margin: 0;
+  color: var(--fg-soft);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.project-feature__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.project-feature__quickstart {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  border-left: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.project-feature__quickstart pre {
+  overflow-x: auto;
+  margin: 18px 0 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink-0);
+  color: var(--ink-9);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.9;
+}
+
+.project-feature__quickstart code span {
+  display: block;
+  white-space: nowrap;
+}
+
+.project-feature__quickstart code span::before {
+  margin-right: 10px;
+  color: var(--ink-4);
+  content: "$";
+}
+
 .site-footer {
   display: flex;
   align-items: center;
@@ -699,6 +786,15 @@ html[data-language="zh"] .hero h1 {
     order: 3;
     flex-basis: 100%;
   }
+
+  .project-feature__panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .project-feature__quickstart {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
 }
 
 @media (max-width: 560px) {
@@ -719,6 +815,10 @@ html[data-language="zh"] .hero h1 {
 
   .app-shot-section {
     padding-bottom: 48px;
+  }
+
+  .project-feature {
+    padding-bottom: 56px;
   }
 
   .window-title {

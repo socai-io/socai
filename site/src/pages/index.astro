@@ -68,6 +68,16 @@ const messages = {
             completedEarlier: "completed · 11:38",
             completedYesterday: "completed · yesterday",
         },
+        project: {
+            sectionAria: "Jev Social open-source project",
+            eyebrow: "JEV × SOCAI",
+            title: "Typed decisions. Real social evidence.",
+            description:
+                "Jev chooses each bounded research operation. The local socai CLI runs it in your signed-in Chrome and streams posts, comments, media, and source links into a report.",
+            try: "try Jev Social",
+            source: "view source",
+            quickstart: "NO-CLONE QUICKSTART",
+        },
         footer: {
             linksAria: "footer links",
             blog: "blog",
@@ -133,6 +143,16 @@ const messages = {
             completedNow: "已完成 · 14:02",
             completedEarlier: "已完成 · 11:38",
             completedYesterday: "已完成 · 昨天",
+        },
+        project: {
+            sectionAria: "Jev Social 开源项目",
+            eyebrow: "JEV × SOCAI",
+            title: "类型化决策，真实社媒证据。",
+            description:
+                "Jev 负责选择每一步有边界的调研操作，本地 socai CLI 在你已登录的 Chrome 里执行，并把帖子、评论、媒体和原始链接持续汇成报告。",
+            try: "试用 Jev Social",
+            source: "查看源码",
+            quickstart: "无需克隆，直接运行",
         },
         footer: {
             linksAria: "页脚链接",
@@ -291,6 +311,7 @@ const socialImageAlt = message("meta.socialImageAlt");
 
                     <div
                         class="hero__actions"
+                        role="group"
                         aria-label={message("hero.actionsAria")}
                         data-i18n-aria-label="hero.actionsAria"
                     >
@@ -423,6 +444,7 @@ const socialImageAlt = message("meta.socialImageAlt");
                                 <div class="task-controls">
                                     <span
                                         class="mode-switch"
+                                        role="group"
                                         aria-label={message("preview.modeAria")}
                                         data-i18n-aria-label="preview.modeAria"
                                     >
@@ -500,6 +522,55 @@ const socialImageAlt = message("meta.socialImageAlt");
                                     >
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section
+                    class="project-feature"
+                    aria-label={message("project.sectionAria")}
+                    data-i18n-aria-label="project.sectionAria"
+                >
+                    <div class="project-feature__panel">
+                        <div class="project-feature__copy">
+                            <span
+                                class="project-feature__eyebrow"
+                                data-i18n="project.eyebrow"
+                                >{message("project.eyebrow")}</span
+                            >
+                            <h2 data-i18n="project.title">
+                                {message("project.title")}
+                            </h2>
+                            <p data-i18n="project.description">
+                                {message("project.description")}
+                            </p>
+                            <div class="project-feature__actions">
+                                <a
+                                    class="button button--primary"
+                                    href="https://socai-io.github.io/jev-social/"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    data-i18n="project.try"
+                                    >{message("project.try")}</a
+                                >
+                                <a
+                                    class="button button--secondary"
+                                    href="https://github.com/socai-io/jev-social"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    data-i18n="project.source"
+                                    >{message("project.source")}</a
+                                >
+                            </div>
+                        </div>
+                        <div class="project-feature__quickstart">
+                            <span
+                                class="project-feature__label"
+                                data-i18n="project.quickstart"
+                                >{message("project.quickstart")}</span
+                            >
+                            <pre><code><span>npx --yes github:socai-io/jev-social onboard</span>
+<span>npx --yes github:socai-io/jev-social</span></code></pre>
                         </div>
                     </div>
                 </section>

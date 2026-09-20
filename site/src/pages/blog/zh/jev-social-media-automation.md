@@ -67,6 +67,13 @@ socai 已经有搜索、打开帖子、读主页、获取评论这些社交平�
 
 ## 如何用
 
-[jev-social 是开源的](https://github.com/socai-io/jev-social)。把这个项目扔给你的AI，让它去帮你设置就能用，需要登录一下你的社媒。
+[jev-social 是开源的](https://github.com/socai-io/jev-social)。安装 Node 20+ 后，不用克隆仓库，运行两条命令即可完成设置并打开本地界面：
+
+```bash
+npx --yes github:socai-io/jev-social onboard
+npx --yes github:socai-io/jev-social
+```
+
+设置过程会提示你输入 OpenRouter Key；如果没有找到 socai CLI，也会询问是否安装官方版本。你仍然需要登录要调研的社媒账号。[Jev Social 项目页](https://socai-io.github.io/jev-social/)提供演示、架构说明和源码安装方式。
 
 可以找你想研究的产品、品牌或者创作者，看看评论区里能找到什么。

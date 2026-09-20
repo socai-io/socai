@@ -66,6 +66,13 @@ All of these tasks involve a lot of searching, opening, reading and copying. Let
 
 ## How to use it
 
-[jev-social is open source](https://github.com/socai-io/jev-social). Give the repo link to your AI assistant and ask it to set things up. You'll need to log in to your social accounts.
+[jev-social is open source](https://github.com/socai-io/jev-social). With Node 20+ installed, you can onboard and open the local app without cloning the repository:
+
+```bash
+npx --yes github:socai-io/jev-social onboard
+npx --yes github:socai-io/jev-social
+```
+
+Onboarding prompts for your OpenRouter key and offers to install the current socai CLI when it is missing. You'll still need to log in to the social accounts you want to research. The [Jev Social project page](https://socai-io.github.io/jev-social/) has the recorded demo, architecture and source-checkout path.
 
 Then look up a product, brand or creator you're interested in and see what people are saying in the comments.
