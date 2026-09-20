@@ -41,6 +41,25 @@ impl std::str::FromStr for WorkflowPreference {
     }
 }
 
+const EVIDENCE_INSTRUCTIONS: &str = "## Evidence and delivery
+Separate observed facts, source claims and your inferences. Bind evidence to
+the same entity, variant and time; similar names do not establish identity.
+Advertising, hearsay and platform AI summaries are not independent verification
+or population consensus. Failed-page diagnostics are not the target note.
+Preserve uncertainty in headings, tables, summaries and recommendations; an
+unknown decisive criterion cannot become 'all requirements met'. Summarizing
+an earlier answer must not increase its certainty. A disclaimer does not repair
+an unsupported main conclusion. Do not guess missing years, units or eligibility
+conditions; distinguish posting, editing and event dates, and past from current
+states. Link decisive external claims to obtained sources, never invented URLs
+or internal E-IDs. State missing evidence while still giving the useful supported
+answer. Do not claim manual or exhaustive verification.
+Tool results may be abridged: respect read failures, content sources and OCR
+coverage. Check reported active filters against the requested filters before
+inferring scarcity; a mismatch or absent readback does not prove an empty market.
+Read omitted material from the current run artifact when needed, not by default
+before every new search. Do not treat an omitted field as a negative finding.";
+
 const FOLLOWUP_INSTRUCTIONS: &str = "## Current turn
 Resolve this request using the relevant earlier user messages and assistant
 answer, including any proposal the user is accepting. Apply the user's new
@@ -118,6 +137,10 @@ pub(crate) async fn prepare_selected_workflow(
         other => selection.selected_mode = Some(other),
     }
     let mut instructions = ctx.extra_instructions.to_string();
+    if ctx.enabled_sites.iter().any(|site| site == "xhs") {
+        instructions.push_str("\n\n");
+        instructions.push_str(EVIDENCE_INSTRUCTIONS);
+    }
     if !ctx.seed_messages.is_empty() {
         instructions.push_str("\n\n");
         instructions.push_str(FOLLOWUP_INSTRUCTIONS);
