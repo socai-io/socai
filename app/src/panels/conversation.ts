@@ -49,6 +49,8 @@ export interface ComposerProps {
   /** Existing task controlled by the reply composer. */
   taskId?: string;
   value: string;
+  researchMode: boolean;
+  workflow: "general" | "vc";
   submitting: boolean;
   /** True while cancellation for this task is being committed. */
   cancelling: boolean;
@@ -169,6 +171,15 @@ export function renderComposePane(composer: ComposerProps): string {
 
 function renderConnectOverlay(composer: ComposerProps): string {
   const connecting = composer.status.state === "connecting";
+  if (composer.managedProfile) return `
+    <div class="connect-overlay" role="dialog" aria-label="${esc(t("chrome.requiredAria"))}">
+      <h3 class="connect-overlay-head">${esc(t("chrome.managedTitle"))}</h3>
+      <p class="t-small subtle">${esc(t("chrome.managedHelp"))}</p>
+      <button id="overlay-chrome-connect" type="button" class="btn-primary connect-setup-action" ${connecting ? "disabled" : ""}>
+        ${esc(t(connecting ? "chrome.connectingCta" : "chrome.connectCta"))}
+      </button>
+      ${composer.chromeSetupError ? `<p class="t-small" role="alert">${esc(composer.chromeSetupError)}</p>` : ""}
+    </div>`;
   const ready = composer.chromeSetupState === "ready";
   const permissionRequired = composer.chromeSetupState === "permission_required";
   return `
@@ -337,6 +348,7 @@ function renderTurn(
   const hosted = task.provider === "socai";
   const metrics = turnMetrics(task, events, isLast);
 
+
   // Every completed turn owns its own model, duration, usage and cost. Never
   // read an earlier answer's figures from the task's latest-run snapshot.
   let answer = "";
@@ -431,12 +443,21 @@ function renderTurn(
     <div class="turn">
       ${user}
       ${renderActivity(task, body, index, showWorking, metrics, isActivityOpen)}
+      ${answer ? renderReadingStats(task, index) : ""}
       ${answer}
       ${artifactCards}
       ${exportAction}
       ${meta}
     </div>
   `;
+}
+
+function renderReadingStats(task: AgentTaskView, index: number): string {
+  const stats = task.readingStats?.find((s) => s.turn_index === index);
+  if (!stats || !(stats.preview_notes + stats.detail_notes + stats.comments + stats.authors)) return "";
+  return `<div class="conv-reading-stats t-small" title="${esc(t("task.readingStatsHint"))}">${esc(t("task.readingStats", {
+    preview: stats.preview_notes, detail: stats.detail_notes, comments: stats.comments, authors: stats.authors,
+  }))}</div>`;
 }
 
 function renderArtifactCards(
@@ -875,6 +896,23 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
           ${action}
         </div>
         ${hideSources ? "" : renderSourcePicker(c, disabled)}
+        <div class="composer__options">
+          <label class="composer__workflow t-small">
+            <span>${esc(t("task.workflow"))}</span>
+            <select id="composer-workflow" aria-label="${esc(t("task.workflow"))}" ${disabled ? "disabled" : ""}>
+              <option value="general" ${c.workflow === "general" ? "selected" : ""}>${esc(t("task.workflowGeneral"))}</option>
+              <option value="vc" ${c.workflow === "vc" ? "selected" : ""}>${esc(t("task.workflowVc"))}</option>
+            </select>
+          </label>
+          <button id="composer-research" type="button"
+            class="composer__research t-small"
+            aria-pressed="${c.researchMode}"
+            title="${esc(t(c.researchMode ? "task.researchEnabledHint" : "task.researchAutoHint"))}"
+            ${disabled ? "disabled" : ""}>
+            <span class="composer__research-dot" aria-hidden="true"></span>
+            ${esc(t(c.researchMode ? "task.researchMode" : "task.researchLight"))}
+          </button>
+        </div>
       </form>
       ${connectHint}
       ${keyHint}

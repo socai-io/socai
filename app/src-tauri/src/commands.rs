@@ -1,5 +1,5 @@
 use crate::artifact_tool::PublishArtifactTool;
-use crate::tasks::{app_data_dir, now_ms, AgentTaskRegistry, AgentTaskSnapshot};
+use crate::tasks::{app_data_dir, now_ms, AgentTaskRegistry, AgentTaskSnapshot, TaskWorkflow};
 use crate::telemetry::{duration_ms, short_error, DesktopTelemetry};
 use crate::timeline::{agent_event_to_timeline, AgentTaskEventKind, AgentTaskEventPayload};
 use anyhow::Result;
@@ -106,6 +106,13 @@ fn validate_task_sites(sites: Vec<String>) -> Result<Vec<String>, String> {
     Ok(selected)
 }
 
+/// Desktop defaults to an isolated persistent profile; explicit user choices win.
+fn desktop_browser_options() -> Result<ChromeConnectOptions> {
+    let mut config = socai_core::config::load_config()?;
+    config.chrome.profile.get_or_insert(ChromeProfile::Managed);
+    Ok(config.chrome_connect_options())
+}
+
 // ── CDP connect tests (existing) ───────────────────────────────────────────
 
 #[tauri::command]
@@ -113,10 +120,9 @@ pub async fn cdp_connect(
     runtime: State<'_, SocaiRuntime>,
     telemetry: State<'_, DesktopTelemetry>,
 ) -> Result<(), String> {
-    let profile = ChromeConnectOptions::from_config()
-        .map(|options| options.profile.as_str())
-        .unwrap_or("unknown");
-    runtime.connect_browser_once();
+    let options = desktop_browser_options().map_err(|err| format!("{err:#}"))?;
+    let profile = options.profile.as_str();
+    runtime.connect_browser_once_with_options(options);
     telemetry.capture(
         "socai_browser_connect",
         json!({ "outcome": "requested", "browser_profile": profile }),
@@ -672,6 +678,8 @@ pub async fn agent_task_start(
     model: Option<String>,
     sites: Option<Vec<String>>,
     language: Option<String>,
+    research_mode: Option<bool>,
+    workflow: Option<TaskWorkflow>,
 ) -> Result<AgentTaskSnapshot, String> {
     let sites = validate_task_sites(sites.unwrap_or_else(crate::tasks::default_task_sites))?;
     let task_text = task.trim().to_string();
@@ -715,6 +723,8 @@ pub async fn agent_task_start(
             run_dir.display().to_string(),
             session_dir,
             sites,
+            research_mode.unwrap_or(false),
+            workflow.unwrap_or_default(),
         )
         .await;
     let task_id = snapshot.task_id.clone();
@@ -791,6 +801,8 @@ pub async fn agent_task_reply(
     message: String,
     sites: Option<Vec<String>>,
     language: Option<String>,
+    research_mode: Option<bool>,
+    workflow: Option<TaskWorkflow>,
 ) -> Result<AgentTaskSnapshot, String> {
     let message_text = message.trim().to_string();
     if message_text.is_empty() {
@@ -858,6 +870,8 @@ pub async fn agent_task_reply(
             snapshot.degraded_reason = None;
             snapshot.points_used = None;
             snapshot.current_message = Some(message_text.clone());
+            snapshot.research_mode = research_mode.unwrap_or(existing.research_mode);
+            snapshot.workflow = workflow.unwrap_or(existing.workflow);
         })
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
@@ -1050,6 +1064,12 @@ impl ToolFailureRecovery for DesktopBrowserRecovery {
             }
             return ToolRecoveryOutcome::NotNeeded;
         };
+        socai_core::cdp::diagnostics::record(
+            "task_recovery_requested",
+            json!({
+                "tool":tool_name,"retry":retry_number,"page":self.page.transport_diagnostic().await,
+            }),
+        );
         if retry_number > 0 {
             let reason = format!(
                 "browser disconnected again after automatically retrying {tool_name}: {disconnect_reason}"
@@ -1225,7 +1245,7 @@ impl Drop for UnboundPageGuard {
 }
 
 fn remote_browser_selected() -> bool {
-    ChromeConnectOptions::from_config()
+    desktop_browser_options()
         .map(|options| options.profile == ChromeProfile::Remote)
         .unwrap_or(false)
 }
@@ -1248,7 +1268,7 @@ async fn acquire_session_page(
     let site = app_site().map_err(|error| {
         PageAdmission::Failed(task_preflight_error("preflight_site", format!("{error:#}")))
     })?;
-    let options = ChromeConnectOptions::from_config().map_err(|error| {
+    let options = desktop_browser_options().map_err(|error| {
         PageAdmission::Failed(task_preflight_error(
             "preflight_browser_config",
             format!("{error:#}"),
@@ -1434,6 +1454,7 @@ pub async fn agent_task_events(
 /// task creation) and on history reload.
 #[tauri::command]
 pub async fn agent_task_notes(
+    app: AppHandle,
     tasks: State<'_, AgentTaskRegistry>,
     task_id: String,
 ) -> Result<Vec<Value>, String> {
@@ -1444,6 +1465,13 @@ pub async fn agent_task_notes(
     let mut order: Vec<String> = Vec::new();
     let mut by_id: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
     for (run_dir, _) in crate::timeline::conversation_run_dirs(&snapshot) {
+        // Historical conversations may live outside today's configured runs root.
+        // Grant only this task's archived directory, not its parent workspace.
+        if let Ok(root) = run_dir.canonicalize() {
+            app.asset_protocol_scope()
+                .allow_directory(&root, true)
+                .map_err(|error| format!("could not load archived task media: {error}"))?;
+        }
         for mut note in socai_core::agent::note_store::load_notes(&run_dir) {
             socai_core::sites::post_archive::deduplicate_post_media(&mut note);
             absolutize_note_media(&mut note, &run_dir);
@@ -1469,6 +1497,26 @@ pub async fn agent_task_notes(
         .into_iter()
         .filter_map(|id| by_id.remove(&id))
         .collect())
+}
+
+#[tauri::command]
+pub async fn agent_task_reading_stats(
+    tasks: State<'_, AgentTaskRegistry>,
+    task_id: String,
+) -> Result<Vec<Value>, String> {
+    let snapshot = tasks
+        .get(&task_id)
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    let dirs = crate::timeline::conversation_run_dirs(&snapshot);
+    tauri::async_runtime::spawn_blocking(move || {
+        dirs.into_iter().enumerate().filter_map(|(index, (dir, _))| {
+            socai_core::sites::xhs::reading_stats::for_run(&dir).map(|stats| json!({
+                "turn_index": index, "preview_notes": stats.preview_notes,
+                "detail_notes": stats.detail_notes, "comments": stats.comments, "authors": stats.authors,
+            }))
+        }).collect()
+    }).await.map_err(|e| e.to_string())
 }
 
 /// A file produced during one conversation turn and safe to expose as a
@@ -3216,6 +3264,15 @@ async fn run_agent_task_on_session_page(
         .as_ref()
         .map(|c| c.context_note())
         .unwrap_or_default();
+    let selection = match &registry {
+        Some(registry) => registry.get(&task_id).await,
+        None => None,
+    };
+    let research_mode = selection.as_ref().is_some_and(|task| task.research_mode);
+    let workflow = selection
+        .as_ref()
+        .map(|task| task.workflow)
+        .unwrap_or_default();
 
     ensure_llm_provider_configured_for(provider, model)?;
     let llm_provider = create_llm_provider_for_task(provider, model, &task_id)?;
@@ -3305,7 +3362,7 @@ async fn run_agent_task_on_session_page(
                 tools.extend(socai_core::sites::weixin::weixin_tools(page.clone()));
             }
             tools.extend(scoped_site_learning_tools(page.clone(), &available_sites));
-            let browser_tools = tools.iter().map(|tool| tool.name().to_string()).collect();
+            let browser_tools = tools.iter().filter(|tool| tool.name() != "read_saved_notes").map(|tool| tool.name().to_string()).collect();
             let last_page_url = page
                 .page_info()
                 .await
@@ -3387,18 +3444,29 @@ async fn run_agent_task_on_session_page(
             .filter(|site| site.browserless_tools.is_some())
             .map(|site| site.default_agent_instructions.unwrap_or(site.agent_instructions)(""))
             .collect::<Vec<_>>().join("\n\n");
+        let mut initial_skills = Vec::new();
+        if workflow == TaskWorkflow::Vc { initial_skills.push("vc-research".into()); }
+        if research_mode { initial_skills.push("research".into()); }
+        let depth_instructions = if research_mode {
+            "Research depth: deep. Explore complementary directions before converging; follow promising signals selectively. Use the larger budget for useful discovery, not repeated verification or a quota. Reserve time for delivery."
+        } else {
+            "Research depth: light. Produce a useful first pass within the smaller budget, preserving relevant uncertain leads. Do not turn this into exhaustive research or diligence. Loading a skill does not change this budget."
+        };
         let config = AgentRunConfig {
+            max_steps: if research_mode { 120 } else { socai_core::agent::r#loop::DEFAULT_MAX_STEPS },
             extra_instructions: format!(
-                "{}{}{}{}{}{}\n\n{}",
+                "{}{}{}{}{}{}\n\n{}\n\n{}",
                 instructions,
                 TAURI_SITE_ROUTING_RULES,
                 TAURI_CITATION_RULES,
                 TAURI_ARTIFACT_RULES,
                 source_instructions,
                 instagram_login_note,
-                http_instructions
+                http_instructions,
+                depth_instructions
             ),
             enabled_sites: available_sites,
+            initial_skills,
             seed_messages,
             run_dir,
             session_id: Some(session_id),
@@ -3575,7 +3643,7 @@ pub fn config_get() -> Result<DesktopConfig, String> {
         chrome_source: config
             .chrome
             .profile
-            .unwrap_or_default()
+            .unwrap_or(ChromeProfile::Managed)
             .as_str()
             .to_string(),
         chrome_profile_dir: config.chrome.profile_dir.unwrap_or_default(),
@@ -4112,7 +4180,8 @@ mod tests {
 #[tauri::command]
 pub async fn github_preview(url: String, refresh: Option<bool>) -> Result<Value, String> {
     socai_core::sites::github::preview::read(&url, refresh.unwrap_or(false))
-        .await.map_err(|e|format!("{e:#}"))
+        .await
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// User-expanded podcast sections stay outside the agent context.

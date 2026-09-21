@@ -252,53 +252,49 @@ impl XhsHistoryStore {
         let mut fresh = entity.clone();
         strip_error_fields(&mut fresh);
 
-        let snapshot = {
-            let Ok(mut guard) = self.inner.lock() else {
-                return;
-            };
-            let entry = guard.notes.entry(note_id.clone()).or_insert_with(|| {
-                let mut e = HistoryEntry::default();
-                e.note_id = note_id.clone();
-                e.first_seen_at = now.clone();
-                e
-            });
-            entry.note_id = note_id;
-            if !title.is_empty() {
-                entry.title = title;
-            }
-            if !author.is_empty() {
-                entry.author = author;
-            }
-            if !url.is_empty() {
-                entry.url = url;
-            }
-            if level_value(level) > level_value(&entry.level) {
-                entry.level = level.to_string();
-            }
-            if include_media {
-                entry.include_media = true;
-            }
-            let merged = match entry.entity.take() {
-                Some(prev) => merge_entities(&prev, fresh),
-                None => fresh,
-            };
-            entry.downloaded = entity_has_downloaded(&merged);
-            entry.ocr = entity_has_ocr(&merged);
-            entry.transcribed = entity_has_transcript(&merged);
-            entry.comments_loaded = entity_comment_count(&merged);
-            let total = entity_comment_total(&merged);
-            if total > entry.comments_total {
-                entry.comments_total = total;
-            }
-            entry.entity = Some(merged);
-            entry.analysis_count = entry.analysis_count.saturating_add(1);
-            entry.last_seen_at = now;
-            guard.clone()
+        let Ok(mut guard) = self.inner.lock() else {
+            return;
         };
-
-        // Best-effort write. A failure here just means the next process
-        // won't see this entry — agent still works.
-        let _ = save_file(&self.path, &snapshot);
+        let entry = guard.notes.entry(note_id.clone()).or_insert_with(|| {
+            let mut e = HistoryEntry::default();
+            e.note_id = note_id.clone();
+            e.first_seen_at = now.clone();
+            e
+        });
+        entry.note_id = note_id;
+        if !title.is_empty() {
+            entry.title = title;
+        }
+        if !author.is_empty() {
+            entry.author = author;
+        }
+        if !url.is_empty() {
+            entry.url = url;
+        }
+        if level_value(level) > level_value(&entry.level) {
+            entry.level = level.to_string();
+        }
+        if include_media {
+            entry.include_media = true;
+        }
+        let merged = match entry.entity.take() {
+            Some(prev) => merge_entities(&prev, fresh),
+            None => fresh,
+        };
+        entry.downloaded = entity_has_downloaded(&merged);
+        entry.ocr = entity_has_ocr(&merged);
+        entry.transcribed = entity_has_transcript(&merged);
+        entry.comments_loaded = entity_comment_count(&merged);
+        let total = entity_comment_total(&merged);
+        if total > entry.comments_total {
+            entry.comments_total = total;
+        }
+        entry.entity = Some(merged);
+        entry.analysis_count = entry.analysis_count.saturating_add(1);
+        entry.last_seen_at = now;
+        // Keep the same-store lock through persistence: parallel worker
+        // snapshots must not overwrite a newer one or share an active temp file.
+        let _ = save_file(&self.path, &guard);
     }
 
     /// Forget downloaded media that lived under run dirs being deleted: strip
@@ -309,27 +305,24 @@ impl XhsHistoryStore {
     /// agent holds its own store instance and its next record can clobber
     /// this write — the disk check in `is_satisfied_by` is the backstop.
     pub fn scrub_media_under(&self, run_dirs: &[PathBuf]) -> usize {
-        let (snapshot, scrubbed) = {
-            let Ok(mut guard) = self.inner.lock() else {
-                return 0;
-            };
-            let mut scrubbed = 0usize;
-            for entry in guard.notes.values_mut() {
-                let Some(entity) = entry.entity.as_mut() else {
-                    continue;
-                };
-                if !scrub_entity_media_under(entity, run_dirs) {
-                    continue;
-                }
-                entry.downloaded = entity_has_downloaded(entity);
-                scrubbed += 1;
-            }
-            if scrubbed == 0 {
-                return 0;
-            }
-            (guard.clone(), scrubbed)
+        let Ok(mut guard) = self.inner.lock() else {
+            return 0;
         };
-        let _ = save_file(&self.path, &snapshot);
+        let mut scrubbed = 0usize;
+        for entry in guard.notes.values_mut() {
+            let Some(entity) = entry.entity.as_mut() else {
+                continue;
+            };
+            if !scrub_entity_media_under(entity, run_dirs) {
+                continue;
+            }
+            entry.downloaded = entity_has_downloaded(entity);
+            scrubbed += 1;
+        }
+        if scrubbed == 0 {
+            return 0;
+        }
+        let _ = save_file(&self.path, &guard);
         scrubbed
     }
 }

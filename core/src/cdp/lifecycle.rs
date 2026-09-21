@@ -90,6 +90,14 @@ impl Cdp {
         });
     }
 
+    pub fn connect_once_with_options(&self, options: ChromeConnectOptions) {
+        let cdp = self.clone();
+        let generation = cdp.connect_generation();
+        tokio::spawn(async move {
+            run_connect(cdp, Some(options), 1, true, generation).await;
+        });
+    }
+
     /// Trigger a connect attempt with explicit chrome profile selection.
     /// `connect()` uses ~/.socai/config.json (or the default existing-profile
     /// attach mode); this method is for internal callers that have already

@@ -28,6 +28,14 @@ struct AgentTaskRegistryInner {
     timeline_locks: HashMap<String, Arc<Mutex<()>>>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskWorkflow {
+    #[default]
+    General,
+    Vc,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct AgentTaskSnapshot {
     pub(crate) task_id: String,
@@ -36,6 +44,11 @@ pub struct AgentTaskSnapshot {
     pub(crate) sites: Vec<String>,
     pub(crate) provider: Option<String>,
     pub(crate) model: Option<String>,
+    /// Explicit exploration budget; independent from workflow and source selection.
+    #[serde(default)]
+    pub(crate) research_mode: bool,
+    #[serde(default)]
+    pub(crate) workflow: TaskWorkflow,
     pub(crate) status: String,
     pub(crate) created_at: u64,
     pub(crate) started_at: Option<u64>,
@@ -145,6 +158,8 @@ impl AgentTaskRegistry {
         run_dir: String,
         session_dir: String,
         sites: Vec<String>,
+        research_mode: bool,
+        workflow: TaskWorkflow,
     ) -> AgentTaskSnapshot {
         let mut guard = self.inner.lock().await;
         guard.next_seq += 1;
@@ -156,6 +171,8 @@ impl AgentTaskRegistry {
             sites,
             provider,
             model,
+            research_mode,
+            workflow,
             status: "queued".into(),
             created_at: now_ms(),
             started_at: None,
@@ -637,6 +654,8 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
                 "task_id": &task.task_id,
                 "task": &task.task,
                 "sites": &task.sites,
+                "research_mode": task.research_mode,
+                "workflow": task.workflow,
                 "provider": &task.provider,
                 "model": &task.model,
                 "status": &task.status,

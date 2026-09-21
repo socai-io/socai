@@ -174,8 +174,8 @@ pub enum ToolRecoveryOutcome {
     NotNeeded,
     /// The dependency was repaired. The loop retries the same tool call once.
     Recovered,
-    /// Recovery is unavailable or failed. Stop calling tools and produce a
-    /// best-effort final answer from results already present in the history.
+    /// Recovery failed. Stop acquisition; opt-in local tools may finish delivery
+    /// before a best-effort partial answer.
     Degraded { reason: String },
 }
 
@@ -205,6 +205,8 @@ pub struct ToolContext {
     pub billing_task_id: Option<String>,
     remote_ocr: Option<RemoteOcrConfig>,
     pub run_state: Option<Arc<RunState>>,
+    auxiliary_usage: Arc<Mutex<crate::agent::TokenUsage>>,
+    usage_recorder: Option<Arc<super::run_logging::AgentRunRecorder>>,
     tool_dir: Option<PathBuf>,
     pub enabled_sites: Arc<Mutex<BTreeSet<String>>>,
     progress: Option<ToolProgressSender>,
@@ -280,6 +282,28 @@ impl std::fmt::Debug for ToolContext {
 }
 
 impl ToolContext {
+    /// Nested readers share the parent accounting without adding chat turns.
+    pub fn record_auxiliary_usage(&self, usage: &crate::agent::TokenUsage) {
+        *self.auxiliary_usage.lock().expect("poisoned") += usage;
+        if let Some(recorder) = &self.usage_recorder {
+            if let Err(error) = recorder.record_auxiliary_usage(usage) {
+                tracing::warn!(%error, "failed to persist nested model usage");
+            }
+        }
+    }
+
+    pub(crate) fn with_usage_recorder(
+        mut self,
+        recorder: Arc<super::run_logging::AgentRunRecorder>,
+    ) -> Self {
+        self.usage_recorder = Some(recorder);
+        self
+    }
+
+    pub(crate) fn take_auxiliary_usage(&self) -> crate::agent::TokenUsage {
+        std::mem::take(&mut *self.auxiliary_usage.lock().expect("poisoned"))
+    }
+
     pub fn new(run_id: impl Into<String>, run_dir: impl AsRef<Path>) -> Self {
         let run_dir = run_dir.as_ref().to_path_buf();
         let archived_notes = crate::agent::note_store::load_notes(&run_dir)
@@ -304,6 +328,8 @@ impl ToolContext {
             billing_task_id: None,
             remote_ocr: None,
             run_state: None,
+            auxiliary_usage: Arc::new(Mutex::new(crate::agent::TokenUsage::default())),
+            usage_recorder: None,
             tool_dir: None,
             enabled_sites: Arc::new(Mutex::new(BTreeSet::new())),
             progress: None,
@@ -784,6 +810,12 @@ pub trait Tool: Send + Sync {
 
     /// Tools that should always be exposed regardless of `enabled_sites`.
     fn always_available(&self) -> bool {
+        false
+    }
+
+    /// Explicit opt-in for the bounded, local-only delivery stage after a
+    /// dependency fails. Must not browse, call external services or execute shell.
+    fn available_in_local_delivery(&self) -> bool {
         false
     }
 

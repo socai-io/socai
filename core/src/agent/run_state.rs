@@ -13,6 +13,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::agent::compaction::{compact_value, truncate};
+use crate::agent::research::ResearchState;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ArtifactRecord {
@@ -33,6 +34,7 @@ struct Inner {
     artifacts: BTreeMap<String, ArtifactRecord>,
     evidence: BTreeMap<String, Value>,
     recent_events: Vec<Value>,
+    research: Option<ResearchState>,
 }
 
 #[derive(Debug)]
@@ -49,6 +51,7 @@ impl RunState {
                 artifacts: BTreeMap::new(),
                 evidence: BTreeMap::new(),
                 recent_events: Vec::new(),
+                research: None,
             }),
         }
     }
@@ -181,6 +184,32 @@ impl RunState {
         self.append_event(json!({"type": "plan_update"}));
     }
 
+    pub fn activate_research(&self) {
+        self.inner
+            .lock()
+            .expect("poisoned")
+            .research
+            .get_or_insert_with(ResearchState::default);
+    }
+
+    pub fn research(&self) -> Option<ResearchState> {
+        self.inner.lock().expect("poisoned").research.clone()
+    }
+
+    pub fn research_active(&self) -> bool {
+        self.inner.lock().expect("poisoned").research.is_some()
+    }
+
+    pub fn set_research(&self, research: ResearchState) {
+        self.inner.lock().expect("poisoned").research = Some(research);
+    }
+
+    pub fn invalidate_research_review(&self) {
+        if let Some(research) = &mut self.inner.lock().expect("poisoned").research {
+            research.review = None;
+        }
+    }
+
     pub fn render_working_memory(&self, max_recent_events: usize, max_evidence: usize) -> String {
         let guard = self.inner.lock().expect("poisoned");
         let mut out = format!("# Task\n{}\n\n# Plan\n", guard.task);
@@ -256,7 +285,10 @@ impl RunState {
 
     pub fn has_structured_state(&self) -> bool {
         let guard = self.inner.lock().expect("poisoned");
-        !guard.plan.is_empty() || !guard.evidence.is_empty() || !guard.artifacts.is_empty()
+        guard.research.is_some()
+            || !guard.plan.is_empty()
+            || !guard.evidence.is_empty()
+            || !guard.artifacts.is_empty()
     }
 
     pub fn artifact_records(&self) -> Vec<ArtifactRecord> {

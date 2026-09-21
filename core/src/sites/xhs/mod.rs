@@ -1,9 +1,12 @@
 pub mod entities;
+pub mod explore;
 pub mod history;
 mod media_manifest;
 pub mod page;
 pub(crate) mod page_diagnostics;
 pub mod publish;
+pub mod reading_stats;
+pub mod saved_notes;
 pub mod tools;
 
 pub use self::entities::{parse_count_text, XhsAuthorProfile, XhsNote, XhsNoteCard};

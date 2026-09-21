@@ -106,7 +106,22 @@ async function downloadArchive(target) {
 
 export async function prepareSherpaArchives(targets) {
   await mkdir(ARCHIVE_DIR, { recursive: true });
-  for (const target of [...new Set(targets)]) await downloadArchive(target);
+  for (const target of [...new Set(targets)]) {
+    await downloadArchive(target);
+    // Rust caches may retain the prebuilt directory after pruning its native
+    // libraries. sherpa's build script only checks whether that directory exists.
+    // Extract the verified archive explicitly so an empty cache is never reused.
+    const destination = path.join(REPO_DIR, "target", "sherpa-onnx-libs", target);
+    await rm(destination, { recursive: true, force: true });
+    await mkdir(destination, { recursive: true });
+    execFileSync("tar", [
+      "-xf", path.join(ARCHIVE_DIR, ARCHIVES[target].name),
+      "-C", destination, "--strip-components=1",
+    ], { stdio: "inherit" });
+    const library = target.includes("windows") ? "sherpa-onnx-c-api.lib" : "libsherpa-onnx-c-api.a";
+    const metadata = await stat(path.join(destination, "lib", library));
+    if (!metadata.size) throw new Error(`empty sherpa-onnx library for ${target}`);
+  }
 }
 
 const invokedDirectly = process.argv[1]

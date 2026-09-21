@@ -35,6 +35,10 @@ impl PublishArtifactTool {
 
 #[async_trait]
 impl Tool for PublishArtifactTool {
+    fn available_in_local_delivery(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "publish_artifact"
     }

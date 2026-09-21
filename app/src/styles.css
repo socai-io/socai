@@ -1723,6 +1723,11 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex-wrap: wrap;
   gap: 6px;
 }
+.artifact-process {
+  margin-top: var(--sp-3);
+  color: var(--fg-muted);
+}
+.artifact-process > summary { cursor: pointer; }
 .artifact-card {
   position: relative;
   width: min(100%, 320px);
@@ -2134,6 +2139,23 @@ body.has-paper > * { position: relative; z-index: 1; }
   gap: var(--sp-2);
 }
 .composer__form { margin: 0; }
+.composer__options { display: flex; padding-top: var(--sp-2); }
+.composer__research {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 5px 10px;
+  border: var(--hairline);
+  border-radius: var(--r-4);
+  background: var(--canvas);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.composer__research[aria-pressed="true"] { background: var(--fg); color: var(--canvas); border-color: var(--fg); }
+.composer__research-dot { width: 6px; height: 6px; border: 1px solid currentColor; border-radius: 50%; }
+.composer__research[aria-pressed="true"] .composer__research-dot { background: currentColor; }
+.composer__research:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.composer__research:disabled { opacity: .5; cursor: default; }
 /* the input is a self-contained rounded box floating in the pane — no outer
    dock divider boxing it off from the conversation above. */
 .composer__row {
@@ -3004,3 +3026,9 @@ code {
 .github-readme td, .github-readme th { padding: 8px 12px; border: 1px solid var(--line); }
 .github-readme blockquote { margin-inline: 0; padding-left: 18px; border-left: 2px solid var(--line); color: var(--fg-muted); }
 .github-readme summary { cursor: pointer; }
+.conv-reading-stats { color: var(--fg-muted); border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 16px; }
+
+.composer__options { flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+.composer__workflow { display: inline-flex; align-items: center; gap: var(--sp-2); color: var(--fg-muted); }
+.composer__workflow select { font: inherit; color: var(--fg); background: var(--canvas); border: 1px solid var(--line); border-radius: var(--r-2); padding: 4px 8px; }
+.composer__workflow select:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }

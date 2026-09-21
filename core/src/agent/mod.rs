@@ -7,6 +7,7 @@
 pub mod api_errors;
 pub mod compaction;
 pub mod conversation;
+pub mod extensions;
 pub mod file_bash_tools;
 pub mod llm;
 pub mod r#loop;
@@ -14,6 +15,7 @@ pub mod memory;
 pub mod note_store;
 pub mod provider;
 pub mod report;
+pub mod research;
 pub mod run_logging;
 pub mod run_state;
 pub mod signature;

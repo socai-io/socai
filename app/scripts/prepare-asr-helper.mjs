@@ -22,12 +22,14 @@ function rustHost() {
 function build(target) {
   const args = ["build", "-p", "socai-asr", "--target", target];
   if (release) args.push("--release");
-  execFileSync("cargo", args, {
+  const runner = process.env.SOCAI_CARGO_RUNNER || "cargo";
+  execFileSync(runner, args, {
     cwd: REPO_DIR,
     stdio: "inherit",
     env: {
       ...process.env,
       SHERPA_ONNX_ARCHIVE_DIR: path.join(REPO_DIR, "target", "sherpa-onnx-archives"),
+      SHERPA_ONNX_LIB_DIR: path.join(REPO_DIR, "target", "sherpa-onnx-libs", target, "lib"),
     },
   });
   const extension = target.includes("windows") ? ".exe" : "";

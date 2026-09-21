@@ -132,6 +132,30 @@ site tools without pre-navigating to a platform. Explicit selections scope the
 site-learning tools and prompt to those sites. This is a research scope control,
 not a security sandbox for the agent's local environment tools.
 
+### Workflow and research depth
+
+The composer has independent **General / VC research**, **Light / Deep research**
+and source controls. New tasks start in light mode. VC research defaults to
+opportunity discovery: useful teams, projects, relationships and uncertain
+signals with source links. Meeting preparation, diligence and tracking suggestions
+are produced when requested; selecting VC does not contact people or start a
+monitor. The first skill is intentionally concise and lives at
+[`vc-research/SKILL.md`](../core/src/agent/skills/vc-research/SKILL.md).
+
+Light research makes an initial pass (30 action steps); deep research permits
+more complementary exploration and selective depth (120). These are ceilings,
+not quotas or guarantees of candidate count. Loading a skill does not raise the
+budget. Workflow, depth and selected sources persist with each conversation and
+can be changed before a follow-up. Existing tasks default to General and Light.
+
+VC works with Auto, one platform, or multiple selected platforms, including the
+existing WeChat articles, X, podcasts and GitHub sources. Auto chooses useful
+available platforms; it does not visit every platform. Explicit selections limit
+new collection to those platforms. The parallel `explore` tool remains specific
+to Xiaohongshu; other sources use their existing tools. An unavailable source must
+be disclosed, and uncertain leads are retained with labels rather than silently
+excluded. Choosing deep research does not require diligence on every candidate.
+
 ### Feishu export
 
 Each answer's “导出到飞书” action lets the user choose document or direct
