@@ -964,104 +964,12 @@
       {
         "id": "kimi-k2.5",
         "display_name": "Kimi K2.5",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.6,
-              "output_per_million": 3,
-              "cache_read_per_million": 0.1,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "kimi-k2-0905-preview",
-        "display_name": "Kimi K2 0905",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.6,
-              "output_per_million": 2.5,
-              "cache_read_per_million": 0.15,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "kimi-k2-0711-preview",
-        "display_name": "Kimi K2 0711",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.6,
-              "output_per_million": 2.5,
-              "cache_read_per_million": 0.15,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "kimi-k2-turbo-preview",
-        "display_name": "Kimi K2 Turbo",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 2.4,
-              "output_per_million": 10,
-              "cache_read_per_million": 0.6,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "kimi-k2-thinking-turbo",
-        "display_name": "Kimi K2 Thinking Turbo",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 1.15,
-              "output_per_million": 8,
-              "cache_read_per_million": 0.15,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
+        "source": "fallback"
       },
       {
         "id": "kimi-k2-thinking",
         "display_name": "Kimi K2 Thinking",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.6,
-              "output_per_million": 2.5,
-              "cache_read_per_million": 0.15,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
+        "source": "fallback"
       }
     ],
     "qwen": [
@@ -1352,9 +1260,9 @@
           "source": "pi-ai",
           "tiers": [
             {
-              "input_per_million": 0.435,
-              "output_per_million": 0.87,
-              "cache_read_per_million": 0.003625,
+              "input_per_million": 1.32,
+              "output_per_million": 3.96,
+              "cache_read_per_million": 0.044,
               "cache_write_per_million": 0
             }
           ]
@@ -1362,34 +1270,22 @@
         "recommended": true
       },
       {
-        "id": "deepseek-v4-flash-vision-exp",
-        "display_name": "DeepSeek V4 Flash Vision Exp",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.14,
-              "output_per_million": 0.28,
-              "cache_read_per_million": 0.0028,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
         "id": "deepseek-v4-flash",
         "display_name": "DeepSeek V4 Flash",
+        "source": "fallback"
+      },
+      {
+        "id": "deepseek-flash",
+        "display_name": "DeepSeek V4.1 Flash",
         "source": "pi-ai",
         "pricing": {
           "currency": "USD",
           "source": "pi-ai",
           "tiers": [
             {
-              "input_per_million": 0.14,
-              "output_per_million": 0.28,
-              "cache_read_per_million": 0.0028,
+              "input_per_million": 0.3,
+              "output_per_million": 1.2,
+              "cache_read_per_million": 0.006,
               "cache_write_per_million": 0
             }
           ]
