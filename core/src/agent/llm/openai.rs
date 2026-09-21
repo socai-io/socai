@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -25,6 +26,9 @@ use crate::agent::provider::{
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+// Long reasoning responses can outlast the ordinary chat deadline, including
+// non-streaming compatible APIs. Connection establishment is bounded separately.
+const RESPONSES_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const IDLE_POOL_TIMEOUT: Duration = Duration::from_secs(300);
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -142,6 +146,9 @@ impl OpenAICompatBackend {
     fn extra_body(&self) -> Map<String, Value> {
         let mut extra = Map::new();
         match self.provider {
+            Provider::DeepSeek if self.model.starts_with("deepseek-v4") => {
+                extra.insert("thinking".into(), json!({"type": "enabled"}));
+            }
             Provider::Kimi if self.model.starts_with("kimi-k2.6") => {
                 extra.insert("thinking".into(), json!({"type": "enabled"}));
             }
@@ -205,7 +212,7 @@ impl OpenAICompatBackend {
         tools: &[ToolSchema],
         max_tokens: u32,
     ) -> ResponsesRequest {
-        // Reasoning on by default — newer GPT-5.x releases default the
+        // Reasoning on by default — newer GPT releases may default the
         // effort to "none". summary: "auto" surfaces the summary text;
         // encrypted_content is what store:false replay needs. Non-reasoning
         // models (gpt-4o, the -chat variants) reject the parameter.
@@ -294,6 +301,7 @@ fn is_openai_reasoning_model(model: &str) -> bool {
         return false;
     }
     model.starts_with("gpt-5")
+        || model.starts_with("gpt-6")
         || model.starts_with("o1")
         || model.starts_with("o3")
         || model.starts_with("o4")
@@ -861,7 +869,8 @@ fn parse_responses_sse(
                             .get("arguments")
                             .and_then(Value::as_str)
                             .unwrap_or("{}");
-                        let input = serde_json::from_str(args).unwrap_or_else(|_| json!({}));
+                        let input = serde_json::from_str(args)
+                            .unwrap_or_else(|_| Value::String(args.to_string()));
                         if !id.is_empty() && !name.is_empty() {
                             tool_calls.push(ToolCall { id, name, input });
                         }
@@ -962,6 +971,19 @@ impl Backend for OpenAICompatBackend {
         let body = self.build_chat_request(system, messages, tools, max_tokens);
 
         let mut request = self.client.post(self.url()).bearer_auth(self.api_key()?);
+        if self.provider == Provider::Socai {
+            // Let the hosted gateway return its own 600s timeout and settle usage.
+            request = request.timeout(RESPONSES_REQUEST_TIMEOUT + Duration::from_secs(30));
+        } else if body.extra.get("enable_thinking").and_then(Value::as_bool) == Some(true)
+            || body
+                .extra
+                .get("thinking")
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str)
+                == Some("enabled")
+        {
+            request = request.timeout(RESPONSES_REQUEST_TIMEOUT);
+        }
         if let Some(task_id) = &self.task_id {
             request = request.header("X-Socai-Task-ID", task_id);
         }
@@ -995,7 +1017,8 @@ impl Backend for OpenAICompatBackend {
         let mut tool_calls = Vec::new();
         for tc in choice.message.tool_calls.unwrap_or_default() {
             let args_raw = tc.function.arguments.unwrap_or_else(|| "{}".into());
-            let input: Value = serde_json::from_str(&args_raw).unwrap_or(Value::Object(Map::new()));
+            let input: Value =
+                serde_json::from_str(&args_raw).unwrap_or_else(|_| Value::String(args_raw));
             tool_calls.push(ToolCall {
                 id: tc.id,
                 name: tc.function.name,
@@ -1046,7 +1069,10 @@ impl OpenAICompatBackend {
         body: &ResponsesRequest,
     ) -> anyhow::Result<reqwest::Response> {
         let credential = &self.credential;
-        let request = self.client.post(self.responses_url());
+        let request = self
+            .client
+            .post(self.responses_url())
+            .timeout(RESPONSES_REQUEST_TIMEOUT);
         let request = match credential {
             Credential::CodexOAuth {
                 access_token,
@@ -1067,7 +1093,10 @@ impl OpenAICompatBackend {
         let is_codex = matches!(self.credential, Credential::CodexOAuth { .. });
         let label = if is_codex { "openai-codex" } else { "openai" };
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+        let text = response
+            .text()
+            .await
+            .context("failed to read OpenAI Responses stream")?;
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED && is_codex {
                 anyhow::bail!(

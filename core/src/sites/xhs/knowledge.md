@@ -30,6 +30,13 @@ The default interactive XHS tools are intentionally high level:
 - `search` — the topic/keyword search macro, and the single XHS search tool.
 - `author_scan` — author/profile macro.
 - `get_notes` — revisit specific notes by previously collected note id + xsec token.
+- `explore` — 1–3 independent exploration branches in parallel tabs: concepts,
+  people, profiles or selected posts. Returns concise prose with note IDs and
+  new leads, using the same model. Give distinct questions and known context.
+- `read_saved_notes` — read this run's saved sources by note ID, including full
+  OCR/comments. Omit IDs for a source index; use section/offset to page through
+  long material. Use section="links" for just IDs/titles/original URLs when
+  writing reports. No browser or shell required; it does not re-run OCR.
 
 Stateful micro tools such as opening/closing a current note, scrolling a note,
 extracting the current modal, or reading current page state are not part of the
@@ -74,6 +81,33 @@ user remote browsing is temporarily unavailable on socai's side and to try again
 later. Do NOT ask them to scan a QR and do NOT call `wait_for_login`.
 
 ## Tool Use
+
+### Search query strategy (all XHS tasks)
+
+Use one or two core concepts, a specific name, or one short natural question.
+Keep a multiword product/person name intact; this is a semantic guideline, not
+a whitespace word limit. XHS search is ranked retrieval, not a Boolean AND
+filter: adding every task criterion does not reliably find notes matching them
+all. Apply the remaining criteria while reading the returned posts.
+
+For example, search `Weco` or `AIDE` separately instead of
+`Weco AI 自动研究 AIDE 递归`; use `自动科研` or `科研创业` instead of
+`AI自动科研 autoresearch 创业 中国`. Choose the term most likely used by the
+target authors, rather than translating the whole task into a query.
+
+When changing a query, change the discovery direction:
+- Go broader into an adjacent concept, community, workflow, use case or user
+  group that could reveal a different set of posts.
+- Go deeper into an observed person/project, a concrete property, problem,
+  product or activity. Add only the useful distinguishing concept.
+- Try an alias or another language when it plausibly reaches different author
+  vocabulary; do not repeatedly reorder words or cycle through near-synonyms.
+
+Compare returned note IDs, authors and new useful information with prior
+results. Heavy overlap is a reason to change direction, inspect an author, or
+try a relevant search filter, not to generate another cosmetic paraphrase.
+Sparse results are a reason to simplify the query or loosen constraints first.
+Do not silently rewrite an exact query explicitly required by the user.
 
 ### `search` and `author_scan`
 
@@ -120,17 +154,34 @@ already contains the official account's own announcement and its date is
 current for what is being asked, answer from it directly — the hop is for
 official evidence that is stale, conflicting, or missing from the sample.
 
-If no official account surfaces for such a question, keep the default search
-ranking — that relevance ordering is what XHS search is good at; do not
-re-search with recency filters just to freshen results. Answer from the dated
-evidence you have: state the dates of the notes you relied on, and when the
-newest relevant note looks old for what is being asked, say clearly that the
-answer may be outdated.
+For such announcement questions, sorting by newest cannot establish that an
+announcement is current or official. Prefer the subject's own account when
+available and inspect dates and content. For discovery, however, changing
+sort or time filters can expose posts hidden by the default ranking; use this
+when it could add useful material, not merely make an answer look recent.
+If the newest relevant material still looks old for the question, state its
+date and the remaining gap.
 
-For questions with no authoritative owner (experiences, opinions,
-recommendations), user notes are the evidence — no profile hop needed. An
+For summaries of experiences or opinions, user notes are usually the evidence;
+no profile hop is needed unless the author's background changes the assessment. An
 `author_scan` can still help there to distinguish firsthand expertise from
 soft ads/content farms when a note looks suspicious or representative.
+
+For sourcing, founder/project discovery, partnerships or practitioner research,
+posts are discovery leads, while people/projects are the deliverable. Load the
+`research` skill. Firsthand building, launch, pilot, hiring, or customer-learning
+signals can justify inspecting a profile and relevant history, even without an
+official account or verification badge. Use `author_scan(preview=true)` to screen
+the profile/cards, then `get_notes` for selected relevant posts. Use profiles to
+find additional work and connections, not as an admission test for every lead.
+A roundup author need not be a founder for the named projects to be useful:
+keep those projects and search their names. Retain relevant uncertain leads with
+brief labels; an official website or confirmed founder identity is not required
+for social discovery. For long roundups, read the saved full OCR/body artifact
+when the returned preview is truncated, so names beyond the preview are not lost.
+Use observed product names, workflows and user groups to expand searches when
+they add a distinct direction. Do not investigate every author or stop merely
+because a few keyword searches returned relevant posts.
 
 Shared options (same meaning for both):
 
@@ -145,8 +196,14 @@ Shared options (same meaning for both):
   any note. `download_media` is ignored in this mode.
 - `download_media=true` — download note images/videos into the run dir; use when
   the user needs local files.
-- `ocr=true` — also read text inside the images (local PP-OCRv6, offline, run
-  pipelined behind the browse loop so it's near-free). Each note gets `ocr_text`
+- `ocr=true` — also read text inside the images (local PP-OCRv6, offline,
+  pipelined behind the browse loop but still costing time). This is an internal
+  macro stage, not an additional agent tool call or reasoning step. Returned
+  OCR text does consume context; the compact note result includes at most two
+  cover-first image texts, each capped at 1,200 characters, with a truncation
+  marker and the complete text saved in artifacts. App/TUI macros enable OCR
+  automatically; do not request another OCR pass for already saved text.
+  Each note gets `ocr_text`
   as a per-image array (cover first); implies `download_media`; in `preview` mode
   it OCRs each card's cover only.
 - `transcribe_audio=true` — transcribe a video note's audio in the cloud,

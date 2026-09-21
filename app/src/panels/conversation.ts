@@ -45,6 +45,7 @@ export interface ComposerProps {
   /** Existing task controlled by the reply composer. */
   taskId?: string;
   value: string;
+  researchMode: boolean;
   submitting: boolean;
   /** True while cancellation for this task is being committed. */
   cancelling: boolean;
@@ -60,6 +61,7 @@ export interface ComposerProps {
    * reconnects on demand, so the connect overlay and send gating don't apply.
    */
   remoteProfile: boolean;
+  managedProfile: boolean;
   chromeSetupState: ChromeSetupState;
   chromeSetupError: string;
   /** Cloud microphone availability and the current recording phase. */
@@ -146,6 +148,15 @@ export function renderComposePane(composer: ComposerProps): string {
 
 function renderConnectOverlay(composer: ComposerProps): string {
   const connecting = composer.status.state === "connecting";
+  if (composer.managedProfile) return `
+    <div class="connect-overlay" role="dialog" aria-label="${esc(t("chrome.requiredAria"))}">
+      <h3 class="connect-overlay-head">${esc(t("chrome.managedTitle"))}</h3>
+      <p class="t-small subtle">${esc(t("chrome.managedHelp"))}</p>
+      <button id="overlay-chrome-connect" type="button" class="btn-primary connect-setup-action" ${connecting ? "disabled" : ""}>
+        ${esc(t(connecting ? "chrome.connectingCta" : "chrome.connectCta"))}
+      </button>
+      ${composer.chromeSetupError ? `<p class="t-small" role="alert">${esc(composer.chromeSetupError)}</p>` : ""}
+    </div>`;
   const ready = composer.chromeSetupState === "ready";
   const permissionRequired = composer.chromeSetupState === "permission_required";
   return `
@@ -311,6 +322,7 @@ function renderTurn(
   const hosted = task.provider === "socai";
   const metrics = turnMetrics(task, events, isLast);
 
+
   // Every completed turn owns its own model, duration, usage and cost. Never
   // read an earlier answer's figures from the task's latest-run snapshot.
   let answer = "";
@@ -404,12 +416,21 @@ function renderTurn(
     <div class="turn">
       ${user}
       ${renderActivity(task, body, index, showWorking, metrics, isActivityOpen)}
+      ${answer ? renderReadingStats(task, index) : ""}
       ${answer}
       ${artifactCards}
       ${exportAction}
       ${meta}
     </div>
   `;
+}
+
+function renderReadingStats(task: AgentTaskView, index: number): string {
+  const stats = task.readingStats?.find((s) => s.turn_index === index);
+  if (!stats || !(stats.preview_notes + stats.detail_notes + stats.comments + stats.authors)) return "";
+  return `<div class="conv-reading-stats t-small" title="${esc(t("task.readingStatsHint"))}">${esc(t("task.readingStats", {
+    preview: stats.preview_notes, detail: stats.detail_notes, comments: stats.comments, authors: stats.authors,
+  }))}</div>`;
 }
 
 function renderArtifactCards(
@@ -419,9 +440,8 @@ function renderArtifactCards(
   downloadState: ConversationProps["artifactDownloadState"],
   previewPath: string | null,
 ): string {
-  const cards = artifacts
-    .filter((artifact) => artifact.turn_index === turnIndex)
-    .map((artifact) => {
+  const turnArtifacts = artifacts.filter((artifact) => artifact.turn_index === turnIndex);
+  const renderCards = (items: AgentArtifact[]): string => items.map((artifact) => {
       const state = downloadState(artifact.path);
       const statusKey = state?.status === "downloading"
         ? "artifact.downloading"
@@ -494,8 +514,13 @@ function renderArtifactCards(
       `;
     })
     .join("");
-  if (!cards) return "";
-  return `<div class="artifact-cards" aria-label="${esc(t("artifact.listAria"))}">${cards}</div>`;
+  const delivered = turnArtifacts.filter((artifact) => artifact.relative_path.startsWith("outputs/"));
+  const intermediate = turnArtifacts.filter((artifact) => !artifact.relative_path.startsWith("outputs/"));
+  const cards = renderCards(delivered);
+  const process = intermediate.length
+    ? `<details class="artifact-process"><summary class="t-small">${esc(t("artifact.processFiles", { count: intermediate.length }))}</summary><div class="artifact-cards">${renderCards(intermediate)}</div></details>`
+    : "";
+  return `${cards ? `<div class="artifact-cards" aria-label="${esc(t("artifact.listAria"))}">${cards}</div>` : ""}${process}`;
 }
 
 /** Exact answer represented by an answer-level export button. */
@@ -691,11 +716,11 @@ export function renderSocialMaterials(task: AgentTaskView): string {
     const site = note?.site || ref.split(":", 1)[0] || "xhs";
     const platform = materialPlatform(site);
     const media = note?.media ?? [];
-    const type = media.some((item) => item.kind === "video")
+    const type = note?.type === "video" || media.some((item) => item.kind === "video")
       ? t("task.materialVideo")
       : media.length > 0
         ? t("task.materialImage")
-        : t("task.materialText");
+        : site === "xhs" ? t("task.materialUnavailable") : t("task.materialText");
     const key = `${site}:${type}`;
     const group = groups.get(key) ?? { label: `${platform} · ${type}`, refs: [] };
     group.refs.push(ref);
@@ -831,6 +856,16 @@ function renderComposer(c: ComposerProps): string {
             >${voiceGlyph}</button>
           </span>
           ${action}
+        </div>
+        <div class="composer__options">
+          <button id="composer-research" type="button"
+            class="composer__research t-small"
+            aria-pressed="${c.researchMode}"
+            title="${esc(t(c.researchMode ? "task.researchEnabledHint" : "task.researchAutoHint"))}"
+            ${disabled ? "disabled" : ""}>
+            <span class="composer__research-dot" aria-hidden="true"></span>
+            ${esc(t("task.researchMode"))}
+          </button>
         </div>
       </form>
       ${connectHint}

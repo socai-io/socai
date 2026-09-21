@@ -170,6 +170,33 @@ impl PageSession {
         self.connection.read().await.target_id.clone()
     }
 
+    /// A separately owned tab on the same browser/profile. Dropping its guard
+    /// closes only that target, including when a branch is cancelled.
+    pub async fn new_sibling(&self) -> anyhow::Result<super::pages::OwnedPage> {
+        let page = super::pages::OwnedPage::new(
+            super::pages::PageSessionManager::new(self.owner.clone())
+                .create_page("about:blank")
+                .await?,
+        );
+        // Background tabs otherwise defer mouse input acknowledgements by ~5s.
+        // Scoped to our temporary worker, without bringing user windows to front.
+        let active = page.page();
+        let result = active
+            .execute(
+                "Emulation.setFocusEmulationEnabled",
+                json!({"enabled":true}),
+            )
+            .await;
+        super::diagnostics::record(
+            "worker_focus_emulation",
+            json!({"page":active.transport_diagnostic().await,"enabled":result.is_ok()}),
+        );
+        if let Err(error) = result {
+            tracing::warn!(%error,"worker focus emulation unavailable");
+        }
+        Ok(page)
+    }
+
     /// True when this page was created in a remote hosted browser (socai pro
     /// `chrome.profile remote`) rather than any local chrome.
     pub fn is_remote_browser(&self) -> bool {
@@ -180,7 +207,15 @@ impl PageSession {
     /// Target closure keeps the browser websocket alive and therefore remains
     /// distinguishable from a recoverable whole-CDP transport loss.
     pub async fn transport_closed(&self) -> bool {
-        self.connection.read().await.client.is_closed()
+        let connection = self.connection.read().await;
+        connection
+            .client
+            .is_session_closed(connection.session_id.as_deref())
+    }
+
+    pub async fn transport_diagnostic(&self) -> Value {
+        let c = self.connection.read().await;
+        json!({"target_id":c.target_id,"session_id":c.session_id,"health":c.client.health_diagnostic()})
     }
 
     /// Rebind this stable page handle to a freshly-created target. All tools
@@ -206,6 +241,10 @@ impl PageSession {
         };
         self.remote_browser
             .store(replacement_remote, Ordering::Release);
+        super::diagnostics::record(
+            "page_rebound",
+            json!({"old_target_id":old_target_id,"replacement":self.transport_diagnostic().await}),
+        );
         self.owner.unregister_owned_target(&old_target_id).await;
     }
 
@@ -802,22 +841,32 @@ return (async () => {{
 
     /// Close the underlying tab. Consumes the session.
     pub async fn close(self) -> anyhow::Result<()> {
-        let (target_id, client) = {
+        self.close_target().await
+    }
+
+    pub(crate) async fn close_target(&self) -> anyhow::Result<()> {
+        let (target_id, session_id, client) = {
             let connection = self.connection.read().await;
-            (connection.target_id.clone(), connection.client.clone())
+            (
+                connection.target_id.clone(),
+                connection.session_id.clone(),
+                connection.client.clone(),
+            )
         };
         // Use the browser websocket that created/attached this PageSession, not
         // whatever browser client the runtime currently holds. The runtime may
         // have disconnected/reconnected or switched profile by the time a
         // session is dropped/cancelled; cleanup should still target the browser
         // that owns this target id.
-        let result = client
-            .execute("Target.closeTarget", json!({ "targetId": target_id }))
-            .await;
-        result?;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.execute("Target.closeTarget", json!({ "targetId": target_id })),
+        )
+        .await;
         self.owner.unregister_owned_target(&target_id).await;
+        client.forget_session(session_id.as_deref());
         self.close_on_drop.store(false, Ordering::Release);
-        Ok(())
+        result.context("Closing target timed out")?.map(|_| ())
     }
 }
 

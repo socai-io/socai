@@ -70,6 +70,12 @@ const AGENT_TOP_COMMENTS_PER_NOTE: i64 = 5;
 /// at compile time so the agent prompt always carries the latest copy.
 pub const XHS_KNOWLEDGE: &str = include_str!("knowledge.md");
 
+const XHS_SEARCH_QUERY_GUIDANCE: &str =
+    "Use 1-2 core concepts, a specific name, or a short question; keep multiword names intact. \
+     XHS search is not Boolean AND: do not stack all task criteria. For a new direction, \
+     broaden to an adjacent concept or deepen into a concrete entity/detail instead of \
+     repeatedly rephrasing near-synonyms.";
+
 /// All XHS tools constructed against the same page. Convenience helper for
 /// the CLI / agent host — just register everything.
 pub fn xhs_tools(page: Arc<PageSession>) -> Vec<Arc<dyn Tool>> {
@@ -84,7 +90,7 @@ pub fn xhs_tools_with_llm_provider(
     // Transcription is available for every account: paid sessions route to
     // managed ASR and all other sessions route to local Whisper small.
     let asr_enabled = true;
-    vec![
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(GetNotesTool {
             page: page.clone(),
             llm_provider: llm_provider.clone(),
@@ -119,7 +125,7 @@ pub fn xhs_tools_with_llm_provider(
         Arc::new(ExtractProfileTool { page: page.clone() }),
         Arc::new(SearchTool {
             page: page.clone(),
-            llm_provider,
+            llm_provider: llm_provider.clone(),
             history: history.clone(),
             always_download_media: false,
             always_ocr: false,
@@ -127,15 +133,17 @@ pub fn xhs_tools_with_llm_provider(
         }),
         Arc::new(AuthorScanTool {
             page: page.clone(),
-            history,
+            history: history.clone(),
             always_download_media: false,
             always_ocr: false,
             asr_enabled,
         }),
         Arc::new(WaitForLoginTool { page: page.clone() }),
         Arc::new(WaitForRateLimitTool),
-        Arc::new(PageStateTool { page }),
-    ]
+        Arc::new(PageStateTool { page: page.clone() }),
+    ];
+    add_research_readers(&mut tools, page, llm_provider, history);
+    tools
 }
 
 pub fn xhs_macro_tools_with_llm_provider(
@@ -147,7 +155,7 @@ pub fn xhs_macro_tools_with_llm_provider(
     // The app/TUI agent interface always downloads note media so the offline
     // files are on hand for deeper analysis, and always OCRs every image; the
     // CLI keeps its --download-media / --ocr opt-ins via the full tool set above.
-    vec![
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(GetNotesTool {
             page: page.clone(),
             llm_provider: llm_provider.clone(),
@@ -158,7 +166,7 @@ pub fn xhs_macro_tools_with_llm_provider(
         }) as Arc<dyn Tool>,
         Arc::new(SearchTool {
             page: page.clone(),
-            llm_provider,
+            llm_provider: llm_provider.clone(),
             history: history.clone(),
             always_download_media: true,
             always_ocr: true,
@@ -166,13 +174,61 @@ pub fn xhs_macro_tools_with_llm_provider(
         }) as Arc<dyn Tool>,
         Arc::new(AuthorScanTool {
             page: page.clone(),
-            history,
+            history: history.clone(),
             always_download_media: true,
             always_ocr: true,
             asr_enabled,
         }),
-        Arc::new(WaitForLoginTool { page }),
+        Arc::new(WaitForLoginTool { page: page.clone() }),
         Arc::new(WaitForRateLimitTool),
+    ];
+    add_research_readers(&mut tools, page, llm_provider, history);
+    tools
+}
+
+fn add_research_readers(
+    tools: &mut Vec<Arc<dyn Tool>>,
+    page: Arc<PageSession>,
+    backend: Option<Arc<dyn LlmProvider>>,
+    history: Arc<XhsHistoryStore>,
+) {
+    tools.push(Arc::new(super::saved_notes::ReadSavedNotesTool));
+    if let Some(backend) = backend {
+        tools.push(Arc::new(super::explore::ExploreTool::new(
+            backend, page, history,
+        )));
+    }
+}
+
+pub(super) fn exploration_tools(
+    page: Arc<PageSession>,
+    backend: Arc<dyn LlmProvider>,
+    history: Arc<XhsHistoryStore>,
+) -> Vec<Arc<dyn Tool>> {
+    vec![
+        Arc::new(SearchTool {
+            page: page.clone(),
+            llm_provider: Some(backend.clone()),
+            history: history.clone(),
+            always_download_media: false,
+            always_ocr: false,
+            asr_enabled: false,
+        }),
+        Arc::new(AuthorScanTool {
+            page: page.clone(),
+            history: history.clone(),
+            always_download_media: false,
+            always_ocr: false,
+            asr_enabled: false,
+        }),
+        Arc::new(GetNotesTool {
+            page,
+            llm_provider: Some(backend),
+            history,
+            always_download_media: false,
+            always_ocr: true,
+            asr_enabled: false,
+        }),
     ]
 }
 
@@ -271,7 +327,7 @@ pub static XHS_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     key: "query",
                     long: None,
                     value_name: "QUERY",
-                    help: "Search query",
+                    help: XHS_SEARCH_QUERY_GUIDANCE,
                     required: true,
                     kind: ArgKind::Str,
                 },
@@ -1751,6 +1807,11 @@ pub fn note_data_record(
 
     let mut record = Map::new();
     record.insert("note_id".into(), Value::String(note_id.clone()));
+    // Post type is independent of whether local media was requested/downloaded.
+    let post_type = text("type");
+    if !post_type.is_empty() {
+        record.insert("type".into(), Value::String(post_type));
+    }
     let url = text("url");
     if !url.is_empty() {
         record.insert("url".into(), Value::String(url));
@@ -2376,6 +2437,7 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     // Per-note OCR summary (joined from each image's ocr_text). Only present
     // when the scan ran with `ocr`; the per-image texts stay in the artifact.
     "ocr_text",
+    "ocr_truncated",
     // Video audio transcript from the selected ASR route. The full video object stays in the
     // artifact; this keeps the usable text in the compact result.
     "audio_transcript",
@@ -2476,33 +2538,41 @@ const LEAN_NOTE_OCR_MAX_IMAGES: usize = 2;
 /// [`lean_scan_note`]) so the artifact retains the complete per-image / poster
 /// OCR while the returned result stays bounded.
 fn attach_note_ocr_summary(entity: &mut Value) {
-    let mut texts: Vec<Value> = Vec::new();
+    let mut full_texts: Vec<&str> = Vec::new();
     if let Some(poster) = entity
         .get("video")
         .and_then(|video| video.get("poster_ocr"))
         .and_then(Value::as_str)
     {
-        texts.push(Value::String(truncate(poster, 1200)));
+        full_texts.push(poster);
     }
     if let Some(images) = entity.get("images").and_then(Value::as_array) {
-        let remaining = LEAN_NOTE_OCR_MAX_IMAGES.saturating_sub(texts.len());
-        texts.extend(images.iter().take(remaining).map(|image| {
-            let text = image
-                .get("ocr_text")
-                .and_then(Value::as_str)
-                .map(|text| truncate(text, 1200))
-                .unwrap_or_default();
-            Value::String(text)
-        }));
+        full_texts.extend(
+            images
+                .iter()
+                .map(|image| image.get("ocr_text").and_then(Value::as_str).unwrap_or("")),
+        );
     }
-    let any = texts
-        .iter()
-        .any(|value| value.as_str().is_some_and(|s| !s.is_empty()));
-    if !any {
+    if !full_texts.iter().any(|text| !text.is_empty()) {
         return;
     }
+    let truncated = full_texts.iter().enumerate().any(|(index, text)| {
+        if index >= LEAN_NOTE_OCR_MAX_IMAGES {
+            !text.is_empty()
+        } else {
+            text.chars().count() > 1200
+        }
+    });
+    let texts: Vec<Value> = full_texts
+        .iter()
+        .take(LEAN_NOTE_OCR_MAX_IMAGES)
+        .map(|text| Value::String(truncate(text, 1200)))
+        .collect();
     if let Some(map) = entity.as_object_mut() {
         map.insert("ocr_text".into(), Value::Array(texts));
+        if truncated {
+            map.insert("ocr_truncated".into(), Value::Bool(true));
+        }
     }
 }
 
@@ -2694,6 +2764,21 @@ fn write_run_perf_file(ctx: &ToolContext, name: &str, perf: &Value) {
         return;
     }
     if let Ok(rendered) = serde_json::to_string_pretty(perf) {
+        // A recovered macro retries in the same tool directory. Keep each
+        // attempt, otherwise scan.json silently hides the first attempt's cost.
+        let history = stats_dir.join(format!("{}.jsonl", name.trim_end_matches(".json")));
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(history)
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                file,
+                "{}",
+                json!({"recorded_at":chrono::Utc::now().to_rfc3339(),"perf":perf})
+            );
+        }
         let _ = std::fs::write(stats_dir.join(name), rendered);
     }
 }
@@ -2786,7 +2871,7 @@ fn attach_artifact_pointer(
         "artifact".into(),
         json!({
             "path": path,
-            "note": "Full untrimmed results. Look up a note by note_id for the fields trimmed below.",
+            "note": "Full untrimmed results. Look up a note by note_id for trimmed fields. ocr_truncated=true means additional OCR text is available here.",
             "extra_note_properties": extra_properties,
         }),
     );
@@ -2807,6 +2892,7 @@ const LEAN_PREVIEW_CARD_FIELDS: &[&str] = &[
     "type",
     // Cover-image OCR text, present only when the preview ran with `ocr`.
     "ocr_text",
+    "ocr_truncated",
 ];
 
 /// Trim each `search --preview` card to [`LEAN_PREVIEW_CARD_FIELDS`], renaming
@@ -2821,7 +2907,12 @@ fn lean_preview_cards(payload: &mut Value) {
             continue;
         };
         if let Some(text) = obj.get("ocr_text").and_then(Value::as_str) {
-            obj.insert("ocr_text".into(), json!(truncate(text, 1200)));
+            let truncated = text.chars().count() > 1200;
+            let summary = truncate(text, 1200);
+            obj.insert("ocr_text".into(), json!(summary));
+            if truncated {
+                obj.insert("ocr_truncated".into(), Value::Bool(true));
+            }
         }
         if let Some(link) = obj.remove("link") {
             obj.insert("url".into(), link);
@@ -4108,14 +4199,20 @@ impl Tool for SearchTool {
          (titles/likes/covers) without opening any note. Defaults to 10 notes; \
          pass a larger `num_notes` to scan more (each note is opened, so latency \
          scales with it). Prefer this for XHS topic/keyword research. Do not \
-         repeat the same search unless the previous one was clearly insufficient."
+         repeat the same search unless the previous one was clearly insufficient \
+         or a purposeful filter change can uncover different posts. Use 1-2 core \
+         concepts or a short question, not a stack of all task criteria. Change \
+         discovery direction rather than repeatedly rephrasing near-synonyms."
     }
 
     fn input_schema(&self) -> Value {
         let mut schema = json!({
             "type": "object",
             "properties": {
-                "query": { "type": "string" },
+                "query": {
+                    "type": "string",
+                    "description": XHS_SEARCH_QUERY_GUIDANCE
+                },
                 "filters": search_filters_schema(),
                 "num_notes": {
                     "type": "integer",
@@ -4936,8 +5033,11 @@ impl Tool for AuthorScanTool {
          files still require download_media. \
          Pass `preview=true` for a fast cards-only pass that \
          returns the note cards (titles/likes/covers) without opening any note. \
-         Use this for creator research — it's like `search` but scoped to one \
-         author instead of a query."
+         Use this to discover an author's other projects, collaborators, history, \
+         expertise and useful new search directions, including founder/project \
+         sourcing. Preview first, then use get_notes on relevant returned cards. \
+         Investigate selectively; uncertain identity does not disqualify a useful \
+         social lead or the companies mentioned by a roundup author."
     }
 
     fn input_schema(&self) -> Value {
@@ -5344,7 +5444,7 @@ fn search_filters_schema() -> Value {
 
     json!({
         "type": "object",
-        "description": "Search filter selections by group key.",
+        "description": "Search filter selections by group key. Sort changes ranking; publish_time narrows the time window. Choose a purposeful change to discover different posts, and loosen restrictive filters when results are sparse. Use only the listed options.",
         "properties": properties,
         "minProperties": 1,
         "additionalProperties": false

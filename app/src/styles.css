@@ -1650,6 +1650,11 @@ body.has-paper > * { position: relative; z-index: 1; }
   flex-wrap: wrap;
   gap: var(--sp-2);
 }
+.artifact-process {
+  margin-top: var(--sp-3);
+  color: var(--fg-muted);
+}
+.artifact-process > summary { cursor: pointer; }
 .artifact-card {
   width: min(100%, 360px);
   min-width: 0;
@@ -2023,6 +2028,23 @@ body.has-paper > * { position: relative; z-index: 1; }
   gap: var(--sp-2);
 }
 .composer__form { margin: 0; }
+.composer__options { display: flex; padding-top: var(--sp-2); }
+.composer__research {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 5px 10px;
+  border: var(--hairline);
+  border-radius: var(--r-4);
+  background: var(--canvas);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.composer__research[aria-pressed="true"] { background: var(--fg); color: var(--canvas); border-color: var(--fg); }
+.composer__research-dot { width: 6px; height: 6px; border: 1px solid currentColor; border-radius: 50%; }
+.composer__research[aria-pressed="true"] .composer__research-dot { background: currentColor; }
+.composer__research:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.composer__research:disabled { opacity: .5; cursor: default; }
 /* the input is a self-contained rounded box floating in the pane — no outer
    dock divider boxing it off from the conversation above. */
 .composer__row {
@@ -2772,3 +2794,5 @@ code {
   color: var(--fg-soft);
   cursor: not-allowed;
 }
+
+.conv-reading-stats { color: var(--fg-muted); border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 16px; }

@@ -9,7 +9,7 @@ const supportedLanguages: Language[] = ["zh", "en"];
 
 /** Agent points granted on first sign-in. Shown by the account menu and by the
  *  api-error copy that offers the built-in model as a way out of a spent key. */
-export const SIGNUP_BONUS_POINTS = 50;
+export const SIGNUP_BONUS_POINTS = import.meta.env.VITE_SOCAI_DEMO === "true" ? 500 : 50;
 
 // Active IANA timezone for displaying task timestamps. `undefined` follows the
 // system local zone. This is a display-only preference (no backend field) — it
@@ -56,6 +56,8 @@ const messages = {
     en: "connect chrome to start",
     zh: "连接 chrome 后开始",
   },
+  "chrome.managedTitle": { en: "Connect independent Chrome", zh: "连接独立 Chrome" },
+  "chrome.managedHelp": { en: "Sign in to Xiaohongshu in the new window once. socai keeps this profile for later tasks.", zh: "首次在新开的窗口登录小红书，后续任务会保留登录状态。" },
   "chrome.setupTitle": {
     en: "connect agent to chrome",
     zh: "帮Agent连接到Chrome",
@@ -154,8 +156,12 @@ const messages = {
   "auth.accountAria": { en: "open account menu", zh: "打开账号菜单" },
   "auth.loginTitle": { en: "sign in with phone", zh: "手机号登录" },
   "auth.loginAgentHint": {
-    en: "sign in to get {points} points of agent credit",
-    zh: "登录后获赠{points}点 agent额度",
+    en: import.meta.env.VITE_SOCAI_DEMO === "true"
+      ? "new accounts receive {points} trial points during this limited demo offer"
+      : "new accounts receive {points} points of agent credit",
+    zh: import.meta.env.VITE_SOCAI_DEMO === "true"
+      ? "活动期内新用户注册赠送{points}点试用额度，限量100名"
+      : "新用户注册赠送{points}点 agent额度",
   },
   "auth.useOwnApiKey": {
     en: "or use your own API key, no sign-in required",
@@ -493,6 +499,8 @@ const messages = {
   "task.working": { en: "working…", zh: "运行中…" },
   "task.activityLabel": { en: "activity", zh: "运行过程" },
   "task.partialResult": { en: "partial result", zh: "部分结果" },
+  "task.readingStats": { en: "Previewed {preview} · Read in detail {detail} · Comments {comments} · Authors {authors}", zh: "速读 {preview} 篇 · 精读 {detail} 篇 · 评论 {comments} 条 · 作者 {authors} 位" },
+  "task.readingStatsHint": { en: "Unique sources in this turn. Previews exclude detail reads (including cached material). Comments include collected replies. Authors count visited profiles.", zh: "按本轮材料去重。速读为仅有卡片/预览的帖子；精读为已取得详情的帖子（含缓存材料）；评论含已读取回复；作者为实际访问过主页的人。两种帖子数不重复累计。" },
   "task.interruptedAppClosed": {
     en: "the app was closed before this task finished.",
     zh: "应用在任务完成前已关闭。",
@@ -506,11 +514,16 @@ const messages = {
   "task.materialVideo": { en: "video", zh: "视频" },
   "task.materialImage": { en: "image post", zh: "图文" },
   "task.materialText": { en: "text post", zh: "文字" },
+  "task.materialUnavailable": { en: "media not saved", zh: "媒体未保存" },
+  "artifact.processFiles": { en: "Process files ({count})", zh: "过程文件（{count}）" },
   "note.commentsHead": { en: "{n} comments", zh: "共 {n} 条评论" },
   "note.authorBadge": { en: "author", zh: "作者" },
   "note.transcript": { en: "transcript", zh: "语音转写" },
   "note.openExternal": { en: "open on xiaohongshu", zh: "在小红书打开" },
   "task.replyPlaceholder": { en: "ask a follow-up…", zh: "继续追问…" },
+  "task.researchMode": { en: "deep mode", zh: "深度模式" },
+  "task.researchEnabledHint": { en: "Deep mode enabled: explore more sources and follow promising leads. Click to return to automatic mode.", zh: "已开启深度模式：扩大搜索、深入作者和线索。点击后恢复自动判断。" },
+  "task.researchAutoHint": { en: "Enable deep mode for this conversation. Otherwise, the agent chooses based on your task.", zh: "手动开启深度模式；未开启时由模型按任务自动判断。" },
   "task.replyConnectHint": {
     en: "connect chrome to send a follow-up",
     zh: "连接 chrome 后可继续追问",
@@ -1293,7 +1306,7 @@ export function formatTokenUsage(
       : `cache write ${number(cacheCreationInputTokens)}`);
   }
   if (estimatedCost !== null && costCurrency) {
-    const cents = Math.trunc(estimatedCost * 100) / 100;
+    const cents = estimatedCost;
     let amount: string;
     try {
       amount = new Intl.NumberFormat(locale, {

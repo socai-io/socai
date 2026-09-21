@@ -342,6 +342,7 @@ pub fn run() {
             commands::agent_task_get,
             commands::agent_task_events,
             commands::agent_task_notes,
+            commands::agent_task_reading_stats,
             commands::agent_task_artifacts,
             commands::agent_task_artifact_preview,
             commands::agent_task_artifact_download,

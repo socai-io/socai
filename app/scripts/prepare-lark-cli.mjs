@@ -107,7 +107,9 @@ async function extract(key) {
   rmSync(destination, { recursive: true, force: true });
   mkdirSync(destination, { recursive: true });
 
-  if (archive.name.endsWith(".zip")) {
+  if (archive.name.endsWith(".zip") && process.platform !== "win32") {
+    execFileSync("unzip", ["-q", source, "-d", destination], { stdio: "inherit" });
+  } else if (archive.name.endsWith(".zip")) {
     const command = [
       "Expand-Archive",
       "-LiteralPath",
@@ -135,6 +137,10 @@ function install(source, targetTriple, windows = false) {
 }
 
 async function main() {
+  if (process.env.TAURI_ENV_TARGET_TRIPLE === "x86_64-pc-windows-msvc") {
+    install(await extract("windows-amd64"), "x86_64-pc-windows-msvc", true);
+    return;
+  }
   if (process.platform === "darwin") {
     const arm = install(await extract("darwin-arm64"), "aarch64-apple-darwin");
     const intel = install(await extract("darwin-amd64"), "x86_64-apple-darwin");

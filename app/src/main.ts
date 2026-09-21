@@ -60,6 +60,7 @@ export interface AgentTaskSnapshot {
   task: string;
   provider: string | null;
   model: string | null;
+  research_mode?: boolean;
   status: AgentTaskStatus;
   created_at: number;
   started_at: number | null;
@@ -649,7 +650,9 @@ async function startBackgroundUpgrade(): Promise<void> {
 async function maybeCheckForUpdate(): Promise<void> {
   // The updater only truly installs in a bundled build; skip the network check
   // in `tauri dev` so it never nags or errors during local development.
-  if (import.meta.env.DEV) return;
+  // A demo build must keep its signup campaign instead of silently installing
+  // the public release before the recipient signs in.
+  if (import.meta.env.DEV || import.meta.env.VITE_SOCAI_DEMO === "true") return;
   if (updateState.phase !== "idle") return;
   const now = Date.now();
   if (now - lastUpdateCheck < UPDATE_CHECK_INTERVAL_MS) return;

@@ -56,7 +56,8 @@ const TAURI_CITATION_RULES: &str = "\n\n## Citing notes in the final answer (req
     Example: 推荐 [湾区遛娃|坐小火车喂羊驼](note:65f0a1b2000000000c030d1e) 的路线。\n\
     - Link text is the post's title; drop any square brackets inside it.\n\
     - For results that are not archived post cards, link their canonical URL instead.\n\
-    - Cite each post where it is discussed, not in a separate list at the end.";
+    - Cite each candidate, including unnamed leads, where discussed; note:<id> citations are sufficient for archived notes in the app.\n\
+    - In exported Markdown files use the original https URL from saved sources, not the app-only note: scheme.";
 
 const TAURI_SITE_ROUTING_RULES: &str = "\n\n## Browser routing\n\
     A new conversation starts on a blank tab. Do not navigate to Xiaohongshu or \
@@ -84,6 +85,13 @@ fn app_site() -> Result<&'static NativeSiteAdapter> {
         .ok_or_else(|| anyhow::anyhow!("app default site {APP_SITE_ID} is not registered"))
 }
 
+/// Desktop defaults to an isolated persistent profile; explicit user choices win.
+fn desktop_browser_options() -> Result<ChromeConnectOptions> {
+    let mut config = socai_core::config::load_config()?;
+    config.chrome.profile.get_or_insert(ChromeProfile::Managed);
+    Ok(config.chrome_connect_options())
+}
+
 // ── CDP connect tests (existing) ───────────────────────────────────────────
 
 #[tauri::command]
@@ -91,10 +99,9 @@ pub async fn cdp_connect(
     runtime: State<'_, SocaiRuntime>,
     telemetry: State<'_, DesktopTelemetry>,
 ) -> Result<(), String> {
-    let profile = ChromeConnectOptions::from_config()
-        .map(|options| options.profile.as_str())
-        .unwrap_or("unknown");
-    runtime.connect_browser_once();
+    let options = desktop_browser_options().map_err(|err| format!("{err:#}"))?;
+    let profile = options.profile.as_str();
+    runtime.connect_browser_once_with_options(options);
     telemetry.capture(
         "socai_browser_connect",
         json!({ "outcome": "requested", "browser_profile": profile }),
@@ -640,6 +647,7 @@ pub async fn agent_task_start(
     task: String,
     provider: Option<String>,
     model: Option<String>,
+    research_mode: Option<bool>,
 ) -> Result<AgentTaskSnapshot, String> {
     let task_text = task.trim().to_string();
     if task_text.is_empty() {
@@ -664,6 +672,7 @@ pub async fn agent_task_start(
             model.clone(),
             run_dir.display().to_string(),
             session_dir,
+            research_mode.unwrap_or(false),
         )
         .await;
     let task_id = snapshot.task_id.clone();
@@ -722,6 +731,7 @@ pub async fn agent_task_reply(
     telemetry: State<'_, DesktopTelemetry>,
     task_id: String,
     message: String,
+    research_mode: Option<bool>,
 ) -> Result<AgentTaskSnapshot, String> {
     let message_text = message.trim().to_string();
     if message_text.is_empty() {
@@ -774,6 +784,7 @@ pub async fn agent_task_reply(
             snapshot.degraded_reason = None;
             snapshot.points_used = None;
             snapshot.current_message = Some(message_text.clone());
+            snapshot.research_mode = research_mode.unwrap_or(existing.research_mode);
         })
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
@@ -895,6 +906,12 @@ impl DesktopBrowserRecovery {
     }
 
     fn capture_recovery(&self, outcome: &str, reason: &str, duration_ms: u64) {
+        socai_core::cdp::diagnostics::record(
+            "task_recovery_finished",
+            json!({
+                "task_id": self.task_id, "outcome": outcome, "duration_ms": duration_ms,
+            }),
+        );
         self.telemetry.capture(
             "socai_browser_task_recovery",
             json!({
@@ -932,6 +949,12 @@ impl ToolFailureRecovery for DesktopBrowserRecovery {
             }
             return ToolRecoveryOutcome::NotNeeded;
         };
+        socai_core::cdp::diagnostics::record(
+            "task_recovery_requested",
+            json!({
+                "tool":tool_name,"retry":retry_number,"page":self.page.transport_diagnostic().await,
+            }),
+        );
         if retry_number > 0 {
             let reason = format!(
                 "browser disconnected again after automatically retrying {tool_name}: {disconnect_reason}"
@@ -1101,7 +1124,7 @@ impl Drop for UnboundPageGuard {
 }
 
 fn remote_browser_selected() -> bool {
-    ChromeConnectOptions::from_config()
+    desktop_browser_options()
         .map(|options| options.profile == ChromeProfile::Remote)
         .unwrap_or(false)
 }
@@ -1124,7 +1147,7 @@ async fn acquire_session_page(
     let site = app_site().map_err(|error| {
         PageAdmission::Failed(task_preflight_error("preflight_site", format!("{error:#}")))
     })?;
-    let options = ChromeConnectOptions::from_config().map_err(|error| {
+    let options = desktop_browser_options().map_err(|error| {
         PageAdmission::Failed(task_preflight_error(
             "preflight_browser_config",
             format!("{error:#}"),
@@ -1310,6 +1333,7 @@ pub async fn agent_task_events(
 /// task creation) and on history reload.
 #[tauri::command]
 pub async fn agent_task_notes(
+    app: AppHandle,
     tasks: State<'_, AgentTaskRegistry>,
     task_id: String,
 ) -> Result<Vec<Value>, String> {
@@ -1320,6 +1344,13 @@ pub async fn agent_task_notes(
     let mut order: Vec<String> = Vec::new();
     let mut by_id: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
     for (run_dir, _) in crate::timeline::conversation_run_dirs(&snapshot) {
+        // Historical conversations may live outside today's configured runs root.
+        // Grant only this task's archived directory, not its parent workspace.
+        if let Ok(root) = run_dir.canonicalize() {
+            app.asset_protocol_scope()
+                .allow_directory(&root, true)
+                .map_err(|error| format!("could not load archived task media: {error}"))?;
+        }
         for mut note in socai_core::agent::note_store::load_notes(&run_dir) {
             absolutize_note_media(&mut note, &run_dir);
             let Some(id) = note
@@ -1344,6 +1375,26 @@ pub async fn agent_task_notes(
         .into_iter()
         .filter_map(|id| by_id.remove(&id))
         .collect())
+}
+
+#[tauri::command]
+pub async fn agent_task_reading_stats(
+    tasks: State<'_, AgentTaskRegistry>,
+    task_id: String,
+) -> Result<Vec<Value>, String> {
+    let snapshot = tasks
+        .get(&task_id)
+        .await
+        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+    let dirs = crate::timeline::conversation_run_dirs(&snapshot);
+    tauri::async_runtime::spawn_blocking(move || {
+        dirs.into_iter().enumerate().filter_map(|(index, (dir, _))| {
+            socai_core::sites::xhs::reading_stats::for_run(&dir).map(|stats| json!({
+                "turn_index": index, "preview_notes": stats.preview_notes,
+                "detail_notes": stats.detail_notes, "comments": stats.comments, "authors": stats.authors,
+            }))
+        }).collect()
+    }).await.map_err(|e| e.to_string())
 }
 
 /// A file produced during one conversation turn and safe to expose as a
@@ -2777,7 +2828,7 @@ async fn run_agent_task_background(
                     &task_id,
                     "completed",
                     if outcome.partial {
-                        "task completed with partial results after browser recovery failed".into()
+                        "task completed with partial results".into()
                     } else {
                         "task completed".into()
                     },
@@ -2985,6 +3036,14 @@ async fn run_agent_task_on_session_page(
         .as_ref()
         .map(|c| c.context_note())
         .unwrap_or_default();
+    let research_mode = if let Some(registry) = &registry {
+        registry
+            .get(&task_id)
+            .await
+            .is_some_and(|task| task.research_mode)
+    } else {
+        false
+    };
 
     ensure_llm_provider_configured_for(provider, model)?;
     let llm_provider = create_llm_provider_for_task(provider, model, &task_id)?;
@@ -2995,7 +3054,11 @@ async fn run_agent_task_on_session_page(
         let agent_tools = site.default_agent_tools.unwrap_or(site.agent_tools);
         let mut tools = agent_tools(page.clone(), llm_provider.clone()).await?;
         tools.extend(site_learning_tools(page.clone()));
-        let browser_tools = tools.iter().map(|tool| tool.name().to_string()).collect();
+        let browser_tools = tools
+            .iter()
+            .filter(|tool| tool.name() != "read_saved_notes")
+            .map(|tool| tool.name().to_string())
+            .collect();
         let last_page_url = page
             .page_info()
             .await
@@ -3045,6 +3108,11 @@ async fn run_agent_task_on_session_page(
                 TAURI_ARTIFACT_RULES
             ),
             enabled_sites: vec![site.id.to_string()],
+            initial_skills: if research_mode {
+                vec!["research".into()]
+            } else {
+                Vec::new()
+            },
             seed_messages,
             run_dir,
             session_id: Some(session_id),
@@ -3218,7 +3286,7 @@ pub fn config_get() -> Result<DesktopConfig, String> {
         chrome_source: config
             .chrome
             .profile
-            .unwrap_or_default()
+            .unwrap_or(ChromeProfile::Managed)
             .as_str()
             .to_string(),
         chrome_profile_dir: config.chrome.profile_dir.unwrap_or_default(),

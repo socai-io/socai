@@ -45,7 +45,15 @@ export type AgentTaskView = AgentTaskSnapshot & {
   events: AgentTaskEventPayload[];
   notes?: NoteData[];
   artifacts?: AgentArtifact[];
+  readingStats?: ReadingStats[];
 };
+export interface ReadingStats {
+  turn_index: number;
+  preview_notes: number;
+  detail_notes: number;
+  comments: number;
+  authors: number;
+}
 type CodexLoginStart = { message: string };
 type PersistedArtifactDownload = {
   taskId: string;
@@ -66,6 +74,8 @@ const ARTIFACT_PREVIEW_CONVERSATION_MIN_WIDTH = 360;
 export namespace agentPanel {
   let view: WorkspaceView = "compose";
   let draft = "";
+  let researchMode = false;
+  const replyResearchModes = new Map<string, boolean>();
   let model = "";
   let modelProvider = "";
   let modelByProvider = new Map<string, string>();
@@ -207,6 +217,7 @@ export namespace agentPanel {
       return {
         ...merged,
         artifacts: existing?.artifacts,
+        readingStats: existing?.readingStats,
         events: mergeEvents(existing?.events ?? [], pending),
       };
     });
@@ -264,8 +275,17 @@ export namespace agentPanel {
   // currently-selected task. Best-effort: a run simply may have no notes.
   export async function loadTaskNotes(taskId: string, shell: ShellState): Promise<void> {
     try {
-      const notes = await invoke<NoteData[]>("agent_task_notes", { taskId });
-      if (setTaskNotes(taskId, notes)) shell.rerender();
+      const [notes, stats] = await Promise.all([
+        invoke<NoteData[]>("agent_task_notes", { taskId }),
+        invoke<ReadingStats[]>("agent_task_reading_stats", { taskId }).catch((e) => {
+          console.error("agent_task_reading_stats failed:", e);
+          return [] as ReadingStats[];
+        }),
+      ]);
+      const task = tasks.find((item) => item.task_id === taskId);
+      if (task) task.readingStats = stats;
+      const selected = setTaskNotes(taskId, notes);
+      if (selected || task?.task_id === selectedTask()?.task_id) shell.rerender();
     } catch (e) {
       console.error("agent_task_notes failed:", e);
     }
@@ -904,6 +924,7 @@ export namespace agentPanel {
     return {
       mode: "new",
       value: draft,
+      researchMode,
       submitting: submittingTask,
       cancelling: false,
       error: submitError,
@@ -911,6 +932,7 @@ export namespace agentPanel {
       modelReady: !!selected && selected.has_key,
       running: false,
       remoteProfile: settingsMenu.isRemoteProfile(),
+      managedProfile: settingsMenu.isManagedProfile(),
       chromeSetupState,
       chromeSetupError: chromeSetupError || chromeSetupDetectionError,
       voice: voiceInput.composerState(),
@@ -922,6 +944,7 @@ export namespace agentPanel {
       mode: "reply",
       taskId,
       value: replyDraft,
+      researchMode: replyResearchModes.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.research_mode ?? false,
       submitting: submittingReply,
       cancelling: cancellingTaskIds.has(taskId),
       error: cancellationErrors.get(taskId) ?? replyError,
@@ -929,6 +952,7 @@ export namespace agentPanel {
       modelReady: true,
       running,
       remoteProfile: settingsMenu.isRemoteProfile(),
+      managedProfile: settingsMenu.isManagedProfile(),
       chromeSetupState,
       chromeSetupError: chromeSetupError || chromeSetupDetectionError,
       voice: voiceInput.composerState(),
@@ -1422,6 +1446,16 @@ export namespace agentPanel {
     disposeComposerAutosize?.();
     disposeComposerAutosize = input ? bindTextareaAutosize(input) : undefined;
     updateComposerButton(shell);
+    document.getElementById("composer-research")?.addEventListener("click", () => {
+      if (composerTask) {
+        const current = replyResearchModes.get(composerTask.task_id) ?? composerTask.research_mode ?? false;
+        replyResearchModes.set(composerTask.task_id, !current);
+      } else {
+        researchMode = !researchMode;
+      }
+      shell.rerender();
+      document.getElementById("composer-research")?.focus();
+    });
     input?.addEventListener("input", () => {
       if (composerTask) replyDraft = input.value;
       else draft = input.value;
@@ -1493,7 +1527,7 @@ export namespace agentPanel {
     chromeSetupStatus = shell.status;
 
     const overlayVisible = document.querySelector(".connect-overlay") !== null;
-    if (!overlayVisible || shell.status.state === "connected" || settingsMenu.isRemoteProfile()) {
+    if (!overlayVisible || shell.status.state === "connected" || settingsMenu.isRemoteProfile() || settingsMenu.isManagedProfile()) {
       stopChromeSetupPolling();
       if (shell.status.state === "connected") {
         chromeSetupState = "ready";
@@ -1576,11 +1610,13 @@ export namespace agentPanel {
         task: value,
         provider: selected?.provider || modelProvider || null,
         model: selected ? modelId(selected) : model || null,
+        researchMode,
       });
       upsertTask(snapshot);
       selectedTaskId = snapshot.task_id;
       view = "detail";
       draft = "";
+      researchMode = false;
     } catch (err) {
       console.error("agent_task_start failed:", err);
       submitError = shell.notifyTaskCommandError(err) ? "" : `${err}`;
@@ -1610,9 +1646,11 @@ export namespace agentPanel {
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_reply", {
         taskId,
         message: value,
+        researchMode: replyResearchModes.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.research_mode ?? false,
       });
       upsertTask(snapshot);
       replyDraft = "";
+      replyResearchModes.delete(taskId);
     } catch (err) {
       console.error("agent_task_reply failed:", err);
       replyError = shell.notifyTaskCommandError(err) ? "" : `${err}`;

@@ -29,6 +29,7 @@ use tracing::{debug, info, warn};
 
 use crate::agent::api_errors::is_transient_api_error;
 use crate::agent::compaction::{compress_text_maybe_json, TOOL_RESULT_TEXT_MAX_CHARS};
+use crate::agent::extensions::{FinishDecision, RequestPhase, RunExtensions};
 use crate::agent::llm::{
     Backend, Block, LLMResponse, Message, StopReason, TokenUsage, ToolCall, ToolResultContent,
     ToolSchema,
@@ -105,6 +106,8 @@ pub enum AgentEvent {
     },
 }
 
+pub const DEFAULT_MAX_STEPS: u32 = 60;
+
 #[derive(Debug, Clone)]
 pub struct AgentOptions {
     pub max_steps: u32,
@@ -113,6 +116,8 @@ pub struct AgentOptions {
     pub run_dir: Option<PathBuf>,
     /// Site names to pre-enable in ToolContext (gates `defer_until_site` tools).
     pub enabled_sites: Vec<String>,
+    /// Entrypoint-selected skills loaded before the first model request.
+    pub initial_skills: Vec<String>,
     /// Full-message count that triggers deterministic transcript compaction.
     pub compact_after_messages: usize,
     /// Recent full-message window kept verbatim after compaction.
@@ -129,18 +134,19 @@ pub struct AgentOptions {
     pub billing_task_id: Option<String>,
     /// Optional entrypoint-owned recovery hook for transient dependencies used
     /// by tools. A recovered call is retried once; failed recovery switches
-    /// the loop to a tool-free best-effort summary.
+    /// the loop to bounded local delivery followed by a partial summary.
     pub tool_failure_recovery: Option<SharedToolFailureRecovery>,
 }
 
 impl Default for AgentOptions {
     fn default() -> Self {
         Self {
-            max_steps: 30,
+            max_steps: DEFAULT_MAX_STEPS,
             max_tokens: 16000,
             extra_instructions: String::new(),
             run_dir: None,
             enabled_sites: Vec::new(),
+            initial_skills: Vec::new(),
             compact_after_messages: DEFAULT_COMPACT_AFTER_MESSAGES,
             keep_recent_messages: DEFAULT_KEEP_RECENT_MESSAGES,
             seed_messages: Vec::new(),
@@ -192,14 +198,14 @@ pub async fn run_agent_with_events(
     let run_dir = options.run_dir.unwrap_or_else(|| make_run_dir(task));
     ensure_dir(&run_dir)?;
     let run_state = Arc::new(RunState::new(task));
-    let run_recorder = AgentRunRecorder::start(
+    let run_recorder = Arc::new(AgentRunRecorder::start(
         &run_dir,
         &run_id,
         options.session_id.as_deref(),
         task,
         backend.provider(),
         backend.model(),
-    )?;
+    )?);
     let mut run_trace = RunTraceBuilder::new(
         &run_dir,
         &run_id,
@@ -211,6 +217,7 @@ pub async fn run_agent_with_events(
     );
 
     let mut ctx = ToolContext::new(&run_id, &run_dir)
+        .with_usage_recorder(Arc::clone(&run_recorder))
         .with_run_state(Arc::clone(&run_state))
         .with_background_media_generation(options.background_media_generation)
         .with_billing_task_id(options.billing_task_id);
@@ -220,6 +227,12 @@ pub async fn run_agent_with_events(
 
     let mut messages: Vec<Message> = options.seed_messages.clone();
     messages.push(Message::user(task.to_string()));
+    messages.extend(
+        super::skills::load_initial_skills(&options.initial_skills, &ctx)
+            .await?
+            .into_iter()
+            .map(Message::user),
+    );
     let mut anchor_user_index = options.seed_messages.len();
     let is_follow_up = !options.seed_messages.is_empty();
     // Everything before this index is already in the trace: seed messages were
@@ -252,16 +265,34 @@ pub async fn run_agent_with_events(
     let mut completed = false;
     let mut terminal_error: Option<String> = None;
     let mut degraded_reason: Option<String> = None;
+    let mut extension_stop_reason: Option<String> = None;
+    let mut extensions = RunExtensions::default();
     let mut truncation_retries = 0u32;
+    let mut invalid_delivery_retries = 0u32;
+    let mut delivery_steps_left: Option<u32> = None;
     let mut last_system: String = build_system_prompt(&[], &options.extra_instructions);
 
-    while step < options.max_steps {
+    while delivery_steps_left.map_or_else(
+        || step < extensions.execution_ceiling(&ctx, options.max_steps),
+        |left| left > 0,
+    ) {
+        let local_delivery = delivery_steps_left.is_some();
+        if let Some(left) = delivery_steps_left.as_mut() {
+            *left -= 1;
+        }
+        let max_steps = extensions.execution_ceiling(&ctx, options.max_steps);
         step += 1;
         ctx.step = step;
         emit(&events, AgentEvent::Step { step });
         debug!(step, "agent step start");
 
-        let schemas = tool_schemas(&tools, &ctx);
+        let mut schemas = tool_schemas(&tools, &ctx);
+        if local_delivery {
+            schemas.retain(|schema| {
+                find_tool(&tools, &schema.name)
+                    .is_some_and(|tool| tool.available_in_local_delivery())
+            });
+        }
         let tool_names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         let system = build_system_prompt(&tool_names, &options.extra_instructions);
         last_system = system.clone();
@@ -281,7 +312,17 @@ pub async fn run_agent_with_events(
             // normal user message in the trace.
             traced_len = messages.len();
         }
-        let request_messages = messages.clone();
+        let mut request_messages = messages.clone();
+        for context in extensions.request_context(
+            &ctx,
+            if local_delivery {
+                RequestPhase::LocalDelivery
+            } else {
+                RequestPhase::Action { step, max_steps }
+            },
+        ) {
+            request_messages.push(Message::user(context));
+        }
         let request_payload =
             backend.request_payload(&system, &request_messages, &schemas, options.max_tokens)?;
         run_recorder.record_llm_request(step, &request_payload)?;
@@ -405,6 +446,30 @@ pub async fn run_agent_with_events(
         }
         truncation_retries = 0;
 
+        if response.tool_calls.is_empty() {
+            let visible = visible_texts.join("\n\n");
+            let invalid = contains_pseudo_tool_call(&visible)
+                || (local_delivery
+                    && forced_summary_failure(
+                        task,
+                        &response,
+                        &visible,
+                        run_state.as_ref(),
+                        tools.iter().any(|tool| tool.name() == "publish_artifact"),
+                        ForcedSummaryKind::RecoveryPartial,
+                    )
+                    .is_some());
+            if invalid {
+                invalid_delivery_retries += 1;
+                if invalid_delivery_retries > 2 {
+                    extension_stop_reason = Some("Repeated invalid tool-call text; summarize available progress without claiming unexecuted actions.".into());
+                    break;
+                }
+                messages.push(Message::user("That response did not execute a real tool call or claimed unpublished files. Use the actual exposed tool API, never XML/DSML text. Read saved material, write the requested files, then publish them. If delivery cannot be completed, give an honest partial answer."));
+                continue;
+            }
+        }
+
         // Build the assistant block list manually instead of using
         // LLMResponse::to_assistant_blocks() so we can:
         // - drop [Thinking]-prefixed text from history
@@ -415,6 +480,20 @@ pub async fn run_agent_with_events(
         // The assistant turn is already on the trace as the previous span's
         // gen_ai.output.messages; don't repeat it in the next input delta.
         traced_len = messages.len();
+
+        if response.tool_calls.is_empty() && !local_delivery {
+            match extensions.before_finish(&ctx, max_steps.saturating_sub(step)) {
+                FinishDecision::Allow => {}
+                FinishDecision::Continue(instruction) => {
+                    messages.push(Message::user(instruction));
+                    continue;
+                }
+                FinishDecision::Partial(reason) => {
+                    extension_stop_reason = Some(reason);
+                    break;
+                }
+            }
+        }
 
         for text in &visible_texts {
             emit(
@@ -441,6 +520,9 @@ pub async fn run_agent_with_events(
         let mut tool_result_blocks: Vec<Block> = Vec::new();
         for (idx, tc) in response.tool_calls.iter().enumerate() {
             let ToolCall { id, name, input } = tc;
+            if !local_delivery {
+                extensions.before_tool(&ctx, name);
+            }
             ctx.active_tool_name = name.clone();
 
             let sig = tool_call_signature(name, input);
@@ -449,9 +531,15 @@ pub async fn run_agent_with_events(
             let repeat_count = history.len() as u32;
 
             let sequence = (idx + 1) as u32;
-            let effective_input = find_tool(&tools, name)
-                .map(|tool| tool.effective_input(input))
-                .unwrap_or_else(|| input.clone());
+            // Preserve malformed provider arguments for an explicit tool error;
+            // defaults must not turn them into an apparently successful empty call.
+            let effective_input = if input.is_object() {
+                find_tool(&tools, name)
+                    .map(|tool| tool.effective_input(input))
+                    .unwrap_or_else(|| input.clone())
+            } else {
+                input.clone()
+            };
             let tool_recorder =
                 run_recorder.start_tool_call(step, sequence, name, &effective_input)?;
             let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -472,7 +560,12 @@ pub async fn run_agent_with_events(
             );
             run_state.note_tool_call(step, name, &effective_input);
             let started = Instant::now();
-            let (result, error) = if let Some(reason) = degraded_reason.clone() {
+            let unavailable_reason = extension_stop_reason.clone().or_else(|| {
+                degraded_reason.clone().filter(|_| {
+                    !find_tool(&tools, name).is_some_and(|tool| tool.available_in_local_delivery())
+                })
+            });
+            let (result, error) = if let Some(reason) = unavailable_reason {
                 let error = format!("tool skipped because recovery already failed: {reason}");
                 (ToolResult::text(format!("Error: {error}")), Some(error))
             } else {
@@ -502,8 +595,10 @@ pub async fn run_agent_with_events(
                         }
                     };
                     let recovery = match &options.tool_failure_recovery {
-                        Some(recovery) => recovery.recover_after_tool(name, retry_number).await,
-                        None => ToolRecoveryOutcome::NotNeeded,
+                        Some(recovery) if degraded_reason.is_none() => {
+                            recovery.recover_after_tool(name, retry_number).await
+                        }
+                        _ => ToolRecoveryOutcome::NotNeeded,
                     };
                     match recovery {
                         ToolRecoveryOutcome::NotNeeded => break outcome,
@@ -559,6 +654,7 @@ pub async fn run_agent_with_events(
             let duration_s = (duration_ms as f64) / 1000.0;
             tool_recorder.finish_blocks(&result.blocks, duration_ms, error.as_deref())?;
 
+            usage += &ctx.take_auxiliary_usage();
             let result_content = tool_result_to_content(&result);
             let content = content_for_log(&result_content);
             run_trace.record_tool(
@@ -588,6 +684,15 @@ pub async fn run_agent_with_events(
             );
             run_state.note_tool_result(step, name, &effective_input, &summary, duration_s);
             let mut history_content = bound_content_for_history(&result_content);
+            let feedback = if local_delivery {
+                Default::default()
+            } else {
+                extensions.after_tool(&tool_ctx, name, &result, error.as_deref())
+            };
+            for text in feedback.notes.into_iter().rev() {
+                history_content.insert(0, ToolResultContent::Text { text });
+            }
+            extension_stop_reason = extension_stop_reason.or(feedback.stop_reason);
             // Break tight loops: when the model fires the *same* call with the
             // same args repeatedly, the bare result won't change its mind. Tell
             // it explicitly to stop and work with what it already has.
@@ -613,12 +718,36 @@ pub async fn run_agent_with_events(
             ctx.active_tool_name.clear();
         }
         messages.push(Message::user_blocks(tool_result_blocks));
-        if degraded_reason.is_some() {
+        if extension_stop_reason.is_some() {
             break;
+        }
+        if degraded_reason.is_some() && delivery_steps_left.is_none() {
+            if !tools
+                .iter()
+                .any(|tool| tool.available_in_local_delivery() && tool.is_available(&ctx))
+            {
+                break;
+            }
+            delivery_steps_left = Some(8);
+            messages.push(Message::user(
+                "External dependency recovery failed. Acquisition is over; the result remains partial. You now have up to 8 local-only steps to read existing material, create requested deliverables with write_file, and publish them. Only exposed local tools may be called; no shell, browser, new searches or external services. Use real tool calls, not XML/DSML markup. Do not claim a file is attached before publish_artifact succeeds. Then give a useful partial answer explaining the interruption."
+            ));
         }
     }
 
-    let forced_summary_prompt = degraded_reason
+    let max_steps = extensions.execution_ceiling(&ctx, options.max_steps);
+    if !completed && terminal_error.is_none() && step >= max_steps {
+        extension_stop_reason =
+            extension_stop_reason.or_else(|| extensions.execution_limit_reason(&ctx));
+    }
+    let forced_summary_prompt = extension_stop_reason
+        .as_ref()
+        .map(|reason| format!(
+            "{reason} Do not call more tools. Produce a complete user-visible partial answer \
+             in the task's language using collected evidence only. State the completed scope, \
+             missing information and useful next steps. Do not claim the original task is complete."
+        ))
+        .or_else(|| degraded_reason
         .as_ref()
         .map(|reason| {
             info!(
@@ -627,14 +756,14 @@ pub async fn run_agent_with_events(
             );
             format!(
                 "The browser connection was lost and automatic recovery did not succeed: {reason}. \
-                 Do not call any more tools. Produce the best possible final answer now in the same \
+                 Do not call any more tools or emit XML/DSML tool markup. Do not claim files were saved or published unless a successful tool result confirms it. Produce the best possible final answer now in the same \
                  language as the original task, using only evidence already present in the tool \
                  results and conversation. Clearly label the answer as partial, distinguish verified \
                  facts from missing information, and never guess or invent values."
             )
-        })
+        }))
         .or_else(|| {
-            (step >= options.max_steps).then(|| {
+            (step >= max_steps).then(|| {
                 info!(step, "reached max_steps, forcing final summary");
                 format!(
                     "You have reached the maximum of {} tool-using steps. Do not call any \
@@ -642,7 +771,7 @@ pub async fn run_agent_with_events(
                      possible final answer for the user now in the same language as the \
                      original task. If information is incomplete, state what is known, \
                      what is missing, and give your best-effort conclusion.",
-                    options.max_steps
+                    max_steps
                 )
             })
         });
@@ -662,7 +791,10 @@ pub async fn run_agent_with_events(
             ) {
                 traced_len = messages.len();
             }
-            let request_messages = messages.clone();
+            let mut request_messages = messages.clone();
+            for context in extensions.request_context(&ctx, RequestPhase::Summary) {
+                request_messages.push(Message::user(context));
+            }
             let request_payload = backend.request_payload(
                 &last_system,
                 &request_messages,
@@ -710,7 +842,7 @@ pub async fn run_agent_with_events(
                         );
                         if summary_attempt == 0 {
                             forced_summary_prompt =
-                                "Your previous tool-free summary was incomplete or truncated. Do not call tools or include reasoning-only output. Respond once with a concise, complete user-visible answer based only on the gathered evidence, clearly marking any missing information."
+                                "Your previous tool-free summary was incomplete or truncated. Do not call tools, emit XML/DSML tool markup, promise to write files, or include reasoning-only output. Only claim published files when a successful tool result exists. Respond once with a concise, complete user-visible answer based only on the gathered evidence, clearly marking any missing information."
                                     .to_string();
                             continue;
                         }
@@ -798,7 +930,12 @@ pub async fn run_agent_with_events(
     // summary itself failed, persist and return only the terminal error.
     let completed_degraded_reason = terminal_error
         .is_none()
-        .then(|| degraded_reason.clone())
+        .then(|| {
+            degraded_reason
+                .clone()
+                .or(extension_stop_reason)
+                .or_else(|| extensions.partial_reason(&ctx))
+        })
         .flatten();
 
     // Failed runs already signalled ApiError; a Done event on top would give
@@ -861,7 +998,7 @@ const CHAT_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from
 /// errors, 408/429/5xx) — a multi-minute run should not die on one dropped
 /// packet. Permanent errors (auth, billing, bad request) surface on the
 /// first attempt.
-async fn send_with_retry(
+pub(crate) async fn send_with_retry(
     backend: &Arc<dyn Backend>,
     system: &str,
     messages: &[Message],
@@ -935,6 +1072,11 @@ async fn dispatch_tool(
     input: &Value,
     ctx: &ToolContext,
 ) -> (ToolResult, Option<String>) {
+    if !input.is_object() {
+        let error = "Tool arguments were not a valid JSON object. No action was executed. Resend this call with well-formed JSON arguments.".to_string();
+        ctx.record_tool_outcome(name, input, false);
+        return (ToolResult::failure(&error), Some(error));
+    }
     let outcome = match find_tool(tools, name) {
         Some(tool) if tool.is_available(ctx) => match tool.call(input.clone(), ctx).await {
             Ok(r) => (r, None),
@@ -1176,6 +1318,9 @@ fn forced_summary_failure(
 fn contains_pseudo_tool_call(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
+        "<｜｜dsml｜｜tool_calls",
+        "<｜dsml｜tool_calls",
+        "&lt;｜｜dsml｜｜tool_calls",
         "<tool_calls",
         "<function_calls",
         "<invoke",
@@ -1547,6 +1692,9 @@ mod tests {
 
     #[test]
     fn pseudo_tool_markup_is_not_a_valid_summary() {
+        assert!(contains_pseudo_tool_call(
+            "<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name=\"shell\">"
+        ));
         assert!(contains_pseudo_tool_call(
             "<function_calls><invoke name=\"publish_artifact\">"
         ));

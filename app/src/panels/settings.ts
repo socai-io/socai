@@ -98,6 +98,10 @@ export namespace settingsMenu {
     return (draft?.chrome_source ?? config?.chrome_source) === "remote" && authMenu.hasProAccess();
   }
 
+  export function isManagedProfile(): boolean {
+    return (draft?.chrome_source ?? config?.chrome_source ?? "managed") === "managed";
+  }
+
   export function isRemoteSelected(): boolean {
     return (draft?.chrome_source ?? config?.chrome_source) === "remote";
   }
@@ -367,7 +371,7 @@ export namespace settingsMenu {
     draft = {
       timezone: getTimezone(),
       output_dir: config?.output_dir ?? "",
-      chrome_source: config?.chrome_source || "existing",
+      chrome_source: config?.chrome_source || "managed",
       invite_code: "",
     };
   }

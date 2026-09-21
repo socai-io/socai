@@ -124,7 +124,37 @@ impl TokenUsage {
     }
 
     fn estimate_cost(&mut self, provider: Provider, model: &str) {
-        let Some(pricing) = catalog_model_pricing(provider, model) else {
+        use chrono::{Datelike, Timelike};
+        let at = chrono::Utc::now();
+        let official = if provider == Provider::DeepSeek {
+            let rates = match model {
+                "deepseek-v4-pro" | "deepseek-v4-pro-0813" => Some((9.0, 27.0, 0.30)),
+                "deepseek-flash" | "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp" => {
+                    Some((2.0, 8.0, 0.04))
+                }
+                _ => None,
+            };
+            rates.map(|(input, output, hit)| {
+                let peak = at.weekday().num_days_from_monday() < 5
+                    && ((1..4).contains(&at.hour()) || (6..10).contains(&at.hour()));
+                let factor = if peak { 1.0 } else { 0.5 };
+                crate::agent::provider::ModelPricing {
+                    currency: "CNY".into(),
+                    source: "deepseek-official-2026-09-17".into(),
+                    tiers: vec![ModelPricingTier {
+                        max_input_tokens: None,
+                        input_per_million: input * factor,
+                        output_per_million: output * factor,
+                        cache_read_per_million: hit * factor,
+                        cache_write_per_million: 0.0,
+                    }],
+                    overrides: Default::default(),
+                }
+            })
+        } else {
+            None
+        };
+        let Some(pricing) = official.or_else(|| catalog_model_pricing(provider, model)) else {
             return;
         };
         let Some(rates) = pricing.tier_for_input(self.input_tokens).cloned() else {

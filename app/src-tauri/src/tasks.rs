@@ -34,6 +34,9 @@ pub struct AgentTaskSnapshot {
     pub(crate) task: String,
     pub(crate) provider: Option<String>,
     pub(crate) model: Option<String>,
+    /// Explicit composer selection; false leaves automatic skill selection enabled.
+    #[serde(default)]
+    pub(crate) research_mode: bool,
     pub(crate) status: String,
     pub(crate) created_at: u64,
     pub(crate) started_at: Option<u64>,
@@ -138,6 +141,7 @@ impl AgentTaskRegistry {
         model: Option<String>,
         run_dir: String,
         session_dir: String,
+        research_mode: bool,
     ) -> AgentTaskSnapshot {
         let mut guard = self.inner.lock().await;
         guard.next_seq += 1;
@@ -148,6 +152,7 @@ impl AgentTaskRegistry {
             task,
             provider,
             model,
+            research_mode,
             status: "queued".into(),
             created_at: now_ms(),
             started_at: None,

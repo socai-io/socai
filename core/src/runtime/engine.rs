@@ -505,6 +505,12 @@ impl SocaiRuntime {
         self.cdp.connect_once();
     }
 
+    pub fn connect_browser_once_with_options(&self, options: ChromeConnectOptions) {
+        self.activity.touch();
+        self.ensure_idle_reaper();
+        self.cdp.connect_once_with_options(options);
+    }
+
     pub fn connect_browser_with_options(&self, options: ChromeConnectOptions) {
         self.activity.touch();
         self.ensure_idle_reaper();
@@ -1017,6 +1023,7 @@ pub struct AgentRunConfig {
     pub keep_recent_messages: usize,
     pub extra_instructions: String,
     pub enabled_sites: Vec<String>,
+    pub initial_skills: Vec<String>,
     pub run_dir: Option<PathBuf>,
     /// Prior chat-level messages to continue an ongoing conversation from.
     pub seed_messages: Vec<Message>,
@@ -1029,7 +1036,7 @@ pub struct AgentRunConfig {
 impl Default for AgentRunConfig {
     fn default() -> Self {
         Self {
-            max_steps: 30,
+            max_steps: crate::agent::r#loop::DEFAULT_MAX_STEPS,
             // Thinking tokens count against max_tokens on Anthropic thinking
             // models (Sonnet 5 thinks by default), so 4096 starves the final
             // report. 16000 is the recommended non-streaming ceiling.
@@ -1038,6 +1045,7 @@ impl Default for AgentRunConfig {
             keep_recent_messages: crate::agent::memory::DEFAULT_KEEP_RECENT_MESSAGES,
             extra_instructions: String::new(),
             enabled_sites: Vec::new(),
+            initial_skills: Vec::new(),
             run_dir: None,
             seed_messages: Vec::new(),
             session_id: None,
@@ -1065,6 +1073,7 @@ pub async fn run_agent_task(
         extra_instructions: config.extra_instructions,
         run_dir: config.run_dir,
         enabled_sites: config.enabled_sites,
+        initial_skills: config.initial_skills,
         compact_after_messages: config.compact_after_messages,
         keep_recent_messages: config.keep_recent_messages,
         seed_messages: config.seed_messages,
