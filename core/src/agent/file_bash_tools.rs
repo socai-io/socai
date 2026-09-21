@@ -237,6 +237,10 @@ impl ReadFileTool {
 
 #[async_trait]
 impl Tool for ReadFileTool {
+    fn available_in_local_delivery(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "read_file"
     }
@@ -356,6 +360,77 @@ impl Tool for ReadFileTool {
         let take = limit.unwrap_or(DEFAULT_READ_LIMIT);
         let windowed: Vec<&str> = content.lines().skip(start).take(take).collect();
         Ok(ToolResult::text(windowed.join("\n")))
+    }
+}
+
+/// A text writer that remains usable when external dependencies fail.
+/// Creates a new run-local file; revisions use another filename.
+pub struct WriteFileTool;
+
+#[async_trait]
+impl Tool for WriteFileTool {
+    fn name(&self) -> &str {
+        "write_file"
+    }
+    fn description(&self) -> &str {
+        "Write UTF-8 text (Markdown, plain text, CSV, etc.) to a new file relative to this run directory. Creates subdirectories. Existing files are not overwritten; use a new filename for revisions. Returns the saved path; use publish_artifact afterward for a downloadable attachment. No shell or browser required."
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type":"object","properties":{
+            "path":{"type":"string","description":"New file path relative to the run, e.g. drafts/report.md."},
+            "content":{"type":"string","description":"Complete UTF-8 file contents."}
+        },"required":["path","content"],"additionalProperties":false})
+    }
+    fn always_available(&self) -> bool {
+        true
+    }
+    fn available_in_local_delivery(&self) -> bool {
+        true
+    }
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        use std::io::Write;
+        use std::path::Component;
+        let path = Path::new(
+            input["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("path is required"))?,
+        );
+        let content = input["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("content is required"))?;
+        if path.as_os_str().is_empty()
+            || !path.components().all(|c| matches!(c, Component::Normal(_)))
+        {
+            anyhow::bail!("path must be relative to this run, without . or .. components");
+        }
+        if content.len() > 4 * 1024 * 1024 {
+            anyhow::bail!("text exceeds 4 MB; split the deliverable");
+        }
+        let mut parent = ctx.run_dir.canonicalize()?;
+        if let Some(relative_parent) = path.parent() {
+            for component in relative_parent.components() {
+                parent.push(component.as_os_str());
+                if !parent.exists() {
+                    std::fs::create_dir(&parent)?;
+                }
+                let metadata = std::fs::symlink_metadata(&parent)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    anyhow::bail!("parent must be a regular directory");
+                }
+            }
+        }
+        let target = parent.join(
+            path.file_name()
+                .ok_or_else(|| anyhow::anyhow!("filename is required"))?,
+        );
+        let mut temporary = tempfile::NamedTempFile::new_in(&parent)?;
+        temporary.write_all(content.as_bytes())?;
+        temporary.persist_noclobber(&target)?;
+        Ok(ToolResult::text(format!(
+            "Saved {} ({} bytes). Publish this path to attach the file.",
+            target.display(),
+            content.len()
+        )))
     }
 }
 
@@ -697,9 +772,16 @@ pub type BashTool = ShellTool;
 pub fn local_agent_tools() -> Vec<SharedTool> {
     let mut tools: Vec<SharedTool> = vec![
         std::sync::Arc::new(ReadFileTool::unrestricted()),
+        std::sync::Arc::new(WriteFileTool),
         std::sync::Arc::new(ShellTool::unrestricted()),
     ];
     tools.extend(crate::agent::skills::skill_tools());
+    tools.push(std::sync::Arc::new(
+        crate::agent::research::ResearchUpdateTool,
+    ));
+    tools.push(std::sync::Arc::new(
+        crate::agent::research::ResearchReadTool,
+    ));
     tools
 }
 

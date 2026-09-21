@@ -1,4 +1,5 @@
 pub mod connection;
+pub mod diagnostics;
 pub mod endpoint;
 pub(crate) mod launch;
 pub mod lifecycle;

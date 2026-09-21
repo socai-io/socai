@@ -234,6 +234,7 @@ pub async fn verify_sms_code(
             "challenge_id": challenge_id.trim(),
             "phone": canonical_phone,
             "code": code.trim(),
+            "demo_campaign_token": option_env!("SOCAI_DEMO_CAMPAIGN_TOKEN").unwrap_or(""),
             "install_id": install_id,
             "app_version": env!("CARGO_PKG_VERSION"),
             "label": label.trim(),

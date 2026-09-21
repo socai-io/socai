@@ -201,6 +201,17 @@ impl AgentRunRecorder {
         Ok(())
     }
 
+    /// Persist nested model usage as it arrives, including when the parent
+    /// tool is later cancelled. Finalization overwrites with the same total.
+    pub(crate) fn record_auxiliary_usage(&self, delta: &TokenUsage) -> std::io::Result<()> {
+        let mut manifest = self.manifest.lock().expect("poisoned");
+        let mut usage =
+            serde_json::from_value::<TokenUsage>(manifest["usage"].clone()).unwrap_or_default();
+        usage += delta;
+        manifest["usage"] = serde_json::to_value(usage).map_err(std::io::Error::other)?;
+        write_json_atomic(&self.manifest_path, &manifest)
+    }
+
     pub fn record_llm_error(
         &self,
         step: u32,

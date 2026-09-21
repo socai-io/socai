@@ -149,10 +149,40 @@ in [Website deployment](docs/website-deployment.md).
 | --- | --- |
 | [Data model](docs/data-model.md) | Run artifacts, desktop task index, and timeline replay. |
 | [Context window management](docs/context-window-management.md) | Agent turns, tool-result bounds, sawtooth compaction, prompt caching, and artifact evidence retention. |
-| [Agent skills and self-healing](docs/agent-skills.md) | Progressive skill loading, constrained local learnings, and the initial self-healing instruction. |
+| [Agent skills and research](docs/agent-skills.md) | Skill loading, research lifecycle, local delivery, and retained self-healing learnings. |
 | [CLI telemetry schema](docs/telemetry-schema.md) | Telemetry schema, privacy, and configuration contract for the CLI daemon. |
 | [Telemetry runbook](docs/development/telemetry-runbook.md) | Maintainer runbook for operating CLI telemetry. |
 | [Release flow](docs/release-flow.md) | GitHub Release workflow, platform build graph, assets, and installer smoke tests. |
 | [Website deployment](docs/website-deployment.md) | Vercel deployment runbook for `socai.io`. |
 | [Website launch QA](docs/website-launch-qa.md) | Launch checklist used for the `socai.io` rollout. |
 | [Browser automation on CDP](docs/browser-automation-evolution.md) | Conceptual map of CDP and how browser-automation frameworks evolved on it. |
+
+### Browser connection diagnostics
+
+Local CDP diagnostics are appended to `~/.socai/logs/cdp-diagnostics.jsonl`
+with one rotated backup at roughly 5 MB. They record connection/command IDs,
+command methods and elapsed time, first transport failures, socket close codes,
+page rebinds and task recovery outcomes. They omit CDP parameters, JavaScript,
+URLs and page contents. Correlate the first failure with recovery/rebinding
+before assuming the final health-check error caused the disconnect.
+
+XHS performance records retain the latest `stats/scan.json`, `ocr.json` and
+`read.json`, plus timestamped append-only `.jsonl` histories for each attempt.
+Use these with `stats/search.jsonl` breadcrumbs so a recovered tool retry does
+not hide its first attempt. See [agent skills](docs/agent-skills.md) for local
+delivery behavior after dependency loss.
+
+### Private demo builds
+
+Normal builds keep the public signup policy. For a demo edition, set
+`SOCAI_DEMO_CAMPAIGN_TOKEN` at Rust compile time and `VITE_SOCAI_DEMO=true`
+for the frontend build. The matching server campaign controls the deadline,
+new-account eligibility and claim quota. Existing accounts never receive a
+retroactive grant. Keep campaign tokens in ignored local build configuration,
+not source control. Demo builds skip the public automatic updater.
+
+For Windows NSIS cross-compilation from macOS, install `cargo-xwin`, LLVM,
+LLD and NSIS, then use `--runner cargo-xwin --target x86_64-pc-windows-msvc`.
+Set `SOCAI_CARGO_RUNNER=cargo-xwin` so the ASR sidecar uses the same runner;
+set `TAURI_ENV_DEBUG=false` for release sidecars. The Lark preparation script
+honors the Windows target and extracts its ZIP on the build host.

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -26,9 +26,32 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct RawCdpClient {
     tx: mpsc::Sender<CommandRequest>,
     unhealthy: Arc<AtomicBool>,
+    unhealthy_sessions: Arc<Mutex<std::collections::HashSet<String>>>,
+    diagnostic: Arc<ConnectionDiagnostic>,
+}
+
+struct ConnectionDiagnostic {
+    id: String,
+    next_id: AtomicU64,
+    first_failure: Mutex<Option<Value>>,
+}
+
+impl ConnectionDiagnostic {
+    fn event(&self, event: &str, data: Value, failure: bool) {
+        let value = serde_json::json!({"connection_id":self.id,"event":event,"at":chrono::Utc::now().to_rfc3339(),"data":data});
+        if failure {
+            if let Ok(mut first) = self.first_failure.lock() {
+                if first.is_none() {
+                    *first = Some(value.clone());
+                }
+            }
+        }
+        super::diagnostics::record(event, value);
+    }
 }
 
 struct CommandRequest {
+    id: u64,
     method: String,
     params: Value,
     session_id: Option<String>,
@@ -66,10 +89,18 @@ impl RawCdpClient {
             .await
             .with_context(|| format!("failed to connect CDP websocket: {ws_url}"))?;
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-        tokio::spawn(run_connection(ws, rx));
+        let diagnostic = Arc::new(ConnectionDiagnostic {
+            id: uuid::Uuid::new_v4().to_string(),
+            next_id: AtomicU64::new(1),
+            first_failure: Mutex::new(None),
+        });
+        diagnostic.event("connected", serde_json::json!({}), false);
+        tokio::spawn(run_connection(ws, rx, diagnostic.clone()));
         Ok(Self {
             tx,
             unhealthy: Arc::new(AtomicBool::new(false)),
+            unhealthy_sessions: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            diagnostic,
         })
     }
 
@@ -82,6 +113,29 @@ impl RawCdpClient {
     /// recognize the user-facing error strings returned by `execute`.
     pub(crate) fn is_closed(&self) -> bool {
         self.tx.is_closed() || self.unhealthy.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_session_closed(&self, session: Option<&str>) -> bool {
+        self.is_closed()
+            || session.is_some_and(|id| {
+                self.unhealthy_sessions
+                    .lock()
+                    .expect("poisoned")
+                    .contains(id)
+            })
+    }
+
+    pub(crate) fn forget_session(&self, session: Option<&str>) {
+        if let Some(id) = session {
+            self.unhealthy_sessions.lock().expect("poisoned").remove(id);
+        }
+    }
+
+    pub(crate) fn health_diagnostic(&self) -> Value {
+        serde_json::json!({"connection_id":self.diagnostic.id,"socket_closed":self.tx.is_closed(),
+            "marked_unhealthy":self.unhealthy.load(Ordering::Acquire),
+            "unhealthy_session_count":self.unhealthy_sessions.lock().map(|s| s.len()).unwrap_or_default(),
+            "first_failure":self.diagnostic.first_failure.lock().ok().and_then(|v| v.clone())})
     }
 
     pub async fn execute_for_session(
@@ -102,13 +156,16 @@ impl RawCdpClient {
         timeout: Duration,
     ) -> Result<Value> {
         let method = method.into();
-        if self.unhealthy.load(Ordering::Acquire) {
+        let id = self.diagnostic.next_id.fetch_add(1, Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        if self.is_session_closed(session_id) {
             anyhow::bail!("CDP transport is unhealthy after a command timeout: {method}");
         }
         let (resp_tx, resp_rx) = oneshot::channel();
         let response = match tokio::time::timeout(timeout, async {
             self.tx
                 .send(CommandRequest {
+                    id,
                     method: method.clone(),
                     params,
                     session_id: session_id.map(ToOwned::to_owned),
@@ -124,10 +181,21 @@ impl RawCdpClient {
         {
             Ok(response) => response?,
             Err(_) => {
-                self.unhealthy.store(true, Ordering::Release);
+                self.diagnostic.event("command_timeout", serde_json::json!({"command_id":id,"method":method,"elapsed_ms":started.elapsed().as_millis(),"session_id":session_id,"scope":if session_id.is_some(){"page"}else{"browser"}}), true);
+                if let Some(session) = session_id {
+                    self.unhealthy_sessions
+                        .lock()
+                        .expect("poisoned")
+                        .insert(session.into());
+                } else {
+                    self.unhealthy.store(true, Ordering::Release);
+                }
                 return Err(anyhow!("CDP command timed out: {method}"));
             }
         };
+        if response.is_err() || started.elapsed().as_secs() >= 5 {
+            self.diagnostic.event(if response.is_err() { "command_error" } else { "slow_command" }, serde_json::json!({"command_id":id,"method":method,"elapsed_ms":started.elapsed().as_millis(),"session_id":session_id}), false);
+        }
         response.map_err(|err| anyhow!("CDP command failed ({method}): {err}"))
     }
 }
@@ -135,11 +203,11 @@ impl RawCdpClient {
 async fn run_connection<S>(
     ws: async_tungstenite::WebSocketStream<S>,
     mut rx: mpsc::Receiver<CommandRequest>,
+    diagnostic: Arc<ConnectionDiagnostic>,
 ) where
     S: futures::AsyncRead + futures::AsyncWrite + Unpin,
 {
     let (mut write, mut read) = ws.split();
-    let mut next_id: u64 = 1;
     let mut pending: HashMap<u64, oneshot::Sender<std::result::Result<Value, String>>> =
         HashMap::new();
 
@@ -161,8 +229,7 @@ async fn run_connection<S>(
                     fail_all(&mut pending, "command channel closed");
                     break;
                 };
-                let id = next_id;
-                next_id = next_id.wrapping_add(1).max(1);
+                let id = command.id;
                 let mut payload = serde_json::json!({
                     "id": id,
                     "method": command.method,
@@ -180,6 +247,7 @@ async fn run_connection<S>(
                 };
                 pending.insert(id, command.resp);
                 if let Err(err) = write.send(WsMessage::Text(text)).await {
+                    diagnostic.event("websocket_send_failed", serde_json::json!({"command_id":id,"pending":pending.len()}), true);
                     fail_one(&mut pending, id, format!("websocket send failed: {err}"));
                     fail_all(&mut pending, "websocket send failed");
                     break;
@@ -194,6 +262,7 @@ async fn run_connection<S>(
                         }
                     }
                     Some(Ok(WsMessage::Close(frame))) => {
+                        diagnostic.event("websocket_close", serde_json::json!({"close_code":frame.as_ref().map(|f| u16::from(f.code)),"pending":pending.len()}), true);
                         let detail = frame.map_or_else(
                             || "websocket closed without a close frame".to_string(),
                             |frame| {
@@ -207,12 +276,14 @@ async fn run_connection<S>(
                         break;
                     }
                     None => {
+                        diagnostic.event("websocket_eof", serde_json::json!({"pending":pending.len()}), true);
                         fail_all(&mut pending, "websocket stream ended without a close frame");
                         break;
                     }
                     Some(Ok(WsMessage::Ping(_))) | Some(Ok(WsMessage::Pong(_))) => {}
                     Some(Ok(_)) => {}
                     Some(Err(err)) => {
+                        diagnostic.event("websocket_receive_failed", serde_json::json!({"pending":pending.len(),"kind":match &err { async_tungstenite::tungstenite::Error::Io(e) => format!("io:{:?}",e.kind()), _ => "protocol_or_transport".into() }}), true);
                         fail_all(&mut pending, &format!("websocket receive failed: {err}"));
                         break;
                     }
@@ -227,7 +298,7 @@ fn handle_text_message(
     text: &str,
 ) {
     let Ok(message) = serde_json::from_str::<IncomingMessage>(text) else {
-        tracing::debug!(target: "socai::cdp::raw", msg = text, "failed to parse CDP message");
+        tracing::debug!(target: "socai::cdp::raw", bytes = text.len(), "failed to parse CDP message");
         return;
     };
     let Some(id) = message.id else {

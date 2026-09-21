@@ -3,6 +3,36 @@ use serde_json::{json, Value};
 use crate::cdp::connection::Cdp;
 use crate::cdp::session::PageSession;
 
+/// Cancellation-safe ownership for short-lived parallel worker tabs.
+pub struct OwnedPage(Option<std::sync::Arc<PageSession>>);
+
+impl OwnedPage {
+    pub(crate) fn new(page: PageSession) -> Self {
+        Self(Some(std::sync::Arc::new(page)))
+    }
+    pub fn page(&self) -> std::sync::Arc<PageSession> {
+        self.0.as_ref().expect("owned page").clone()
+    }
+    pub async fn close(mut self) {
+        if let Some(page) = self.0.as_ref() {
+            let _ = page.close_target().await;
+        }
+        self.0.take();
+    }
+}
+
+impl Drop for OwnedPage {
+    fn drop(&mut self) {
+        if let Some(page) = self.0.take() {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = page.close_target().await;
+                });
+            }
+        }
+    }
+}
+
 /// Owns a target from the moment Chrome returns its id until the fully
 /// attached `PageSession` takes over. Cancellation during attachment drops
 /// this guard and closes the otherwise orphaned tab.

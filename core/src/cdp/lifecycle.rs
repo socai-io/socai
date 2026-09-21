@@ -88,6 +88,13 @@ impl Cdp {
         });
     }
 
+    pub fn connect_once_with_options(&self, options: ChromeConnectOptions) {
+        let cdp = self.clone();
+        tokio::spawn(async move {
+            run_connect(cdp, Some(options), 1, true).await;
+        });
+    }
+
     /// Trigger a connect attempt with explicit chrome profile selection.
     /// `connect()` uses ~/.socai/config.json (or the default existing-profile
     /// attach mode); this method is for internal callers that have already
@@ -307,30 +314,29 @@ async fn try_connect_once(
 ) -> anyhow::Result<ConnectAttempt> {
     let OpenEndpoint { endpoint, owner } = open_endpoint(options).await?;
 
-    let inventory = match tokio::time::timeout(INVENTORY_TIMEOUT, connect_inventory(&endpoint))
-        .await
-    {
-        Ok(Ok(inventory)) => inventory,
-        // Both error exits release a just-minted hosted session awaited
-        // before surfacing the error. A Drop-spawned release could still be
-        // in flight when `run_connect` gives up and frees the connect lock —
-        // at which point a shutdown waiting in `disconnect()` proceeds to
-        // process exit and aborts it. Awaiting preserves the invariant that
-        // a free connect lock means no release from this attempt is still
-        // in the air.
-        Ok(Err(err)) => {
-            release_owner_now(owner).await;
-            return Err(redact_endpoint_in_error(&endpoint, err));
-        }
-        Err(_) => {
-            release_owner_now(owner).await;
-            anyhow::bail!(
-                "browser websocket {} did not respond within {}s",
-                endpoint.display_ws_url(),
-                INVENTORY_TIMEOUT.as_secs()
-            )
-        }
-    };
+    let inventory =
+        match tokio::time::timeout(INVENTORY_TIMEOUT, connect_inventory(&endpoint)).await {
+            Ok(Ok(inventory)) => inventory,
+            // Both error exits release a just-minted hosted session awaited
+            // before surfacing the error. A Drop-spawned release could still be
+            // in flight when `run_connect` gives up and frees the connect lock —
+            // at which point a shutdown waiting in `disconnect()` proceeds to
+            // process exit and aborts it. Awaiting preserves the invariant that
+            // a free connect lock means no release from this attempt is still
+            // in the air.
+            Ok(Err(err)) => {
+                release_owner_now(owner).await;
+                return Err(redact_endpoint_in_error(&endpoint, err));
+            }
+            Err(_) => {
+                release_owner_now(owner).await;
+                anyhow::bail!(
+                    "browser websocket {} did not respond within {}s",
+                    endpoint.display_ws_url(),
+                    INVENTORY_TIMEOUT.as_secs()
+                )
+            }
+        };
     let monitor_task = spawn_target_poll_loop(cdp.clone(), inventory.browser_client.clone());
 
     {

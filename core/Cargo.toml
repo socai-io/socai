@@ -17,6 +17,7 @@ tracing.workspace = true
 reqwest.workspace = true
 base64.workspace = true
 dirs = "5"
+tempfile = "3"
 libc.workspace = true
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -43,7 +44,6 @@ windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
-tempfile = "3"
 
 [build-dependencies]
 serde_json.workspace = true
