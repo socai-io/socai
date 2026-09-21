@@ -31,7 +31,7 @@ import {
   renderLiveNotesGroup,
   renderSearchGroupForEvent,
 } from "./conversation";
-import type { ArtifactDownloadState, ChromeSetupState, ComposerProps } from "./conversation";
+import type { ArtifactDownloadState, ChromeSetupState, ComposerProps, WorkflowPreference } from "./conversation";
 import { artifactPreviewMime, renderArtifactPreview } from "./artifact_preview";
 import type { ArtifactPreviewPaneState } from "./artifact_preview";
 import { bindNoteInteractions, setNoteRegistry } from "./notes";
@@ -71,6 +71,8 @@ export namespace agentPanel {
   let draft = "";
   let model = "";
   let modelProvider = "";
+  let newWorkflow: WorkflowPreference | undefined;
+  const workflowByTask = new Map<string, WorkflowPreference>();
   let modelByProvider = new Map<string, string>();
   let submittingTask = false;
   let submitError = "";
@@ -942,6 +944,7 @@ export namespace agentPanel {
     const selected = selectedModel();
     return {
       mode: "new",
+      workflow: newWorkflow,
       value: draft,
       submitting: submittingTask,
       cancelling: false,
@@ -959,6 +962,7 @@ export namespace agentPanel {
   function replyComposer(shell: ShellState, taskId: string, running: boolean): ComposerProps {
     return {
       mode: "reply",
+      workflow: workflowByTask.get(taskId),
       taskId,
       value: replyDraft,
       submitting: submittingReply,
@@ -1457,6 +1461,15 @@ export namespace agentPanel {
   function bindComposer(shell: ShellState): void {
     syncChromeSetupDetection(shell);
     const composerTask = view === "compose" ? undefined : selectedTask();
+    const workflowSelect = document.getElementById("composer-workflow") as HTMLSelectElement | null;
+    workflowSelect?.addEventListener("change", () => {
+      const value = workflowSelect.value;
+      const mode = value === "auto" || value === "reactive" || value === "research" ? value : undefined;
+      if (composerTask) {
+        if (mode) workflowByTask.set(composerTask.task_id, mode);
+        else workflowByTask.delete(composerTask.task_id);
+      } else newWorkflow = mode;
+    });
     const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     disposeComposerAutosize?.();
     disposeComposerAutosize = input ? bindTextareaAutosize(input) : undefined;
@@ -1605,6 +1618,7 @@ export namespace agentPanel {
 
   async function startAgentTask(shell: ShellState): Promise<void> {
     const value = draft.trim();
+    const workflow = newWorkflow;
     if (!value || submittingTask) return;
     submittingTask = true;
     submitError = "";
@@ -1615,9 +1629,11 @@ export namespace agentPanel {
         task: value,
         provider: selected?.provider || modelProvider || null,
         model: selected ? modelId(selected) : model || null,
+        workflowPreference: workflow ?? null,
       });
       upsertTask(snapshot);
       selectedTaskId = snapshot.task_id;
+      if (workflow) workflowByTask.set(snapshot.task_id, workflow);
       view = "detail";
       draft = "";
     } catch (err) {
@@ -1638,6 +1654,7 @@ export namespace agentPanel {
   }
 
   async function submitReplyValue(shell: ShellState, taskId: string, value: string): Promise<void> {
+    const workflow = workflowByTask.get(taskId);
     if (!value.trim() || submittingReply) return;
     submittingReply = true;
     replyError = "";
@@ -1649,6 +1666,7 @@ export namespace agentPanel {
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_reply", {
         taskId,
         message: value,
+        workflowPreference: workflow ?? null,
       });
       upsertTask(snapshot);
       replyDraft = "";

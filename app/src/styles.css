@@ -2705,3 +2705,6 @@ code {
   color: var(--fg-soft);
   cursor: not-allowed;
 }
+/* Per-turn workflow preference; execution mode is recorded with each run. */
+.composer__workflow { display: flex; align-items: center; gap: 8px; padding: 6px 12px; color: var(--ink-5); }
+.composer__workflow select { font: inherit; color: var(--fg); background: var(--canvas); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }

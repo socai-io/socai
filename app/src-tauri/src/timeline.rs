@@ -428,6 +428,9 @@ fn run_status_marker(status: &str) -> Option<AgentTaskEventKind> {
 
 pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind {
     match event {
+        AgentEvent::WorkflowSelected { text } => AgentTaskEventKind::Running {
+            text: truncate_event_text(text),
+        },
         AgentEvent::Started {
             run_id,
             task,

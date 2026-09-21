@@ -200,6 +200,8 @@ impl ResearchBrief {
              - A covered subquestion needs evidence actually obtained in this run and an answer that uses that evidence to satisfy the requested deliverable.\n\
              - Preserve the user's hard constraints and scope. Distinguish first-party facts, note-body claims, comments, author-profile facts, OCR, and transcripts.\n\
              - For recommendation, comparison, or planning tasks, use the evidence to select, rank, or reject candidates against the user's important constraints; do not merely collect independent facts.\n\
+             - Before expanding research, identify the unresolved issue that could change eligibility, ranking, the core explanation, or a required deliverable. Check inexpensive decisive criteria before deep reads where tools permit; do not exhaust initial angles or optional context merely to fill the plan.\n\
+             - Submit completion when the requested deliverable is adequately supported. Otherwise investigate a feasible decision-relevant gap or report it honestly under the existing protocol; do not require exhausting the platform, and never mark an unmet hard constraint satisfied just to finish.\n\
              - Do not finish with ordinary prose. When ready to finish, call submit_research_completion exactly once and do not combine it with another tool call.\n\
              - Each successful tool result includes a short system-generated evidence_id such as E1 or E2. In submit_research_completion, report every brief subquestion exactly once and cite those short IDs; do not invent or reconstruct locator paths. IDs from older compacted results remain listed in Earlier compacted context.\n\
              - For each covered subquestion, cite current-run E-IDs and set gap=null. For each non-covered subquestion, include one nested gap: material means an ordinary available-tool action can still change the core answer; search_scarcity means one precise last-mile search may find a higher-match example; capability_blocked means current tools cannot enter the required source; source_unavailable means the fact is not public; limitation means the gap does not change the core answer. A failed keyword search, captcha, login wall, rate limit, or browser failure is never a blocked coverage gap.\n\
@@ -251,23 +253,59 @@ impl ResearchSubquestion {
     }
 }
 
-pub fn planner_system_prompt() -> String {
+pub(crate) const FOLLOWUP_EVIDENCE_INSTRUCTIONS: &str = "## Follow-up evidence
+Evidence IDs belong to this run. Never reuse an earlier turn's E-ID or assume
+an identical ID denotes the same evidence. When historical raw material is
+needed, read the relevant material with an available tool and cite the NEW ID
+for that read. Traceability does not establish truth or freshness. An old
+report alone cannot certify its external claims. Fetch fresh evidence when
+required; do not perform dummy tool calls just to obtain an ID. Unsupported
+claims must remain non-covered with honest limitations.";
+
+const FOLLOWUP_PLANNING_RULES: &str = "\n\nFollow-up planning rules:
+1. Resolve the current request using relevant prior user messages AND the
+assistant answer, including a proposal the user is accepting. Short replies
+are not automatically ambiguous. Clarify once only when multiple plausible
+referents materially change the task.
+2. Plan the CURRENT deliverable. Carry forward only relevant unchanged user
+constraints; new user goals, scope and preferences replace conflicting old
+requirements. A new topic must not inherit unrelated old requirements.
+3. Include only subquestions needed for this turn. Do not reopen completed,
+unaffected research. Narrower scope can need new evidence; more examples may
+only need continuation under existing criteria. Answer length is not depth.
+4. Old assistant conclusions are background, not verified evidence. For an
+objection identify the affected claim, criterion or source. Do not defend or
+discard the whole prior answer; a user's preferred external conclusion is not
+proof. Preserve unaffected findings only as provisional background.
+5. Express inherited constraints, changes and exclusions in existing brief
+fields, not extra history/schema fields. Distinguish user requirements from
+assumptions; never promote an old assistant claim to a hard constraint.
+6. Search angles and stop conditions serve this turn's remaining needs. For
+mixed requests retain the synthesis/rewrite in deliverable while investigating
+only necessary new evidence. Preserve explicit prohibitions on new searches;
+do not invent research merely to satisfy the workflow.
+7. For interrupted or incomplete work, plan only what is still needed based on
+available context. Do not infer success from a status or claimed filename.
+Disclose uncertainty when the earlier progress cannot be established.";
+
+pub fn planner_system_prompt(is_follow_up: bool) -> String {
     format!(
         "You are the planning stage of socai's Xiaohongshu research workflow.\n\n\
-         Your only job is to convert the user's current request and relevant prior conversation into one decision-complete research brief. Do not research the topic, answer the user's question, browse Xiaohongshu, inspect local files, or invent facts.\n\n\
+         Your only job is to convert the user's current request and relevant prior conversation into one minimal sufficient research brief for the current deliverable. Do not research the topic, answer the user's question, browse Xiaohongshu, inspect local files, or invent facts.\n\n\
          You have exactly one tool: {SUBMIT_RESEARCH_BRIEF_TOOL}. Call it exactly once and do not produce a prose answer.\n\n\
          Planning rules:\n\
          1. Preserve the user's actual objective, requested deliverable, explicit constraints, time range, location, subjects, and language.\n\
-         2. Create 1-4 distinct, non-overlapping subquestions. Merge similar questions. Include only questions necessary to produce the requested deliverable. Use consecutive subquestion ids Q1, Q2, Q3, Q4; do not use SQ1 or other prefixes.\n\
-         3. For each subquestion, specify the main evidence types needed. Distinguish official or first-party facts from user experiences, note-body claims, top comments, author-profile facts, OCR, and audio transcripts.\n\
-         4. Add hard constraints only when they come from the user or are required for evidence-grounded research. Do not invent product requirements.\n\
-         5. State reversible assumptions explicitly. Never convert an assumption into a fact.\n\
-         6. Provide at most four initial search angles. They are starting points, not a fixed execution script; the research agent may adapt after seeing real results.\n\
-         7. Define concrete stop conditions based on subquestion coverage and evidence, not on a fixed number of searches alone.\n\
+         2. Use the smallest set of 1-4 independent decision questions; one or two are valid. Merge questions answered by the same evidence. Titles, links and output columns are usually attributes, not separate research questions. Use consecutive ids Q1, Q2, Q3, Q4, never SQ1.\n\
+         3. Specify evidence appropriate to each claim, distinguishing first-party facts from experiences, note-body claims, comments, profiles, OCR and transcripts. A comparison can use separately supported evidence about each option; do not require a published head-to-head comparison unless the user asks for one.\n\
+         4. Preserve user constraints and their logic: OR is not AND, preferred is not mandatory, at most is not at least. Do not invent source quotas, category balance, extra background research or deliverables; do not weaken requested links or proof standards.\n\
+         5. State only reversible scope assumptions. Do not resolve uncertain entity identity, certify external facts or waive user requirements by assumption. Separate desirable context from requirements.\n\
+         6. Provide at most four candidate search angles, not a checklist or quota. Do not assume the research label grants access to every source. Keep verification beyond known capabilities explicit without assuming public reposts cannot exist.\n\
+         7. Stop conditions should describe the minimum adequately supported deliverable and honest remaining gaps, not exhaustion of all queries or platform content. Optional context must not delay a ready answer. Missing required evidence remains an unmet requirement, not a satisfied constraint.\n\
          8. Ask one concise clarification question only when missing user-owned information would materially change the research scope or deliverable. Do not ask for facts that socai can discover with its tools.\n\
          9. The brief is a plan, not evidence. Do not include unverified claims about the subject.\n\
          10. Use the same language as the user's current request for all brief fields and any clarification question.\n\n\
-         Today's date is {}.",
+         {}\n\nToday's date is {}.",
+        if is_follow_up { FOLLOWUP_PLANNING_RULES } else { "" },
         chrono::Local::now().format("%Y-%m-%d (%A)")
     )
 }
@@ -293,8 +331,8 @@ pub fn research_brief_tool_schema() -> ToolSchema {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "objective": { "type": "string" },
-                        "deliverable": { "type": "string" },
+                        "objective": { "type": "string", "description": "The current turn's goal, not a full restatement of conversation history." },
+                        "deliverable": { "type": "string", "description": "The complete current deliverable, including synthesis or revisions as well as new research." },
                         "scope": {
                             "type": "object",
                             "additionalProperties": false,
@@ -313,6 +351,7 @@ pub fn research_brief_tool_schema() -> ToolSchema {
                         },
                         "subquestions": {
                             "type": "array",
+                            "description": "Smallest set of independent decision questions for this turn; merge output attributes and questions sharing evidence. One or two are valid. Do not reopen unaffected history.",
                             "minItems": 1,
                             "maxItems": MAX_SUBQUESTIONS,
                             "items": {
@@ -327,6 +366,7 @@ pub fn research_brief_tool_schema() -> ToolSchema {
                                     },
                                     "evidence_requirements": {
                                         "type": "array",
+                                        "description": "Evidence needed for the claim and user's proof standard, not invented source quotas or a mandatory published comparison.",
                                         "minItems": 1,
                                         "maxItems": MAX_REQUIREMENTS_PER_QUESTION,
                                         "items": { "type": "string" }
@@ -337,21 +377,25 @@ pub fn research_brief_tool_schema() -> ToolSchema {
                         },
                         "hard_constraints": {
                             "type": "array",
+                            "description": "Currently valid user constraints, preserving OR/AND, preferred/mandatory and at most/at least. Not prior assistant conclusions, invented quotas or desired external facts.",
                             "maxItems": MAX_HARD_CONSTRAINTS,
                             "items": { "type": "string" }
                         },
                         "assumptions": {
                             "type": "array",
+                            "description": "Reversible scope assumptions only; never waive requirements or assume entity identity or external facts.",
                             "maxItems": MAX_ASSUMPTIONS,
                             "items": { "type": "string" }
                         },
                         "initial_search_angles": {
                             "type": "array",
+                            "description": "Starting angles for current evidence gaps; may be empty and are not a search quota.",
                             "maxItems": MAX_SEARCH_ANGLES,
                             "items": { "type": "string" }
                         },
                         "stop_conditions": {
                             "type": "array",
+                            "description": "Minimum adequately supported current deliverable with honest gaps; no exhaustive search or optional expansion. Preserve unmet requirements and do not reopen unaffected history.",
                             "minItems": 1,
                             "maxItems": MAX_STOP_CONDITIONS,
                             "items": { "type": "string" }

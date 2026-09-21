@@ -2281,9 +2281,7 @@ fn lean_scan_payload(payload: &mut Value) {
     obj.remove("search");
     obj.remove("sampling");
     obj.remove("timing");
-    // The filter summary (which filters ended up active) is bookkeeping, not
-    // analysis input — it stays in the artifact only.
-    obj.remove("filters");
+    // Keep the compact filter readback: requested filters may not have taken effect.
     // `ok: true` is pure noise — a successful bundle is self-evident from its
     // notes. Keep `ok: false` (with its `reason`): there it's the failure signal.
     if obj.get("ok").and_then(Value::as_bool) == Some(true) {
@@ -2354,10 +2352,8 @@ fn compact_filter_result(filters: &Value) -> Option<Value> {
 /// Per-note entity fields kept in the lean output handed to the LLM: the basic
 /// human-readable post (title/author/content/date), the engagement counts, the
 /// comment texts, and the three handoff locators (`note_id`, `url`,
-/// `author_id`). Everything else — hashtags, images, image_count, author URLs,
-/// location, type, video,
-/// content_source, and the wait diagnostics — stays only in the run artifact,
-/// which the LLM can re-read by `note_id` when it needs the dropped detail.
+/// `author_id`), plus short source/type/IP and coverage metadata. Full media,
+/// comments and diagnostics remain in the artifact, addressable by `note_id`.
 const LEAN_NOTE_FIELDS: &[&str] = &[
     "note_id",
     "url",
@@ -2365,6 +2361,10 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     "author",
     "author_id",
     "content",
+    "content_source",
+    "type",
+    "ip_location",
+    "image_count",
     "date",
     // Only present (true) when `date` is the note's last-edited date rather
     // than its publish date, so unedited notes pay nothing for it.
@@ -2376,9 +2376,11 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     // Per-note OCR summary (joined from each image's ocr_text). Only present
     // when the scan ran with `ocr`; the per-image texts stay in the artifact.
     "ocr_text",
+    "ocr_coverage",
     // Video audio transcript from the selected ASR route. The full video object stays in the
     // artifact; this keeps the usable text in the compact result.
     "audio_transcript",
+    "audio_transcript_truncated",
 ];
 
 /// Collapse one full comment object to its lean form: `null` when it has no text,
@@ -2408,8 +2410,7 @@ fn lean_comment(comment: &Value) -> Option<Value> {
     }
 }
 
-/// Trim one scanned-note entry to the lean shape: drop the per-entry provenance
-/// wrappers (`source_position`, `ok`, `skipped`, plus failure detail), collapse
+/// Trim one scanned-note entry, retaining read/skip/error status, and collapse
 /// `top_comments` to a plain array of comment texts, and whitelist the entity to
 /// [`LEAN_NOTE_FIELDS`]. Applies to both freshly-read and reused (cached)
 /// entities; the full objects stay in the run artifact.
@@ -2417,12 +2418,8 @@ fn lean_scan_note(note: &mut Value) {
     let Some(entry) = note.as_object_mut() else {
         return;
     };
-    // The entity is the only thing handed back; the provenance wrappers around
-    // it (history dedup status, source ordinal, read status) are diagnostics.
+    // Keep ok/skipped/error: a failed or cached read is not a fresh verified note.
     entry.remove("source_position");
-    entry.remove("ok");
-    entry.remove("skipped");
-    entry.remove("error");
     entry.remove("open");
     let Some(entity) = entry.get_mut("entity") else {
         return;
@@ -2455,12 +2452,16 @@ fn attach_note_audio_transcript(entity: &mut Value) {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
-        .map(|text| truncate(text, 6000))
     else {
         return;
     };
+    let truncated = transcript.chars().count() > 6000;
+    let transcript = truncate(transcript, 6000);
     if let Some(map) = entity.as_object_mut() {
         map.insert("audio_transcript".into(), Value::String(transcript));
+        if truncated {
+            map.insert("audio_transcript_truncated".into(), json!(true));
+        }
     }
 }
 
@@ -2472,37 +2473,56 @@ const LEAN_NOTE_OCR_MAX_IMAGES: usize = 2;
 /// image strings. For an image note these are the first carousel images; for a
 /// video note it's the poster's OCR (the cover, and the only OCR surface).
 /// Each entry is that image's recognized text ("" when an image has none).
-/// No-op when nothing produced any text. Called only during lean trimming (see
-/// [`lean_scan_note`]) so the artifact retains the complete per-image / poster
-/// OCR while the returned result stays bounded.
+/// Coverage counts non-empty captured texts, not total source images or OCR
+/// accuracy. Omitted or clipped text is flagged even when the first images are
+/// blank. The artifact retains all captured OCR; the return stays bounded.
 fn attach_note_ocr_summary(entity: &mut Value) {
-    let mut texts: Vec<Value> = Vec::new();
-    if let Some(poster) = entity
+    let all_texts: Vec<&str> = entity
         .get("video")
         .and_then(|video| video.get("poster_ocr"))
         .and_then(Value::as_str)
-    {
-        texts.push(Value::String(truncate(poster, 1200)));
-    }
-    if let Some(images) = entity.get("images").and_then(Value::as_array) {
-        let remaining = LEAN_NOTE_OCR_MAX_IMAGES.saturating_sub(texts.len());
-        texts.extend(images.iter().take(remaining).map(|image| {
-            let text = image
-                .get("ocr_text")
-                .and_then(Value::as_str)
-                .map(|text| truncate(text, 1200))
-                .unwrap_or_default();
-            Value::String(text)
-        }));
-    }
-    let any = texts
+        .into_iter()
+        .chain(
+            entity
+                .get("images")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|image| image.get("ocr_text").and_then(Value::as_str).unwrap_or("")),
+        )
+        .collect();
+    let available = all_texts
         .iter()
-        .any(|value| value.as_str().is_some_and(|s| !s.is_empty()));
-    if !any {
+        .filter(|text| !text.trim().is_empty())
+        .count();
+    if available == 0 {
         return;
     }
+    let shown = all_texts
+        .iter()
+        .take(LEAN_NOTE_OCR_MAX_IMAGES)
+        .filter(|text| !text.trim().is_empty())
+        .count();
+    let truncated = available > shown
+        || all_texts
+            .iter()
+            .take(LEAN_NOTE_OCR_MAX_IMAGES)
+            .any(|text| text.trim().chars().count() > 1200);
+    let texts: Vec<Value> = all_texts
+        .iter()
+        .take(LEAN_NOTE_OCR_MAX_IMAGES)
+        .map(|text| json!(truncate(text, 1200)))
+        .collect();
     if let Some(map) = entity.as_object_mut() {
-        map.insert("ocr_text".into(), Value::Array(texts));
+        map.insert(
+            "ocr_coverage".into(),
+            json!({
+                "available_texts": available, "shown_texts": shown, "truncated": truncated
+            }),
+        );
+        if shown > 0 {
+            map.insert("ocr_text".into(), Value::Array(texts));
+        }
     }
 }
 
@@ -2745,12 +2765,9 @@ fn strip_ocr_timing(media_timing: &mut Value) {
 const ARTIFACT_EXTRA_NOTE_PROPERTIES: &[&str] = &[
     "hashtags",
     "images (index, url, ocr_text, ocr_ms)",
-    "image_count",
     "video",
-    "type",
     "author_url",
     "location",
-    "content_source",
     "top_comments (full objects: text, author, likes, time, sub_comments[])",
 ];
 
@@ -2786,7 +2803,7 @@ fn attach_artifact_pointer(
         "artifact".into(),
         json!({
             "path": path,
-            "note": "Full untrimmed results. Look up a note by note_id for the fields trimmed below.",
+            "note": "Untrimmed captured results, not a guarantee of complete source content. Look up note_id for omitted fields or clipped OCR/transcripts. ocr_coverage counts non-empty captured texts, not source images; absent OCR does not mean images contain no text. Read/skip/error status and content_source still apply; diagnostics are not note content.",
             "extra_note_properties": extra_properties,
         }),
     );
@@ -4285,13 +4302,11 @@ impl Tool for SearchTool {
                 if let Some(obj) = value.as_object_mut() {
                     // `submit` is the search-submission diagnostic (strategy +
                     // page-state echo), `reason` is empty on success, `ok` is
-                    // self-evident, and the filter summary is bookkeeping that
-                    // lives in the artifact — drop them all to match the
-                    // full-scan output.
+                    // self-evident. Keep the compact filter readback just as
+                    // in the full-scan output.
                     obj.remove("submit");
                     obj.remove("reason");
                     obj.remove("ok");
-                    obj.remove("filters");
                 }
                 lean_preview_cards(&mut value);
                 attach_artifact_pointer(

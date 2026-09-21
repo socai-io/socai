@@ -47,7 +47,7 @@ fn safe_component(value: &str, fallback: &str) -> String {
     }
 }
 
-fn write_json_atomic(path: &Path, value: &Value) -> std::io::Result<()> {
+pub(crate) fn write_json_atomic(path: &Path, value: &Value) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

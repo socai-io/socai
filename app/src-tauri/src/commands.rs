@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use calamine::{Data, DataRef, Reader, SheetType, Xlsx};
 use quick_xml::{events::Event as XmlEvent, Reader as XmlReader};
 use serde_json::{json, Map, Value};
+use socai_core::agent::WorkflowPreference;
 use socai_core::agent::{
     catalog_models_for, configured_default_model_for, configured_default_provider,
     desktop_agent_tools, load_api_key, make_run_dir, mark_agent_run_status,
@@ -629,6 +630,7 @@ pub async fn agent_task_start(
     task: String,
     provider: Option<String>,
     model: Option<String>,
+    workflow_preference: Option<WorkflowPreference>,
 ) -> Result<AgentTaskSnapshot, String> {
     let task_text = task.trim().to_string();
     if task_text.is_empty() {
@@ -675,6 +677,7 @@ pub async fn agent_task_start(
             task_text,
             provider,
             model,
+            workflow_preference,
             run_dir,
             background_media_generation,
             telemetry,
@@ -711,6 +714,7 @@ pub async fn agent_task_reply(
     telemetry: State<'_, DesktopTelemetry>,
     task_id: String,
     message: String,
+    workflow_preference: Option<WorkflowPreference>,
 ) -> Result<AgentTaskSnapshot, String> {
     let message_text = message.trim().to_string();
     if message_text.is_empty() {
@@ -786,6 +790,7 @@ pub async fn agent_task_reply(
             message_text,
             provider,
             model,
+            workflow_preference,
             run_dir,
             background_media_generation,
             telemetry,
@@ -2533,6 +2538,7 @@ async fn run_agent_task_background(
     task: String,
     provider: Option<String>,
     model: Option<String>,
+    workflow_preference: Option<WorkflowPreference>,
     run_dir: PathBuf,
     background_media_generation: u64,
     telemetry: DesktopTelemetry,
@@ -2704,6 +2710,7 @@ async fn run_agent_task_background(
         provider.as_deref(),
         model.as_deref(),
         Some(run_dir),
+        workflow_preference,
         Some(background_media_generation),
         Some(registry.clone()),
         telemetry.clone(),
@@ -2957,6 +2964,7 @@ async fn run_agent_task_on_session_page(
     provider: Option<&str>,
     model: Option<&str>,
     run_dir: Option<PathBuf>,
+    workflow_preference: Option<WorkflowPreference>,
     background_media_generation: Option<u64>,
     registry: Option<AgentTaskRegistry>,
     telemetry: DesktopTelemetry,
@@ -3054,6 +3062,7 @@ async fn run_agent_task_on_session_page(
             .unwrap_or(site.agent_instructions);
         let preamble = format!("{TAURI_AGENT_PREAMBLE}\n\n{context_note}");
         let config = AgentRunConfig {
+            workflow_preference,
             extra_instructions: format!(
                 "{}{}{}",
                 agent_instructions(&preamble),

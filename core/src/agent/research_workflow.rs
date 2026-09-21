@@ -19,7 +19,7 @@ use crate::agent::memory::compact_messages_for_context;
 use crate::agent::r#loop::{
     build_assistant_blocks, emit, send_with_retry, split_thinking, AgentEvent,
 };
-use crate::agent::research::ResearchBrief;
+use crate::agent::research::{ResearchBrief, FOLLOWUP_EVIDENCE_INSTRUCTIONS};
 use crate::agent::research_coverage::{
     answer_with_missing_limitations, budget_exhausted_completion_prompt, completion_limitations,
     completion_protocol_correction_prompt, completion_tool_result_content, evaluate_completion,
@@ -32,8 +32,8 @@ use crate::agent::research_finalizer::{run_forced_final_writer, ForcedWriterOutc
 use crate::agent::research_planner::prepare_research_brief;
 use crate::agent::system_prompt::build_system_prompt;
 use crate::agent::workflow::{
-    PreparedWorkflow, ResponseDirective, TerminalCause, WorkflowIo, WorkflowOutcome,
-    WorkflowPlugin, WorkflowPrepareContext,
+    research_available, PreparedWorkflow, ResponseDirective, TerminalCause, WorkflowIo,
+    WorkflowOutcome, WorkflowPlugin, WorkflowPrepareContext,
 };
 
 pub(crate) struct ResearchWorkflow {
@@ -46,7 +46,7 @@ impl ResearchWorkflow {
     pub async fn prepare(
         ctx: WorkflowPrepareContext<'_>,
     ) -> anyhow::Result<PreparedWorkflow<Self>> {
-        if !research_workflow_enabled(ctx.enabled_sites) {
+        if !research_available(ctx.enabled_sites) {
             return Ok(PreparedWorkflow {
                 workflow: Self {
                     runtime: None,
@@ -55,6 +55,7 @@ impl ResearchWorkflow {
                 },
                 usage: TokenUsage::default(),
                 immediate_text: None,
+                error: None,
                 planning_steps: 0,
             });
         }
@@ -64,16 +65,23 @@ impl ResearchWorkflow {
             ctx.backend,
             ctx.seed_messages,
             ctx.max_tokens,
+            ctx.first_step,
+            ctx.max_steps,
             ctx.compact_after_messages,
             ctx.keep_recent_messages,
             ctx.recorder,
             ctx.trace,
         )
         .await?;
+        let mut instructions = ctx.extra_instructions.to_string();
+        if !ctx.seed_messages.is_empty() {
+            instructions.push_str("\n\n");
+            instructions.push_str(FOLLOWUP_EVIDENCE_INSTRUCTIONS);
+        }
         let mut workflow = Self {
             runtime: None,
-            base_instructions: ctx.extra_instructions.to_string(),
-            execution_instructions: ctx.extra_instructions.to_string(),
+            base_instructions: instructions.clone(),
+            execution_instructions: instructions,
         };
         let mut immediate_text = None;
         let mut planning_error = planning.error.clone();
@@ -124,6 +132,7 @@ impl ResearchWorkflow {
             workflow,
             usage: planning.usage,
             immediate_text,
+            error: None,
             planning_steps: planning.steps,
         })
     }
@@ -665,10 +674,6 @@ impl WorkflowPlugin for ResearchWorkflow {
             }
         }
     }
-}
-
-fn research_workflow_enabled(enabled_sites: &[String]) -> bool {
-    enabled_sites.len() == 1 && enabled_sites.first().is_some_and(|site| site == "xhs")
 }
 
 struct CoverageRuntime {

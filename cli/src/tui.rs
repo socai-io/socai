@@ -18,7 +18,7 @@ use rustyline::{Cmd, CompletionType, Config, Editor, EventHandler, Helper, KeyEv
 use socai_core::agent::{
     catalog_models_for, config_for, configured_default_model_for, provider_credential_kind,
     resolve_provider, save_api_key, save_default_model, AgentEvent, Backend, CredentialKind,
-    ModelCatalogEntry, Provider, PROVIDERS,
+    ModelCatalogEntry, Provider, WorkflowPreference, PROVIDERS,
 };
 use socai_core::agent::{local_agent_tools, make_run_dir, Conversation};
 use socai_core::runtime::{
@@ -48,6 +48,7 @@ const PROVIDER_ORDER: &[Provider] = &[
 // Autocomplete-visible slash commands. `/new` is an alias of `/clear` handled
 // in dispatch but intentionally omitted here so only `/clear` is suggested.
 const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("mode", "Choose auto, reactive or research for this chat"),
     ("model", "Choose the active LLM model"),
     ("clear", "Clear the chat and start a new session"),
     ("exit", "Exit the TUI"),
@@ -65,6 +66,7 @@ const TUI_AGENT_PREAMBLE: &str =
      destructive, networked, or system-wide commands.";
 
 struct AppState {
+    workflow_preference: Option<WorkflowPreference>,
     model: Option<String>,
     // Set alongside `model` by /model. Threaded through to the run so the
     // selection is honored verbatim — model-prefix inference can't tell
@@ -167,6 +169,7 @@ pub async fn run() -> Result<()> {
     let runtime = SocaiRuntime::new();
     let conversation = Conversation::new(None).context("failed to create chat session")?;
     let mut state = AppState {
+        workflow_preference: None,
         model: None,
         provider: None,
         conversation,
@@ -271,6 +274,23 @@ async fn handle_command(line: &str, state: &mut AppState) -> Result<bool> {
         .map(|(c, r)| (c, r.trim()))
         .unwrap_or((body, ""));
     match cmd.to_ascii_lowercase().as_str() {
+        "mode" => {
+            if rest.is_empty() {
+                eprintln!(
+                    "[socai] mode: {:?}; use /mode auto|reactive|research",
+                    state.workflow_preference
+                );
+            } else {
+                match rest.parse::<WorkflowPreference>() {
+                    Ok(mode) => {
+                        state.workflow_preference = Some(mode);
+                        eprintln!("[socai] mode: {mode:?} (next turn)");
+                    }
+                    Err(error) => eprintln!("[socai] {error}"),
+                }
+            }
+            Ok(false)
+        }
         "exit" | "quit" => Ok(true),
         "model" => {
             handle_model_command(state, rest).await?;
@@ -680,6 +700,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
         .default_agent_instructions
         .unwrap_or(site.agent_instructions);
     let config = AgentRunConfig {
+        workflow_preference: state.workflow_preference,
         extra_instructions: agent_instructions(&preamble),
         enabled_sites: vec![site.id.to_string()],
         seed_messages: state.conversation.chat_messages(),
@@ -792,6 +813,7 @@ fn env_model() -> Option<String> {
 
 fn print_agent_event(event: &AgentEvent) {
     match event {
+        AgentEvent::WorkflowSelected { text } => println!("[socai] {text}"),
         AgentEvent::Started {
             run_id,
             task,

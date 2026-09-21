@@ -1011,6 +1011,7 @@ pub fn ensure_llm_provider_configured_for(
 
 #[derive(Debug, Clone)]
 pub struct AgentRunConfig {
+    pub workflow_preference: Option<crate::agent::WorkflowPreference>,
     pub max_steps: u32,
     pub max_tokens: u32,
     pub compact_after_messages: usize,
@@ -1029,6 +1030,7 @@ pub struct AgentRunConfig {
 impl Default for AgentRunConfig {
     fn default() -> Self {
         Self {
+            workflow_preference: None,
             max_steps: 30,
             // Thinking tokens count against max_tokens on Anthropic thinking
             // models (Sonnet 5 thinks by default), so 4096 starves the final
@@ -1060,6 +1062,7 @@ pub async fn run_agent_task(
         anyhow::bail!("task is empty");
     }
     let options = AgentOptions {
+        workflow_preference: config.workflow_preference,
         max_steps: config.max_steps,
         max_tokens: config.max_tokens,
         extra_instructions: config.extra_instructions,

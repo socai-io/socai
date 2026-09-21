@@ -27,6 +27,7 @@ impl WorkflowPlugin for ReactivePlugin {
             workflow: Self::new(ctx.extra_instructions),
             usage: Default::default(),
             immediate_text: None,
+            error: None,
             planning_steps: 0,
         })
     }

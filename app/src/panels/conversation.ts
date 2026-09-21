@@ -40,7 +40,10 @@ import type { AgentTaskView } from "./tasks";
 
 export type ChromeSetupState = "waiting" | "ready" | "permission_required";
 
+export type WorkflowPreference = "auto" | "reactive" | "research";
+
 export interface ComposerProps {
+  workflow?: WorkflowPreference;
   mode: "new" | "reply";
   /** Existing task controlled by the reply composer. */
   taskId?: string;
@@ -794,6 +797,13 @@ function renderComposer(c: ComposerProps): string {
   return `
     <div class="composer">
       <form id="composer-form" class="composer__form">
+        <label class="composer__workflow t-small">
+          Workflow
+          <select id="composer-workflow" aria-label="Workflow for the next turn" ${c.submitting || c.running ? "disabled" : ""}>
+            <option value="" ${!c.workflow ? "selected" : ""}>Default</option>
+            ${(["auto", "reactive", "research"] as const).map(mode => `<option value="${mode}" ${c.workflow === mode ? "selected" : ""}>${mode === "auto" ? "Auto" : mode === "reactive" ? "Reactive" : "Research"}</option>`).join("")}
+          </select>
+        </label>
         <div class="composer__row ${disabled ? "is-disabled" : ""}">
           <textarea
             id="composer-input"
