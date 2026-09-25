@@ -517,9 +517,9 @@ fn instagram_detail_record(item: &Value) -> Option<(String, Value)> {
     if let Some(stats) = item.get("engagement") {
         insert_stats(
             &mut record,
-            parse_metric(&text_at(stats, &["likes"])),
+            stats.get("likes").and_then(Value::as_u64),
             None,
-            parse_metric(&text_at(stats, &["comments"])),
+            stats.get("comments").and_then(Value::as_u64),
             None,
         );
     }

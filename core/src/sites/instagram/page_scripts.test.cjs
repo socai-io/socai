@@ -464,3 +464,61 @@ test('comment write helpers expose geometry and exact read-back without clicking
   }).status, 'wrong_post');
   assert.equal(clicked, false);
 });
+
+test('account suggestions keep homepage dropdown order and skip the nav profile', () => {
+  const rect = () => ({ width: 180, height: 40, top: 20, left: 80, bottom: 60, right: 260 });
+  const account = (username, name, subtitle) => ({
+    href: `https://www.instagram.com/${username}/`,
+    innerText: [username, name, subtitle].filter(Boolean).join('\n'),
+    getAttribute: (attr) => (attr === 'href' ? `/${username}/` : ''),
+    querySelector: () => ({ currentSrc: `https://cdn.example/${username}.jpg`, src: '' }),
+    getBoundingClientRect: rect,
+  });
+  const nike = account('nike', 'Nike', 'Followed by ada');
+  const nikeRunning = account('nikerunning', 'Nike Running', '');
+  const panel = {
+    parentElement: {
+      querySelector: () => ({ href: '/direct/inbox/' }),
+      querySelectorAll: () => [],
+    },
+    querySelector: () => null,
+    querySelectorAll: (selector) => (
+      selector === 'a[href], [role="link"][href]' ? [nike, nikeRunning] : []
+    ),
+  };
+  const input = {
+    placeholder: 'Search',
+    value: 'nike',
+    getAttribute: () => '',
+    getBoundingClientRect: rect,
+    parentElement: panel,
+  };
+  const document = {
+    body: { innerText: 'Instagram home' },
+    readyState: 'complete',
+    querySelector: () => null,
+    querySelectorAll: (selector) => (
+      selector.startsWith('input') ? [input] : []
+    ),
+  };
+  const window = { getComputedStyle: () => ({ visibility: 'visible', display: 'block' }) };
+  const context = {
+    URL,
+    document,
+    location: { href: 'https://www.instagram.com/', pathname: '/' },
+    window,
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'page_scripts.js'), 'utf8'), context);
+  context.window.__socaiIgSearchWatch = { key: 'accounts:nike\nnike\nnikerunning', count: 2, at: Date.now() - 1000 };
+
+  const result = window.SocaiInstagramPageScripts.accountSuggestions({ query: 'nike' });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'results');
+  assert.equal(result.accounts.map((item) => item.username).join(','), 'nike,nikerunning');
+  assert.equal(result.accounts[0].position, 1);
+  assert.equal(result.accounts[0].name, 'Nike');
+  assert.equal(result.accounts[0].subtitle, 'Followed by ada');
+  assert.equal(result.accounts[1].position, 2);
+  assert.equal(result.accounts[1].name, 'Nike Running');
+});

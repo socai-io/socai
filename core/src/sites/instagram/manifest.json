@@ -22,6 +22,24 @@
       },
       "returns": { "type": "object", "description": "Search route, query, gate, and result state." }
     },
+    "openSearch": {
+      "description": "Locate the homepage Search control (magnifying glass) so the host can open the account suggestion panel. Returns already_open when the search input is visible.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "openSearch",
+      "args": {},
+      "returns": { "type": "object", "description": "Search-control geometry, or already_open when the input is visible." }
+    },
+    "accountSuggestions": {
+      "description": "Read Instagram account suggestions from the open search dropdown, in visual order. Does not open profiles or follow anyone.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "accountSuggestions",
+      "args": {
+        "query": { "type": "string", "required": false, "description": "Expected search keywords." }
+      },
+      "returns": { "type": "object", "description": "Ordered account suggestions, or an explicit empty or gate state." }
+    },
     "setSearchQuery": {
       "description": "Set a query in the visible Instagram search input and dispatch input events; this never follows, likes, comments, or sends messages.",
       "path": "page_scripts.js",

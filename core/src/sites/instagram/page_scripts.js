@@ -384,6 +384,114 @@
     return { ok: input.value === query, status: input.value === query ? 'query_set' : 'query_rejected', query: input.value };
   }
 
+  const SEARCH_CONTROL_LABEL = /^(search|搜索|buscar|rechercher|suchen|cerca|検索)$/i;
+
+  function searchNavControl() {
+    const nodes = Array.from(document.querySelectorAll('svg[aria-label], [aria-label], a, [role="link"], [role="button"]'));
+    for (const node of nodes) {
+      const label = cleanText(
+        (node.getAttribute && node.getAttribute('aria-label')) || node.innerText || '',
+        40,
+      );
+      if (!SEARCH_CONTROL_LABEL.test(label)) continue;
+      const clickable = (node.closest && node.closest('a, button, [role="link"], [role="button"]')) || node;
+      if (clickable.matches && clickable.matches('input, textarea')) continue;
+      if (!visible(clickable)) continue;
+      const rect = clickable.getBoundingClientRect();
+      if (rect.left > 420) continue;
+      return clickable;
+    }
+    return null;
+  }
+
+  function openSearch() {
+    if (loginRoute()) return { ok: false, status: 'login_required' };
+    if (searchInput()) return { ok: true, already_open: true, status: 'search_open' };
+    const control = searchNavControl();
+    if (!control) return { ok: false, status: 'search_control_not_found' };
+    return { ok: false, already_open: false, status: 'search_control', ...elementCenter(control) };
+  }
+
+  function suggestionPanel(input) {
+    let node = input.parentElement;
+    let panel = null;
+    for (let i = 0; node && i < 8; i += 1, node = node.parentElement) {
+      if (node.querySelector('a[href="/direct/inbox"], a[href="/direct/inbox/"]')) break;
+      const links = profileLinksIn(node);
+      if (!links.length) continue;
+      panel = node;
+      break;
+    }
+    return panel;
+  }
+
+  function profileLinksIn(root) {
+    const links = [];
+    const seen = new Set();
+    for (const link of root.querySelectorAll('a[href], [role="link"][href]')) {
+      const username = profileUsername(link.href || link.getAttribute('href'));
+      if (!username || seen.has(username) || !visible(link)) continue;
+      seen.add(username);
+      links.push(link);
+    }
+    return links;
+  }
+
+  const ACCOUNT_CHROME = /^(follow|following|requested|message|关注|已关注|发消息)$/i;
+
+  function accountSuggestion(link, username, position) {
+    const lines = cleanText(link, 500).split('\n').map((line) => cleanText(line, 200)).filter((line) => {
+      if (!line || ACCOUNT_CHROME.test(line)) return false;
+      return line.toLocaleLowerCase() !== `${username}'s profile picture`
+        && line !== `${username}的头像`;
+    });
+    const handleIndex = lines.findIndex((line) => line.toLocaleLowerCase() === username);
+    const rest = lines.filter((_, index) => index !== handleIndex);
+    const name = rest[0] || '';
+    const subtitle = rest.slice(1).join('\n');
+    const image = link.querySelector('img[src], img[srcset]');
+    const avatar = image && (image.currentSrc || image.src) || '';
+    return {
+      position,
+      username,
+      name,
+      url: instagramUrl(link.href || link.getAttribute('href')),
+      subtitle,
+      avatar_url: /^https:\/\//i.test(avatar) ? avatar : '',
+    };
+  }
+
+  function accountSuggestions(arg) {
+    const expected = cleanText(arg && arg.query || '', 1000);
+    if (loginRoute()) return { ok: false, status: 'login_required', query: '', count: 0, accounts: [] };
+    const input = searchInput();
+    if (!input) return { ok: false, status: 'search_input_not_found', query: '', count: 0, accounts: [] };
+    const actual = cleanText(input.value || '', 1000);
+    if (expected && normalizedQuery(expected) !== normalizedQuery(actual)) {
+      return { ok: false, status: 'query_mismatch', query: actual, expected_query: expected, count: 0, accounts: [] };
+    }
+    const panel = suggestionPanel(input);
+    const links = panel ? profileLinksIn(panel) : [];
+    const accounts = links.map((link, index) => accountSuggestion(
+      link,
+      profileUsername(link.href || link.getAttribute('href')),
+      index + 1,
+    ));
+    const key = `${actual}\n${accounts.map((account) => account.username).join('\n')}`;
+    const stableFor = searchResultStability(accounts.length, `accounts:${key}`);
+    const settled = stableFor >= 800;
+    let status = 'hydrating';
+    if (accounts.length && settled) status = 'results';
+    else if (!accounts.length && settled && actual) status = 'empty';
+    return {
+      ok: status === 'results' || status === 'empty',
+      status,
+      query: actual,
+      count: accounts.length,
+      accounts: status === 'hydrating' ? [] : accounts,
+    };
+  }
+
   function isScrollable(el) {
     if (!el || !el.getBoundingClientRect) return false;
     const style = window.getComputedStyle(el);
@@ -521,16 +629,6 @@
       if (output.length >= limit) break;
     }
     return output;
-  }
-
-  function elementCenter(node) {
-    const rect = node.getBoundingClientRect();
-    return {
-      x: Math.round(rect.left + rect.width / 2),
-      y: Math.round(rect.top + rect.height / 2),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
-    };
   }
 
   function ownedClickPoint(node) {
@@ -681,6 +779,40 @@
       : { ok: false, status: associated ? 'post_close_control_obscured' : 'post_close_control_unowned' };
   }
 
+  function outboundUrl(link) {
+    try {
+      const url = new URL(link.href || link.getAttribute('href'), location.href);
+      if (url.hostname.toLowerCase() === 'l.instagram.com') {
+        const target = url.searchParams.get('u');
+        if (target && /^https?:\/\//i.test(target)) return target;
+      }
+      return url.href;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function isExternalProfileLink(href) {
+    if (!href) return false;
+    try {
+      const host = new URL(href).hostname.toLowerCase();
+      return host && host !== 'instagram.com' && !host.endsWith('.instagram.com') &&
+        host !== 'threads.com' && !host.endsWith('.threads.com') &&
+        host !== 'facebook.com' && !host.endsWith('.facebook.com');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function externalProfileUrl(root) {
+    if (!root || !root.querySelectorAll) return '';
+    for (const link of root.querySelectorAll('a[href]')) {
+      const href = outboundUrl(link);
+      if (isExternalProfileLink(href)) return href;
+    }
+    return '';
+  }
+
   function profileDetail() {
     const username = profileUsername(location.href);
     const state = pageState();
@@ -691,34 +823,23 @@
     const title = metaContent('og:title') || document.title || '';
     const nameMatch = title.match(/^(.+?)\s*\(@([A-Za-z0-9._]+)\)/);
     const bioMatch = description.match(/["“]([\s\S]+)["”]\s*$/);
+    const header = document.querySelector('header');
     const main = document.querySelector('main');
-    const stats = profileStats(`${cleanText(main, 12000)}\n${description}`);
-    const external = main && Array.from(main.querySelectorAll('a[href]')).map((link) => {
-      try {
-        const url = new URL(link.href, location.href);
-        if (url.hostname.toLowerCase() === 'l.instagram.com') {
-          const target = url.searchParams.get('u');
-          if (target && /^https?:\/\//i.test(target)) return target;
-        }
-        return url.href;
-      } catch (_) {
-        return '';
-      }
-    }).find((href) => {
-      if (!href) return false;
-      try {
-        const host = new URL(href).hostname.toLowerCase();
-        return host && host !== 'instagram.com' && !host.endsWith('.instagram.com') &&
-          host !== 'threads.com' && !host.endsWith('.threads.com');
-      } catch (_) {
-        return false;
-      }
-    }) || '';
+    const fromHeader = profileStats(cleanText(header, 4000));
+    const fromMeta = profileStats(description);
+    const stats = {
+      followers: fromHeader.followers ?? fromMeta.followers,
+      following: fromHeader.following ?? fromMeta.following,
+      post_count: fromHeader.post_count ?? fromMeta.post_count,
+    };
+    const external = externalProfileUrl(header) || externalProfileUrl(main);
     const visiblePosts = profilePosts({ limit: 100 });
     const contentAvailable = hasProfileContent() && !!(title || description || visiblePosts.length);
+    const stableFor = searchResultStability(visiblePosts.length, `profile-grid:${username}`);
+    const gridReady = stableFor >= 800 && (visiblePosts.length > 0 || stats.post_count === 0);
     return {
-      ok: contentAvailable && !state.challenge_required && !state.rate_limited,
-      status: contentAvailable ? 'profile' : state.login_required ? 'login_required' : 'unhydrated',
+      ok: contentAvailable && gridReady && !state.challenge_required && !state.rate_limited,
+      status: !contentAvailable ? (state.login_required ? 'login_required' : 'unhydrated') : gridReady ? 'profile' : 'hydrating',
       id: username,
       username,
       url: canonicalPageUrl(),
@@ -844,20 +965,20 @@
     return output;
   }
 
-  function postPublishedAt() {
-    const root = activePostDialog(activePostIdentity()) || document.querySelector('main') || document;
-    for (const time of root.querySelectorAll('time[datetime]')) {
-      const commentLink = time.closest('a[href*="/c/"]');
-      if (!commentLink) return time.dateTime || time.getAttribute('datetime') || '';
+  function postPublishedAt(root) {
+    const identity = activePostIdentity();
+    let fallback = '';
+    for (const time of (root || document).querySelectorAll('time[datetime]')) {
+      if (time.closest('a[href*="/c/"]')) continue;
+      const date = time.dateTime || time.getAttribute('datetime') || '';
+      const link = time.closest('a[href]');
+      const linked = link && postIdentity(link.href);
+      // The caption row can carry a different timestamp. The date linked to
+      // this post's permalink is the publication date shown in both layouts.
+      if (linked && identity && linked.shortcode === identity.shortcode) return date;
+      if (!fallback) fallback = date;
     }
-    return '';
-  }
-
-  function engagementFromDescription(description) {
-    return {
-      likes: metricBeforeLabel(description, 'likes?|次赞|赞'),
-      comments: metricBeforeLabel(description, 'comments?|条评论|评论'),
-    };
+    return fallback;
   }
 
   function commentRows(limit) {
@@ -1076,17 +1197,93 @@
     return dialog.querySelector('article') || dialog;
   }
 
-  function overlayLikes(article) {
-    for (const node of article.querySelectorAll('button, a, span')) {
-      if (node.closest('a[href*="/c/"]')) continue;
-      const labels = [node.getAttribute && node.getAttribute('aria-label'), node.innerText];
-      for (const raw of labels) {
-        const label = cleanText(raw || '', 40).replace(/\s+/g, ' ');
-        const match = label.match(/^([\d.,]+\s*[KMB万亿]?)\s+likes?$/i);
-        if (match) return parseMetric(match[1]);
+  const LIKE_ICON = 'svg[aria-label="Like" i], svg[aria-label="Unlike" i], svg[aria-label="赞"], svg[aria-label="取消赞"]';
+  const COMMENT_ICON = 'svg[aria-label="Comment" i], svg[aria-label="评论"]';
+
+  function postMetric(raw, source) {
+    const text = cleanText(raw || '', 100);
+    const match = text.match(/^([\d.,]+\s*[KMB万亿]?)(?:\s*(?:likes?|comments?|次赞|条评论|赞|评论))?$/i);
+    return match ? {
+      value: parseMetric(match[1]),
+      source,
+      approximate: /[KMB万亿]/i.test(match[1]),
+    } : { value: null, source: 'unavailable', approximate: false };
+  }
+
+  function metricBesideIcon(bar, selector) {
+    let node = bar.querySelector(selector);
+    // Modern IG places the count beside the icon wrapper, not inside it.
+    for (; node && node !== bar; node = node.parentElement) {
+      const sibling = node.nextElementSibling;
+      if (!sibling || sibling.querySelector('svg')) continue;
+      const metric = postMetric(cleanText(sibling, 100), 'visible');
+      if (metric.value !== null) return metric;
+    }
+    return postMetric('');
+  }
+
+  function postEngagement(root, description) {
+    let bar = null;
+    // A comment's heart has no adjacent post Comment control. Never scan all
+    // "N likes" strings: that also matches the likes on individual comments.
+    for (const icon of root.querySelectorAll(COMMENT_ICON)) {
+      for (let node = icon.parentElement; node && node !== root; node = node.parentElement) {
+        if (node.querySelector('a[href*="/c/"]')) break;
+        if (node.querySelector(LIKE_ICON)) { bar = node; break; }
+      }
+      if (bar) break;
+    }
+    let likes = bar ? metricBesideIcon(bar, LIKE_ICON) : postMetric('');
+    let comments = bar ? metricBesideIcon(bar, COMMENT_ICON) : postMetric('');
+    // Older layouts render the post likes immediately after the action section.
+    const section = bar && bar.closest('section');
+    const likesRegion = section && section.nextElementSibling;
+    if (likes.value === null && likesRegion && !likesRegion.querySelector('a[href*="/c/"]')) {
+      const label = cleanText(likesRegion, 100);
+      if (/^\s*[\d.,]+\s*[KMB万亿]?\s*(?:likes?|次赞|赞)\s*$/i.test(label)) {
+        likes = postMetric(label, 'visible');
+      } else if (/^liked by[\s\S]+and others$/i.test(label)) {
+        likes = { value: null, source: 'hidden', approximate: false };
       }
     }
-    return null;
+    for (const [key, labels] of [['likes', 'likes?|次赞|赞'], ['comments', 'comments?|条评论|评论']]) {
+      const current = key === 'likes' ? likes : comments;
+      if (current.value !== null || current.source === 'hidden') continue;
+      const match = description.match(new RegExp(`([\\d.,]+\\s*[KMB万亿]?)\\s*(?:${labels})`, 'i'));
+      const metric = postMetric(match && match[1] || '', 'metadata');
+      if (key === 'likes') likes = metric;
+      else comments = metric;
+    }
+    return {
+      likes: likes.value,
+      comments: comments.value,
+      provenance: { likes, comments },
+    };
+  }
+
+  function postRoot() {
+    const identity = activePostIdentity();
+    const dialog = activePostDialog(identity);
+    if (dialog) return dialog;
+    const overlay = overlayArticle();
+    if (overlay) return overlay;
+    const main = document.querySelector('main') || document;
+    const articles = Array.from(main.querySelectorAll('article'));
+    return articles.find((article) => Array.from(article.querySelectorAll('a[href]')).some((link) => {
+      const linked = postIdentity(link.href);
+      return linked && identity && linked.shortcode === identity.shortcode;
+    })) || (articles.length === 1 ? articles[0] : main);
+  }
+
+  function visiblePostAuthor(root) {
+    const time = Array.from(root.querySelectorAll('time[datetime]'))
+      .find((node) => !node.closest('a[href*="/c/"]'));
+    if (!time) return '';
+    // Only profile links before the post's own date may identify its author;
+    // links in the caption and commenters below it cannot supply a fallback.
+    return Array.from(root.querySelectorAll('a[href]')).filter((link) =>
+      link.compareDocumentPosition(time) & 4,
+    ).map((link) => profileUsername(link.href)).find(Boolean) || '';
   }
 
   function overlayVideoUrl(article) {
@@ -1147,60 +1344,55 @@
       ? candidateUrl
       : instagramUrl(location.href);
     const state = pageState();
-    const overlay = overlayArticle();
-    if (overlay && identity) {
-      const author = Array.from(overlay.querySelectorAll('a[href]'))
-        .map((link) => profileUsername(link.href))
-        .find(Boolean) || '';
-      const caption = cleanText(overlay.querySelector('h1'), 20000);
-      const media = overlayMedia(overlay);
-      const videoUrl = overlayVideoUrl(overlay);
-      const contentAvailable = !!(caption || author || media.length);
-      return {
-        ok: contentAvailable && !state.challenge_required && !state.rate_limited,
-        status: contentAvailable ? (videoUrl || overlay.querySelector('video') ? 'reel' : identity.kind) : 'unhydrated',
-        id: identity.shortcode,
-        kind: videoUrl || overlay.querySelector('video') ? 'reel' : identity.kind,
-        url: canonical,
-        author,
-        caption,
-        published_at: postPublishedAt(),
-        likes: overlayLikes(overlay),
-        video_url: videoUrl,
-        media,
-      };
-    }
     if (!identity) {
       return { ok: false, status: 'not_post', url: location.href, page_state: state };
     }
-    const dialog = activePostDialog(identity);
-    const description = metaContent('description') || metaContent('og:description');
-    const visibleCaption = dialog && firstVisibleNode(dialog, ['h1']);
-    const caption = quotedCaption(description || metaContent('og:title')) || cleanText(visibleCaption, 20000);
-    const visibleAuthorLink = dialog && Array.from(dialog.querySelectorAll('a[href]'))
-      .find((link) => profileUsername(link.href));
-    const author = postAuthor(description, canonical) || profileUsername(visibleAuthorLink && visibleAuthorLink.href);
-    const media = postMedia();
-    const engagement = engagementFromDescription(`${description}\n${cleanText(dialog, 5000)}`);
+    const root = postRoot();
+    const overlay = overlayArticle();
+    const metadataIdentity = postIdentity(metaContent('og:url'));
+    const metadataMatches = !overlay && (!metadataIdentity || metadataIdentity.shortcode === identity.shortcode);
+    const description = metadataMatches ? metaContent('description') || metaContent('og:description') : '';
+    const heading = root.querySelector('h1')
+      || (root.querySelectorAll && Array.from(root.querySelectorAll('h1'))[0]);
+    const caption = cleanText(heading, 20000) || quotedCaption(description);
+    const author = visiblePostAuthor(root)
+      || (root.querySelectorAll
+        ? Array.from(root.querySelectorAll('a[href]')).map((link) => profileUsername(link.href)).find(Boolean)
+        : '')
+      || postAuthor(description, canonical);
+    const media = overlay ? overlayMedia(root) : postMedia();
+    const videoUrl = overlayVideoUrl(root) || (media.find((item) => item.type === 'video') || {}).url || '';
+    const kind = videoUrl || root.querySelector('video') ? 'reel' : identity.kind;
+    const engagement = postEngagement(root, description);
     const visibleComments = commentRows(100);
-    const contentAvailable = hasPostContent() && !!(caption || author || media.length);
+    const publishedAt = postPublishedAt(root);
+    const missingFields = [];
+    if (!author) missingFields.push('author');
+    if (!publishedAt) missingFields.push('published_at');
+    if (engagement.likes === null) missingFields.push('likes');
+    if (engagement.comments === null) missingFields.push('comment_count');
+    const contentAvailable = !!(caption || author || media.length);
     return {
       ok: contentAvailable && !state.challenge_required && !state.rate_limited,
-      status: contentAvailable ? identity.kind : state.login_required ? 'login_required' : 'unhydrated',
+      status: contentAvailable ? kind : state.login_required ? 'login_required' : 'unhydrated',
+      complete: missingFields.length === 0,
+      missing_fields: missingFields,
       id: identity.shortcode,
       shortcode: identity.shortcode,
-      kind: identity.kind,
-      url: canonical,
+      kind,
+      url: `https://www.instagram.com/p/${identity.shortcode}/`,
       author: {
         username: author,
         url: author ? instagramUrl(`/${author}/`) : '',
       },
       caption,
-      published_at: postPublishedAt(),
+      published_at: publishedAt,
+      video_url: videoUrl,
       media,
       engagement: {
         likes: engagement.likes,
         comments: engagement.comments,
+        provenance: engagement.provenance,
         visible_comments: commentCount(visibleComments),
       },
       login_gate_present: state.login_gate_present,
@@ -1290,6 +1482,8 @@
     pageState,
     searchState,
     setSearchQuery,
+    openSearch,
+    accountSuggestions,
     searchResults,
     clickResult,
     closeOverlay,
