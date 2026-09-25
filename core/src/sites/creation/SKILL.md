@@ -76,6 +76,8 @@ XHS、Douyin、TikTok 与后续平台都走同一个发现入口；平台差异�
 5. 检查最新 snapshot 与 JSON 结果。状态不符合预期时先修复当前动作；验证通过后再增加下一步。
 6. 循环直到搜索、详情、评论、作者或媒体流程达到明确成功条件。
 
+返回给模型的结果形状，以及读取或关闭前要等多久，见同目录 [best-practices.md](./best-practices.md)。
+
 开发时如需避免反复确认 remote debugging，可临时使用 managed profile：
 
 ```bash

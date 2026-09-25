@@ -12,6 +12,8 @@ Use Instagram for read-only profile, post, reel, and comment research by default
 ## Candidate selection
 
 - Keep each candidate's `kind`, stable `id`, canonical `url`, and `position`; never identify a result only by its screen position.
+- Default `search` opens each post or Reel and returns caption, author, engagement, and comments together. `preview=true` returns grid cards only. Keyword-grid cells often have no caption; that text appears only after the post is opened.
+- Cite the short post `url` (`https://www.instagram.com/p/<shortcode>/`). `video_url` is the playable file and stays on the post because a later download needs it.
 - Use `profileDetail` and `profilePosts` on a selected `/<username>/` profile.
 - Use `postDetail` and `comments` on a selected `/p/<shortcode>/`, `/reel/<shortcode>/`, or `/<username>/(p|reel)/<shortcode>/` page.
 - For a requested comment budget, call `postDetail`, then `comments`. The host automatically alternates extraction with `scrollComments`, expands collapsed replies, deduplicates, and returns the accumulated set up to `limit` (100 by default). The expansion action is read-only; never click Like, Reply, Follow, or Submit controls.

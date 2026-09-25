@@ -77,7 +77,7 @@ pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
         SiteCommand {
             name: "search",
             tool_name: "search",
-            about: "Search Instagram and print profile, hashtag, location, post, and reel candidates as JSON.",
+            about: "Search Instagram. Default opens each post or Reel and returns its caption, media, and comments. --preview returns grid cards only.",
             args: &[
                 CommandArg {
                     key: "query",
@@ -91,15 +91,7 @@ pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     key: "num",
                     long: Some("num"),
                     value_name: "N",
-                    help: "Number of candidates to collect by scrolling. Defaults to 10.",
-                    required: false,
-                    kind: ArgKind::Int,
-                },
-                CommandArg {
-                    key: "deep",
-                    long: Some("deep"),
-                    value_name: "N",
-                    help: "Open up to N post/reel cards by trusted page click and return full details. Defaults to 0.",
+                    help: "Number of posts or Reels to open. Defaults to 10. With --preview, number of grid cards.",
                     required: false,
                     kind: ArgKind::Int,
                 },
@@ -107,15 +99,23 @@ pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     key: "num_comments",
                     long: Some("num-comments"),
                     value_name: "N",
-                    help: "Comments to collect for each deeply read post. Defaults to 8.",
+                    help: "Comments to collect per opened post. Defaults to 8; 0 skips comments. Ignored with --preview.",
                     required: false,
                     kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "preview",
+                    long: Some("preview"),
+                    value_name: "PREVIEW",
+                    help: "Return search-grid cards only, without opening posts.",
+                    required: false,
+                    kind: ArgKind::Flag,
                 },
                 CommandArg {
                     key: "wait_seconds",
                     long: Some("wait-seconds"),
                     value_name: "SECONDS",
-                    help: "Maximum wait for the search page to hydrate. Defaults to 30.",
+                    help: "Maximum wait for each page to hydrate. Defaults to 30.",
                     required: false,
                     kind: ArgKind::Int,
                 },
@@ -351,7 +351,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search Instagram for profiles, hashtags, locations, posts, and reels matching `query`."
+        "Search Instagram. Default: collect up to `num` post/Reel cards, open each one, and return caption, author, likes, comments, the short post URL, and the playable video URL together. `preview=true` returns grid cards only and does not open posts."
     }
 
     fn input_schema(&self) -> Value {
@@ -360,8 +360,8 @@ impl Tool for SearchTool {
             "properties": {
                 "query": { "type": "string", "maxLength": 512 },
                 "num": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 },
-                "deep": { "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
                 "num_comments": { "type": "integer", "default": 8, "minimum": 0, "maximum": 100 },
+                "preview": { "type": "boolean", "default": false },
                 "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
             },
             "required": ["query"]
@@ -374,9 +374,12 @@ impl Tool for SearchTool {
             anyhow::bail!("query must contain at most 512 characters");
         }
         let num = get_i64(&input, "num", DEFAULT_RESULT_COUNT).clamp(1, MAX_TOOL_ITEMS);
-        let deep = get_i64(&input, "deep", 0).clamp(0, num);
-        let num_comments =
-            get_i64(&input, "num_comments", DEFAULT_COMMENT_COUNT).clamp(0, MAX_TOOL_ITEMS);
+        let preview = input.get("preview").and_then(Value::as_bool).unwrap_or(false);
+        let num_comments = if preview {
+            0
+        } else {
+            get_i64(&input, "num_comments", DEFAULT_COMMENT_COUNT).clamp(0, MAX_TOOL_ITEMS)
+        };
         let wait_seconds =
             get_f64(&input, "wait_seconds", DEFAULT_WAIT_SECONDS).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
         let target = format!(
@@ -455,21 +458,57 @@ impl Tool for SearchTool {
             .await?
         };
         let count = results.as_array().map(Vec::len).unwrap_or(0);
-        let deep_posts =
-            read_clicked_candidates(&self.page, ctx, &results, deep, num_comments, wait_seconds)
-                .await?;
-        let deep_status = deep_read_status(&results, &deep_posts, deep);
-        Ok(json_result(&json!({
-            "ok": deep_status.get("ok").and_then(Value::as_bool).unwrap_or(true),
-            "partial": !deep_status.get("ok").and_then(Value::as_bool).unwrap_or(true),
+        if preview {
+            return Ok(json_result(&json!({
+                "ok": true,
+                "preview": true,
+                "query": query,
+                "url": current_url(&self.page).await.unwrap_or_default(),
+                "count": count,
+                "results": results,
+                "state": state,
+            })));
+        }
+        let mut posts = Vec::new();
+        if let Some(cards) = results.as_array() {
+            for card in cards {
+                let kind = card.get("kind").and_then(Value::as_str).unwrap_or("");
+                if !matches!(kind, "post" | "reel") {
+                    posts.push(card.clone());
+                    continue;
+                }
+                let id = card.get("id").and_then(Value::as_str).unwrap_or("");
+                if id.is_empty() {
+                    continue;
+                }
+                let card_video = card
+                    .get("video_url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                posts.push(
+                    open_search_card(
+                        &self.page,
+                        ctx,
+                        id,
+                        num_comments,
+                        wait_seconds,
+                        &card_video,
+                    )
+                    .await?,
+                );
+            }
+        }
+        let failed = posts.iter().any(|item| item.get("ok").and_then(Value::as_bool) == Some(false));
+        let mut payload = json!({
             "query": query,
-            "url": current_url(&self.page).await.unwrap_or_default(),
-            "count": count,
-            "results": results,
-            "deep_posts": deep_posts,
-            "deep_status": deep_status,
-            "state": state,
-        })))
+            "count": posts.len(),
+            "posts": posts,
+        });
+        if failed {
+            payload["ok"] = json!(false);
+        }
+        Ok(json_result(&payload))
     }
 }
 
@@ -1449,6 +1488,212 @@ async fn close_clicked_instagram_post(
         "state": state,
         "reason": "originating_list_not_restored",
     }))
+}
+
+async fn open_search_card(
+    page: &PageSession,
+    ctx: &ToolContext,
+    id: &str,
+    num_comments: i64,
+    wait_seconds: f64,
+    card_video_url: &str,
+) -> anyhow::Result<Value> {
+    let click = invoke_browser_tool(
+        page,
+        ctx,
+        SITE_ID,
+        "clickResult",
+        Some(&json!({ "id": id })),
+        false,
+    )
+    .await?;
+    if click.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(failure_payload(
+            click
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("card_not_found"),
+            json!({ "input": id, "click": click }),
+        ));
+    }
+    let x = click.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+    let y = click.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+    page.click(x, y).await?;
+    let detail = wait_for_browser_tool(page, SITE_ID, "postDetail", None, wait_seconds).await?;
+    if let Some(reason) = gate_reason(&detail) {
+        let _ = close_search_overlay(page, ctx).await;
+        return Ok(failure_payload(
+            reason,
+            json!({ "input": id, "entity": detail }),
+        ));
+    }
+    if detail.get("ok").and_then(Value::as_bool) != Some(true) {
+        let _ = close_search_overlay(page, ctx).await;
+        return Ok(failure_payload(
+            detail
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("post_unavailable"),
+            json!({ "input": id, "entity": detail }),
+        ));
+    }
+    let entity = wait_for_overlay_media(page, ctx, wait_seconds, card_video_url).await?;
+    let comments = if num_comments > 0 {
+        wait_for_overlay_comments(page, ctx, num_comments, wait_seconds).await?
+    } else {
+        Value::Array(Vec::new())
+    };
+    let _ = close_search_overlay(page, ctx).await;
+    Ok(compact_opened_post(id, &entity, &comments, card_video_url))
+}
+
+/// Caption can be ready while likes, the playable video URL, and comments are
+/// still mounting. Closing or reading at the first non-empty caption records
+/// those regions as empty.
+async fn wait_for_overlay_media(
+    page: &PageSession,
+    ctx: &ToolContext,
+    wait_seconds: f64,
+    card_video_url: &str,
+) -> anyhow::Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.clamp(1.0, 12.0));
+    let mut latest = invoke_browser_tool(page, ctx, SITE_ID, "postDetail", None, false).await?;
+    while Instant::now() < deadline {
+        let overlay_video = latest.get("video_url").and_then(Value::as_str).unwrap_or("");
+        let video_url = if overlay_video.is_empty() {
+            card_video_url
+        } else {
+            overlay_video
+        };
+        let has_video = latest.get("kind").and_then(Value::as_str) == Some("reel");
+        if !has_video || !video_url.is_empty() {
+            if latest.get("likes").and_then(Value::as_i64).is_some() || !has_video {
+                return Ok(latest);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        latest = invoke_browser_tool(page, ctx, SITE_ID, "postDetail", None, false).await?;
+    }
+    Ok(latest)
+}
+
+async fn wait_for_overlay_comments(
+    page: &PageSession,
+    ctx: &ToolContext,
+    num_comments: i64,
+    wait_seconds: f64,
+) -> anyhow::Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.clamp(1.0, 12.0));
+    loop {
+        let state = invoke_browser_tool(page, ctx, SITE_ID, "commentState", None, false).await?;
+        let count = state.get("count").and_then(Value::as_i64).unwrap_or(0);
+        let empty = state.get("empty").and_then(Value::as_bool).unwrap_or(false);
+        if count > 0 || empty || Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    invoke_browser_tool(
+        page,
+        ctx,
+        SITE_ID,
+        "comments",
+        Some(&json!({ "limit": num_comments })),
+        true,
+    )
+    .await
+}
+
+fn compact_opened_post(
+    id: &str,
+    entity: &Value,
+    comments: &Value,
+    card_video_url: &str,
+) -> Value {
+    if entity.get("ok").and_then(Value::as_bool) == Some(false) {
+        return json!({
+            "ok": false,
+            "id": id,
+            "reason": entity.get("status").and_then(Value::as_str).unwrap_or("post_unavailable"),
+        });
+    }
+    let mut post = json!({
+        "id": entity.get("id").and_then(Value::as_str).unwrap_or(id),
+        "kind": entity.get("kind").and_then(Value::as_str).unwrap_or("post"),
+        "url": entity.get("url").and_then(Value::as_str).unwrap_or(""),
+        "author": entity.get("author").and_then(Value::as_str).unwrap_or(""),
+        "caption": entity.get("caption").and_then(Value::as_str).unwrap_or(""),
+        "published_at": entity.get("published_at").and_then(Value::as_str).unwrap_or(""),
+        "comments": compact_comments(comments),
+    });
+    if let Some(likes) = entity.get("likes").and_then(Value::as_i64) {
+        post["likes"] = json!(likes);
+    }
+    let video_url = entity
+        .get("video_url")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .unwrap_or(card_video_url);
+    if !video_url.is_empty() {
+        post["video_url"] = json!(video_url);
+    }
+    post
+}
+
+fn compact_comments(comments: &Value) -> Value {
+    let Some(items) = comments.as_array() else {
+        return Value::Array(Vec::new());
+    };
+    Value::Array(items.iter().map(compact_comment).collect())
+}
+
+fn compact_comment(comment: &Value) -> Value {
+    let replies = comment
+        .get("replies")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let mut item = json!({
+        "text": comment_body(comment.get("text").and_then(Value::as_str).unwrap_or("")),
+        "replies": replies,
+    });
+    if let Some(likes) = comment.get("likes").and_then(Value::as_i64) {
+        item["likes"] = json!(likes);
+    }
+    item
+}
+
+fn comment_body(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Some((head, tail)) = trimmed.rsplit_once('\n') else {
+        return trimmed.to_string();
+    };
+    let chrome: String = tail.chars().filter(|c| !c.is_whitespace()).collect();
+    let chrome = chrome.to_ascii_lowercase();
+    if chrome.contains("reply") {
+        return head.trim().to_string();
+    }
+    trimmed.to_string()
+}
+
+async fn close_search_overlay(page: &PageSession, ctx: &ToolContext) -> anyhow::Result<()> {
+    let close = invoke_browser_tool(page, ctx, SITE_ID, "closeOverlay", None, false).await?;
+    if close.get("ok").and_then(Value::as_bool) == Some(true) {
+        let x = close.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+        let y = close.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+        page.click(x, y).await?;
+    } else {
+        page.press_key("Escape").await?;
+    }
+    let _ = wait_for_browser_tool(
+        page,
+        SITE_ID,
+        "searchState",
+        None,
+        8.0,
+    )
+    .await;
+    Ok(())
 }
 
 async fn read_instagram_post(

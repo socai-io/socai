@@ -471,10 +471,13 @@ fn instagram_card_record(item: &Value) -> Option<(String, Value)> {
         &content,
     );
     let thumbnail = text_at(item, &["thumbnail_url"]);
-    let media = if thumbnail.is_empty() {
-        Vec::new()
-    } else {
+    let video_url = text_at(item, &["video_url"]);
+    let media = if !video_url.is_empty() {
+        vec![json!({ "kind": "video", "src": video_url, "ratio": "1:1" })]
+    } else if !thumbnail.is_empty() {
         vec![json!({ "kind": "image", "src": thumbnail, "ratio": "1:1" })]
+    } else {
+        Vec::new()
     };
     record.insert("media".into(), Value::Array(media));
     Some((post_note_id("instagram", &native_id), Value::Object(record)))

@@ -240,6 +240,33 @@
     return candidates;
   }
 
+  const GENERIC_CARD_LABEL = /^(reels?|clips?|videos?|photos?|posts?|carousels?|视频|图片|帖子)$/i;
+
+  function cardMedia(link) {
+    const image = link.querySelector('img[src], img[srcset]');
+    const video = link.querySelector('video');
+    const source = video && video.querySelector('source[src]');
+    const videoUrl = video && (video.currentSrc || video.src || (source && source.src) || '') || '';
+    const poster = video && video.poster || '';
+    const imageUrl = image && (image.currentSrc || image.src) || (/^https:\/\//i.test(poster) ? poster : '');
+    const badge = link.querySelector('svg[aria-label], [aria-label]');
+    const badgeLabel = cleanText(badge && badge.getAttribute('aria-label') || '', 80);
+    const alt = cleanText(image && image.alt || '', 1000);
+    return {
+      videoUrl: /^https:\/\//i.test(videoUrl) ? videoUrl : '',
+      imageUrl: /^https:\/\//i.test(imageUrl) ? imageUrl : '',
+      badgeLabel,
+      alt,
+      isReel: !!(videoUrl || /^reels?$/i.test(badgeLabel)),
+    };
+  }
+
+  function meaningfulLine(value, badgeLabel) {
+    const text = cleanText(value || '', 500);
+    if (!text || GENERIC_CARD_LABEL.test(text) || text === badgeLabel) return '';
+    return text;
+  }
+
   function searchResults(arg) {
     const input = arg || {};
     const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
@@ -248,7 +275,7 @@
     for (const link of searchResultLinks()) {
       if (viewportOnly && !inViewport(link)) continue;
       const url = instagramUrl(link.href || link.getAttribute('href'));
-      const kind = resultKind(url);
+      let kind = resultKind(url);
       const identity = postIdentity(url);
       const username = profileUsername(url);
       let id = identity && identity.shortcode || username;
@@ -257,10 +284,10 @@
         id = parts[parts.length - 1] || url;
       }
       const card = link.closest('li, article, [role="listitem"]') || link;
-      const lines = cleanText(card, 2000).split('\n').filter(Boolean);
-      const image = link.querySelector('img[src]') || card.querySelector('img[src]');
-      const imageAlt = cleanText(image && image.alt || '', 1000);
-      const title = cleanText(link, 500).split('\n').filter(Boolean)[0] || lines[0] || imageAlt || id;
+      const media = cardMedia(link);
+      if (kind === 'post' && media.isReel) kind = 'reel';
+      const lines = cleanText(card, 2000).split('\n').map((line) => meaningfulLine(line, media.badgeLabel)).filter(Boolean);
+      const title = meaningfulLine(cleanText(link, 500).split('\n')[0], media.badgeLabel) || lines[0] || meaningfulLine(media.alt, media.badgeLabel) || '';
       const subtitle = lines.filter((line) => line !== title).slice(0, 3).join('\n');
       output.push({
         kind,
@@ -268,8 +295,9 @@
         url,
         title,
         subtitle,
-        thumbnail_url: image && (image.currentSrc || image.src) || '',
-        media_description: imageAlt,
+        thumbnail_url: media.imageUrl,
+        video_url: media.videoUrl,
+        media_description: meaningfulLine(media.alt, media.badgeLabel),
         position: output.length + 1,
       });
       if (output.length >= limit) break;
@@ -311,13 +339,16 @@
     const resultCount = validRoute ? searchResultLinks().length : 0;
     const empty = validRoute && explicitSearchEmpty();
     const queryMatches = !expected || normalizedQuery(expected) === normalizedQuery(actual);
-    const hydrated = document.readyState !== 'loading' && (resultCount > 0 || empty || login || challenge || limited);
+    const stableFor = searchResultStability(resultCount, `${location.pathname}\n${actual}`);
+    const resultsSettled = resultCount > 0 && stableFor >= 800;
+    const hydrated = document.readyState !== 'loading' && (resultsSettled || empty || login || challenge || limited);
     let status = 'unhydrated';
     if (login) status = 'login_required';
     else if (challenge) status = 'challenge_required';
     else if (limited) status = 'rate_limited';
     else if (!validRoute) status = 'not_search_surface';
     else if (!queryMatches) status = 'query_mismatch';
+    else if (resultCount > 0 && !resultsSettled) status = 'hydrating';
     else if (resultCount > 0) status = 'results';
     else if (empty) status = 'empty';
     return {
@@ -353,19 +384,54 @@
     return { ok: input.value === query, status: input.value === query ? 'query_set' : 'query_rejected', query: input.value };
   }
 
+  function isScrollable(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    const overflowY = style.overflowY || style.overflow || '';
+    return el.scrollHeight > el.clientHeight + 24 && ['auto', 'scroll', 'overlay'].includes(overflowY);
+  }
+
+  function resultsScrollTarget() {
+    const links = searchResultLinks();
+    let node = links.length ? links[links.length - 1] : (document.querySelector('main') || null);
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (isScrollable(node)) return node;
+      node = node.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function searchResultStability(count, key) {
+    const now = Date.now();
+    const watch = window.__socaiIgSearchWatch || (window.__socaiIgSearchWatch = {});
+    if (watch.key !== key || watch.count !== count) {
+      watch.key = key;
+      watch.count = count;
+      watch.at = now;
+    }
+    return now - watch.at;
+  }
+
   function scrollResults(arg) {
     const input = arg || {};
-    const before = window.scrollY;
+    const target = resultsScrollTarget();
+    const scrollingElement = document.scrollingElement || document.documentElement;
+    const useWindow = target === scrollingElement || target === document.documentElement || target === document.body;
+    const before = target.scrollTop || 0;
+    const viewport = useWindow ? window.innerHeight : target.clientHeight;
     const delta = input.to_top ? -before : input.nudge_up
-      ? -Math.max(240, Math.floor(window.innerHeight * 0.35))
-      : Math.max(520, Math.floor(window.innerHeight * 0.82));
-    window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+      ? -Math.max(240, Math.floor(viewport * 0.35))
+      : Math.max(520, Math.floor(viewport * 0.82));
+    if (useWindow) window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+    else target.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+    const after = target.scrollTop || 0;
+    const extent = (target.scrollHeight || 0) - 8;
     return {
       ok: searchSurfaceActive() && !loginRoute() && !challengeRequired() && !rateLimited(),
       before,
-      after: window.scrollY,
+      after,
       result_count: searchResultLinks().length,
-      at_end: window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 8,
+      at_end: after + (useWindow ? window.innerHeight : target.clientHeight) >= extent,
     };
   }
 
@@ -1004,6 +1070,75 @@
     };
   }
 
+  function overlayArticle() {
+    const dialog = document.querySelector('[role="dialog"]');
+    if (!dialog) return null;
+    return dialog.querySelector('article') || dialog;
+  }
+
+  function overlayLikes(article) {
+    for (const node of article.querySelectorAll('button, a, span')) {
+      if (node.closest('a[href*="/c/"]')) continue;
+      const labels = [node.getAttribute && node.getAttribute('aria-label'), node.innerText];
+      for (const raw of labels) {
+        const label = cleanText(raw || '', 40).replace(/\s+/g, ' ');
+        const match = label.match(/^([\d.,]+\s*[KMB万亿]?)\s+likes?$/i);
+        if (match) return parseMetric(match[1]);
+      }
+    }
+    return null;
+  }
+
+  function overlayVideoUrl(article) {
+    const video = article.querySelector('video');
+    if (!video) return '';
+    const source = video.querySelector('source[src]');
+    const candidates = [
+      video.getAttribute('src'),
+      source && source.getAttribute('src'),
+      video.currentSrc,
+      video.src,
+      source && source.src,
+    ];
+    for (const candidate of candidates) {
+      if (/^https:\/\//i.test(candidate || '')) return candidate;
+    }
+    return '';
+  }
+
+  function commentState() {
+    const overlay = overlayArticle();
+    if (!overlay || !postIdentity(location.href)) {
+      return { ok: false, status: 'not_overlay', count: 0, empty: false };
+    }
+    const text = cleanText(overlay, 6000);
+    return {
+      ok: true,
+      count: commentCount(commentRows(100)),
+      empty: /no comments yet|还没有评论|暂无评论/i.test(text),
+      video_url: overlayVideoUrl(overlay),
+      has_video: !!overlay.querySelector('video'),
+    };
+  }
+
+  function overlayMedia(article) {
+    const output = [];
+    for (const node of article.querySelectorAll('video, img[src]')) {
+      if (node.tagName === 'IMG' && /(profile picture|头像)/i.test(node.alt || '')) continue;
+      const video = node.tagName === 'VIDEO' ? node : null;
+      const url = video ? (video.currentSrc || video.src || '') : (node.currentSrc || node.src || '');
+      if (!/^https:\/\//i.test(url) && !(video && video.poster)) continue;
+      output.push({
+        type: video ? 'video' : 'image',
+        url: /^https:\/\//i.test(url) ? url : '',
+        poster_url: video && /^https:\/\//i.test(video.poster || '') ? video.poster : '',
+        alt: cleanText(node.alt || '', 3000),
+      });
+      if (output.length >= 20) break;
+    }
+    return output;
+  }
+
   function postDetail() {
     const identity = activePostIdentity();
     const candidateUrl = canonicalPageUrl();
@@ -1012,6 +1147,29 @@
       ? candidateUrl
       : instagramUrl(location.href);
     const state = pageState();
+    const overlay = overlayArticle();
+    if (overlay && identity) {
+      const author = Array.from(overlay.querySelectorAll('a[href]'))
+        .map((link) => profileUsername(link.href))
+        .find(Boolean) || '';
+      const caption = cleanText(overlay.querySelector('h1'), 20000);
+      const media = overlayMedia(overlay);
+      const videoUrl = overlayVideoUrl(overlay);
+      const contentAvailable = !!(caption || author || media.length);
+      return {
+        ok: contentAvailable && !state.challenge_required && !state.rate_limited,
+        status: contentAvailable ? (videoUrl || overlay.querySelector('video') ? 'reel' : identity.kind) : 'unhydrated',
+        id: identity.shortcode,
+        kind: videoUrl || overlay.querySelector('video') ? 'reel' : identity.kind,
+        url: canonical,
+        author,
+        caption,
+        published_at: postPublishedAt(),
+        likes: overlayLikes(overlay),
+        video_url: videoUrl,
+        media,
+      };
+    }
     if (!identity) {
       return { ok: false, status: 'not_post', url: location.href, page_state: state };
     }
@@ -1081,11 +1239,61 @@
     };
   }
 
+  function elementCenter(node) {
+    const rect = node.getBoundingClientRect();
+    return {
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+  }
+
+  function clickResult(arg) {
+    const id = cleanText(arg && (arg.id || arg.shortcode) || '', 80);
+    const link = searchResultLinks().find((candidate) => {
+      const identity = postIdentity(candidate.href || candidate.getAttribute('href'));
+      return identity && identity.shortcode === id;
+    });
+    if (!link) return { ok: false, error: 'card_not_found', id };
+    link.scrollIntoView({ block: 'center', inline: 'center' });
+    const video = link.querySelector('video');
+    const image = link.querySelector('img');
+    const target = (video && visible(video) && video) || (image && visible(image) && image) || link;
+    const rect = target.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return { ok: false, error: 'card_zero_sized', id };
+    return {
+      ok: true,
+      id,
+      target: target === link ? 'link' : target.tagName.toLowerCase(),
+      ...elementCenter(target),
+    };
+  }
+
+  function closeOverlay() {
+    const dialog = document.querySelector('[role="dialog"]');
+    const root = dialog || document;
+    const controls = Array.from(root.querySelectorAll('button, [role="button"], svg[aria-label], [aria-label]'));
+    for (const control of controls) {
+      const label = cleanText(`${control.getAttribute && control.getAttribute('aria-label') || ''} ${control.innerText || ''}`, 80);
+      if (!/^(close|关闭|cerrar|fermer)$/i.test(label)) continue;
+      const node = control.closest('button, [role="button"]') || control;
+      if (!visible(node)) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      return { ok: true, label, ...elementCenter(node) };
+    }
+    return { ok: false, error: 'close_button_not_found', dialog: !!dialog };
+  }
+
   window.SocaiInstagramPageScripts = Object.freeze({
     pageState,
     searchState,
     setSearchQuery,
     searchResults,
+    clickResult,
+    closeOverlay,
+    commentState,
     scrollResults,
     scrollPosts,
     profileDetail,
