@@ -323,11 +323,11 @@ Local development, build instructions, repository conventions, and the reference
 
 [Jev Social](https://github.com/socai-io/jev-social) is a local-first demo that lets Jev choose bounded socai CLI operations for Instagram, TikTok, and LinkedIn. Captured post cards stay visible while a source-linked research report streams into the browser.
 
-Version 0.1.7 works with OpenRouter Jev or a user-started local System One endpoint; the local path does not use an OpenRouter key.
+Version 0.1.8 works with OpenRouter Jev or a user-started local System One endpoint; the local path does not use an OpenRouter key. It also ships a reproducible benchmark workflow, without claiming live speed results before the run set is complete.
 
 [![Jev Social demo](https://raw.githubusercontent.com/socai-io/jev-social/main/docs/jev-social.gif)](https://github.com/socai-io/jev-social)
 
-[View the demo](https://socai-io.github.io/jev-social/) · [Install the Agent Skill](https://github.com/socai-io/jev-social/tree/v0.1.7/skills/jev-social) · [Star Jev Social](https://github.com/socai-io/jev-social)
+[View the demo](https://socai-io.github.io/jev-social/) · [Install the Agent Skill](https://github.com/socai-io/jev-social/tree/v0.1.8/skills/jev-social) · [Star Jev Social](https://github.com/socai-io/jev-social)
 
 ## Community
 

@@ -70,10 +70,10 @@ socai 已经有搜索、打开帖子、读主页、获取评论这些社交平�
 [jev-social 是开源的](https://github.com/socai-io/jev-social)。安装 Node 20+ 后，不用克隆仓库，运行两条命令即可完成设置并打开本地界面：
 
 ```bash
-npx github:socai-io/jev-social#v0.1.7 onboard
-npx github:socai-io/jev-social#v0.1.7
+npx github:socai-io/jev-social#v0.1.8 onboard
+npx github:socai-io/jev-social#v0.1.8
 ```
 
-设置时可选择 OpenRouter Jev，或你自己启动的本地 System One 兼容端点；本地方式不需要 OpenRouter Key。如果没有找到 socai CLI，设置过程也会询问是否安装官方版本。你仍然需要登录要调研的社媒账号。[Jev Social 项目页](https://socai-io.github.io/jev-social/)提供演示、架构说明和源码安装方式。
+设置时可选择 OpenRouter Jev，或你自己启动的本地 System One 兼容端点；本地方式不需要 OpenRouter Key。如果没有找到 socai CLI，设置过程也会询问是否安装官方版本。你仍然需要登录要调研的社媒账号。0.1.8 加入了可复现的基准测试流程，但在跑满要求的数据前不会发布速度结论。[Jev Social 项目页](https://socai-io.github.io/jev-social/)提供演示、架构说明和源码安装方式。
 
 可以找你想研究的产品、品牌或者创作者，看看评论区里能找到什么。

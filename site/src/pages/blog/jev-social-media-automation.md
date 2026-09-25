@@ -69,10 +69,10 @@ All of these tasks involve a lot of searching, opening, reading and copying. Let
 [jev-social is open source](https://github.com/socai-io/jev-social). With Node 20+ installed, you can onboard and open the local app without cloning the repository:
 
 ```bash
-npx github:socai-io/jev-social#v0.1.7 onboard
-npx github:socai-io/jev-social#v0.1.7
+npx github:socai-io/jev-social#v0.1.8 onboard
+npx github:socai-io/jev-social#v0.1.8
 ```
 
-Onboarding lets you use OpenRouter Jev or a user-started local System One-compatible endpoint; the local path needs no OpenRouter key. It can also offer to install the current socai CLI when it is missing. You'll still need to log in to the social accounts you want to research. The [Jev Social project page](https://socai-io.github.io/jev-social/) has the recorded demo, architecture and source-checkout path.
+Onboarding lets you use OpenRouter Jev or a user-started local System One-compatible endpoint; the local path needs no OpenRouter key. It can also offer to install the current socai CLI when it is missing. You'll still need to log in to the social accounts you want to research. Version 0.1.8 adds a reproducible benchmark workflow, but does not publish a live speed result before the required runs exist. The [Jev Social project page](https://socai-io.github.io/jev-social/) has the recorded demo, architecture and source-checkout path.
 
 Then look up a product, brand or creator you're interested in and see what people are saying in the comments.
