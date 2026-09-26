@@ -28,6 +28,26 @@ const SocaiXhsPageScripts = (() => {
     return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
   }
 
+  function inViewport(el) {
+    if (!isVisible(el)) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth;
+  }
+
+  function editableText(el, limit = 1000) {
+    if (!el) return '';
+    const value = ('value' in el) ? el.value : (el.innerText || el.textContent || '');
+    return String(value || '').replace(/\r\n/g, '\n').slice(0, limit);
+  }
+
+  function ownedClickPoint(el) {
+    if (!inViewport(el)) return null;
+    const point = elementCenter(el);
+    const hit = document.elementFromPoint(point.x, point.y);
+    if (!hit || (hit !== el && !el.contains(hit))) return null;
+    return point;
+  }
+
   // ── note modal scoping (the core fix for content extraction) ─
   function getNoteOverlay() {
     // `#noteContainer` is also the root of a directly navigated full-screen
@@ -1221,6 +1241,9 @@ const SocaiXhsPageScripts = (() => {
   }
 
   function parseComment(item, includeChildren) {
+    const authorLink = item.querySelector?.('a[href*="/user/profile/"]');
+    const authorUrl = authorLink ? absUrl(authorLink.href || authorLink.getAttribute('href')) : '';
+    const authorIdMatch = authorUrl.match(/\/user\/profile\/([^/?#]+)/);
     const username = firstText(['.name', '.user-name', '.nickname', '.author-name'], item);
     const content = firstText(['.content', '.comment-text', '.note-text', '.desc', '[class*="content"]'], item);
     const likes = firstText(['.like .count', '.like-wrapper .count', '.interact-wrapper .count', '[class*="like"] .count'], item);
@@ -1236,7 +1259,10 @@ const SocaiXhsPageScripts = (() => {
       }
     }
     return {
+      comment_id: item.getAttribute?.('data-comment-id') || item.getAttribute?.('data-id') || '',
       username,
+      author_id: authorIdMatch ? decodeURIComponent(authorIdMatch[1]) : '',
+      author_url: authorUrl,
       text: content,
       likes,
       like_count: parseCount(likes),
@@ -1271,6 +1297,184 @@ const SocaiXhsPageScripts = (() => {
     const max = Number(opts.max_comments) || 0;
     if (max > 0) out = out.slice(0, max);
     return out;
+  }
+
+  // Write-action helpers only inspect rendered state and geometry. The native
+  // host owns every trusted pointer/keyboard event and the one-shot commit.
+  function activeCommentNoteId(expected) {
+    const wanted = String(expected || '');
+    const root = getNoteRoot();
+    if (!wanted || !root) return '';
+    if (extractNoteIdFromUrl() !== wanted) return '';
+    const rootIds = new Set();
+    for (const node of [root, ...$$('[data-note-id], [data-noteid]', root)]) {
+      const id = String(node.getAttribute?.('data-note-id') || node.getAttribute?.('data-noteid') || '');
+      if (id) rootIds.add(id);
+    }
+    if (rootIds.size > 0) return rootIds.size === 1 && rootIds.has(wanted) ? wanted : '';
+    try {
+      const state = window.__INITIAL_STATE__ || {};
+      const noteState = unwrapStateValue(state.note) || {};
+      const detailMap = unwrapStateValue(noteState.noteDetailMap) || {};
+      if (!Object.prototype.hasOwnProperty.call(detailMap, wanted)) return '';
+      const detail = unwrapStateValue(detailMap[wanted]);
+      const stateNote = unwrapStateValue(detail?.note || detail);
+      if (!stateNote || typeof stateNote !== 'object') return '';
+      const stateId = String(unwrapStateValue(stateNote.noteId || stateNote.note_id || stateNote.id) || wanted);
+      return stateId === wanted ? wanted : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function commentRoot(arg) {
+    const expected = String((arg && arg.note_id) || '');
+    if (!expected || activeCommentNoteId(expected) !== expected) return null;
+    return getNoteRoot();
+  }
+
+  function currentCommentActor() {
+    const links = Array.from(document.querySelectorAll([
+      '.user.side-bar-component a[href*="/user/profile/"]',
+      '.side-bar-component.user a[href*="/user/profile/"]',
+      '.user.side-bar-component[href*="/user/profile/"]',
+      '.side-bar-component.user[href*="/user/profile/"]',
+      'a.user[href*="/user/profile/"]',
+    ].join(', '))).filter(isVisible);
+    const actors = new Map();
+    for (const link of links) {
+      const url = absUrl(link.href || link.getAttribute('href'));
+      const match = url.match(/\/user\/profile\/([^/?#]+)/);
+      if (!match) continue;
+      const id = decodeURIComponent(match[1]);
+      actors.set(id, { id, display_name: norm(text(link) || link.getAttribute('aria-label') || id) });
+    }
+    return actors.size === 1 ? Array.from(actors.values())[0] : null;
+  }
+
+  function editableCommentEditor(root) {
+    const active = document.activeElement;
+    if (active && root.contains(active) && (
+      active.matches?.('textarea, input, [contenteditable="true"], [role="textbox"]') || active.isContentEditable
+    ) && !active.closest?.(COMMENT_ROOT_SELECTOR)) return active;
+    const selectors = [
+      'textarea[placeholder*="说点"]', 'input[placeholder*="说点"]',
+      'textarea[placeholder*="评论"]', 'input[placeholder*="评论"]',
+      '[contenteditable="true"]', '[role="textbox"]',
+      '.comment-input textarea', '.comment-input input', '.comment-input [contenteditable="true"]',
+      '.input-box textarea', '.input-box input', '.input-box [contenteditable="true"]',
+    ];
+    const editors = Array.from(new Set(selectors.flatMap((selector) => $$(selector, root))))
+      .filter((node) => isVisible(node) && !node.closest?.(COMMENT_ROOT_SELECTOR)
+        && !node.disabled && node.getAttribute('aria-disabled') !== 'true' && !node.readOnly);
+    return editors.length === 1 ? editors[0] : null;
+  }
+
+  function commentComposer(root) {
+    const editor = editableCommentEditor(root);
+    if (editor) return editor;
+    const candidates = $$('div, span, p', root).filter((node) => {
+      if (!isVisible(node)) return false;
+      if (node.closest?.(COMMENT_ROOT_SELECTOR)) return false;
+      return /^说点什么[.。…]*$/.test(norm(text(node)));
+    }).sort((a, b) => {
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      return ar.width * ar.height - br.width * br.height;
+    });
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function commentEditorTarget(arg) {
+    const root = commentRoot(arg);
+    if (!root) return { ok: false, status: 'wrong_note' };
+    const composer = commentComposer(root);
+    if (!composer) return { ok: false, status: 'comment_editor_not_found' };
+    const point = ownedClickPoint(composer);
+    if (!point) return { ok: false, status: 'comment_editor_obscured' };
+    return {
+      ok: true,
+      status: 'comment_editor_ready',
+      note_id: activeCommentNoteId(arg && arg.note_id),
+      hit_owned: true,
+      ...point,
+    };
+  }
+
+  function commentDraftState(arg) {
+    const root = commentRoot(arg);
+    if (!root) return { ok: false, status: 'wrong_note', value: '' };
+    const editor = editableCommentEditor(root);
+    if (!editor) return { ok: false, status: 'comment_editor_not_found', value: '' };
+    const active = document.activeElement;
+    return {
+      ok: true,
+      status: 'comment_editor_ready',
+      note_id: activeCommentNoteId(arg && arg.note_id),
+      focused: active === editor || editor.contains?.(active),
+      value: editableText(editor),
+    };
+  }
+
+  function commentSubmitTarget(arg) {
+    const root = commentRoot(arg);
+    if (!root) return { ok: false, status: 'wrong_note' };
+    const editor = editableCommentEditor(root);
+    if (!editor) return { ok: false, status: 'comment_editor_not_found' };
+    const scopes = [];
+    for (let node = editor.parentElement, depth = 0; node && node !== root && depth < 7; node = node.parentElement, depth += 1) {
+      scopes.push(node);
+    }
+    let control = null;
+    for (const scope of scopes) {
+      const controls = Array.from(scope.querySelectorAll('button, [role="button"]'))
+        .filter((node) => isVisible(node) && !node.closest?.(COMMENT_ROOT_SELECTOR)
+          && /^(发送|发布|send)$/i.test(norm(text(node))));
+      if (controls.length > 1) return { ok: false, status: 'ambiguous_comment_submit' };
+      if (controls.length === 1) { control = controls[0]; break; }
+    }
+    if (!control) return { ok: false, status: 'comment_submit_not_found' };
+    const point = ownedClickPoint(control);
+    const disabled = !!control.disabled || control.getAttribute('aria-disabled') === 'true'
+      || /disabled/.test(String(control.className || ''));
+    return {
+      ok: !disabled && !!point,
+      status: disabled ? 'comment_submit_disabled' : point ? 'comment_submit_ready' : 'comment_submit_obscured',
+      note_id: activeCommentNoteId(arg && arg.note_id),
+      text: norm(text(control)),
+      disabled,
+      hit_owned: !!point,
+      ...(point || elementCenter(control)),
+    };
+  }
+
+  function renderedCommentState(arg) {
+    const expected = norm(String((arg && arg.text) || '')).slice(0, 1000);
+    const root = commentRoot(arg);
+    if (!expected) return { ok: false, status: 'invalid_comment_text', visible: false, count: 0 };
+    if (!root) return { ok: false, status: 'wrong_note', visible: false, count: 0 };
+    const actor = currentCommentActor();
+    if (!actor) return { ok: false, status: 'current_user_unknown', visible: false, count: 0, ids: [] };
+    const flattened = [];
+    const append = (items) => {
+      for (const item of items || []) {
+        flattened.push(item);
+        append(item.sub_comments || []);
+      }
+    };
+    append(comments({ prefer_hot: false, max_comments: 0 }));
+    const exact = flattened.filter((item) => norm(item.text || '') === expected);
+    const owned = exact.filter((item) => item.author_id === actor.id && item.comment_id);
+    return {
+      ok: true,
+      status: owned.length ? 'comment_visible' : 'comment_not_visible',
+      visible: owned.length > 0,
+      count: owned.length,
+      total_exact_count: exact.length,
+      ids: owned.map((item) => item.comment_id),
+      actor,
+      note_id: activeCommentNoteId(arg && arg.note_id),
+    };
   }
 
   function commentsSignature(items) {
@@ -1516,6 +1720,10 @@ const SocaiXhsPageScripts = (() => {
     comments,
     commentsWithWait,
     commentAreaState,
+    commentEditorTarget,
+    commentDraftState,
+    commentSubmitTarget,
+    renderedCommentState,
     expandCommentReplies,
     scrollFeed,
     scrollInNote,

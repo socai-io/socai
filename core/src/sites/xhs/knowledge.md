@@ -30,6 +30,7 @@ The default interactive XHS tools are intentionally high level:
 - `search` — the topic/keyword search macro, and the single XHS search tool.
 - `author_scan` — author/profile macro.
 - `get_notes` — revisit specific notes by previously collected note id + xsec token.
+- `comment` — write one explicit comment to one user-selected complete note URL.
 
 Stateful micro tools such as opening/closing a current note, scrolling a note,
 extracting the current modal, or reading current page state are not part of the
@@ -165,6 +166,20 @@ specific notes you need into one call. Only use tokens already collected from
 `search` or `author_scan`; a bare note id is insufficient. It supports the same
 `num_comments`, `download_media`, `ocr`, and `transcribe_audio` options as the
 full scan macros.
+
+### `comment`
+
+Use `comment(note=..., text=...)` only when the user explicitly asks to post
+that exact comment to that exact note. The command navigates through the
+existing CDP browser session, verifies the authenticated account and active
+note id, refuses a non-empty draft or a pre-existing exact comment, types with
+trusted keyboard events, and clicks the verified send control exactly once.
+Pass through the complete URL returned by search/author results so its
+`xsec_token` is preserved; a bare note id is rejected.
+It then reconciles the rendered comment. A `commit_unknown` result is not
+permission to retry: report the uncertainty and read the note again before any
+new write. Never use this tool for inferred engagement, bulk comments, or a
+different target than the one the user selected.
 
 ## Artifact-First Reasoning
 

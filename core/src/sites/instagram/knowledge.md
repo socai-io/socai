@@ -4,7 +4,9 @@ Use Instagram for read-only profile, post, reel, and comment research by default
 
 ## Search and gates
 
-- Logged-in keyword route: `https://www.instagram.com/explore/search/keyword/?q=<encoded query>`.
+- `search` finds posts and Reels. Logged-in keyword route: `https://www.instagram.com/explore/search/keyword/?q=<encoded query>`. It does not list accounts.
+- `search_accounts` finds people. Open the homepage, click the Search magnifying glass, type the query, and return the dropdown accounts in order. That box does not submit a general post search.
+- Account suggestions are a small ranked sample, not an exhaustive creator directory or an author filter for post search. Verify a suggested account with `profile`, then read its posts with `get-posts`.
 - Instagram can also expose search as a panel with a visible Search/搜索 input. If the keyword route is unavailable, open Instagram, use `setSearchQuery`, wait for results to hydrate, and then call `searchState`.
 - Always call `searchState` before trusting `searchResults`. A redirect to `/accounts/login`, `/challenge`, or a rate-limit page is not an empty result. Report the gate and ask the user to finish login or verification in the browser.
 - Treat zero candidates as a genuine empty result only when `searchState.ok` and `searchState.empty` are both true. Do not convert an unhydrated surface, query mismatch, or gate into zero results.
@@ -12,6 +14,12 @@ Use Instagram for read-only profile, post, reel, and comment research by default
 ## Candidate selection
 
 - Keep each candidate's `kind`, stable `id`, canonical `url`, and `position`; never identify a result only by its screen position.
+- Default `search` opens each post or Reel and returns caption, author, engagement, and comments together. `preview=true` returns grid cards only. Keyword-grid cells often have no caption; that text appears only after the post is opened.
+- Cite the short post `url` (`https://www.instagram.com/p/<shortcode>/`). `video_url` is the playable file and stays on the post because a later download needs it.
+- Deep `search` and `get-posts` share the same compact post structure: `author` is the username string; `likes` and `comment_count` are nullable post-level metrics. Their `_source` and `_approximate` fields distinguish visible values, metadata, hidden likes, and unavailable counts. Never substitute comment likes or infer zero from a missing count.
+- `complete` covers author, publication date, likes, and comment count; `missing_fields` identifies unavailable fields. It does not promise all carousel slides, all comments, or full video coverage. `comments` is a sample with author and source URL; `comment_count` is the post's displayed total, not sample length.
+- Keyword search has no implemented server-side date or popularity filters. Filtering or sorting collected posts only changes the retrieved sample. Profile grids may start with pinned posts; read publication dates before describing posts as recent.
+- Short captions do not establish visual content. Use returned `media` and `video_url` to inspect shortlisted posts when the task depends on clothing, product placement, scenes, or presentation style; do not infer these from the caption alone.
 - Use `profileDetail` and `profilePosts` on a selected `/<username>/` profile.
 - Use `postDetail` and `comments` on a selected `/p/<shortcode>/`, `/reel/<shortcode>/`, or `/<username>/(p|reel)/<shortcode>/` page.
 - For a requested comment budget, call `postDetail`, then `comments`. The host automatically alternates extraction with `scrollComments`, expands collapsed replies, deduplicates, and returns the accumulated set up to `limit` (100 by default). The expansion action is read-only; never click Like, Reply, Follow, or Submit controls.

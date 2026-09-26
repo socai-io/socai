@@ -51,9 +51,9 @@ const LOG_NAME: &str = "rust-daemon.log";
 const IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// The daemon only serves a CLI of the exact same build. A version mismatch
-/// is a hard error the user has to reconcile (update or rebuild); a same-
-/// version binary change (dev rebuild) restarts the daemon automatically.
+/// The daemon only serves a CLI of the exact same build. A version or build
+/// mismatch restarts the daemon from the current binary so a leftover process
+/// never blocks the command the user just ran.
 const PROTOCOL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CODE_VERSION_MISMATCH: &str = "version-mismatch";
 const CODE_STALE_DAEMON: &str = "stale-daemon";
@@ -77,8 +77,7 @@ fn process_build_id() -> &'static str {
     })
 }
 
-/// Daemon failures that need different client-side recovery: a version
-/// mismatch must fail, a stale daemon is restarted automatically.
+/// Daemon failures the client recovers by replacing the running daemon.
 #[derive(Debug)]
 enum DaemonClientError {
     VersionMismatch(String),
@@ -350,13 +349,10 @@ pub async fn send_or_spawn(
         Err(err) => err,
     };
     match err.downcast_ref::<DaemonClientError>() {
-        // A different release serving this CLI is never acceptable — the user
-        // has to bring both onto the same version.
-        Some(DaemonClientError::VersionMismatch(_)) => return Err(err),
-        // Same version, different binary (typically a dev rebuild): replace
-        // the daemon so commands never run on stale code.
-        Some(DaemonClientError::StaleDaemon(_)) => {
-            eprintln!("socai daemon was started from a different build; restarting it");
+        // A leftover daemon from another release or binary cannot run this
+        // command. Replace it with the CLI the user just invoked.
+        Some(DaemonClientError::VersionMismatch(_) | DaemonClientError::StaleDaemon(_)) => {
+            eprintln!("socai daemon does not match this CLI; restarting it");
             let _ = stop_daemon().await;
             wait_for_daemon_exit().await;
         }

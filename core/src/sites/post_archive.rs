@@ -471,10 +471,13 @@ fn instagram_card_record(item: &Value) -> Option<(String, Value)> {
         &content,
     );
     let thumbnail = text_at(item, &["thumbnail_url"]);
-    let media = if thumbnail.is_empty() {
-        Vec::new()
-    } else {
+    let video_url = text_at(item, &["video_url"]);
+    let media = if !video_url.is_empty() {
+        vec![json!({ "kind": "video", "src": video_url, "ratio": "1:1" })]
+    } else if !thumbnail.is_empty() {
         vec![json!({ "kind": "image", "src": thumbnail, "ratio": "1:1" })]
+    } else {
+        Vec::new()
     };
     record.insert("media".into(), Value::Array(media));
     Some((post_note_id("instagram", &native_id), Value::Object(record)))
@@ -514,9 +517,9 @@ fn instagram_detail_record(item: &Value) -> Option<(String, Value)> {
     if let Some(stats) = item.get("engagement") {
         insert_stats(
             &mut record,
-            parse_metric(&text_at(stats, &["likes"])),
+            stats.get("likes").and_then(Value::as_u64),
             None,
-            parse_metric(&text_at(stats, &["comments"])),
+            stats.get("comments").and_then(Value::as_u64),
             None,
         );
     }

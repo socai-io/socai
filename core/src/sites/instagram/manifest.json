@@ -22,6 +22,24 @@
       },
       "returns": { "type": "object", "description": "Search route, query, gate, and result state." }
     },
+    "openSearch": {
+      "description": "Locate the homepage Search control (magnifying glass) so the host can open the account suggestion panel. Returns already_open when the search input is visible.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "openSearch",
+      "args": {},
+      "returns": { "type": "object", "description": "Search-control geometry, or already_open when the input is visible." }
+    },
+    "accountSuggestions": {
+      "description": "Read Instagram account suggestions from the open search dropdown, in visual order. Does not open profiles or follow anyone.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "accountSuggestions",
+      "args": {
+        "query": { "type": "string", "required": false, "description": "Expected search keywords." }
+      },
+      "returns": { "type": "object", "description": "Ordered account suggestions, or an explicit empty or gate state." }
+    },
     "setSearchQuery": {
       "description": "Set a query in the visible Instagram search input and dispatch input events; this never follows, likes, comments, or sends messages.",
       "path": "page_scripts.js",
@@ -31,6 +49,32 @@
         "query": { "type": "string", "required": true, "description": "Search keywords to enter." }
       },
       "returns": { "type": "object", "description": "Whether the visible search input accepted the query." }
+    },
+    "clickResult": {
+      "description": "Locate one Instagram search-grid card by shortcode and return the center of its visible video or image for a native click. Does not navigate.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "clickResult",
+      "args": {
+        "id": { "type": "string", "required": true, "description": "Post or reel shortcode." }
+      },
+      "returns": { "type": "object", "description": "Click target geometry." }
+    },
+    "commentState": {
+      "description": "Read whether the open Instagram overlay has mounted comments and a playable video URL. Used to avoid closing the overlay before those regions hydrate.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "commentState",
+      "args": {},
+      "returns": { "type": "object", "description": "Comment count, explicit empty state, and video URL readiness." }
+    },
+    "closeOverlay": {
+      "description": "Locate the visible Close control on the current Instagram post overlay.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "closeOverlay",
+      "args": {},
+      "returns": { "type": "object", "description": "Close-control geometry, or a miss when none is visible." }
     },
     "searchResults": {
       "description": "Collect Instagram profile, hashtag, location, post, or reel search candidates across lazy-scroll pages up to limit.",

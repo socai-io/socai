@@ -162,6 +162,47 @@
       "args": {},
       "returns": { "type": "object", "description": "Current comment-area state." }
     },
+    "commentEditorTarget": {
+      "description": "Inspect the verified active note and return owned pointer geometry for its visible comment editor; never focuses or types.",
+      "path": "page_scripts.js",
+      "binding": "SocaiXhsPageScripts",
+      "callable": "commentEditorTarget",
+      "args": {
+        "note_id": { "type": "string", "required": true, "description": "Expected active Xiaohongshu note id." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed comment editor geometry bound to the active note." }
+    },
+    "commentDraftState": {
+      "description": "Read the draft and focus state of the verified active-note comment editor.",
+      "path": "page_scripts.js",
+      "binding": "SocaiXhsPageScripts",
+      "callable": "commentDraftState",
+      "args": {
+        "note_id": { "type": "string", "required": true, "description": "Expected active Xiaohongshu note id." }
+      },
+      "returns": { "type": "object", "description": "Current comment draft state bound to the active note." }
+    },
+    "commentSubmitTarget": {
+      "description": "Inspect the verified editor scope and return owned pointer geometry for its enabled send control; never clicks.",
+      "path": "page_scripts.js",
+      "binding": "SocaiXhsPageScripts",
+      "callable": "commentSubmitTarget",
+      "args": {
+        "note_id": { "type": "string", "required": true, "description": "Expected active Xiaohongshu note id." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed send-control geometry bound to the active editor." }
+    },
+    "renderedCommentState": {
+      "description": "Count exact rendered comment text inside the verified active note for one-shot reconciliation.",
+      "path": "page_scripts.js",
+      "binding": "SocaiXhsPageScripts",
+      "callable": "renderedCommentState",
+      "args": {
+        "note_id": { "type": "string", "required": true, "description": "Expected active Xiaohongshu note id." },
+        "text": { "type": "string", "required": true, "description": "Exact comment text." }
+      },
+      "returns": { "type": "object", "description": "Exact rendered comment count for reconciliation." }
+    },
     "expandCommentReplies": {
       "description": "Expand visible Xiaohongshu comment replies.",
       "path": "page_scripts.js",

@@ -40,7 +40,7 @@ Not a scraper. Not a reverse-engineered API. socai lives in the Chrome you alrea
 
 Social platforms are where the real conversations happen. Public APIs hide them. Scrapers get you banned. socai takes the third path: it drives your signed-in Chrome the way a researcher would — search, open posts, expand comments, read profiles, OCR images, transcribe video — then keeps the artifacts.
 
-Read-only by design. It does not publish, like, follow, or comment.
+Research is read-only by default. Explicit target-bound write commands run only when directly invoked and use durable one-shot receipts to prevent automatic resubmission.
 
 https://github.com/user-attachments/assets/8aebcded-f365-4f12-b9c4-102cc1fa964d
 
@@ -131,7 +131,7 @@ All three interfaces share the same browser connection, site capabilities, and r
 | Instagram | Keyword search, profiles, posts, reels, comments and replies, and playable video download | Agent and structured CLI |
 | LinkedIn | People, company, and content search; profiles, experience, relationships, posts, and comments | Agent and structured CLI |
 
-All integrations are read-only. socai does not follow, connect, publish, like, react, comment, reply, or send messages on your behalf.
+Research commands never mutate platform state. The separately documented publish and comment commands require an explicit target and content, verify the signed-in actor and rendered target immediately before dispatch, and never automatically retry an uncertain submit.
 
 ## Platform command reference
 
@@ -173,6 +173,12 @@ socai xhs get-notes \
   --note '<note_id>=<xsec_token>' \
   --note '<note_id>=<xsec_token>' \
   --num-comments 20
+```
+
+Post one explicitly requested comment through the existing signed-in browser:
+
+```bash
+socai xhs comment '<complete_note_url>' --text 'Exact comment text'
 ```
 
 #### Common options

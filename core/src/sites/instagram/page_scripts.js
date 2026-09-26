@@ -264,6 +264,33 @@
     return candidates;
   }
 
+  const GENERIC_CARD_LABEL = /^(reels?|clips?|videos?|photos?|posts?|carousels?|视频|图片|帖子)$/i;
+
+  function cardMedia(link) {
+    const image = link.querySelector('img[src], img[srcset]');
+    const video = link.querySelector('video');
+    const source = video && video.querySelector('source[src]');
+    const videoUrl = video && (video.currentSrc || video.src || (source && source.src) || '') || '';
+    const poster = video && video.poster || '';
+    const imageUrl = image && (image.currentSrc || image.src) || (/^https:\/\//i.test(poster) ? poster : '');
+    const badge = link.querySelector('svg[aria-label], [aria-label]');
+    const badgeLabel = cleanText(badge && badge.getAttribute('aria-label') || '', 80);
+    const alt = cleanText(image && image.alt || '', 1000);
+    return {
+      videoUrl: /^https:\/\//i.test(videoUrl) ? videoUrl : '',
+      imageUrl: /^https:\/\//i.test(imageUrl) ? imageUrl : '',
+      badgeLabel,
+      alt,
+      isReel: !!(videoUrl || /^reels?$/i.test(badgeLabel)),
+    };
+  }
+
+  function meaningfulLine(value, badgeLabel) {
+    const text = cleanText(value || '', 500);
+    if (!text || GENERIC_CARD_LABEL.test(text) || text === badgeLabel) return '';
+    return text;
+  }
+
   function searchResults(arg) {
     const input = arg || {};
     const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
@@ -272,7 +299,7 @@
     for (const link of searchResultLinks()) {
       if (viewportOnly && !inViewport(link)) continue;
       const url = instagramUrl(link.href || link.getAttribute('href'));
-      const kind = resultKind(url);
+      let kind = resultKind(url);
       const identity = postIdentity(url);
       const username = profileUsername(url);
       let id = identity && identity.shortcode || username;
@@ -281,10 +308,10 @@
         id = parts[parts.length - 1] || url;
       }
       const card = link.closest('li, article, [role="listitem"]') || link;
-      const lines = cleanText(card, 2000).split('\n').filter(Boolean);
-      const image = link.querySelector('img[src]') || card.querySelector('img[src]');
-      const imageAlt = cleanText(image && image.alt || '', 1000);
-      const title = cleanText(link, 500).split('\n').filter(Boolean)[0] || lines[0] || imageAlt || id;
+      const media = cardMedia(link);
+      if (kind === 'post' && media.isReel) kind = 'reel';
+      const lines = cleanText(card, 2000).split('\n').map((line) => meaningfulLine(line, media.badgeLabel)).filter(Boolean);
+      const title = meaningfulLine(cleanText(link, 500).split('\n')[0], media.badgeLabel) || lines[0] || meaningfulLine(media.alt, media.badgeLabel) || '';
       const subtitle = lines.filter((line) => line !== title).slice(0, 3).join('\n');
       output.push({
         kind,
@@ -292,8 +319,9 @@
         url,
         title,
         subtitle,
-        thumbnail_url: image && (image.currentSrc || image.src) || '',
-        media_description: imageAlt,
+        thumbnail_url: media.imageUrl,
+        video_url: media.videoUrl,
+        media_description: meaningfulLine(media.alt, media.badgeLabel),
         position: output.length + 1,
       });
       if (output.length >= limit) break;
@@ -335,13 +363,16 @@
     const resultCount = validRoute ? searchResultLinks().length : 0;
     const empty = validRoute && explicitSearchEmpty();
     const queryMatches = !expected || normalizedQuery(expected) === normalizedQuery(actual);
-    const hydrated = document.readyState !== 'loading' && (resultCount > 0 || empty || login || challenge || limited);
+    const stableFor = searchResultStability(resultCount, `${location.pathname}\n${actual}`);
+    const resultsSettled = resultCount > 0 && stableFor >= 800;
+    const hydrated = document.readyState !== 'loading' && (resultsSettled || empty || login || challenge || limited);
     let status = 'unhydrated';
     if (login) status = 'login_required';
     else if (challenge) status = 'challenge_required';
     else if (limited) status = 'rate_limited';
     else if (!validRoute) status = 'not_search_surface';
     else if (!queryMatches) status = 'query_mismatch';
+    else if (resultCount > 0 && !resultsSettled) status = 'hydrating';
     else if (resultCount > 0) status = 'results';
     else if (empty) status = 'empty';
     return {
@@ -377,19 +408,162 @@
     return { ok: input.value === query, status: input.value === query ? 'query_set' : 'query_rejected', query: input.value };
   }
 
+  const SEARCH_CONTROL_LABEL = /^(search|搜索|buscar|rechercher|suchen|cerca|検索)$/i;
+
+  function searchNavControl() {
+    const nodes = Array.from(document.querySelectorAll('svg[aria-label], [aria-label], a, [role="link"], [role="button"]'));
+    for (const node of nodes) {
+      const label = cleanText(
+        (node.getAttribute && node.getAttribute('aria-label')) || node.innerText || '',
+        40,
+      );
+      if (!SEARCH_CONTROL_LABEL.test(label)) continue;
+      const clickable = (node.closest && node.closest('a, button, [role="link"], [role="button"]')) || node;
+      if (clickable.matches && clickable.matches('input, textarea')) continue;
+      if (!visible(clickable)) continue;
+      const rect = clickable.getBoundingClientRect();
+      if (rect.left > 420) continue;
+      return clickable;
+    }
+    return null;
+  }
+
+  function openSearch() {
+    if (loginRoute()) return { ok: false, status: 'login_required' };
+    if (searchInput()) return { ok: true, already_open: true, status: 'search_open' };
+    const control = searchNavControl();
+    if (!control) return { ok: false, status: 'search_control_not_found' };
+    return { ok: false, already_open: false, status: 'search_control', ...elementCenter(control) };
+  }
+
+  function suggestionPanel(input) {
+    let node = input.parentElement;
+    let panel = null;
+    for (let i = 0; node && i < 8; i += 1, node = node.parentElement) {
+      if (node.querySelector('a[href="/direct/inbox"], a[href="/direct/inbox/"]')) break;
+      const links = profileLinksIn(node);
+      if (!links.length) continue;
+      panel = node;
+      break;
+    }
+    return panel;
+  }
+
+  function profileLinksIn(root) {
+    const links = [];
+    const seen = new Set();
+    for (const link of root.querySelectorAll('a[href], [role="link"][href]')) {
+      const username = profileUsername(link.href || link.getAttribute('href'));
+      if (!username || seen.has(username) || !visible(link)) continue;
+      seen.add(username);
+      links.push(link);
+    }
+    return links;
+  }
+
+  const ACCOUNT_CHROME = /^(follow|following|requested|message|关注|已关注|发消息)$/i;
+
+  function accountSuggestion(link, username, position) {
+    const lines = cleanText(link, 500).split('\n').map((line) => cleanText(line, 200)).filter((line) => {
+      if (!line || ACCOUNT_CHROME.test(line)) return false;
+      return line.toLocaleLowerCase() !== `${username}'s profile picture`
+        && line !== `${username}的头像`;
+    });
+    const handleIndex = lines.findIndex((line) => line.toLocaleLowerCase() === username);
+    const rest = lines.filter((_, index) => index !== handleIndex);
+    const name = rest[0] || '';
+    const subtitle = rest.slice(1).join('\n');
+    const image = link.querySelector('img[src], img[srcset]');
+    const avatar = image && (image.currentSrc || image.src) || '';
+    return {
+      position,
+      username,
+      name,
+      url: instagramUrl(link.href || link.getAttribute('href')),
+      subtitle,
+      avatar_url: /^https:\/\//i.test(avatar) ? avatar : '',
+    };
+  }
+
+  function accountSuggestions(arg) {
+    const expected = cleanText(arg && arg.query || '', 1000);
+    if (loginRoute()) return { ok: false, status: 'login_required', query: '', count: 0, accounts: [] };
+    const input = searchInput();
+    if (!input) return { ok: false, status: 'search_input_not_found', query: '', count: 0, accounts: [] };
+    const actual = cleanText(input.value || '', 1000);
+    if (expected && normalizedQuery(expected) !== normalizedQuery(actual)) {
+      return { ok: false, status: 'query_mismatch', query: actual, expected_query: expected, count: 0, accounts: [] };
+    }
+    const panel = suggestionPanel(input);
+    const links = panel ? profileLinksIn(panel) : [];
+    const accounts = links.map((link, index) => accountSuggestion(
+      link,
+      profileUsername(link.href || link.getAttribute('href')),
+      index + 1,
+    ));
+    const key = `${actual}\n${accounts.map((account) => account.username).join('\n')}`;
+    const stableFor = searchResultStability(accounts.length, `accounts:${key}`);
+    const settled = stableFor >= 800;
+    let status = 'hydrating';
+    if (accounts.length && settled) status = 'results';
+    else if (!accounts.length && settled && actual) status = 'empty';
+    return {
+      ok: status === 'results' || status === 'empty',
+      status,
+      query: actual,
+      count: accounts.length,
+      accounts: status === 'hydrating' ? [] : accounts,
+    };
+  }
+
+  function isScrollable(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    const overflowY = style.overflowY || style.overflow || '';
+    return el.scrollHeight > el.clientHeight + 24 && ['auto', 'scroll', 'overlay'].includes(overflowY);
+  }
+
+  function resultsScrollTarget() {
+    const links = searchResultLinks();
+    let node = links.length ? links[links.length - 1] : (document.querySelector('main') || null);
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (isScrollable(node)) return node;
+      node = node.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function searchResultStability(count, key) {
+    const now = Date.now();
+    const watch = window.__socaiIgSearchWatch || (window.__socaiIgSearchWatch = {});
+    if (watch.key !== key || watch.count !== count) {
+      watch.key = key;
+      watch.count = count;
+      watch.at = now;
+    }
+    return now - watch.at;
+  }
+
   function scrollResults(arg) {
     const input = arg || {};
-    const before = window.scrollY;
+    const target = resultsScrollTarget();
+    const scrollingElement = document.scrollingElement || document.documentElement;
+    const useWindow = target === scrollingElement || target === document.documentElement || target === document.body;
+    const before = target.scrollTop || 0;
+    const viewport = useWindow ? window.innerHeight : target.clientHeight;
     const delta = input.to_top ? -before : input.nudge_up
-      ? -Math.max(240, Math.floor(window.innerHeight * 0.35))
-      : Math.max(520, Math.floor(window.innerHeight * 0.82));
-    window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+      ? -Math.max(240, Math.floor(viewport * 0.35))
+      : Math.max(520, Math.floor(viewport * 0.82));
+    if (useWindow) window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+    else target.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+    const after = target.scrollTop || 0;
+    const extent = (target.scrollHeight || 0) - 8;
     return {
       ok: searchSurfaceActive() && !loginRoute() && !challengeRequired() && !rateLimited(),
       before,
-      after: window.scrollY,
+      after,
       result_count: searchResultLinks().length,
-      at_end: window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 8,
+      at_end: after + (useWindow ? window.innerHeight : target.clientHeight) >= extent,
     };
   }
 
@@ -479,16 +653,6 @@
       if (output.length >= limit) break;
     }
     return output;
-  }
-
-  function elementCenter(node) {
-    const rect = node.getBoundingClientRect();
-    return {
-      x: Math.round(rect.left + rect.width / 2),
-      y: Math.round(rect.top + rect.height / 2),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
-    };
   }
 
   function ownedClickPoint(node) {
@@ -639,6 +803,40 @@
       : { ok: false, status: associated ? 'post_close_control_obscured' : 'post_close_control_unowned' };
   }
 
+  function outboundUrl(link) {
+    try {
+      const url = new URL(link.href || link.getAttribute('href'), location.href);
+      if (url.hostname.toLowerCase() === 'l.instagram.com') {
+        const target = url.searchParams.get('u');
+        if (target && /^https?:\/\//i.test(target)) return target;
+      }
+      return url.href;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function isExternalProfileLink(href) {
+    if (!href) return false;
+    try {
+      const host = new URL(href).hostname.toLowerCase();
+      return host && host !== 'instagram.com' && !host.endsWith('.instagram.com') &&
+        host !== 'threads.com' && !host.endsWith('.threads.com') &&
+        host !== 'facebook.com' && !host.endsWith('.facebook.com');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function externalProfileUrl(root) {
+    if (!root || !root.querySelectorAll) return '';
+    for (const link of root.querySelectorAll('a[href]')) {
+      const href = outboundUrl(link);
+      if (isExternalProfileLink(href)) return href;
+    }
+    return '';
+  }
+
   function profileDetail() {
     const username = profileUsername(location.href);
     const state = pageState();
@@ -649,34 +847,23 @@
     const title = metaContent('og:title') || document.title || '';
     const nameMatch = title.match(/^(.+?)\s*\(@([A-Za-z0-9._]+)\)/);
     const bioMatch = description.match(/["“]([\s\S]+)["”]\s*$/);
+    const header = document.querySelector('header');
     const main = document.querySelector('main');
-    const stats = profileStats(`${cleanText(main, 12000)}\n${description}`);
-    const external = main && Array.from(main.querySelectorAll('a[href]')).map((link) => {
-      try {
-        const url = new URL(link.href, location.href);
-        if (url.hostname.toLowerCase() === 'l.instagram.com') {
-          const target = url.searchParams.get('u');
-          if (target && /^https?:\/\//i.test(target)) return target;
-        }
-        return url.href;
-      } catch (_) {
-        return '';
-      }
-    }).find((href) => {
-      if (!href) return false;
-      try {
-        const host = new URL(href).hostname.toLowerCase();
-        return host && host !== 'instagram.com' && !host.endsWith('.instagram.com') &&
-          host !== 'threads.com' && !host.endsWith('.threads.com');
-      } catch (_) {
-        return false;
-      }
-    }) || '';
+    const fromHeader = profileStats(cleanText(header, 4000));
+    const fromMeta = profileStats(description);
+    const stats = {
+      followers: fromHeader.followers ?? fromMeta.followers,
+      following: fromHeader.following ?? fromMeta.following,
+      post_count: fromHeader.post_count ?? fromMeta.post_count,
+    };
+    const external = externalProfileUrl(header) || externalProfileUrl(main);
     const visiblePosts = profilePosts({ limit: 100 });
     const contentAvailable = hasProfileContent() && !!(title || description || visiblePosts.length);
+    const stableFor = searchResultStability(visiblePosts.length, `profile-grid:${username}`);
+    const gridReady = stableFor >= 800 && (visiblePosts.length > 0 || stats.post_count === 0);
     return {
-      ok: contentAvailable && !state.challenge_required && !state.rate_limited,
-      status: contentAvailable ? 'profile' : state.login_required ? 'login_required' : 'unhydrated',
+      ok: contentAvailable && gridReady && !state.challenge_required && !state.rate_limited,
+      status: !contentAvailable ? (state.login_required ? 'login_required' : 'unhydrated') : gridReady ? 'profile' : 'hydrating',
       id: username,
       username,
       url: canonicalPageUrl(),
@@ -802,20 +989,20 @@
     return output;
   }
 
-  function postPublishedAt() {
-    const root = activePostDialog(activePostIdentity()) || document.querySelector('main') || document;
-    for (const time of root.querySelectorAll('time[datetime]')) {
-      const commentLink = time.closest('a[href*="/c/"]');
-      if (!commentLink) return time.dateTime || time.getAttribute('datetime') || '';
+  function postPublishedAt(root) {
+    const identity = activePostIdentity();
+    let fallback = '';
+    for (const time of (root || document).querySelectorAll('time[datetime]')) {
+      if (time.closest('a[href*="/c/"]')) continue;
+      const date = time.dateTime || time.getAttribute('datetime') || '';
+      const link = time.closest('a[href]');
+      const linked = link && postIdentity(link.href);
+      // The caption row can carry a different timestamp. The date linked to
+      // this post's permalink is the publication date shown in both layouts.
+      if (linked && identity && linked.shortcode === identity.shortcode) return date;
+      if (!fallback) fallback = date;
     }
-    return '';
-  }
-
-  function engagementFromDescription(description) {
-    return {
-      likes: metricBeforeLabel(description, 'likes?|次赞|赞'),
-      comments: metricBeforeLabel(description, 'comments?|条评论|评论'),
-    };
+    return fallback;
   }
 
   function commentRows(limit) {
@@ -1034,6 +1221,151 @@
     };
   }
 
+  function overlayArticle() {
+    const dialog = document.querySelector('[role="dialog"]');
+    if (!dialog) return null;
+    return dialog.querySelector('article') || dialog;
+  }
+
+  const LIKE_ICON = 'svg[aria-label="Like" i], svg[aria-label="Unlike" i], svg[aria-label="赞"], svg[aria-label="取消赞"]';
+  const COMMENT_ICON = 'svg[aria-label="Comment" i], svg[aria-label="评论"]';
+
+  function postMetric(raw, source) {
+    const text = cleanText(raw || '', 100);
+    const match = text.match(/^([\d.,]+\s*[KMB万亿]?)(?:\s*(?:likes?|comments?|次赞|条评论|赞|评论))?$/i);
+    return match ? {
+      value: parseMetric(match[1]),
+      source,
+      approximate: /[KMB万亿]/i.test(match[1]),
+    } : { value: null, source: 'unavailable', approximate: false };
+  }
+
+  function metricBesideIcon(bar, selector) {
+    let node = bar.querySelector(selector);
+    // Modern IG places the count beside the icon wrapper, not inside it.
+    for (; node && node !== bar; node = node.parentElement) {
+      const sibling = node.nextElementSibling;
+      if (!sibling || sibling.querySelector('svg')) continue;
+      const metric = postMetric(cleanText(sibling, 100), 'visible');
+      if (metric.value !== null) return metric;
+    }
+    return postMetric('');
+  }
+
+  function postEngagement(root, description) {
+    let bar = null;
+    // A comment's heart has no adjacent post Comment control. Never scan all
+    // "N likes" strings: that also matches the likes on individual comments.
+    for (const icon of root.querySelectorAll(COMMENT_ICON)) {
+      for (let node = icon.parentElement; node && node !== root; node = node.parentElement) {
+        if (node.querySelector('a[href*="/c/"]')) break;
+        if (node.querySelector(LIKE_ICON)) { bar = node; break; }
+      }
+      if (bar) break;
+    }
+    let likes = bar ? metricBesideIcon(bar, LIKE_ICON) : postMetric('');
+    let comments = bar ? metricBesideIcon(bar, COMMENT_ICON) : postMetric('');
+    // Older layouts render the post likes immediately after the action section.
+    const section = bar && bar.closest('section');
+    const likesRegion = section && section.nextElementSibling;
+    if (likes.value === null && likesRegion && !likesRegion.querySelector('a[href*="/c/"]')) {
+      const label = cleanText(likesRegion, 100);
+      if (/^\s*[\d.,]+\s*[KMB万亿]?\s*(?:likes?|次赞|赞)\s*$/i.test(label)) {
+        likes = postMetric(label, 'visible');
+      } else if (/^liked by[\s\S]+and others$/i.test(label)) {
+        likes = { value: null, source: 'hidden', approximate: false };
+      }
+    }
+    for (const [key, labels] of [['likes', 'likes?|次赞|赞'], ['comments', 'comments?|条评论|评论']]) {
+      const current = key === 'likes' ? likes : comments;
+      if (current.value !== null || current.source === 'hidden') continue;
+      const match = description.match(new RegExp(`([\\d.,]+\\s*[KMB万亿]?)\\s*(?:${labels})`, 'i'));
+      const metric = postMetric(match && match[1] || '', 'metadata');
+      if (key === 'likes') likes = metric;
+      else comments = metric;
+    }
+    return {
+      likes: likes.value,
+      comments: comments.value,
+      provenance: { likes, comments },
+    };
+  }
+
+  function postRoot() {
+    const identity = activePostIdentity();
+    const dialog = activePostDialog(identity);
+    if (dialog) return dialog;
+    const overlay = overlayArticle();
+    if (overlay) return overlay;
+    const main = document.querySelector('main') || document;
+    const articles = Array.from(main.querySelectorAll('article'));
+    return articles.find((article) => Array.from(article.querySelectorAll('a[href]')).some((link) => {
+      const linked = postIdentity(link.href);
+      return linked && identity && linked.shortcode === identity.shortcode;
+    })) || (articles.length === 1 ? articles[0] : main);
+  }
+
+  function visiblePostAuthor(root) {
+    const time = Array.from(root.querySelectorAll('time[datetime]'))
+      .find((node) => !node.closest('a[href*="/c/"]'));
+    if (!time) return '';
+    // Only profile links before the post's own date may identify its author;
+    // links in the caption and commenters below it cannot supply a fallback.
+    return Array.from(root.querySelectorAll('a[href]')).filter((link) =>
+      link.compareDocumentPosition(time) & 4,
+    ).map((link) => profileUsername(link.href)).find(Boolean) || '';
+  }
+
+  function overlayVideoUrl(article) {
+    const video = article.querySelector('video');
+    if (!video) return '';
+    const source = video.querySelector('source[src]');
+    const candidates = [
+      video.getAttribute('src'),
+      source && source.getAttribute('src'),
+      video.currentSrc,
+      video.src,
+      source && source.src,
+    ];
+    for (const candidate of candidates) {
+      if (/^https:\/\//i.test(candidate || '')) return candidate;
+    }
+    return '';
+  }
+
+  function commentState() {
+    const overlay = overlayArticle();
+    if (!overlay || !postIdentity(location.href)) {
+      return { ok: false, status: 'not_overlay', count: 0, empty: false };
+    }
+    const text = cleanText(overlay, 6000);
+    return {
+      ok: true,
+      count: commentCount(commentRows(100)),
+      empty: /no comments yet|还没有评论|暂无评论/i.test(text),
+      video_url: overlayVideoUrl(overlay),
+      has_video: !!overlay.querySelector('video'),
+    };
+  }
+
+  function overlayMedia(article) {
+    const output = [];
+    for (const node of article.querySelectorAll('video, img[src]')) {
+      if (node.tagName === 'IMG' && /(profile picture|头像)/i.test(node.alt || '')) continue;
+      const video = node.tagName === 'VIDEO' ? node : null;
+      const url = video ? (video.currentSrc || video.src || '') : (node.currentSrc || node.src || '');
+      if (!/^https:\/\//i.test(url) && !(video && video.poster)) continue;
+      output.push({
+        type: video ? 'video' : 'image',
+        url: /^https:\/\//i.test(url) ? url : '',
+        poster_url: video && /^https:\/\//i.test(video.poster || '') ? video.poster : '',
+        alt: cleanText(node.alt || '', 3000),
+      });
+      if (output.length >= 20) break;
+    }
+    return output;
+  }
+
   function postDetail() {
     const identity = activePostIdentity();
     const candidateUrl = canonicalPageUrl();
@@ -1045,34 +1377,52 @@
     if (!identity) {
       return { ok: false, status: 'not_post', url: location.href, page_state: state };
     }
-    const dialog = activePostDialog(identity);
-    const description = metaContent('description') || metaContent('og:description');
-    const visibleCaption = dialog && firstVisibleNode(dialog, ['h1']);
-    const caption = quotedCaption(description || metaContent('og:title')) || cleanText(visibleCaption, 20000);
-    const visibleAuthorLink = dialog && Array.from(dialog.querySelectorAll('a[href]'))
-      .find((link) => profileUsername(link.href));
-    const author = postAuthor(description, canonical) || profileUsername(visibleAuthorLink && visibleAuthorLink.href);
-    const media = postMedia();
-    const engagement = engagementFromDescription(`${description}\n${cleanText(dialog, 5000)}`);
+    const root = postRoot();
+    const overlay = overlayArticle();
+    const metadataIdentity = postIdentity(metaContent('og:url'));
+    const metadataMatches = !overlay && (!metadataIdentity || metadataIdentity.shortcode === identity.shortcode);
+    const description = metadataMatches ? metaContent('description') || metaContent('og:description') : '';
+    const heading = root.querySelector('h1')
+      || (root.querySelectorAll && Array.from(root.querySelectorAll('h1'))[0]);
+    const caption = cleanText(heading, 20000) || quotedCaption(description);
+    const author = visiblePostAuthor(root)
+      || (root.querySelectorAll
+        ? Array.from(root.querySelectorAll('a[href]')).map((link) => profileUsername(link.href)).find(Boolean)
+        : '')
+      || postAuthor(description, canonical);
+    const media = overlay ? overlayMedia(root) : postMedia();
+    const videoUrl = overlayVideoUrl(root) || (media.find((item) => item.type === 'video') || {}).url || '';
+    const kind = videoUrl || root.querySelector('video') ? 'reel' : identity.kind;
+    const engagement = postEngagement(root, description);
     const visibleComments = commentRows(100);
-    const contentAvailable = hasPostContent() && !!(caption || author || media.length);
+    const publishedAt = postPublishedAt(root);
+    const missingFields = [];
+    if (!author) missingFields.push('author');
+    if (!publishedAt) missingFields.push('published_at');
+    if (engagement.likes === null) missingFields.push('likes');
+    if (engagement.comments === null) missingFields.push('comment_count');
+    const contentAvailable = !!(caption || author || media.length);
     return {
       ok: contentAvailable && !state.challenge_required && !state.rate_limited,
-      status: contentAvailable ? identity.kind : state.login_required ? 'login_required' : 'unhydrated',
+      status: contentAvailable ? kind : state.login_required ? 'login_required' : 'unhydrated',
+      complete: missingFields.length === 0,
+      missing_fields: missingFields,
       id: identity.shortcode,
       shortcode: identity.shortcode,
-      kind: identity.kind,
-      url: canonical,
+      kind,
+      url: `https://www.instagram.com/p/${identity.shortcode}/`,
       author: {
         username: author,
         url: author ? instagramUrl(`/${author}/`) : '',
       },
       caption,
-      published_at: postPublishedAt(),
+      published_at: publishedAt,
+      video_url: videoUrl,
       media,
       engagement: {
         likes: engagement.likes,
         comments: engagement.comments,
+        provenance: engagement.provenance,
         visible_comments: commentCount(visibleComments),
       },
       login_gate_present: state.login_gate_present,
@@ -1111,11 +1461,63 @@
     };
   }
 
+  function elementCenter(node) {
+    const rect = node.getBoundingClientRect();
+    return {
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+  }
+
+  function clickResult(arg) {
+    const id = cleanText(arg && (arg.id || arg.shortcode) || '', 80);
+    const link = searchResultLinks().find((candidate) => {
+      const identity = postIdentity(candidate.href || candidate.getAttribute('href'));
+      return identity && identity.shortcode === id;
+    });
+    if (!link) return { ok: false, error: 'card_not_found', id };
+    link.scrollIntoView({ block: 'center', inline: 'center' });
+    const video = link.querySelector('video');
+    const image = link.querySelector('img');
+    const target = (video && visible(video) && video) || (image && visible(image) && image) || link;
+    const rect = target.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return { ok: false, error: 'card_zero_sized', id };
+    return {
+      ok: true,
+      id,
+      target: target === link ? 'link' : target.tagName.toLowerCase(),
+      ...elementCenter(target),
+    };
+  }
+
+  function closeOverlay() {
+    const dialog = document.querySelector('[role="dialog"]');
+    const root = dialog || document;
+    const controls = Array.from(root.querySelectorAll('button, [role="button"], svg[aria-label], [aria-label]'));
+    for (const control of controls) {
+      const label = cleanText(`${control.getAttribute && control.getAttribute('aria-label') || ''} ${control.innerText || ''}`, 80);
+      if (!/^(close|关闭|cerrar|fermer)$/i.test(label)) continue;
+      const node = control.closest('button, [role="button"]') || control;
+      if (!visible(node)) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      return { ok: true, label, ...elementCenter(node) };
+    }
+    return { ok: false, error: 'close_button_not_found', dialog: !!dialog };
+  }
+
   window.SocaiInstagramPageScripts = Object.freeze({
     pageState,
     searchState,
     setSearchQuery,
+    openSearch,
+    accountSuggestions,
     searchResults,
+    clickResult,
+    closeOverlay,
+    commentState,
     scrollResults,
     scrollPosts,
     profileDetail,

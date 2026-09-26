@@ -21,3 +21,10 @@
 - [Troubleshooting](https://socai.io/docs/troubleshooting/)
 - [Development](https://socai.io/docs/development/)
 - [GitHub repository](https://github.com/socai-io/socai)
+
+## Blog
+
+- [How to benchmark a social browser agent](https://socai.io/blog/benchmark-social-browser-agent/)
+- [怎么给社交媒体 Agent 做基准测试](https://socai.io/blog/zh/benchmark-social-browser-agent/)
+- [How to use Jev for social media](https://socai.io/blog/jev-social-media-automation/)
+- [Jev 如何操作社交媒体？](https://socai.io/blog/zh/jev-social-media-automation/)

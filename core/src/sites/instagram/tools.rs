@@ -61,6 +61,7 @@ pub fn instagram_agent_instructions(extra: &str) -> String {
 fn instagram_tools(page: Arc<PageSession>) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(SearchTool { page: page.clone() }),
+        Arc::new(AccountsTool { page: page.clone() }),
         Arc::new(ProfileTool { page: page.clone() }),
         Arc::new(GetPostsTool { page: page.clone() }),
         Arc::new(CommentTool { page: page.clone() }),
@@ -80,7 +81,7 @@ pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
         SiteCommand {
             name: "search",
             tool_name: "search",
-            about: "Search Instagram and print profile, hashtag, location, post, and reel candidates as JSON.",
+            about: "Search Instagram posts and Reels. Default opens each result and returns its caption, media, and comments. --preview returns grid cards only. Use search_accounts to find people.",
             args: &[
                 CommandArg {
                     key: "query",
@@ -94,15 +95,7 @@ pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     key: "num",
                     long: Some("num"),
                     value_name: "N",
-                    help: "Number of candidates to collect by scrolling. Defaults to 10.",
-                    required: false,
-                    kind: ArgKind::Int,
-                },
-                CommandArg {
-                    key: "deep",
-                    long: Some("deep"),
-                    value_name: "N",
-                    help: "Open up to N post/reel cards by trusted page click and return full details. Defaults to 0.",
+                    help: "Number of posts or Reels to open. Defaults to 10. With --preview, number of grid cards.",
                     required: false,
                     kind: ArgKind::Int,
                 },
@@ -110,21 +103,54 @@ pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     key: "num_comments",
                     long: Some("num-comments"),
                     value_name: "N",
-                    help: "Comments to collect for each deeply read post. Defaults to 8.",
+                    help: "Comments to collect per opened post. Defaults to 8; 0 skips comments. Ignored with --preview.",
                     required: false,
                     kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "preview",
+                    long: Some("preview"),
+                    value_name: "PREVIEW",
+                    help: "Return search-grid cards only, without opening posts.",
+                    required: false,
+                    kind: ArgKind::Flag,
                 },
                 CommandArg {
                     key: "wait_seconds",
                     long: Some("wait-seconds"),
                     value_name: "SECONDS",
-                    help: "Maximum wait for the search page to hydrate. Defaults to 30.",
+                    help: "Maximum wait for each page to hydrate. Defaults to 30.",
                     required: false,
                     kind: ArgKind::Int,
                 },
             ],
             slow: SlowWhen::Always,
             run: run_search,
+        },
+        SiteCommand {
+            name: "search_accounts",
+            tool_name: "search_accounts",
+            about: "Find Instagram accounts from the homepage search dropdown, in the order shown.",
+            args: &[
+                CommandArg {
+                    key: "query",
+                    long: None,
+                    value_name: "QUERY",
+                    help: "Name or username to look up",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "wait_seconds",
+                    long: Some("wait-seconds"),
+                    value_name: "SECONDS",
+                    help: "Maximum wait for the suggestion dropdown. Defaults to 30.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_accounts,
         },
         SiteCommand {
             name: "profile",
@@ -268,6 +294,22 @@ fn run_search(
     run_named(page, args, debug_snapshot, progress, "search", "search")
 }
 
+fn run_accounts(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
+    run_named(
+        page,
+        args,
+        debug_snapshot,
+        progress,
+        "search_accounts",
+        "search_accounts",
+    )
+}
+
 fn run_profile(
     page: Arc<PageSession>,
     args: Value,
@@ -354,7 +396,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search Instagram for profiles, hashtags, locations, posts, and reels matching `query`."
+        "Search Instagram posts and Reels. Default: collect up to `num` post/Reel cards, open each one, and return caption, author, likes, comments, the short post URL, and the playable video URL together. `preview=true` returns grid cards only and does not open posts. Use search_accounts to find people."
     }
 
     fn input_schema(&self) -> Value {
@@ -363,8 +405,8 @@ impl Tool for SearchTool {
             "properties": {
                 "query": { "type": "string", "maxLength": 512 },
                 "num": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 },
-                "deep": { "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
                 "num_comments": { "type": "integer", "default": 8, "minimum": 0, "maximum": 100 },
+                "preview": { "type": "boolean", "default": false },
                 "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
             },
             "required": ["query"]
@@ -377,9 +419,15 @@ impl Tool for SearchTool {
             anyhow::bail!("query must contain at most 512 characters");
         }
         let num = get_i64(&input, "num", DEFAULT_RESULT_COUNT).clamp(1, MAX_TOOL_ITEMS);
-        let deep = get_i64(&input, "deep", 0).clamp(0, num);
-        let num_comments =
-            get_i64(&input, "num_comments", DEFAULT_COMMENT_COUNT).clamp(0, MAX_TOOL_ITEMS);
+        let preview = input
+            .get("preview")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let num_comments = if preview {
+            0
+        } else {
+            get_i64(&input, "num_comments", DEFAULT_COMMENT_COUNT).clamp(0, MAX_TOOL_ITEMS)
+        };
         let wait_seconds =
             get_f64(&input, "wait_seconds", DEFAULT_WAIT_SECONDS).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
         let target = format!(
@@ -458,20 +506,187 @@ impl Tool for SearchTool {
             .await?
         };
         let count = results.as_array().map(Vec::len).unwrap_or(0);
-        let deep_posts =
-            read_clicked_candidates(&self.page, ctx, &results, deep, num_comments, wait_seconds)
-                .await?;
-        let deep_status = deep_read_status(&results, &deep_posts, deep);
-        Ok(json_result(&json!({
-            "ok": deep_status.get("ok").and_then(Value::as_bool).unwrap_or(true),
-            "partial": !deep_status.get("ok").and_then(Value::as_bool).unwrap_or(true),
+        if preview {
+            return Ok(json_result(&json!({
+                "ok": true,
+                "preview": true,
+                "query": query,
+                "url": current_url(&self.page).await.unwrap_or_default(),
+                "count": count,
+                "results": results,
+                "state": state,
+            })));
+        }
+        let mut posts = Vec::new();
+        if let Some(cards) = results.as_array() {
+            for card in cards {
+                let kind = card.get("kind").and_then(Value::as_str).unwrap_or("");
+                if !matches!(kind, "post" | "reel") {
+                    posts.push(card.clone());
+                    continue;
+                }
+                let id = card.get("id").and_then(Value::as_str).unwrap_or("");
+                if id.is_empty() {
+                    continue;
+                }
+                let card_video = card
+                    .get("video_url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                posts.push(
+                    open_search_card(&self.page, ctx, id, num_comments, wait_seconds, &card_video)
+                        .await?,
+                );
+            }
+        }
+        let failed = posts
+            .iter()
+            .any(|item| item.get("ok").and_then(Value::as_bool) == Some(false));
+        let mut payload = json!({
             "query": query,
-            "url": current_url(&self.page).await.unwrap_or_default(),
-            "count": count,
-            "results": results,
-            "deep_posts": deep_posts,
-            "deep_status": deep_status,
-            "state": state,
+            "count": posts.len(),
+            "posts": posts,
+        });
+        if failed {
+            payload["ok"] = json!(false);
+        }
+        Ok(json_result(&payload))
+    }
+}
+
+struct AccountsTool {
+    page: Arc<PageSession>,
+}
+
+#[async_trait]
+impl Tool for AccountsTool {
+    fn name(&self) -> &str {
+        "search_accounts"
+    }
+
+    fn description(&self) -> &str {
+        "Find Instagram accounts. Opens the homepage Search control, types the query, and returns the suggested accounts in dropdown order. Does not search posts."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "maxLength": 512 },
+                "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let query = required_string(&input, "query")?;
+        if query.chars().count() > 512 {
+            anyhow::bail!("query must contain at most 512 characters");
+        }
+        let wait_seconds =
+            get_f64(&input, "wait_seconds", DEFAULT_WAIT_SECONDS).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
+        navigate_https(&self.page, HOME_URL).await?;
+        let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.min(15.0));
+        let mut opened = json!({ "ok": false, "status": "search_control_not_found" });
+        loop {
+            opened =
+                invoke_browser_tool(&self.page, ctx, SITE_ID, "openSearch", None, false).await?;
+            if gate_reason(&opened).is_some()
+                || opened.get("already_open").and_then(Value::as_bool) == Some(true)
+                || opened.get("x").and_then(Value::as_f64).is_some()
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        if let Some(reason) = gate_reason(&opened) {
+            return Ok(json_result(&failure_payload(
+                reason,
+                json!({ "query": query, "open": opened, "count": 0, "accounts": [] }),
+            )));
+        }
+        if opened.get("already_open").and_then(Value::as_bool) != Some(true)
+            && opened.get("x").and_then(Value::as_f64).is_none()
+        {
+            return Ok(json_result(&failure_payload(
+                opened
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("search_control_not_found"),
+                json!({ "query": query, "open": opened, "count": 0, "accounts": [] }),
+            )));
+        }
+        if opened.get("already_open").and_then(Value::as_bool) != Some(true) {
+            let x = opened.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+            let y = opened.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+            self.page.click(x, y).await?;
+            let ready = wait_for_browser_tool(
+                &self.page,
+                SITE_ID,
+                "openSearch",
+                None,
+                wait_seconds.min(10.0),
+            )
+            .await?;
+            if ready.get("already_open").and_then(Value::as_bool) != Some(true) {
+                return Ok(json_result(&failure_payload(
+                    "search_input_not_found",
+                    json!({ "query": query, "open": ready, "count": 0, "accounts": [] }),
+                )));
+            }
+        }
+        let search_args = json!({ "query": query });
+        let typed = invoke_browser_tool(
+            &self.page,
+            ctx,
+            SITE_ID,
+            "setSearchQuery",
+            Some(&search_args),
+            false,
+        )
+        .await?;
+        if typed.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Ok(json_result(&failure_payload(
+                typed
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("query_rejected"),
+                json!({ "query": query, "typed": typed, "count": 0, "accounts": [] }),
+            )));
+        }
+        let suggestions = wait_for_browser_tool(
+            &self.page,
+            SITE_ID,
+            "accountSuggestions",
+            Some(&search_args),
+            wait_seconds,
+        )
+        .await?;
+        if let Some(reason) = gate_reason(&suggestions) {
+            return Ok(json_result(&failure_payload(
+                reason,
+                json!({ "query": query, "state": suggestions, "count": 0, "accounts": [] }),
+            )));
+        }
+        if suggestions.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Ok(json_result(&failure_payload(
+                suggestions
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("account_suggestions_unavailable"),
+                json!({ "query": query, "state": suggestions, "count": 0, "accounts": [] }),
+            )));
+        }
+        let accounts = suggestions
+            .get("accounts")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        Ok(json_result(&json!({
+            "query": query,
+            "accounts": compact_accounts(&accounts),
         })))
     }
 }
@@ -540,19 +755,27 @@ impl Tool for ProfileTool {
             true,
         )
         .await?;
-        let deep_posts =
-            read_clicked_candidates(&self.page, ctx, &posts, deep, num_comments, wait_seconds)
-                .await?;
-        let deep_status = deep_read_status(&posts, &deep_posts, deep);
-        Ok(json_result(&json!({
-            "ok": deep_status.get("ok").and_then(Value::as_bool).unwrap_or(true),
-            "partial": !deep_status.get("ok").and_then(Value::as_bool).unwrap_or(true),
-            "profile": state,
-            "posts": posts,
-            "deep_posts": deep_posts,
-            "deep_status": deep_status,
-            "count": posts.as_array().map(Vec::len).unwrap_or(0),
-        })))
+        let declared = state.get("post_count").and_then(Value::as_i64).unwrap_or(0);
+        let found = posts.as_array().map(Vec::len).unwrap_or(0);
+        if declared > 0 && found == 0 {
+            return Ok(json_result(&failure_payload(
+                "profile_posts_unavailable",
+                json!({ "profile": locator, "url": url }),
+            )));
+        }
+        let mut payload = compact_profile(&state, &posts);
+        if deep > 0 {
+            let deep_posts =
+                read_clicked_candidates(&self.page, ctx, &posts, deep, num_comments, wait_seconds)
+                    .await?;
+            let deep_status = deep_read_status(&posts, &deep_posts, deep);
+            if deep_status.get("ok").and_then(Value::as_bool) != Some(true) {
+                payload["ok"] = json!(false);
+            }
+            payload["deep_posts"] = deep_posts;
+            payload["deep_status"] = deep_status;
+        }
+        Ok(json_result(&payload))
     }
 }
 
@@ -1644,6 +1867,318 @@ async fn close_clicked_instagram_post(
     }))
 }
 
+async fn open_search_card(
+    page: &PageSession,
+    ctx: &ToolContext,
+    id: &str,
+    num_comments: i64,
+    wait_seconds: f64,
+    card_video_url: &str,
+) -> anyhow::Result<Value> {
+    let click = invoke_browser_tool(
+        page,
+        ctx,
+        SITE_ID,
+        "clickResult",
+        Some(&json!({ "id": id })),
+        false,
+    )
+    .await?;
+    if click.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(failure_payload(
+            click
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("card_not_found"),
+            json!({ "input": id, "click": click }),
+        ));
+    }
+    let x = click.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+    let y = click.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+    page.click(x, y).await?;
+    let detail = wait_for_browser_tool(page, SITE_ID, "postDetail", None, wait_seconds).await?;
+    if let Some(reason) = gate_reason(&detail) {
+        let _ = close_search_overlay(page, ctx).await;
+        return Ok(failure_payload(
+            reason,
+            json!({ "input": id, "entity": detail }),
+        ));
+    }
+    if detail.get("ok").and_then(Value::as_bool) != Some(true) {
+        let _ = close_search_overlay(page, ctx).await;
+        return Ok(failure_payload(
+            detail
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("post_unavailable"),
+            json!({ "input": id, "entity": detail }),
+        ));
+    }
+    let entity = wait_for_post_media(page, ctx, wait_seconds, card_video_url).await?;
+    let comments = if num_comments > 0 {
+        wait_for_overlay_comments(page, ctx, num_comments, wait_seconds).await?
+    } else {
+        Value::Array(Vec::new())
+    };
+    let _ = close_search_overlay(page, ctx).await;
+    Ok(compact_opened_post(id, &entity, &comments, card_video_url))
+}
+
+/// Caption can be ready while likes, the playable video URL, and comments are
+/// still mounting. Closing or reading at the first non-empty caption records
+/// those regions as empty.
+async fn wait_for_post_media(
+    page: &PageSession,
+    ctx: &ToolContext,
+    wait_seconds: f64,
+    card_video_url: &str,
+) -> anyhow::Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.clamp(1.0, 12.0));
+    let mut latest = invoke_browser_tool(page, ctx, SITE_ID, "postDetail", None, false).await?;
+    while Instant::now() < deadline {
+        let overlay_video = latest
+            .get("video_url")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let video_url = if overlay_video.is_empty() {
+            card_video_url
+        } else {
+            overlay_video
+        };
+        let has_video = latest.get("kind").and_then(Value::as_str) == Some("reel");
+        let author_ready = latest
+            .pointer("/author/username")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty());
+        let date_ready = latest
+            .get("published_at")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty());
+        if (!has_video || !video_url.is_empty()) && author_ready && date_ready {
+            if latest
+                .pointer("/engagement/likes")
+                .and_then(Value::as_i64)
+                .is_some()
+                || latest
+                    .pointer("/engagement/provenance/likes/source")
+                    .and_then(Value::as_str)
+                    == Some("hidden")
+                || !has_video
+            {
+                return Ok(latest);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        latest = invoke_browser_tool(page, ctx, SITE_ID, "postDetail", None, false).await?;
+    }
+    Ok(latest)
+}
+
+async fn wait_for_overlay_comments(
+    page: &PageSession,
+    ctx: &ToolContext,
+    num_comments: i64,
+    wait_seconds: f64,
+) -> anyhow::Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.clamp(1.0, 12.0));
+    loop {
+        let state = invoke_browser_tool(page, ctx, SITE_ID, "commentState", None, false).await?;
+        let count = state.get("count").and_then(Value::as_i64).unwrap_or(0);
+        let empty = state.get("empty").and_then(Value::as_bool).unwrap_or(false);
+        if count > 0 || empty || Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    invoke_browser_tool(
+        page,
+        ctx,
+        SITE_ID,
+        "comments",
+        Some(&json!({ "limit": num_comments })),
+        true,
+    )
+    .await
+}
+
+fn compact_accounts(accounts: &Value) -> Value {
+    let Some(items) = accounts.as_array() else {
+        return Value::Array(Vec::new());
+    };
+    Value::Array(
+        items
+            .iter()
+            .map(|account| {
+                let mut item = json!({
+                    "username": account.get("username").and_then(Value::as_str).unwrap_or(""),
+                    "name": account.get("name").and_then(Value::as_str).unwrap_or(""),
+                    "url": account.get("url").and_then(Value::as_str).unwrap_or(""),
+                });
+                if let Some(subtitle) = account
+                    .get("subtitle")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                {
+                    item["subtitle"] = json!(subtitle);
+                }
+                if let Some(avatar) = account
+                    .get("avatar_url")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                {
+                    item["avatar_url"] = json!(avatar);
+                }
+                item
+            })
+            .collect(),
+    )
+}
+
+fn compact_profile(state: &Value, posts: &Value) -> Value {
+    let mut profile = json!({
+        "username": state.get("username").and_then(Value::as_str).unwrap_or(""),
+        "display_name": state.get("display_name").and_then(Value::as_str).unwrap_or(""),
+        "url": state.get("url").and_then(Value::as_str).unwrap_or(""),
+        "bio": state.get("bio").and_then(Value::as_str).unwrap_or(""),
+        "avatar_url": state.get("avatar_url").and_then(Value::as_str).unwrap_or(""),
+        "posts": compact_profile_posts(posts),
+    });
+    if let Some(url) = state
+        .get("external_url")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        profile["external_url"] = json!(url);
+    }
+    for key in ["followers", "following", "post_count"] {
+        if let Some(value) = state.get(key).and_then(Value::as_i64) {
+            profile[key] = json!(value);
+        }
+    }
+    profile
+}
+
+fn compact_profile_posts(posts: &Value) -> Value {
+    let Some(items) = posts.as_array() else {
+        return Value::Array(Vec::new());
+    };
+    Value::Array(
+        items
+            .iter()
+            .map(|post| {
+                let mut item = json!({
+                    "id": post.get("id").and_then(Value::as_str).unwrap_or(""),
+                    "kind": post.get("kind").and_then(Value::as_str).unwrap_or("post"),
+                    "url": post.get("url").and_then(Value::as_str).unwrap_or(""),
+                });
+                if let Some(thumb) = post
+                    .get("thumbnail_url")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                {
+                    item["thumbnail_url"] = json!(thumb);
+                }
+                item
+            })
+            .collect(),
+    )
+}
+
+fn compact_opened_post(id: &str, entity: &Value, comments: &Value, card_video_url: &str) -> Value {
+    if entity.get("ok").and_then(Value::as_bool) == Some(false) {
+        return json!({
+            "ok": false,
+            "id": id,
+            "reason": entity.get("status").and_then(Value::as_str).unwrap_or("post_unavailable"),
+        });
+    }
+    let mut post = json!({
+        "ok": true,
+        "id": entity.get("id").and_then(Value::as_str).unwrap_or(id),
+        "kind": entity.get("kind").and_then(Value::as_str).unwrap_or("post"),
+        "url": entity.get("url").and_then(Value::as_str).unwrap_or(""),
+        "author": entity.pointer("/author/username").and_then(Value::as_str).unwrap_or(""),
+        "caption": entity.get("caption").and_then(Value::as_str).unwrap_or(""),
+        "published_at": entity.get("published_at").and_then(Value::as_str).unwrap_or(""),
+        "comments": compact_comments(comments),
+        "likes": entity.pointer("/engagement/likes").cloned().unwrap_or(Value::Null),
+        "comment_count": entity.pointer("/engagement/comments").cloned().unwrap_or(Value::Null),
+        "comment_count_source": entity.pointer("/engagement/provenance/comments/source").and_then(Value::as_str).unwrap_or("unavailable"),
+        "comment_count_approximate": entity.pointer("/engagement/provenance/comments/approximate").and_then(Value::as_bool).unwrap_or(false),
+        "likes_source": entity.pointer("/engagement/provenance/likes/source").and_then(Value::as_str).unwrap_or("unavailable"),
+        "likes_approximate": entity.pointer("/engagement/provenance/likes/approximate").and_then(Value::as_bool).unwrap_or(false),
+        "complete": entity.get("complete").and_then(Value::as_bool).unwrap_or(false),
+        "missing_fields": entity.get("missing_fields").cloned().unwrap_or_else(|| json!([])),
+    });
+    if let Some(media) = entity
+        .get("media")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+    {
+        post["media"] = json!(media);
+    }
+    let video_url = entity
+        .get("video_url")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .unwrap_or(card_video_url);
+    if !video_url.is_empty() {
+        post["video_url"] = json!(video_url);
+    }
+    post
+}
+
+fn compact_comments(comments: &Value) -> Value {
+    let Some(items) = comments.as_array() else {
+        return Value::Array(Vec::new());
+    };
+    Value::Array(items.iter().map(compact_comment).collect())
+}
+
+fn compact_comment(comment: &Value) -> Value {
+    let replies = comment
+        .get("replies")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let mut item = json!({
+        "text": comment_body(comment.get("text").and_then(Value::as_str).unwrap_or("")),
+        "replies": replies,
+        "author": comment.pointer("/author/username").and_then(Value::as_str).unwrap_or(""),
+        "url": comment.get("url").and_then(Value::as_str).unwrap_or(""),
+    });
+    if let Some(likes) = comment.get("likes").and_then(Value::as_i64) {
+        item["likes"] = json!(likes);
+    }
+    item
+}
+
+fn comment_body(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Some((head, tail)) = trimmed.rsplit_once('\n') else {
+        return trimmed.to_string();
+    };
+    let chrome: String = tail.chars().filter(|c| !c.is_whitespace()).collect();
+    let chrome = chrome.to_ascii_lowercase();
+    if chrome.contains("reply") {
+        return head.trim().to_string();
+    }
+    trimmed.to_string()
+}
+
+async fn close_search_overlay(page: &PageSession, ctx: &ToolContext) -> anyhow::Result<()> {
+    let close = invoke_browser_tool(page, ctx, SITE_ID, "closeOverlay", None, false).await?;
+    if close.get("ok").and_then(Value::as_bool) == Some(true) {
+        let x = close.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+        let y = close.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+        page.click(x, y).await?;
+    } else {
+        page.press_key("Escape").await?;
+    }
+    let _ = wait_for_browser_tool(page, SITE_ID, "searchState", None, 8.0).await;
+    Ok(())
+}
+
 async fn read_instagram_post(
     page: &PageSession,
     ctx: &ToolContext,
@@ -1669,7 +2204,7 @@ async fn read_instagram_post(
             json!({ "input": locator, "url": url, "entity": detail }),
         ));
     }
-    let entity = invoke_browser_tool(page, ctx, SITE_ID, "postDetail", None, false).await?;
+    let entity = wait_for_post_media(page, ctx, wait_seconds, "").await?;
     let comments = if num_comments > 0 {
         invoke_browser_tool(
             page,
@@ -1683,13 +2218,7 @@ async fn read_instagram_post(
     } else {
         Value::Array(Vec::new())
     };
-    Ok(json!({
-        "ok": true,
-        "input": locator,
-        "url": current_url(page).await.unwrap_or(url),
-        "entity": entity,
-        "comments": comments,
-    }))
+    Ok(compact_opened_post(locator, &entity, &comments, ""))
 }
 
 fn instagram_profile_url(locator: &str) -> anyhow::Result<String> {
@@ -1736,7 +2265,6 @@ fn instagram_post_url(locator: &str) -> anyhow::Result<String> {
     }
     Ok(format!("https://www.instagram.com/p/{trimmed}/"))
 }
-
 fn validate_instagram_origin(url: &reqwest::Url) -> anyhow::Result<()> {
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     if url.scheme() != "https"
