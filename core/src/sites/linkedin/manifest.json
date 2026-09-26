@@ -108,6 +108,47 @@
       },
       "returns": { "type": "array", "description": "Accumulated, deduplicated LinkedIn comments." }
     },
+    "commentEditorTarget": {
+      "description": "Inspect the verified active LinkedIn post and return owned pointer geometry for its visible comment editor; never focuses or types.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiLinkedInPageScripts",
+      "callable": "commentEditorTarget",
+      "args": {
+        "post_id": { "type": "string", "required": true, "description": "Expected LinkedIn activity id." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed comment editor geometry bound to the active post." }
+    },
+    "commentDraftState": {
+      "description": "Read the draft and focus state of the verified active LinkedIn post comment editor.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiLinkedInPageScripts",
+      "callable": "commentDraftState",
+      "args": {
+        "post_id": { "type": "string", "required": true, "description": "Expected LinkedIn activity id." }
+      },
+      "returns": { "type": "object", "description": "Current comment draft state bound to the active post." }
+    },
+    "commentSubmitTarget": {
+      "description": "Return owned pointer geometry for the single enabled comment submit control bound to the verified active LinkedIn post; never clicks it.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiLinkedInPageScripts",
+      "callable": "commentSubmitTarget",
+      "args": {
+        "post_id": { "type": "string", "required": true, "description": "Expected LinkedIn activity id." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed submit geometry bound to the active post." }
+    },
+    "renderedCommentState": {
+      "description": "Count exact rendered comment text inside the verified active LinkedIn post for one-shot reconciliation.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiLinkedInPageScripts",
+      "callable": "renderedCommentState",
+      "args": {
+        "post_id": { "type": "string", "required": true, "description": "Expected LinkedIn activity id." },
+        "text": { "type": "string", "required": true, "description": "Exact comment text." }
+      },
+      "returns": { "type": "object", "description": "Exact rendered comment count for reconciliation." }
+    },
     "scrollComments": {
       "description": "Load the next bounded batch of LinkedIn comments and collapsed replies using read-only expansion controls.",
       "path": "page_scripts.js",
