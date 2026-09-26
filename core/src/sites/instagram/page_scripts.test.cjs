@@ -399,13 +399,40 @@ test('comment write helpers expose geometry and exact read-back without clicking
     contains: () => false,
     click: () => { clicked = true; },
   };
-  const rendered = {
-    innerText: 'A contextual AI Agent comment',
-    textContent: 'A contextual AI Agent comment',
-    getBoundingClientRect: () => ({ left: 700, top: 400, width: 280, height: 40, right: 980, bottom: 440 }),
+  const composer = {
+    querySelectorAll: (selector) => selector === 'button, [role="button"]' ? [submit] : [],
+  };
+  const profileGlyph = {};
+  const profileLink = {
+    href: 'https://www.instagram.com/asklv/',
+    innerText: 'Profile',
+    getAttribute: (name) => name === 'aria-label' ? 'Profile' : '',
+    querySelector: () => profileGlyph,
     closest: () => null,
-    querySelectorAll: () => [],
-    scrollIntoView: () => {},
+    getBoundingClientRect: () => ({ left: 10, top: 10, width: 40, height: 40, right: 50, bottom: 50 }),
+  };
+  const postAuthorProfileLink = {
+    href: 'https://www.instagram.com/someone_else/',
+    innerText: 'someone_else',
+    getAttribute: () => '',
+    querySelector: () => profileGlyph,
+    closest: (selector) => selector.includes('[role="dialog"]') ? dialog : null,
+    getBoundingClientRect: () => ({ left: 700, top: 80, width: 40, height: 40, right: 740, bottom: 120 }),
+  };
+  const authorLink = { href: 'https://www.instagram.com/asklv/' };
+  const commentLink = { href: 'https://www.instagram.com/p/Write123/c/123/' };
+  const commentRow = {
+    innerText: 'asklv\nA contextual AI Agent comment\n1m',
+    querySelectorAll: (selector) => selector === 'a[href]' ? [authorLink] : [],
+    getBoundingClientRect: () => ({ left: 700, top: 400, width: 280, height: 40, right: 980, bottom: 440 }),
+    matches: () => false,
+  };
+  const commentTime = {
+    innerText: '1m',
+    dateTime: '2026-09-25T08:00:00Z',
+    getAttribute: () => '',
+    closest: (selector) => selector === 'a[href*="/c/"]' ? commentLink : null,
+    parentElement: commentRow,
   };
   const dialog = {
     getBoundingClientRect: () => ({ left: 400, top: 40, width: 700, height: 720, right: 1100, bottom: 760 }),
@@ -414,17 +441,27 @@ test('comment write helpers expose geometry and exact read-back without clicking
       if (selector.includes('a[href*="/p/"]')) return [postLink];
       if (selector.includes('textarea')) return [editor];
       if (selector === 'button, [role="button"]') return [submit];
-      if (selector === 'span, div, p') return [rendered];
+      if (selector === 'a[href*="/c/"] time[datetime]') return [commentTime];
       return [];
     },
+    matches: () => false,
   };
+  editor.parentElement = composer;
+  submit.parentElement = composer;
+  composer.parentElement = dialog;
+  commentRow.parentElement = dialog;
+  dialog.parentElement = null;
   const document = {
     body: { innerText: 'Hydrated Instagram post' },
     readyState: 'complete',
     title: 'Instagram fixture',
     activeElement: editor,
     querySelector: (selector) => selector === 'main' ? dialog : null,
-    querySelectorAll: () => [],
+    querySelectorAll: (selector) => {
+      if (selector === '[role="dialog"]') return [dialog];
+      if (selector.includes('nav a[href]')) return [profileLink, postAuthorProfileLink];
+      return [];
+    },
     elementFromPoint: (x) => x < 985 ? editor : submit,
   };
   const window = {
@@ -455,8 +492,9 @@ test('comment write helpers expose geometry and exact read-back without clicking
     text: 'A contextual AI Agent comment',
   });
   assert.equal(renderedState.visible, true);
-  assert.equal(renderedState.in_viewport, true);
   assert.equal(renderedState.count, 1);
+  assert.deepEqual(Array.from(renderedState.ids), ['123']);
+  assert.equal(renderedState.actor.id, 'asklv');
   assert.equal(scripts.commentEditorTarget({ shortcode: 'Other123' }).status, 'comment_editor_not_found');
   assert.equal(scripts.renderedCommentState({
     shortcode: 'Other123',

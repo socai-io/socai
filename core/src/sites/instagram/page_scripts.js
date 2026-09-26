@@ -145,6 +145,30 @@
     ]);
   }
 
+  function currentCommentActor() {
+    const links = Array.from(document.querySelectorAll([
+      'nav a[href]', 'header a[href]', '[role="navigation"] a[href]',
+      'a[aria-label*="profile" i][href]', 'a[aria-label*="个人主页"][href]',
+    ].join(', '))).filter(visible);
+    const actors = new Map();
+    for (const link of links) {
+      // Post headers also contain profile-picture links, but they identify the
+      // post author rather than the signed-in account. Only account chrome
+      // outside the active content surface is a valid actor anchor.
+      if (link.closest?.('main, article, [role="dialog"]')) continue;
+      const username = profileUsername(link.href || link.getAttribute('href'));
+      if (!username) continue;
+      const label = cleanText(`${link.getAttribute('aria-label') || ''} ${cleanText(link, 400)}`, 500);
+      const hasProfileGlyph = !!link.querySelector?.([
+        'svg[aria-label*="profile" i]', 'svg[aria-label*="个人主页"]',
+        'img[alt*="profile picture" i]', 'img[alt*="头像"]',
+      ].join(', '));
+      if (!hasProfileGlyph && !/(profile|个人主页|主页)/i.test(label)) continue;
+      actors.set(username, { id: username, display_name: `@${username}` });
+    }
+    return actors.size === 1 ? Array.from(actors.values())[0] : null;
+  }
+
   function hasPostContent() {
     const identity = postIdentity(location.href);
     if (!identity) return false;
@@ -1078,9 +1102,10 @@
     const editors = Array.from(root.querySelectorAll(
       'textarea, [contenteditable="true"], [role="textbox"]',
     )).filter((editor) => visible(editor) && !editor.disabled && editor.getAttribute('aria-disabled') !== 'true' && !editor.readOnly);
-    return editors.find((editor) => /(add a comment|comment|添加评论|发表评论|评论)/i.test(
+    const labelled = editors.filter((editor) => /(add a comment|comment|添加评论|发表评论|评论)/i.test(
       `${editor.placeholder || ''} ${editor.getAttribute('aria-label') || ''}`,
-    )) || null;
+    ));
+    return labelled.length === 1 ? labelled[0] : null;
   }
 
   function commentEditorTarget(arg) {
@@ -1110,15 +1135,13 @@
     if (!root || !editor) return { ok: false, status: 'comment_editor_not_found' };
     const scopes = [];
     for (let node = editor.parentElement, depth = 0; node && node !== root && depth < 7; node = node.parentElement, depth += 1) scopes.push(node);
-    scopes.push(root);
-    const controls = scopes.flatMap((scope) => Array.from(scope.querySelectorAll('button, [role="button"]')))
-      .filter((node) => visible(node) && /^(post|publish|send|发布|发送|发表)$/i.test(cleanText(node, 100)))
-      .sort((a, b) => {
-        const ar = a.getBoundingClientRect();
-        const br = b.getBoundingClientRect();
-        return ar.width * ar.height - br.width * br.height;
-      });
-    const control = controls[0];
+    let control = null;
+    for (const scope of scopes) {
+      const controls = Array.from(scope.querySelectorAll('button, [role="button"]'))
+        .filter((node) => visible(node) && /^(post|publish|send|发布|发送|发表)$/i.test(cleanText(node, 100)));
+      if (controls.length > 1) return { ok: false, status: 'ambiguous_comment_submit' };
+      if (controls.length === 1) { control = controls[0]; break; }
+    }
     if (!control || !inViewport(control)) return { ok: false, status: 'comment_submit_not_found' };
     const point = ownedClickPoint(control);
     const owned = !!point;
@@ -1140,20 +1163,27 @@
     if (!expected) return { ok: false, status: 'invalid_comment_text', visible: false, count: 0 };
     const root = commentRoot(arg);
     if (!root) return { ok: false, status: 'wrong_post', visible: false, count: 0 };
-    const exact = Array.from(root.querySelectorAll('span, div, p')).filter((node) => {
-      if (!visible(node) || node.closest?.('textarea, [contenteditable="true"], [role="textbox"]')) return false;
-      return cleanText(node, 10000) === expected;
-    });
-    const matches = exact.filter((node) => !Array.from(node.querySelectorAll?.('span, div, p') || [])
-      .some((child) => child !== node && visible(child) && cleanText(child, 10000) === expected));
-    const inView = matches.filter(inViewport);
+    const actor = currentCommentActor();
+    if (!actor) return { ok: false, status: 'current_user_unknown', visible: false, count: 0, ids: [] };
+    const flattened = [];
+    const append = (items) => {
+      for (const item of items || []) {
+        flattened.push(item);
+        append(item.replies || []);
+      }
+    };
+    append(commentRows(100));
+    const exact = flattened.filter((item) => cleanText(item.text, 10000) === expected);
+    const matches = exact.filter((item) => item.author?.username === actor.id && item.id);
     return {
-      ok: matches.length > 0,
+      ok: true,
       status: matches.length ? 'comment_visible' : 'comment_not_visible',
       visible: matches.length > 0,
-      in_viewport: inView.length > 0,
       count: matches.length,
-      in_viewport_count: inView.length,
+      total_exact_count: exact.length,
+      ids: matches.map((item) => item.id),
+      actor,
+      shortcode: activePostIdentity().shortcode,
     };
   }
 

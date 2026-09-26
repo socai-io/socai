@@ -7,6 +7,9 @@ use serde_json::{json, Value};
 use crate::agent::tool::ToolProgressSender;
 use crate::agent::{Backend as LlmProvider, Tool, ToolContext, ToolResult};
 use crate::cdp::PageSession;
+use crate::sites::actions::{
+    ActionActor, ActionPreview, ActionStore, ActionTarget, SocialActionKind, SocialActionStatus,
+};
 use crate::sites::registry::{
     required_string, ArgKind, BoxFuture, CommandArg, NativeSiteAdapter, SiteCommand, SlowWhen,
 };
@@ -937,8 +940,115 @@ impl Tool for CommentTool {
             Some(&rendered_args),
         )
         .await?;
+        if before.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Ok(json_result(&failure_payload(
+                before
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("comment_preflight_failed"),
+                json!({ "shortcode": shortcode, "url": url, "reconcile": before, "submit_click_count": 0 }),
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let stable_before = crate::sites::learning::run_site_browser_tool(
+            &self.page,
+            SITE_ID,
+            "renderedCommentState",
+            Some(&rendered_args),
+        )
+        .await?;
+        if stable_before.get("ok").and_then(Value::as_bool) != Some(true)
+            || value_string_array(&stable_before, "ids") != value_string_array(&before, "ids")
+            || stable_before
+                .get("total_exact_count")
+                .and_then(Value::as_u64)
+                != before.get("total_exact_count").and_then(Value::as_u64)
+        {
+            return Ok(json_result(&failure_payload(
+                "comments_not_stably_hydrated",
+                json!({ "shortcode": shortcode, "url": url, "before": before, "after": stable_before, "submit_click_count": 0 }),
+            )));
+        }
+        let before = stable_before;
+        let actor_value = before.get("actor").cloned().unwrap_or(Value::Null);
+        let actor = ActionActor {
+            id: actor_value
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            display_name: actor_value
+                .get("display_name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        };
+        if actor.id.is_empty() || actor.display_name.is_empty() {
+            return Ok(json_result(&failure_payload(
+                "current_user_unknown",
+                json!({ "shortcode": shortcode, "url": url, "reconcile": before, "submit_click_count": 0 }),
+            )));
+        }
+        let target_kind = detail
+            .get("kind")
+            .and_then(Value::as_str)
+            .filter(|kind| matches!(*kind, "post" | "reel"))
+            .ok_or_else(|| anyhow::anyhow!("Instagram post detail is missing its route kind"))?;
+        let target_path = if target_kind == "reel" { "reel" } else { "p" };
+        let target_url = format!("https://www.instagram.com/{target_path}/{shortcode}/");
+        let idempotency_key = format!("instagram:comment:{}:{shortcode}:{text}", actor.id);
+        let store = ActionStore::open_default();
+        let mut receipt = store.create_draft(
+            &idempotency_key,
+            "instagram",
+            SocialActionKind::Comment,
+            ActionTarget {
+                id: shortcode.to_string(),
+                url: target_url,
+            },
+            actor.clone(),
+            ActionPreview {
+                text: Some(text.clone()),
+                evidence: Value::Null,
+            },
+        )?;
+        match receipt.status() {
+            SocialActionStatus::Committed | SocialActionStatus::Reconciled => {
+                return Ok(json_result(&json!({
+                    "ok": true, "status": receipt.status(), "action_id": receipt.action_id(),
+                    "idempotent_replay": true, "shortcode": shortcode, "url": url,
+                    "comment": text, "submit_click_count": 0, "receipt": receipt,
+                })));
+            }
+            SocialActionStatus::Committing | SocialActionStatus::CommitUnknown => {
+                let prior = receipt.precommit_target_ids().unwrap_or(&[]);
+                let observed = value_string_array(&before, "ids");
+                if let Some(new_id) = observed.iter().find(|id| !prior.contains(id)) {
+                    receipt = store.reconcile_committed(receipt.action_id(), new_id)?;
+                    return Ok(json_result(&json!({
+                        "ok": true, "status": "reconciled", "action_id": receipt.action_id(),
+                        "idempotent_replay": true, "shortcode": shortcode, "url": url,
+                        "comment": text, "submit_click_count": 0, "receipt": receipt,
+                    })));
+                }
+                return Ok(json_result(&json!({
+                    "ok": false, "status": "commit_unknown", "reason": "a submit attempt was already reserved; reconcile instead of retrying",
+                    "action_id": receipt.action_id(), "shortcode": shortcode, "url": url,
+                    "comment": text, "submit_click_count": 0, "receipt": receipt,
+                })));
+            }
+            SocialActionStatus::Prepared => {
+                receipt = store.reset_prepared(receipt.action_id(), &actor.id, shortcode)?;
+            }
+            SocialActionStatus::Draft => {}
+        }
         let baseline = before.get("count").and_then(Value::as_u64).unwrap_or(0);
-        if baseline > 0 {
+        if before
+            .get("total_exact_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        {
             return Ok(json_result(&failure_payload(
                 "exact_comment_preexists",
                 json!({
@@ -1067,6 +1177,39 @@ impl Tool for CommentTool {
             )));
         }
 
+        let final_rendered = crate::sites::learning::run_site_browser_tool(
+            &self.page,
+            SITE_ID,
+            "renderedCommentState",
+            Some(&rendered_args),
+        )
+        .await?;
+        if final_rendered.get("ok").and_then(Value::as_bool) != Some(true)
+            || final_rendered
+                .get("actor")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str)
+                != Some(actor.id.as_str())
+            || final_rendered
+                .get("total_exact_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 0
+        {
+            return Ok(json_result(&failure_payload(
+                "actor_or_comment_state_changed_before_submit",
+                json!({ "shortcode": shortcode, "url": url, "reconcile": final_rendered, "submit_click_count": 0 }),
+            )));
+        }
+        receipt = store.mark_prepared(receipt.action_id(), &actor.id, shortcode, 300)?;
+        let precommit_ids = value_string_array(&final_rendered, "ids");
+        receipt = store.begin_commit(
+            receipt.action_id(),
+            &actor.id,
+            shortcode,
+            precommit_ids.clone(),
+        )?;
+        let action_id = receipt.action_id().to_string();
         let dispatch_error = self
             .page
             .click(submit_x, submit_y)
@@ -1074,25 +1217,61 @@ impl Tool for CommentTool {
             .err()
             .map(|error| format!("{error:#}"));
         let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds);
-        let reconciled = loop {
-            let state = crate::sites::learning::run_site_browser_tool(
+        let mut reconcile_error = None;
+        let mut reconciled = json!({ "ok": false, "status": "not_observed", "ids": [] });
+        loop {
+            match crate::sites::learning::run_site_browser_tool(
                 &self.page,
                 SITE_ID,
                 "renderedCommentState",
                 Some(&rendered_args),
             )
-            .await?;
-            if state.get("count").and_then(Value::as_u64).unwrap_or(0) > baseline
-                || Instant::now() >= deadline
+            .await
             {
-                break state;
+                Ok(state) => {
+                    if state
+                        .get("actor")
+                        .and_then(|value| value.get("id"))
+                        .and_then(Value::as_str)
+                        != Some(actor.id.as_str())
+                    {
+                        reconcile_error =
+                            Some("signed-in actor changed after submit dispatch".to_string());
+                        reconciled = state;
+                        break;
+                    }
+                    let ids = value_string_array(&state, "ids");
+                    let found = ids.iter().any(|id| !precommit_ids.contains(id));
+                    reconciled = state;
+                    if found || Instant::now() >= deadline {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    reconcile_error = Some(format!("{error:#}"));
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let new_target_id = value_string_array(&reconciled, "ids")
+            .into_iter()
+            .find(|id| !precommit_ids.contains(id));
+        let (committed, persisted_receipt, receipt_error) = if let Some(new_id) = new_target_id {
+            match store.reconcile_committed(&action_id, &new_id) {
+                Ok(receipt) => (true, Some(receipt), None),
+                Err(error) => (false, None, Some(format!("{error:#}"))),
+            }
+        } else {
+            match store.finish_commit(&action_id, false) {
+                Ok(receipt) => (false, Some(receipt), None),
+                Err(error) => (false, None, Some(format!("{error:#}"))),
+            }
         };
-        let committed = reconciled.get("count").and_then(Value::as_u64).unwrap_or(0) > baseline;
         Ok(json_result(&json!({
             "ok": committed,
             "status": if committed { "committed" } else { "commit_unknown" },
+            "action_id": action_id,
             "shortcode": shortcode,
             "url": url,
             "comment": text,
@@ -1100,10 +1279,24 @@ impl Tool for CommentTool {
             "platform_api_called": false,
             "submit_click_count": 1,
             "dispatch_error": dispatch_error,
+            "reconcile_error": reconcile_error,
+            "receipt_error": receipt_error,
+            "receipt": persisted_receipt,
             "baseline_exact_comment_count": baseline,
             "reconcile": reconciled,
         })))
     }
+}
+
+fn value_string_array(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
 }
 
 fn verified_instagram_write_target(target: &Value, shortcode: &str) -> Option<(f64, f64)> {
