@@ -116,6 +116,10 @@ test('content search recovers the canonical activity URL from the semantic card 
   assert.equal(results[0].title, 'Rayha Rehman');
   assert.equal(results[0].snippet, 'OpenAI agent safety analysis');
   assert.equal(typeof scripts.scrollComments, 'function');
+  assert.equal(typeof scripts.commentEditorTarget, 'function');
+  assert.equal(typeof scripts.commentDraftState, 'function');
+  assert.equal(typeof scripts.commentSubmitTarget, 'function');
+  assert.equal(typeof scripts.renderedCommentState, 'function');
 });
 
 test('semantic content search rejects unrelated and nested list items', () => {

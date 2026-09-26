@@ -1,6 +1,6 @@
 # LinkedIn research workflow
 
-Use LinkedIn for read-only people, company, relationship, and content research. Do not send invitations, messages, reactions, replies, or comments.
+Use LinkedIn for read-only people, company, relationship, and content research by default. It may comment only when the user explicitly requests the exact target post and comment content. Do not send invitations, messages, reactions, replies to comments, or connection requests.
 
 ## Search routes
 
@@ -25,6 +25,12 @@ Navigate to a route with `navigate_site`, then call `searchState` before trustin
 - Keep the returned canonical URL and stable profile/activity id with every note or citation. Never identify a result only by its visible position.
 - Preserve returned `image_url`, `avatar_url`, `logo_url`, and `media` HTTPS URLs in research output so the desktop can display linked previews or include them in Markdown/artifacts. Do not invent or substitute missing media.
 - Visible guest post pages can contain useful post text and comments even when a sign-in overlay is present. Trust `postDetail.ok`; use `pageState.login_gate_present` to disclose that additional content may be hidden.
+
+## Explicit comments
+
+- Use `comment` only for an explicit user-authorized write. Preserve the requested text and target; do not invent additional comments.
+- The command must verify the activity id, authenticated state, empty editor, exact draft, and owned submit geometry before clicking once.
+- If the exact text already exists, the command fails closed. Treat `commit_unknown` as unknown and never retry automatically.
 
 ## Common research tasks
 

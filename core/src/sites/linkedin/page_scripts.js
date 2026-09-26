@@ -28,6 +28,32 @@
     return rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
   }
 
+  function editableText(node, maxLength) {
+    if (!node) return '';
+    const raw = typeof node.value === 'string'
+      ? node.value
+      : node.innerText || node.textContent || '';
+    return String(raw).replace(/\r\n/g, '\n').slice(0, Math.max(0, Number(maxLength || 12000)));
+  }
+
+  function elementCenter(node) {
+    const rect = node.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  function ownedClickPoint(node) {
+    if (!inViewport(node)) return null;
+    const point = elementCenter(node);
+    const hit = document.elementFromPoint(point.x, point.y);
+    if (!hit || !(hit === node || node.contains(hit))) return null;
+    return point;
+  }
+
   function firstNode(root, selectors) {
     if (!root || !root.querySelector) return null;
     const scope = root;
@@ -251,6 +277,25 @@
     return activityIdFromText(raw) || activityIdFromReact(root);
   }
 
+  function activityIdFromRoot(root) {
+    if (!root) return '';
+    const ids = new Set();
+    const remember = (value) => {
+      const id = activityIdFromText(value);
+      if (id) ids.add(id);
+    };
+    remember(root.getAttribute('data-activity-urn'));
+    remember(root.getAttribute('data-featured-activity-urn'));
+    remember(root.getAttribute('data-urn'));
+    remember(root.getAttribute('data-id'));
+    for (const link of root.querySelectorAll('a[href*="/posts/"], a[href*="/feed/update/urn:li:"]')) {
+      remember(link.href || link.getAttribute('href'));
+    }
+    const reactId = activityIdFromReact(root);
+    if (reactId) ids.add(reactId);
+    return ids.size === 1 ? Array.from(ids)[0] : '';
+  }
+
   function activityUrl(id) {
     return id ? `https://www.linkedin.com/feed/update/urn:li:activity:${id}/` : '';
   }
@@ -354,6 +399,25 @@
       'a[href*="/mynetwork/"]',
       'a[href*="/messaging/"]',
     ]);
+  }
+
+  function currentCommentActor() {
+    const links = Array.from(document.querySelectorAll([
+      'nav a[href*="/in/"]',
+      'header a[href*="/in/"]',
+      '.global-nav__me a[href*="/in/"]',
+      'a[data-control-name="identity_welcome_message"][href*="/in/"]',
+    ].join(', '))).filter(visible);
+    const actors = new Map();
+    for (const link of links) {
+      const id = profileIdFromUrl(link.href || link.getAttribute('href'));
+      if (!id) continue;
+      actors.set(id, {
+        id,
+        display_name: cleanText(link.getAttribute('aria-label') || link, 500) || id,
+      });
+    }
+    return actors.size === 1 ? Array.from(actors.values())[0] : null;
   }
 
   function postRoot() {
@@ -1262,6 +1326,131 @@
     return output;
   }
 
+  // Write-action helpers are inspection-only. CDP owns pointer/keyboard input
+  // and enforces the one-shot submit policy in the Rust host.
+  function commentRoot(arg) {
+    const expected = cleanText(arg && (arg.post_id || arg.id) || '', 200);
+    if (!expected) return null;
+    const roots = [];
+    for (const selector of [
+      'article[data-activity-urn]', 'article[data-featured-activity-urn]',
+      'main article.feed-shared-update-v2', 'main [data-urn^="urn:li:activity:"]',
+      'main article', 'main [role="listitem"]',
+    ]) {
+      for (const root of document.querySelectorAll(selector)) {
+        if (!roots.includes(root) && activityIdFromRoot(root) === expected) roots.push(root);
+      }
+    }
+    return roots.length === 1 ? roots[0] : null;
+  }
+
+  function commentEditor(arg) {
+    const root = commentRoot(arg);
+    if (!root) return null;
+    const editors = Array.from(root.querySelectorAll([
+      '.comments-comment-box-comment__text-editor',
+      '.ql-editor[contenteditable="true"]',
+      '[contenteditable="true"][role="textbox"]',
+      'textarea',
+    ].join(', '))).filter((editor) => visible(editor)
+      && !editor.disabled
+      && editor.getAttribute('aria-disabled') !== 'true'
+      && !editor.readOnly);
+    const labelled = editors.filter((editor) => /(comment|add a comment|发表评论|添加评论|评论)/i.test(
+      `${editor.getAttribute('aria-label') || ''} ${editor.getAttribute('data-placeholder') || ''} ${editor.getAttribute('placeholder') || ''}`,
+    ));
+    const candidates = labelled.length ? labelled : editors;
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function commentEditorTarget(arg) {
+    const root = commentRoot(arg);
+    const editor = commentEditor(arg);
+    if (!root || !editor) return { ok: false, status: 'comment_editor_not_found' };
+    const point = ownedClickPoint(editor);
+    if (!point) return { ok: false, status: 'comment_editor_obscured' };
+    return {
+      ok: true,
+      status: 'comment_editor_ready',
+      post_id: activityIdFromRoot(root),
+      hit_owned: true,
+      ...point,
+    };
+  }
+
+  function commentDraftState(arg) {
+    const root = commentRoot(arg);
+    const editor = commentEditor(arg);
+    if (!root || !editor) return { ok: false, status: 'comment_editor_not_found', value: '' };
+    const active = document.activeElement;
+    return {
+      ok: true,
+      status: 'comment_editor_ready',
+      post_id: activityIdFromRoot(root),
+      focused: active === editor || editor.contains?.(active),
+      value: editableText(editor, 10000),
+    };
+  }
+
+  function commentSubmitTarget(arg) {
+    const root = commentRoot(arg);
+    const editor = commentEditor(arg);
+    if (!root || !editor) return { ok: false, status: 'comment_editor_not_found' };
+    const scopes = [];
+    for (let node = editor.parentElement, depth = 0; node && node !== root && depth < 8; node = node.parentElement, depth += 1) scopes.push(node);
+    let control = null;
+    for (const scope of scopes) {
+      const controls = Array.from(scope.querySelectorAll('button, [role="button"]'))
+        .filter((node) => visible(node)
+          && /^(comment|post|publish|send|评论|发表|发布|发送)$/i.test(cleanText(node, 100)));
+      if (controls.length > 1) return { ok: false, status: 'ambiguous_comment_submit' };
+      if (controls.length === 1) { control = controls[0]; break; }
+    }
+    if (!control || !inViewport(control)) return { ok: false, status: 'comment_submit_not_found' };
+    const point = ownedClickPoint(control);
+    const owned = !!point;
+    const disabled = !!control.disabled || control.getAttribute('aria-disabled') === 'true'
+      || /disabled/.test(String(control.className || ''));
+    return {
+      ok: !disabled && owned,
+      status: disabled ? 'comment_submit_disabled' : owned ? 'comment_submit_ready' : 'comment_submit_obscured',
+      post_id: activityIdFromRoot(root),
+      text: cleanText(control, 100),
+      disabled,
+      hit_owned: owned,
+      ...(point || elementCenter(control)),
+    };
+  }
+
+  function renderedCommentState(arg) {
+    const expected = cleanText(arg && arg.text || '', 10000);
+    if (!expected) return { ok: false, status: 'invalid_comment_text', visible: false, count: 0 };
+    const root = commentRoot(arg);
+    if (!root) return { ok: false, status: 'wrong_post', visible: false, count: 0 };
+    const actor = currentCommentActor();
+    if (!actor) return { ok: false, status: 'current_user_unknown', visible: false, count: 0, ids: [] };
+    const flattened = [];
+    const append = (items) => {
+      for (const item of items || []) {
+        flattened.push(item);
+        append(item.replies || []);
+      }
+    };
+    append(comments({ limit: 100 }));
+    const exact = flattened.filter((item) => cleanText(item.text, 10000) === expected);
+    const matches = exact.filter((item) => item.author_id === actor.id && item.comment_id);
+    return {
+      ok: true,
+      status: matches.length ? 'comment_visible' : 'comment_not_visible',
+      visible: matches.length > 0,
+      count: matches.length,
+      total_exact_count: exact.length,
+      ids: matches.map((item) => item.comment_id),
+      actor,
+      post_id: activityIdFromRoot(root),
+    };
+  }
+
   function commentTreeCount(items) {
     return items.reduce((count, item) => count + 1 + commentTreeCount(item.replies || []), 0);
   }
@@ -1310,6 +1499,10 @@
     relatedPeople,
     postDetail,
     comments,
+    commentEditorTarget,
+    commentDraftState,
+    commentSubmitTarget,
+    renderedCommentState,
     scrollComments,
   });
 })();

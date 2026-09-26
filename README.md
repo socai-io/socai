@@ -241,6 +241,7 @@ socai linkedin profile https://www.linkedin.com/in/<id>/
 socai linkedin history <id> --section experience
 socai linkedin company <company-id>
 socai linkedin get-posts --post https://www.linkedin.com/posts/<id> --num-comments 8
+socai linkedin comment https://www.linkedin.com/posts/<id> --text 'Exact comment text'
 ```
 
 Use `socai linkedin --help` for company, relationship, post, comment, and diagnostic commands.

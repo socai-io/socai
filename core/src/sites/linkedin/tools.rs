@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -6,6 +7,9 @@ use serde_json::{json, Value};
 use crate::agent::tool::ToolProgressSender;
 use crate::agent::{Backend as LlmProvider, Tool, ToolContext, ToolResult};
 use crate::cdp::PageSession;
+use crate::sites::actions::{
+    ActionActor, ActionPreview, ActionStore, ActionTarget, SocialActionKind, SocialActionStatus,
+};
 use crate::sites::registry::{
     required_string, ArgKind, BoxFuture, CommandArg, NativeSiteAdapter, SiteCommand, SlowWhen,
 };
@@ -41,6 +45,7 @@ fn linkedin_tools(page: Arc<PageSession>) -> Vec<Arc<dyn Tool>> {
         Arc::new(CompanyPeopleTool { page: page.clone() }),
         Arc::new(RelatedPeopleTool { page: page.clone() }),
         Arc::new(GetPostsTool { page: page.clone() }),
+        Arc::new(CommentTool { page: page.clone() }),
         Arc::new(PageStateTool { page }),
     ]
 }
@@ -278,6 +283,39 @@ pub static LINKEDIN_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
             run: run_get_posts,
         },
         SiteCommand {
+            name: "comment",
+            tool_name: "comment",
+            about: "Comment on one LinkedIn post using verified pointer and keyboard events.",
+            args: &[
+                CommandArg {
+                    key: "post",
+                    long: None,
+                    value_name: "URL",
+                    help: "Target LinkedIn /posts/ or /feed/update/ URL.",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "text",
+                    long: Some("text"),
+                    value_name: "TEXT",
+                    help: "Exact comment text. The command refuses to replace an existing draft.",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "wait_seconds",
+                    long: Some("wait-seconds"),
+                    value_name: "SECONDS",
+                    help: "Maximum wait for hydration and post-submit reconciliation. Defaults to 30.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_comment,
+        },
+        SiteCommand {
             name: "page_state",
             tool_name: "page_state",
             about: "Open or reuse LinkedIn and print page state as JSON.",
@@ -377,6 +415,15 @@ fn run_get_posts(
         "get-posts",
         "get_posts",
     )
+}
+
+fn run_comment(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
+    run_named(page, args, debug_snapshot, progress, "comment", "comment")
 }
 
 fn run_page_state(
@@ -816,6 +863,445 @@ impl Tool for GetPostsTool {
     }
 }
 
+struct CommentTool {
+    page: Arc<PageSession>,
+}
+
+#[async_trait]
+impl Tool for CommentTool {
+    fn name(&self) -> &str {
+        "comment"
+    }
+
+    fn description(&self) -> &str {
+        "Comment on an explicitly selected LinkedIn post with real CDP pointer and keyboard events. Refuses login gates, ambiguous editors, existing drafts or exact comments, route changes, and submit retries."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "post": { "type": "string" },
+                "text": { "type": "string", "minLength": 1, "maxLength": 10000 },
+                "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
+            },
+            "required": ["post", "text"]
+        })
+    }
+
+    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let locator = required_string(&input, "post")?;
+        let raw_text = input
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required argument: text"))?;
+        if raw_text.trim().is_empty() || raw_text.trim() != raw_text {
+            anyhow::bail!(
+                "comment text must be non-empty and have no leading or trailing whitespace"
+            );
+        }
+        let text = raw_text.to_string();
+        if text.chars().count() > 10_000 {
+            anyhow::bail!("comment text must contain at most 10000 characters");
+        }
+        let wait_seconds =
+            get_f64(&input, "wait_seconds", DEFAULT_WAIT_SECONDS).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
+        let url = linkedin_post_url(&locator)?;
+        let expected_post_id = linkedin_post_id_from_url(&url)
+            .ok_or_else(|| anyhow::anyhow!("LinkedIn post URL is missing an activity id"))?;
+        navigate_https(&self.page, &url).await?;
+        let detail =
+            wait_for_browser_tool(&self.page, SITE_ID, "postDetail", None, wait_seconds).await?;
+        let page_state =
+            crate::sites::learning::run_site_browser_tool(&self.page, SITE_ID, "pageState", None)
+                .await?;
+        if let Some(reason) = gate_reason(&page_state) {
+            return Ok(json_result(&failure_payload(
+                reason,
+                json!({ "post": locator, "url": url, "detail": detail, "page_state": page_state, "submit_click_count": 0 }),
+            )));
+        }
+        if page_state.get("ok").and_then(Value::as_bool) != Some(true)
+            || page_state.get("authenticated").and_then(Value::as_bool) != Some(true)
+            || page_state
+                .get("login_gate_present")
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            return Ok(json_result(&failure_payload(
+                "login_required",
+                json!({ "post": locator, "url": url, "detail": detail, "page_state": page_state, "submit_click_count": 0 }),
+            )));
+        }
+        let post_id = detail
+            .get("post_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if detail.get("ok").and_then(Value::as_bool) != Some(true) || post_id != expected_post_id {
+            return Ok(json_result(&failure_payload(
+                if detail.get("ok").and_then(Value::as_bool) == Some(true) {
+                    "wrong_post"
+                } else {
+                    detail
+                        .get("status")
+                        .or_else(|| detail.get("error"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("post_unavailable")
+                },
+                json!({ "post": locator, "expected_post_id": expected_post_id, "url": url, "detail": detail, "page_state": page_state, "submit_click_count": 0 }),
+            )));
+        }
+        let action_args = json!({ "post_id": post_id });
+        let rendered_args = json!({ "post_id": post_id, "text": text });
+        let before = crate::sites::learning::run_site_browser_tool(
+            &self.page,
+            SITE_ID,
+            "renderedCommentState",
+            Some(&rendered_args),
+        )
+        .await?;
+        if before.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Ok(json_result(&failure_payload(
+                before
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("comment_preflight_failed"),
+                json!({ "post_id": post_id, "url": url, "reconcile": before, "submit_click_count": 0 }),
+            )));
+        }
+        let actor_value = before.get("actor").cloned().unwrap_or(Value::Null);
+        let actor = ActionActor {
+            id: actor_value
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            display_name: actor_value
+                .get("display_name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        };
+        if actor.id.is_empty() || actor.display_name.is_empty() {
+            return Ok(json_result(&failure_payload(
+                "current_user_unknown",
+                json!({ "post_id": post_id, "url": url, "reconcile": before, "submit_click_count": 0 }),
+            )));
+        }
+        let target_url = format!("https://www.linkedin.com/feed/update/urn:li:activity:{post_id}/");
+        let idempotency_key = format!("linkedin:comment:{}:{post_id}:{text}", actor.id);
+        let store = ActionStore::open_default();
+        let mut receipt = store.create_draft(
+            &idempotency_key,
+            "linkedin",
+            SocialActionKind::Comment,
+            ActionTarget {
+                id: post_id.to_string(),
+                url: target_url,
+            },
+            actor.clone(),
+            ActionPreview {
+                text: Some(text.clone()),
+                evidence: Value::Null,
+            },
+        )?;
+        match receipt.status() {
+            SocialActionStatus::Committed | SocialActionStatus::Reconciled => {
+                return Ok(json_result(&json!({
+                    "ok": true, "status": receipt.status(), "action_id": receipt.action_id(),
+                    "idempotent_replay": true, "post_id": post_id, "url": url,
+                    "comment": text, "submit_click_count": 0, "receipt": receipt,
+                })));
+            }
+            SocialActionStatus::Committing | SocialActionStatus::CommitUnknown => {
+                let prior = receipt.precommit_target_ids().unwrap_or(&[]);
+                let observed = value_string_array(&before, "ids");
+                if let Some(new_id) = observed.iter().find(|id| !prior.contains(id)) {
+                    receipt = store.reconcile_committed(receipt.action_id(), new_id)?;
+                    return Ok(json_result(&json!({
+                        "ok": true, "status": "reconciled", "action_id": receipt.action_id(),
+                        "idempotent_replay": true, "post_id": post_id, "url": url,
+                        "comment": text, "submit_click_count": 0, "receipt": receipt,
+                    })));
+                }
+                return Ok(json_result(&json!({
+                    "ok": false, "status": "commit_unknown", "reason": "a submit attempt was already reserved; reconcile instead of retrying",
+                    "action_id": receipt.action_id(), "post_id": post_id, "url": url,
+                    "comment": text, "submit_click_count": 0, "receipt": receipt,
+                })));
+            }
+            SocialActionStatus::Prepared => {
+                receipt = store.reset_prepared(receipt.action_id(), &actor.id, post_id)?;
+            }
+            SocialActionStatus::Draft => {}
+        }
+        let baseline = before.get("count").and_then(Value::as_u64).unwrap_or(0);
+        if before
+            .get("total_exact_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        {
+            return Ok(json_result(&failure_payload(
+                "exact_comment_preexists",
+                json!({
+                    "post_id": post_id,
+                    "url": url,
+                    "comment": text,
+                    "submit_click_count": 0,
+                    "reconcile": before,
+                }),
+            )));
+        }
+
+        let editor = crate::sites::learning::run_site_browser_tool(
+            &self.page,
+            SITE_ID,
+            "commentEditorTarget",
+            Some(&action_args),
+        )
+        .await?;
+        let Some((editor_x, editor_y)) = verified_linkedin_write_target(&editor, post_id) else {
+            return Ok(json_result(&failure_payload(
+                editor
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("comment_editor_unavailable"),
+                json!({ "post_id": post_id, "url": url, "editor": editor, "submit_click_count": 0 }),
+            )));
+        };
+        self.page.click(editor_x, editor_y).await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let draft = crate::sites::learning::run_site_browser_tool(
+            &self.page,
+            SITE_ID,
+            "commentDraftState",
+            Some(&action_args),
+        )
+        .await?;
+        if draft.get("ok").and_then(Value::as_bool) != Some(true)
+            || draft.get("focused").and_then(Value::as_bool) != Some(true)
+            || !draft
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .is_empty()
+        {
+            return Ok(json_result(&failure_payload(
+                "comment_editor_not_empty_or_focused",
+                json!({ "post_id": post_id, "url": url, "draft": draft, "submit_click_count": 0 }),
+            )));
+        }
+        self.page.type_chars(&text).await?;
+        let typed_deadline = Instant::now() + Duration::from_secs(5);
+        let typed = loop {
+            let state = crate::sites::learning::run_site_browser_tool(
+                &self.page,
+                SITE_ID,
+                "commentDraftState",
+                Some(&action_args),
+            )
+            .await?;
+            if state.get("value").and_then(Value::as_str) == Some(text.as_str())
+                || Instant::now() >= typed_deadline
+            {
+                break state;
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        };
+        if typed.get("value").and_then(Value::as_str) != Some(text.as_str()) {
+            return Ok(json_result(&failure_payload(
+                "comment_draft_mismatch",
+                json!({ "post_id": post_id, "url": url, "draft": typed, "submit_click_count": 0 }),
+            )));
+        }
+
+        let final_page_state =
+            crate::sites::learning::run_site_browser_tool(&self.page, SITE_ID, "pageState", None)
+                .await?;
+        if final_page_state.get("ok").and_then(Value::as_bool) != Some(true)
+            || final_page_state
+                .get("authenticated")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || final_page_state
+                .get("login_gate_present")
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            return Ok(json_result(&failure_payload(
+                gate_reason(&final_page_state).unwrap_or("page_gate_before_submit"),
+                json!({ "post_id": post_id, "url": url, "page_state": final_page_state, "submit_click_count": 0 }),
+            )));
+        }
+        let final_detail =
+            crate::sites::learning::run_site_browser_tool(&self.page, SITE_ID, "postDetail", None)
+                .await?;
+        let final_draft = crate::sites::learning::run_site_browser_tool(
+            &self.page,
+            SITE_ID,
+            "commentDraftState",
+            Some(&action_args),
+        )
+        .await?;
+        let submit = crate::sites::learning::run_site_browser_tool(
+            &self.page,
+            SITE_ID,
+            "commentSubmitTarget",
+            Some(&action_args),
+        )
+        .await?;
+        let Some((submit_x, submit_y)) = verified_linkedin_write_target(&submit, post_id) else {
+            return Ok(json_result(&failure_payload(
+                submit
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("comment_submit_unavailable"),
+                json!({ "post_id": post_id, "url": url, "submit": submit, "submit_click_count": 0 }),
+            )));
+        };
+        if final_detail.get("ok").and_then(Value::as_bool) != Some(true)
+            || final_detail.get("post_id").and_then(Value::as_str) != Some(post_id)
+            || final_draft.get("value").and_then(Value::as_str) != Some(text.as_str())
+        {
+            return Ok(json_result(&failure_payload(
+                "volatile_state_changed_before_submit",
+                json!({ "post_id": post_id, "url": url, "page_state": final_page_state, "detail": final_detail, "draft": final_draft, "submit_click_count": 0 }),
+            )));
+        }
+
+        let final_rendered = crate::sites::learning::run_site_browser_tool(
+            &self.page,
+            SITE_ID,
+            "renderedCommentState",
+            Some(&rendered_args),
+        )
+        .await?;
+        if final_rendered.get("ok").and_then(Value::as_bool) != Some(true)
+            || final_rendered
+                .get("actor")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str)
+                != Some(actor.id.as_str())
+            || final_rendered
+                .get("total_exact_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 0
+        {
+            return Ok(json_result(&failure_payload(
+                "actor_or_comment_state_changed_before_submit",
+                json!({ "post_id": post_id, "url": url, "reconcile": final_rendered, "submit_click_count": 0 }),
+            )));
+        }
+        receipt = store.mark_prepared(receipt.action_id(), &actor.id, post_id, 300)?;
+        let precommit_ids = value_string_array(&final_rendered, "ids");
+        receipt = store.begin_commit(
+            receipt.action_id(),
+            &actor.id,
+            post_id,
+            precommit_ids.clone(),
+        )?;
+        let action_id = receipt.action_id().to_string();
+        let dispatch_error = self
+            .page
+            .click(submit_x, submit_y)
+            .await
+            .err()
+            .map(|error| format!("{error:#}"));
+        let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds);
+        let mut reconcile_error = None;
+        let mut reconciled = json!({ "ok": false, "status": "not_observed", "ids": [] });
+        loop {
+            match crate::sites::learning::run_site_browser_tool(
+                &self.page,
+                SITE_ID,
+                "renderedCommentState",
+                Some(&rendered_args),
+            )
+            .await
+            {
+                Ok(state) => {
+                    if state
+                        .get("actor")
+                        .and_then(|value| value.get("id"))
+                        .and_then(Value::as_str)
+                        != Some(actor.id.as_str())
+                    {
+                        reconcile_error =
+                            Some("signed-in actor changed after submit dispatch".to_string());
+                        reconciled = state;
+                        break;
+                    }
+                    let ids = value_string_array(&state, "ids");
+                    let found = ids.iter().any(|id| !precommit_ids.contains(id));
+                    reconciled = state;
+                    if found || Instant::now() >= deadline {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    reconcile_error = Some(format!("{error:#}"));
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let new_target_id = value_string_array(&reconciled, "ids")
+            .into_iter()
+            .find(|id| !precommit_ids.contains(id));
+        let (committed, persisted_receipt, receipt_error) = if let Some(new_id) = new_target_id {
+            match store.reconcile_committed(&action_id, &new_id) {
+                Ok(receipt) => (true, Some(receipt), None),
+                Err(error) => (false, None, Some(format!("{error:#}"))),
+            }
+        } else {
+            match store.finish_commit(&action_id, false) {
+                Ok(receipt) => (false, Some(receipt), None),
+                Err(error) => (false, None, Some(format!("{error:#}"))),
+            }
+        };
+        Ok(json_result(&json!({
+            "ok": committed,
+            "status": if committed { "committed" } else { "commit_unknown" },
+            "action_id": action_id,
+            "post_id": post_id,
+            "url": url,
+            "comment": text,
+            "interaction": "trusted_pointer_and_keyboard",
+            "platform_api_called": false,
+            "submit_click_count": 1,
+            "dispatch_error": dispatch_error,
+            "reconcile_error": reconcile_error,
+            "receipt_error": receipt_error,
+            "receipt": persisted_receipt,
+            "baseline_exact_comment_count": baseline,
+            "reconcile": reconciled,
+        })))
+    }
+}
+
+fn value_string_array(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+fn verified_linkedin_write_target(target: &Value, post_id: &str) -> Option<(f64, f64)> {
+    if target.get("ok").and_then(Value::as_bool) != Some(true)
+        || target.get("hit_owned").and_then(Value::as_bool) != Some(true)
+        || target.get("post_id").and_then(Value::as_str) != Some(post_id)
+    {
+        return None;
+    }
+    Some((target.get("x")?.as_f64()?, target.get("y")?.as_f64()?))
+}
+
 struct PageStateTool {
     page: Arc<PageSession>,
 }
@@ -945,7 +1431,13 @@ fn normalize_history_section(value: &str) -> anyhow::Result<&'static str> {
 fn linkedin_https_url(locator: &str) -> Option<String> {
     reqwest::Url::parse(locator.trim())
         .ok()
-        .filter(|url| url.scheme() == "https")
+        .filter(|url| {
+            let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+            url.scheme() == "https"
+                && url.username().is_empty()
+                && url.password().is_none()
+                && (host == "linkedin.com" || host.ends_with(".linkedin.com"))
+        })
         .map(|url| url.to_string())
 }
 
@@ -1033,8 +1525,31 @@ fn linkedin_related_url(locator: &str) -> anyhow::Result<String> {
 
 fn linkedin_post_url(locator: &str) -> anyhow::Result<String> {
     linkedin_https_url(locator)
-        .filter(|url| url.contains("/posts/") || url.contains("/feed/update/"))
+        .filter(|url| {
+            reqwest::Url::parse(url).ok().is_some_and(|parsed| {
+                let path = parsed.path();
+                path.starts_with("/posts/") || path.starts_with("/feed/update/")
+            })
+        })
         .ok_or_else(|| {
             anyhow::anyhow!("LinkedIn get-posts requires a /posts/ or /feed/update/ URL")
         })
+}
+
+fn linkedin_post_id_from_url(url: &str) -> Option<String> {
+    [
+        "activity-",
+        "urn:li:activity:",
+        "urn:li:ugcPost:",
+        "urn:li:share:",
+    ]
+    .into_iter()
+    .find_map(|marker| {
+        let suffix = url.split(marker).nth(1)?;
+        let id = suffix
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect::<String>();
+        (!id.is_empty()).then_some(id)
+    })
 }
