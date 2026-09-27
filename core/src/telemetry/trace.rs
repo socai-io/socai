@@ -43,6 +43,7 @@ use crate::agent::llm::{
     Block, LLMResponse, Message, MessageContent, MessageRole, TokenUsage, ToolResultContent,
 };
 use crate::agent::r#loop::THINKING_TEXT_PREFIX;
+use crate::agent::run_logging::write_bytes_atomic;
 use crate::agent::signature::md5_hex;
 
 /// Safety net for pathological runs; a default run (30 steps) stays far below.
@@ -439,7 +440,7 @@ impl RunTraceBuilder {
 
     fn write_trace_file(&self, payload: &Value) {
         if let Ok(bytes) = serde_json::to_vec(payload) {
-            let _ = std::fs::write(self.run_dir.join("trace.json"), bytes);
+            let _ = write_bytes_atomic(&self.run_dir.join("trace.json"), &bytes);
         }
     }
 }
@@ -486,10 +487,8 @@ pub fn mark_run_trace_status(run_dir: impl AsRef<Path>, status: &str) -> std::io
             attribute["value"] = json!({ "stringValue": status });
         }
     }
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&payload).map_err(std::io::Error::other)?,
-    )
+    let bytes = serde_json::to_vec(&payload).map_err(std::io::Error::other)?;
+    write_bytes_atomic(&path, &bytes)
 }
 
 /// Flatten a summarizer map (`summarize_tool_args` / `summarize_tool_result`)
@@ -850,7 +849,8 @@ const SECRET_JSON_FIELDS: [&str; 11] = [
 /// - `Bearer <token>` header values
 pub fn redact_secrets(text: &str) -> String {
     let text = redact_json_secret_fields(text);
-    redact_token_runs(&text)
+    let text = redact_token_runs(&text);
+    redact_secret_query_values(&text)
 }
 
 /// Recursively scrub every string inside a JSON value — used for structured
@@ -981,6 +981,60 @@ fn redact_token_runs(text: &str) -> String {
         i += step;
     }
     out
+}
+
+/// Scrub credentials embedded in URLs. These commonly appear in model-visible
+/// browser tool results as query parameters rather than structured JSON keys.
+fn redact_secret_query_values(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let match_at = SECRET_JSON_FIELDS
+            .iter()
+            .filter_map(|field| {
+                let parameter = format!("{field}=");
+                lower[cursor..]
+                    .match_indices(&parameter)
+                    .map(|(offset, _)| cursor + offset)
+                    .find(|&start| query_parameter_boundary(text.as_bytes(), start))
+                    .map(|start| (start, parameter))
+            })
+            .min_by_key(|(index, _)| *index);
+        let Some((start, parameter)) = match_at else {
+            out.push_str(&text[cursor..]);
+            break;
+        };
+        out.push_str(&text[cursor..start + parameter.len()]);
+        let value_start = start + parameter.len();
+        let value_len = text.as_bytes()[value_start..]
+            .iter()
+            .take_while(|&&byte| secret_query_value_byte(byte))
+            .count();
+        if value_len == 0 {
+            cursor = value_start;
+            continue;
+        }
+        out.push_str("[redacted]");
+        cursor = value_start + value_len;
+    }
+    out
+}
+
+fn query_parameter_boundary(bytes: &[u8], start: usize) -> bool {
+    start == 0
+        || matches!(
+            bytes[start - 1],
+            b'?' | b'&' | b';' | b',' | b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'' | b'\\'
+        )
+}
+
+fn secret_query_value_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'.' | b'_' | b'~' | b'+' | b'/' | b'-' | b'=' | b'%' | b':' | b'@'
+        )
 }
 
 fn token_run_len(bytes: &[u8], accept: impl Fn(u8) -> bool) -> usize {

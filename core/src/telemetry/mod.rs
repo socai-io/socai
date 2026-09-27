@@ -3,18 +3,23 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
+mod evidence;
 pub mod tool_call;
 pub mod trace;
 
 pub use trace::redact_secrets;
 
+use crate::agent::run_logging::{write_bytes_atomic, write_json_atomic};
+
 const EVENT_SCHEMA_VERSION: u32 = 1;
 const TELEMETRY_ENDPOINT: &str = "https://socai.io/v1/events";
 const TRACES_ENDPOINT: &str = "https://socai.io/v1/traces";
+const EVIDENCE_ENDPOINT: &str = "https://socai.io/v1/evidence";
 const CHANNEL_CAPACITY: usize = 512;
 const REMOTE_BATCH_SIZE: usize = 25;
 const REMOTE_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
@@ -23,6 +28,11 @@ const TRACE_UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const TRACE_RETRY_BATCH_SIZE: usize = 5;
 const TRACE_FILE_READY_RETRIES: usize = 20;
 const TRACE_FILE_READY_DELAY: Duration = Duration::from_millis(50);
+const EVIDENCE_BATCH_MAX_BYTES: usize = 512 * 1024;
+const EVIDENCE_BATCH_MAX_RECORDS: usize = 32;
+const EVIDENCE_UPLOAD_STATE_VERSION: u32 = 1;
+const EVIDENCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(60 * 60);
+const EVIDENCE_CONFIG_RETRY_MAX_DELAY: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Which socai surface is emitting telemetry. Carried verbatim into the `source`
 /// field of every event and used to decide which device context is meaningful
@@ -52,6 +62,7 @@ impl TelemetrySource {
 pub struct Telemetry {
     sender: mpsc::Sender<QueuedItem>,
     pending_trace_dir: PathBuf,
+    pending_evidence_dir: PathBuf,
 }
 
 #[derive(Debug)]
@@ -61,6 +72,16 @@ enum QueuedItem {
     TraceFile(PathBuf),
     /// Durable, identity-free copy under telemetry/pending-traces.
     PendingTrace(PathBuf),
+    /// Run directory whose finalized provider request artifacts are not ready.
+    EvidenceRun(PathBuf),
+    /// Durable, identity-free archive under telemetry/pending-evidence.
+    PendingEvidence(PathBuf),
+}
+
+#[derive(Debug)]
+enum EvidenceJob {
+    Run(PathBuf),
+    Pending(PathBuf),
 }
 
 #[derive(Debug)]
@@ -76,6 +97,7 @@ struct WorkerConfig {
     source: TelemetrySource,
     local_path: PathBuf,
     pending_trace_dir: PathBuf,
+    pending_evidence_dir: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +117,7 @@ impl Telemetry {
         let session_id = new_session_id();
         let local_path = home.join("telemetry/events.jsonl");
         let pending_trace_dir = home.join("telemetry/pending-traces");
+        let pending_evidence_dir = home.join("telemetry/pending-evidence");
 
         let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
         let config = WorkerConfig {
@@ -103,12 +126,14 @@ impl Telemetry {
             source,
             local_path,
             pending_trace_dir: pending_trace_dir.clone(),
+            pending_evidence_dir: pending_evidence_dir.clone(),
         };
         spawn_worker(receiver, config);
 
         Self {
             sender,
             pending_trace_dir,
+            pending_evidence_dir,
         }
     }
 
@@ -126,13 +151,23 @@ impl Telemetry {
     /// cancellation can call this just before the trace drop guard finishes;
     /// that source path is retried briefly by the worker.
     pub fn upload_run_trace(&self, run_dir: &Path) -> bool {
+        let (evidence_item, evidence_staged) = match evidence::stage_run_archive(
+            run_dir,
+            &self.pending_evidence_dir,
+            evidence_text_enabled(),
+        ) {
+            Ok(path) => (QueuedItem::PendingEvidence(path), true),
+            Err(_) => (QueuedItem::EvidenceRun(run_dir.to_path_buf()), false),
+        };
+        let _ = self.sender.try_send(evidence_item);
+
         let source = run_dir.join("trace.json");
         let (item, staged) = match stage_trace_file(&source, &self.pending_trace_dir) {
             Ok(path) => (QueuedItem::PendingTrace(path), true),
             Err(_) => (QueuedItem::TraceFile(source), false),
         };
         let _ = self.sender.try_send(item);
-        staged
+        staged && evidence_staged
     }
 }
 
@@ -171,6 +206,12 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerCon
         Err(_) => return,
     };
     let mut remote_batch: Vec<Value> = Vec::new();
+    let (evidence_sender, evidence_receiver) = mpsc::unbounded_channel();
+    tokio::spawn(evidence_worker_loop(
+        evidence_receiver,
+        client.clone(),
+        config.clone(),
+    ));
     let mut flush_tick = tokio::time::interval(REMOTE_FLUSH_INTERVAL);
     flush_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut trace_retry_tick = tokio::time::interval(TRACE_RETRY_INTERVAL);
@@ -202,6 +243,12 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerCon
                     QueuedItem::PendingTrace(path) => {
                         upload_pending_trace(&client, &config, &path).await;
                     }
+                    QueuedItem::EvidenceRun(run_dir) => {
+                        let _ = evidence_sender.send(EvidenceJob::Run(run_dir));
+                    }
+                    QueuedItem::PendingEvidence(path) => {
+                        let _ = evidence_sender.send(EvidenceJob::Pending(path));
+                    }
                 }
             }
             _ = flush_tick.tick() => {
@@ -216,6 +263,40 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerCon
     flush_remote(&client, &mut remote_batch).await;
 }
 
+async fn evidence_worker_loop(
+    mut receiver: mpsc::UnboundedReceiver<EvidenceJob>,
+    client: reqwest::Client,
+    config: WorkerConfig,
+) {
+    let mut retry_tick = tokio::time::interval(TRACE_RETRY_INTERVAL);
+    retry_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            maybe_job = receiver.recv() => {
+                let Some(job) = maybe_job else {
+                    break;
+                };
+                match job {
+                    EvidenceJob::Run(run_dir) => {
+                        if let Some(path) = stage_evidence_when_ready(
+                            &run_dir,
+                            &config.pending_evidence_dir,
+                        ).await {
+                            upload_pending_evidence(&client, &config, &path).await;
+                        }
+                    }
+                    EvidenceJob::Pending(path) => {
+                        upload_pending_evidence(&client, &config, &path).await;
+                    }
+                }
+            }
+            _ = retry_tick.tick() => {
+                retry_pending_evidence(&client, &config).await;
+            }
+        }
+    }
+}
+
 fn stage_trace_file(source: &Path, pending_dir: &Path) -> std::io::Result<PathBuf> {
     let bytes = std::fs::read(source)?;
     let payload: Value = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
@@ -223,12 +304,7 @@ fn stage_trace_file(source: &Path, pending_dir: &Path) -> std::io::Result<PathBu
         .ok_or_else(|| std::io::Error::other("trace.json has no root trace/span id"))?;
     std::fs::create_dir_all(pending_dir)?;
     let destination = pending_dir.join(format!("{key}.json"));
-    let temporary = pending_dir.join(format!("{key}.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temporary, bytes)?;
-    if destination.exists() {
-        let _ = std::fs::remove_file(&destination);
-    }
-    std::fs::rename(&temporary, &destination)?;
+    write_bytes_atomic(&destination, &bytes)?;
     Ok(destination)
 }
 
@@ -259,6 +335,19 @@ async fn stage_trace_file_when_ready(source: &Path, pending_dir: &Path) -> Optio
     None
 }
 
+async fn stage_evidence_when_ready(run_dir: &Path, pending_dir: &Path) -> Option<PathBuf> {
+    for attempt in 0..TRACE_FILE_READY_RETRIES {
+        match evidence::stage_run_archive(run_dir, pending_dir, evidence_text_enabled()) {
+            Ok(path) => return Some(path),
+            Err(_) if attempt + 1 < TRACE_FILE_READY_RETRIES => {
+                tokio::time::sleep(TRACE_FILE_READY_DELAY).await;
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 async fn retry_pending_traces(client: &reqwest::Client, config: &WorkerConfig) {
     let Ok(mut entries) = tokio::fs::read_dir(&config.pending_trace_dir).await else {
         return;
@@ -278,6 +367,38 @@ async fn retry_pending_traces(client: &reqwest::Client, config: &WorkerConfig) {
     }
 }
 
+async fn retry_pending_evidence(client: &reqwest::Client, config: &WorkerConfig) {
+    let Ok(mut entries) = tokio::fs::read_dir(&config.pending_evidence_dir).await else {
+        return;
+    };
+    let now = now_ms();
+    let mut paths: Vec<(u64, u64, PathBuf)> = Vec::new();
+    loop {
+        let Ok(Some(entry)) = entries.next_entry().await else {
+            break;
+        };
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            let next_attempt = upload_state_next_attempt(&path).unwrap_or_default();
+            if next_attempt > now {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .await
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |duration| duration.as_millis() as u64);
+            paths.push((next_attempt, modified, path));
+        }
+    }
+    paths.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    for (_, _, path) in paths.into_iter().take(TRACE_RETRY_BATCH_SIZE) {
+        upload_pending_evidence(client, config, &path).await;
+    }
+}
+
 /// Append identity resource attributes and POST one durable pending trace.
 /// The spool file is removed only after the proxy acknowledges the handoff.
 async fn upload_pending_trace(client: &reqwest::Client, config: &WorkerConfig, path: &Path) {
@@ -294,6 +415,405 @@ async fn upload_pending_trace(client: &reqwest::Client, config: &WorkerConfig, p
     if response.status().is_success() {
         let _ = tokio::fs::remove_file(path).await;
     }
+}
+
+#[derive(Debug)]
+enum EvidencePostResult {
+    Accepted,
+    Retryable {
+        status: Option<u16>,
+        error_code: String,
+        retry_after: Option<Duration>,
+    },
+    Permanent {
+        status: Option<u16>,
+        error_code: String,
+    },
+}
+
+/// Upload content and request manifests first, then the terminal commit. Batch
+/// progress is checkpointed after every ack; permanent payload errors move the
+/// archive to `dead/`, while transient failures retain it with a retry time.
+async fn upload_pending_evidence(client: &reqwest::Client, config: &WorkerConfig, path: &Path) {
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return;
+    };
+    let archive_sha256 = sha256_hex(&bytes);
+    let Ok(payload) = serde_json::from_slice::<Value>(&bytes) else {
+        quarantine_pending_evidence(path, None, "invalid_local_json", None);
+        return;
+    };
+    let Some(evaluation_id) = payload.get("evaluation_id").and_then(Value::as_str) else {
+        quarantine_pending_evidence(path, None, "missing_evaluation_id", None);
+        return;
+    };
+    let Some(records) = payload.get("records").and_then(Value::as_array) else {
+        quarantine_pending_evidence(path, Some(evaluation_id), "missing_records", None);
+        return;
+    };
+
+    let mut body_records = Vec::new();
+    let mut commits = Vec::new();
+    for record in records {
+        let mut record = record.clone();
+        enrich_evidence_record(&mut record, config);
+        if record.get("record_type").and_then(Value::as_str) == Some("turn_commit") {
+            commits.push(record);
+        } else {
+            body_records.push(record);
+        }
+    }
+    if commits.len() != 1 {
+        quarantine_pending_evidence(path, Some(evaluation_id), "invalid_commit_count", None);
+        return;
+    }
+    let Ok(mut batches) = build_evidence_batches(evaluation_id, body_records) else {
+        quarantine_pending_evidence(path, Some(evaluation_id), "unbatchable_archive", None);
+        return;
+    };
+    let Ok(commit_batches) = build_evidence_batches(evaluation_id, commits) else {
+        quarantine_pending_evidence(path, Some(evaluation_id), "unbatchable_commit", None);
+        return;
+    };
+    if commit_batches.len() != 1 {
+        quarantine_pending_evidence(path, Some(evaluation_id), "invalid_commit_batch", None);
+        return;
+    }
+    batches.extend(commit_batches);
+
+    let mut state = load_evidence_upload_state(path, &archive_sha256);
+    let mut next_batch = state
+        .get("next_batch_index")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as usize;
+    if next_batch > batches.len() {
+        quarantine_pending_evidence(path, Some(evaluation_id), "invalid_batch_checkpoint", None);
+        return;
+    }
+
+    while next_batch < batches.len() {
+        let batch = batches[next_batch].clone();
+        match post_evidence_batch(client, evaluation_id, next_batch, batches.len(), batch).await {
+            EvidencePostResult::Accepted => {
+                next_batch += 1;
+                state["next_batch_index"] = json!(next_batch);
+                state["attempt_count"] = json!(0);
+                state["next_attempt_at_ms"] = json!(0);
+                state["last_http_status"] = Value::Null;
+                state["last_error_code"] = Value::Null;
+                state["last_attempt_at_ms"] = json!(now_ms());
+                if write_json_atomic(&evidence_state_path(path), &state).is_err() {
+                    return;
+                }
+            }
+            EvidencePostResult::Retryable {
+                status,
+                error_code,
+                retry_after,
+            } => {
+                let attempts = state
+                    .get("attempt_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default()
+                    .saturating_add(1);
+                let delay = retry_after.unwrap_or_else(|| evidence_retry_delay(attempts, status));
+                state["attempt_count"] = json!(attempts);
+                state["next_attempt_at_ms"] =
+                    json!(now_ms().saturating_add(delay.as_millis() as u64));
+                state["last_http_status"] = status.map_or(Value::Null, |value| json!(value));
+                state["last_error_code"] = json!(error_code);
+                state["last_attempt_at_ms"] = json!(now_ms());
+                let _ = write_json_atomic(&evidence_state_path(path), &state);
+                return;
+            }
+            EvidencePostResult::Permanent { status, error_code } => {
+                quarantine_pending_evidence(path, Some(evaluation_id), &error_code, status);
+                report_evidence_quarantined(client, config, evaluation_id, &error_code, status)
+                    .await;
+                return;
+            }
+        }
+    }
+    let _ = tokio::fs::remove_file(path).await;
+    let _ = tokio::fs::remove_file(evidence_state_path(path)).await;
+}
+
+fn build_evidence_batches(
+    evaluation_id: &str,
+    records: Vec<Value>,
+) -> std::io::Result<Vec<Vec<Value>>> {
+    let mut batches = Vec::new();
+    let mut batch: Vec<Value> = Vec::new();
+    let envelope_base = evidence_envelope_len(evaluation_id, &[])?;
+    let mut batch_bytes = envelope_base;
+    for record in records {
+        let record_bytes = serde_json::to_vec(&record)
+            .map_err(std::io::Error::other)?
+            .len();
+        let separator_bytes = usize::from(!batch.is_empty());
+        let should_flush = batch.len() >= EVIDENCE_BATCH_MAX_RECORDS
+            || batch_bytes + separator_bytes + record_bytes > EVIDENCE_BATCH_MAX_BYTES;
+        if should_flush && !batch.is_empty() {
+            batches.push(std::mem::take(&mut batch));
+            batch_bytes = envelope_base;
+        }
+        if batch_bytes + record_bytes > EVIDENCE_BATCH_MAX_BYTES {
+            return Err(std::io::Error::other(
+                "one evidence record exceeds the client batch byte limit",
+            ));
+        }
+        if !batch.is_empty() {
+            batch_bytes += 1;
+        }
+        batch_bytes += record_bytes;
+        batch.push(record);
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    Ok(batches)
+}
+
+fn evidence_envelope_len(evaluation_id: &str, records: &[Value]) -> std::io::Result<usize> {
+    serde_json::to_vec(&json!({
+        "schema_version": evidence::SCHEMA_VERSION,
+        "evaluation_id": evaluation_id,
+        "records": records,
+    }))
+    .map(|body| body.len())
+    .map_err(std::io::Error::other)
+}
+
+async fn post_evidence_batch(
+    client: &reqwest::Client,
+    evaluation_id: &str,
+    batch_index: usize,
+    batch_count: usize,
+    records: Vec<Value>,
+) -> EvidencePostResult {
+    let expected = records.len() as u64;
+    let batch_sha256 = match serde_json::to_vec(&records) {
+        Ok(bytes) => sha256_hex(&bytes),
+        Err(_) => {
+            return EvidencePostResult::Permanent {
+                status: None,
+                error_code: "batch_serialization_failed".to_string(),
+            }
+        }
+    };
+    let body = json!({
+        "schema_version": evidence::SCHEMA_VERSION,
+        "evaluation_id": evaluation_id,
+        "batch_index": batch_index,
+        "batch_count": batch_count,
+        "batch_sha256": batch_sha256,
+        "records": records,
+    });
+    let Ok(response) = client.post(evidence_endpoint()).json(&body).send().await else {
+        return EvidencePostResult::Retryable {
+            status: None,
+            error_code: "network_error".to_string(),
+            retry_after: None,
+        };
+    };
+    let status = response.status();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs);
+    if !status.is_success() {
+        let error_body = response.json::<Value>().await.unwrap_or(Value::Null);
+        let error_code = error_body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("http_error")
+            .chars()
+            .take(120)
+            .collect::<String>();
+        let status_code = status.as_u16();
+        if matches!(status_code, 400 | 405 | 413 | 422) {
+            return EvidencePostResult::Permanent {
+                status: Some(status_code),
+                error_code,
+            };
+        }
+        return EvidencePostResult::Retryable {
+            status: Some(status_code),
+            error_code,
+            retry_after,
+        };
+    }
+    let Ok(ack) = response.json::<Value>().await else {
+        return EvidencePostResult::Retryable {
+            status: Some(status.as_u16()),
+            error_code: "invalid_proxy_ack".to_string(),
+            retry_after: None,
+        };
+    };
+    let accepted = ack.get("ok").and_then(Value::as_bool) == Some(true)
+        && ack.get("accepted").and_then(Value::as_u64) == Some(expected)
+        && ack.get("batch_sha256").and_then(Value::as_str) == Some(batch_sha256.as_str());
+    if accepted {
+        EvidencePostResult::Accepted
+    } else {
+        EvidencePostResult::Retryable {
+            status: Some(status.as_u16()),
+            error_code: "proxy_ack_mismatch".to_string(),
+            retry_after: None,
+        }
+    }
+}
+
+fn enrich_evidence_record(record: &mut Value, config: &WorkerConfig) {
+    let Some(object) = record.as_object_mut() else {
+        return;
+    };
+    object.insert("source".into(), json!(config.source.as_str()));
+    object.insert("install_id".into(), json!(config.install_id));
+}
+
+fn evidence_state_path(path: &Path) -> PathBuf {
+    path.with_extension("state")
+}
+
+fn default_evidence_upload_state(archive_sha256: &str) -> Value {
+    json!({
+        "schema_version": EVIDENCE_UPLOAD_STATE_VERSION,
+        "archive_sha256": archive_sha256,
+        "next_batch_index": 0,
+        "attempt_count": 0,
+        "next_attempt_at_ms": 0,
+        "last_http_status": null,
+        "last_error_code": null,
+        "last_attempt_at_ms": null,
+    })
+}
+
+fn load_evidence_upload_state(path: &Path, archive_sha256: &str) -> Value {
+    let state_path = evidence_state_path(path);
+    let Ok(bytes) = std::fs::read(state_path) else {
+        return default_evidence_upload_state(archive_sha256);
+    };
+    let Ok(state) = serde_json::from_slice::<Value>(&bytes) else {
+        return default_evidence_upload_state(archive_sha256);
+    };
+    if state.get("schema_version").and_then(Value::as_u64)
+        != Some(EVIDENCE_UPLOAD_STATE_VERSION as u64)
+        || state.get("archive_sha256").and_then(Value::as_str) != Some(archive_sha256)
+    {
+        return default_evidence_upload_state(archive_sha256);
+    }
+    state
+}
+
+fn upload_state_next_attempt(path: &Path) -> Option<u64> {
+    let bytes = std::fs::read(evidence_state_path(path)).ok()?;
+    let state = serde_json::from_slice::<Value>(&bytes).ok()?;
+    state.get("next_attempt_at_ms").and_then(Value::as_u64)
+}
+
+fn evidence_retry_delay(attempts: u64, status: Option<u16>) -> Duration {
+    let configuration_error = matches!(status, Some(401 | 403 | 404));
+    let base_secs: u64 = if configuration_error { 5 * 60 } else { 30 };
+    let max_delay = if configuration_error {
+        EVIDENCE_CONFIG_RETRY_MAX_DELAY
+    } else {
+        EVIDENCE_RETRY_MAX_DELAY
+    };
+    let exponent = attempts.saturating_sub(1).min(10) as u32;
+    let seconds = base_secs.saturating_mul(1u64 << exponent);
+    let jitter_ms = (uuid::Uuid::new_v4().as_u128() % 1000) as u64;
+    Duration::from_secs(seconds.min(max_delay.as_secs())) + Duration::from_millis(jitter_ms)
+}
+
+fn quarantine_pending_evidence(
+    path: &Path,
+    evaluation_id: Option<&str>,
+    error_code: &str,
+    status: Option<u16>,
+) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let dead_dir = parent.join("dead");
+    if std::fs::create_dir_all(&dead_dir).is_err() {
+        return;
+    }
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("evidence.json");
+    let mut destination = dead_dir.join(name);
+    if destination.exists() {
+        destination = dead_dir.join(format!(
+            "{}.{}.json",
+            name.trim_end_matches(".json"),
+            now_ms()
+        ));
+    }
+    if std::fs::rename(path, &destination).is_err() {
+        return;
+    }
+    let old_state = evidence_state_path(path);
+    let _ = std::fs::remove_file(&old_state);
+    let reason_path = destination.with_extension("reason.json");
+    let _ = write_json_atomic(
+        &reason_path,
+        &json!({
+            "evaluation_id": evaluation_id,
+            "error_code": error_code.chars().take(120).collect::<String>(),
+            "http_status": status,
+            "quarantined_at_ms": now_ms(),
+        }),
+    );
+    eprintln!(
+        "quarantined evidence spool {} after permanent error {}",
+        destination.display(),
+        error_code
+    );
+}
+
+async fn report_evidence_quarantined(
+    client: &reqwest::Client,
+    config: &WorkerConfig,
+    evaluation_id: &str,
+    error_code: &str,
+    status: Option<u16>,
+) {
+    if cfg!(test) {
+        return;
+    }
+    let properties = enrich_properties(
+        json!({
+            "evaluation_id": evaluation_id,
+            "error_code": error_code.chars().take(120).collect::<String>(),
+            "http_status": status,
+        }),
+        config,
+        now_ms(),
+    );
+    let event = remote_event(
+        "socai_evidence_upload_quarantined",
+        &config.install_id,
+        &properties,
+    );
+    let _ = client
+        .post(TELEMETRY_ENDPOINT)
+        .json(&json!({ "events": [event] }))
+        .send()
+        .await;
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
 }
 
 /// The on-disk trace stays identity-free so run dirs can be shared; the
@@ -352,6 +872,15 @@ fn traces_endpoint() -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| TRACES_ENDPOINT.to_string())
+}
+
+/// `SOCAI_EVIDENCE_ENDPOINT` overrides the production evidence proxy.
+fn evidence_endpoint() -> String {
+    std::env::var("SOCAI_EVIDENCE_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| EVIDENCE_ENDPOINT.to_string())
 }
 
 fn enrich_properties(properties: Value, config: &WorkerConfig, timestamp_ms: u64) -> Value {
@@ -484,6 +1013,16 @@ pub fn chat_text_enabled() -> bool {
         "SOCAI_TELEMETRY_CHAT_TEXT",
         &["0", "false", "off", "disabled", "no"],
     )
+}
+
+/// Evidence content follows the chat-text privacy gate and has a narrower
+/// opt-out for operators who still want bounded traces without full tool data.
+pub fn evidence_text_enabled() -> bool {
+    chat_text_enabled()
+        && !env_value_is(
+            "SOCAI_TELEMETRY_EVIDENCE",
+            &["0", "false", "off", "disabled", "no"],
+        )
 }
 
 fn device_info() -> &'static DeviceInfo {

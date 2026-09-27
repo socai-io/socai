@@ -38,6 +38,7 @@ The session root is `SOCAI_SESSIONS_DIR`, then `SOCAI_HOME/sessions`, then
 ├── report.md
 ├── llm/
 │   ├── 001.request.json
+│   ├── 001.request.meta.json
 │   ├── 001.response.json
 │   └── ...
 └── tools/
@@ -61,6 +62,11 @@ Each `llm/NNN.request.json` is the actual JSON body sent after context
 preparation and provider-specific translation, excluding authentication
 headers. Its shape therefore follows the active API (Anthropic Messages,
 OpenAI-compatible Chat Completions, or Responses).
+
+The adjacent `llm/NNN.request.meta.json` contains no prompt or tool content. It
+records the request artifact schema, provider wire format, and explicit
+`prepared` / `accepted` / `failed` outcome so post-run consumers do not have to
+infer those load-bearing facts from a future request/response shape.
 
 The matching response contains text, exposed reasoning, tool calls, stop
 reason, normalized `usage`, the provider's original `usage` object, request

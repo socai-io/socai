@@ -16,6 +16,7 @@ anyhow.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
 base64.workspace = true
+sha2.workspace = true
 dirs = "5"
 libc.workspace = true
 uuid = { version = "1", features = ["v4"] }
@@ -25,7 +26,6 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # Pure-Rust mp4 demux for managed ASR. Local Whisper decodes in the bundled
 # helper so the core only needs the existing MP4 container support.
 symphonia = { version = "0.5", default-features = false, features = ["isomp4"] }
-sha2 = "0.10"
 fs2 = "0.4"
 # Local OCR engine (PP-OCRv6 tiny via ONNX Runtime). Default features pull a
 # prebuilt ONNX Runtime at build time (download-binaries) + SIMD CPU kernels.
