@@ -24,6 +24,8 @@
 
 ## Blog
 
+- [What local means for a social research agent](https://socai.io/blog/jev-social-privacy-boundary/)
+- [本地浏览器 Agent 并不等于离线：Jev Social 的数据流](https://socai.io/blog/zh/jev-social-privacy-boundary/)
 - [How to benchmark a social browser agent](https://socai.io/blog/benchmark-social-browser-agent/)
 - [怎么给社交媒体 Agent 做基准测试](https://socai.io/blog/zh/benchmark-social-browser-agent/)
 - [How to use Jev for social media](https://socai.io/blog/jev-social-media-automation/)
