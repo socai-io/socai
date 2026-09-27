@@ -1296,6 +1296,7 @@ impl<'a> XhsPageRuntime<'a> {
                     candidate
                 }
             },
+            avatar_url: string_field(&info, "avatar_url"),
             bio: string_field(&info, "bio"),
             ip_location: string_field(&info, "ip_location"),
             verified: info
@@ -1572,8 +1573,8 @@ impl<'a> XhsPageRuntime<'a> {
         Ok(parse_cards(&raw))
     }
 
-    /// Extract just the author header (display name, xhs id, bio, IP location,
-    /// follower/following/like counts) from the current profile page.
+    /// Extract just the author header (display name, xhs id, avatar, bio, IP
+    /// location, follower/following/like counts) from the current profile page.
     pub async fn profile_info(&self) -> Result<Value> {
         self.expect_object("profileInfo", None).await
     }

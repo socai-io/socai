@@ -1123,6 +1123,7 @@ const SocaiXhsPageScripts = (() => {
       display_name: displayName,
       xhs_id: xhsId,
       profile_url: location.href,
+      avatar_url: profileAvatarUrl(),
       bio,
       ip_location: ipLocation,
       verified: verification.verified,
@@ -1131,6 +1132,24 @@ const SocaiXhsPageScripts = (() => {
       following: statText('关注'),
       likes_and_collections: statText('获赞与收藏|获赞|赞与收藏'),
     };
+  }
+
+  // The profile header avatar. Scoped to the `.user-info` header so the
+  // signed-in account's sidebar avatar and the note cards' 60px author
+  // thumbnails can never be picked up instead. The page serves a resized
+  // (and sometimes blurred) CDN variant; dropping the `imageView2` /
+  // `imageMogr2` transform query yields the original upload.
+  function profileAvatarUrl() {
+    const img = $$(
+      '.user-info .avatar-wrapper img.user-image, .user-info .avatar img, .basic-info .avatar img',
+      document,
+    ).find((el) => (el.currentSrc || el.src || '').trim());
+    if (!img) return '';
+    const value = absUrl(img.currentSrc || img.src);
+    if (!/^https?:\/\//i.test(value)) return '';
+    return value
+      .replace(/^http:\/\//i, 'https://')
+      .replace(/\?(?:imageView2|imageMogr2)\/.*$/i, '');
   }
 
   function profileCards() {

@@ -357,8 +357,8 @@ pub static XHS_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
         SiteCommand {
             name: "author",
             tool_name: "author_scan",
-            about: "Open a Xiaohongshu author's profile and print their header (bio, xhs id, \
-                    IP location, follower/following/like counts) plus their notes. By default \
+            about: "Open a Xiaohongshu author's profile and print their header (avatar, bio, \
+                    xhs id, IP location, follower/following/like counts) plus their notes. By default \
                     opens each note for its body + top comments; with --preview, returns only \
                     the note cards.",
             args: &[
@@ -5595,7 +5595,7 @@ impl Tool for SearchTool {
 ///
 /// Composite macro mirroring `search`, but entered from an author's profile
 /// page instead of a search query: open `…/user/profile/<id>` → read the author
-/// header (bio, xhs id, IP location, follower/following/like counts) → collect
+/// header (avatar, bio, xhs id, IP location, follower/following/like counts) → collect
 /// note summary cards in page order (scrolling to reach `num_notes`) → by
 /// default open each note and read its body + top comments. With `preview =
 /// true` it returns the note cards only, without opening any note — the fast
@@ -5622,7 +5622,7 @@ impl Tool for AuthorScanTool {
 
     fn description(&self) -> &str {
         "Xiaohongshu author/creator scan: open an author's profile page by id → \
-         read the author header (display name, xhs id, bio, IP location, \
+         read the author header (display name, xhs id, avatar url, bio, IP location, \
          official-verification/认证 status when present, \
          follower/following/liked-&-collected counts) → collect their note \
          summary cards in page order (pass `num_notes` to scroll the grid for \
@@ -5779,6 +5779,7 @@ impl Tool for AuthorScanTool {
             display_name: display_name.clone(),
             xhs_id: get_str(&info, "xhs_id").unwrap_or("").to_string(),
             profile_url,
+            avatar_url: get_str(&info, "avatar_url").unwrap_or("").to_string(),
             bio: get_str(&info, "bio").unwrap_or("").to_string(),
             ip_location: get_str(&info, "ip_location").unwrap_or("").to_string(),
             verified: info

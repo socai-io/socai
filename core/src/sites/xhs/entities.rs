@@ -58,6 +58,9 @@ pub struct XhsAuthorProfile {
     pub display_name: String,
     pub xhs_id: String,
     pub profile_url: String,
+    /// Original-size profile avatar (CDN transform query stripped). Empty
+    /// when the header did not render one.
+    pub avatar_url: String,
     pub bio: String,
     pub ip_location: String,
     /// Official-verification (认证) badge on the profile header: `verified`
@@ -79,6 +82,11 @@ impl XhsAuthorProfile {
         map.insert("title".into(), json!(self.display_name));
         map.insert("xhs_id".into(), json!(self.xhs_id));
         map.insert("url".into(), json!(normalize_url(&self.profile_url)));
+        // Emitted only when captured: an empty avatar would read as a real
+        // (missing) image to consumers that render it.
+        if !self.avatar_url.is_empty() {
+            map.insert("avatar_url".into(), json!(self.avatar_url));
+        }
         map.insert("bio".into(), json!(self.bio));
         map.insert("ip_location".into(), json!(self.ip_location));
         // Official verification is the exception to always-emit: absent for
