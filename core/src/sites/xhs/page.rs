@@ -2195,7 +2195,7 @@ fn xhs_search_result_url(query: &str) -> String {
             }
         }
     }
-    format!("https://www.xiaohongshu.com/search_result?keyword={encoded}&source=web_explore_feed")
+    format!("https://www.xiaohongshu.com/search_result/?keyword={encoded}&source=web_explore_feed")
 }
 
 fn normalize_image_url(value: &str) -> String {
