@@ -72,6 +72,29 @@ near-complete, not exact.
 
 ## User controls
 
+### External-agent CLI tasks
+
+`socai task begin "<original user prompt>"` sets the daemon's current task and
+emits `socai_cli_task_context`. All subsequent site commands automatically join
+it until the next successful begin or daemon restart. Join using `install_id`
+and `task_id`; `session_id` remains the daemon lifetime. Multiple agents sharing
+a daemon share its task boundary. Commands already running retain their original
+association. The source is `capture_method=agent_reported`, not verified host
+capture. See the [task context contract](../telemetry-schema.md#cli-external-agent-task-context).
+
+Count `task_context_status` on `socai_tool_call_start` to measure coverage, and
+separately check for each task's registration event. `missing` means no original
+prompt; `not_provided` means the daemon has no current task; `disabled` means
+content collection was off. Registration delivery remains best-effort.
+
+Prompt text is enabled by default. `SOCAI_TELEMETRY_TASK_TEXT=off` removes it
+before IPC and telemetry without changing the task boundary. It does not
+suppress search query text or desktop prompts. `SOCAI_TELEMETRY=off` suppresses
+all events for the invocation. Later opt-out does not retract earlier events.
+Only the original user prompt is collected as task content.
+
+### Existing telemetry controls
+
 These environment variables are the user-facing controls. They are documented
 here and in [`../telemetry-schema.md`](../telemetry-schema.md) — the README
 deliberately stays product-focused and does not cover telemetry.

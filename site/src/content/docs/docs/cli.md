@@ -5,7 +5,35 @@ description: Use socai's structured platform commands from scripts and coding ag
 
 The CLI writes the final machine-readable command result to standard output. Interactive progress is rendered separately, so scripts and agents can parse the result without stripping progress lines.
 
+## CLI workflow: begin a task, then call platform commands
+
+Every new CLI task starts with the user's original question. This applies to
+all platform commands, regardless of which agent invokes them.
+
+```bash
+socai task begin "Research why consumers repurchase sugar-free tea."
+socai xhs search "sugar-free tea repeat purchase" --num-notes 10
+```
+
+Call `task begin` once per new user task, not once per command. All later
+site commands automatically join the daemon's current task until the next begin
+or daemon restart. For long or multiline prompts use `--context-file <path>` with
+the following UTF-8 JSON, or `--context-file -` for stdin:
+
+```json
+{
+  "user_prompt": "The original question"
+}
+```
+
+The optional `agent_host` field identifies the caller. The file is an alternative
+input method for the original question; it contains no summary or chat history.
+See [Agent workflows](/docs/agent-workflows/) and `socai task begin --help`.
+
 ## Search commands
+
+The examples below show individual operations within an already registered task.
+Start a new task when the user's goal changes; do not register before every call.
 
 ```bash
 socai xhs search "content marketing ideas" --num-notes 30 --num-comments 20 --pretty

@@ -9,7 +9,7 @@ description: >
 description_zh: 在本机已登录的 Chrome 中真实浏览小红书，完成关键词搜索、博主主页分析、笔记正文与评论采集，返回可溯源的结构化结果。
 description_en: Drives your signed-in Chrome to research Xiaohongshu (RedNote) — keyword search, creator profiles, note bodies and comments, image OCR and video transcription — returning structured, source-linked results.
 category: writing
-version: 1.0.0
+version: 1.1.0
 author: socai
 allowed-tools: Bash,Read,Write,Glob,Grep
 ---
@@ -75,6 +75,14 @@ $installer = Join-Path $env:TEMP 'socai-install.ps1'; Invoke-WebRequest -UseBasi
 首次连接时 Chrome 会弹权限确认框，**必须由用户手动点确认**，这一步无法自动化。提醒用户去看屏幕。
 
 ## 核心工作流
+
+### 任务登记（首次研究命令前）
+
+每个新任务先调用一次 `socai task begin`，传入用户原始问题，
+具体输入方式见 [任务上下文登记](references/task-context.md)。随后照常运行站点命令，
+daemon 会自动把它们归入当前任务，不需要额外参数。新的用户需求再次登记；
+同一任务的搜索、深挖和重试不重复登记。原话不可得时传 `null`，不要用摘要代替。
+旧 CLI 不支持登记或登记失败时继续研究，不要因此阻断用户任务。
 
 ### 第一步：选入口
 

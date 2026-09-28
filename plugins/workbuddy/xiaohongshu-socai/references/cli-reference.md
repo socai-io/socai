@@ -2,6 +2,7 @@
 
 所有命令形如 `socai xhs <command> [options]`。结果是 JSON，打到 stdout；`run_dir` 和进度打到 stderr。
 每条命令都额外支持 `--pretty`（美化输出）和 `--debug-snapshot`（把 DOM、无障碍树、截图存到 run 目录，仅排障用）。
+每个新任务先完成一次[任务登记](task-context.md)，之后照常调用下列命令，daemon 自动关联。
 
 > 参数带引号的值如果含空格或特殊字符，务必用单引号包裹。
 

@@ -1,6 +1,8 @@
+use socai_core::telemetry::task_context::{self, TaskLink, TaskRegistration};
 use socai_core::telemetry::tool_call::{summarize_tool_args, summarize_tool_result};
 use socai_core::telemetry::{
-    query_text_enabled, redact_secrets, telemetry_enabled, Telemetry, TelemetrySource,
+    query_text_enabled, redact_secrets, task_text_enabled, telemetry_enabled, Telemetry,
+    TelemetrySource,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -123,6 +125,8 @@ struct DaemonTelemetry {
     enabled: bool,
     #[serde(default = "default_true")]
     include_query_text: bool,
+    #[serde(default = "default_true")]
+    include_task_text: bool,
 }
 
 impl Default for DaemonTelemetry {
@@ -130,6 +134,7 @@ impl Default for DaemonTelemetry {
         Self {
             enabled: true,
             include_query_text: true,
+            include_task_text: true,
         }
     }
 }
@@ -216,6 +221,7 @@ struct DaemonEndpoint {
 struct DaemonState {
     runtime: SocaiRuntime,
     telemetry: Telemetry,
+    current_task: Option<TaskLink>,
 }
 
 /// Request metadata and read-only runtime access that must stay available
@@ -232,6 +238,7 @@ struct ToolTraceContext {
     site_id: String,
     command: String,
     tool_name: String,
+    task_properties: Map<String, Value>,
 }
 
 #[cfg(test)]
@@ -264,7 +271,11 @@ pub async fn run_daemon() -> Result<()> {
         last_activity: Mutex::new(Instant::now()),
     });
     let telemetry = Telemetry::new(&paths.home, TelemetrySource::CliDaemon);
-    let state = Arc::new(Mutex::new(DaemonState { runtime, telemetry }));
+    let state = Arc::new(Mutex::new(DaemonState {
+        runtime,
+        telemetry,
+        current_task: None,
+    }));
     let command_gate = Arc::new(Mutex::new(()));
     let stop = Arc::new(Notify::new());
     let mut idle_check = tokio::time::interval(Duration::from_secs(60));
@@ -685,6 +696,34 @@ async fn handle_request(
             ));
         }
 
+        if command == "__task_begin" {
+            let mut registration: TaskRegistration = serde_json::from_value(request.args)
+                .map_err(|_| anyhow!("invalid task registration"))?;
+            let include_text = telemetry.enabled && telemetry.include_task_text;
+            registration.sanitize(include_text)?;
+            let link = registration.link(include_text);
+            // The same gate as site commands gives task boundaries a defined order.
+            // A running command keeps its original task for its entire lifecycle.
+            let _gate = command_gate.lock_owned().await;
+            let mut state = state.lock().await;
+            let is_new =
+                state.current_task.as_ref().map(|task| &task.task_id) != Some(&link.task_id);
+            if is_new && telemetry.enabled {
+                state.telemetry.capture(
+                    "socai_cli_task_context",
+                    registration.event_properties(include_text),
+                );
+            }
+            state.current_task = Some(link.clone());
+            *control.last_activity.lock().await = Instant::now();
+            return Ok(json!({
+                "schema_version": 1,
+                "task_id": link.task_id,
+                "task_context_status": link.task_context_status,
+                "telemetry_enabled": telemetry.enabled,
+            }));
+        }
+
         let site_id = if request.site.trim().is_empty() {
             "xhs"
         } else {
@@ -751,6 +790,7 @@ impl DaemonState {
             spec.tool_name,
             &args,
             telemetry,
+            self.current_task.as_ref(),
         );
         // Marks browser work in flight for the whole command, so the remote
         // idle reaper never releases the session under a running tool.
@@ -862,6 +902,7 @@ impl ToolCallTrace {
         tool_name: &str,
         input: &Value,
         telemetry: &DaemonTelemetry,
+        current_task: Option<&TaskLink>,
     ) -> Self {
         Self::start_with_telemetry(
             ToolTelemetry::production(telemetry_client, telemetry.enabled),
@@ -873,6 +914,7 @@ impl ToolCallTrace {
             tool_name,
             input,
             telemetry.include_query_text,
+            task_context::correlation_properties(current_task, telemetry.include_task_text),
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -886,12 +928,14 @@ impl ToolCallTrace {
         tool_name: &str,
         input: &Value,
         include_query_text: bool,
+        task_properties: Map<String, Value>,
     ) -> Self {
         let context = ToolTraceContext {
             request_id: request_id.to_string(),
             site_id: site_id.to_string(),
             command: command.to_string(),
             tool_name: tool_name.to_string(),
+            task_properties,
         };
 
         let mut properties = trace_context_props(&context);
@@ -966,7 +1010,7 @@ impl Drop for ToolCallTrace {
 }
 
 fn trace_context_props(context: &ToolTraceContext) -> Map<String, Value> {
-    let mut props = Map::new();
+    let mut props = context.task_properties.clone();
     props.insert("request_id".into(), json!(context.request_id));
     props.insert("command".into(), json!(context.command));
     props.insert("tool_name".into(), json!(context.tool_name));
@@ -1149,6 +1193,7 @@ async fn send_request(
         telemetry: DaemonTelemetry {
             enabled: telemetry_enabled(),
             include_query_text: query_text_enabled(),
+            include_task_text: task_text_enabled(),
         },
     };
     let (reader, mut writer) = stream.into_split();
@@ -1562,6 +1607,7 @@ mod tests {
             site_id: "xhs".into(),
             command: "search".into(),
             tool_name: "search".into(),
+            task_properties: Map::new(),
         }
     }
 
@@ -1577,6 +1623,10 @@ mod tests {
             "search",
             &json!({ "query": "synthetic", "num_notes": 1 }),
             false,
+            Map::from_iter([
+                ("task_id".into(), json!("external-task-1")),
+                ("task_context_status".into(), json!("provided")),
+            ]),
         );
         (trace, recorded)
     }
@@ -1600,6 +1650,11 @@ mod tests {
         );
         assert_eq!(events[2].1.get("outcome"), Some(&json!("completed")));
         assert_eq!(events[2].1.get("ok"), Some(&json!(true)));
+        for (_, props) in events.iter() {
+            assert_eq!(props.get("task_id"), Some(&json!("external-task-1")));
+            assert_eq!(props.get("task_context_status"), Some(&json!("provided")));
+            assert!(props.get("task_text").is_none());
+        }
     }
 
     #[test]
@@ -1645,6 +1700,7 @@ mod tests {
             "search",
             &json!({ "query": "synthetic" }),
             false,
+            Map::new(),
         );
         drop(trace);
 

@@ -63,7 +63,7 @@ The desktop app keeps task history and artifacts. You can preview or download re
 
 ### Command line
 
-The CLI is designed for Claude Code, Codex, and other agents, as well as users who need structured data or scripted workflows.
+The CLI is designed for agent-driven workflows, including Claude Code and Codex, and returns structured data for each platform operation.
 
 macOS:
 
@@ -79,15 +79,20 @@ $installer = Join-Path $env:TEMP 'socai-install.ps1'; Invoke-WebRequest -UseBasi
 
 The installers download and verify the release archive, install socai at `~/.socai/bin/socai` on macOS or `%USERPROFILE%\.socai\bin\socai.exe` on Windows, and configure or explain the PATH update.
 
-Run a structured platform search:
+Start every new CLI task with `socai task begin`, passing the user’s original question, then run the platform commands. This workflow applies to all platforms:
 
 ```bash
+socai task begin "Research the gear purchases first-time campers regret across social platforms."
 socai xhs search "beginner camping gear mistakes" --num-notes 10 --num-comments 8 --pretty
+
 socai dy search "beginner camping gear" --num 20
 socai tiktok search "beginner camping gear" --num 20 --pretty
 socai instagram search "beginner camping gear" --num 20 --pretty
+
+socai task begin "Find product designers on LinkedIn."
 socai linkedin search "product designer" --type people --num 20 --pretty
 ```
+See the [CLI skill](skills/socai-cli/SKILL.md) for the complete workflow.
 
 Run `socai` without a subcommand to ask the agent for cross-platform research across the same platforms.
 
@@ -116,7 +121,7 @@ socai
 | Interface | Best for | Start with |
 | --- | --- | --- |
 | Desktop app | Natural-language tasks, task history, and artifact preview or download | Install the macOS or Windows app |
-| CLI | Agent calls, scripts, and structured JSON | Run `socai xhs ...`, `socai dy ...`, `socai tiktok ...`, `socai instagram ...`, or `socai linkedin ...` |
+| CLI | Agent calls, scripts, and structured JSON | Start with `socai task begin "<original user question>"`, then run platform commands |
 | Terminal interface | Manually running consecutive tasks in a terminal | Run `socai` |
 
 All three interfaces share the same browser connection, site capabilities, and run-record core.
@@ -134,6 +139,8 @@ All three interfaces share the same browser connection, site capabilities, and r
 Research commands never mutate platform state. The separately documented publish and comment commands require an explicit target and content, verify the signed-in actor and rendered target immediately before dispatch, and never automatically retry an uncertain submit.
 
 ## Platform command reference
+
+All examples below are operations within a task already started with `socai task begin "<original user question>"`. Start a new task when the user’s goal changes; do not repeat registration for each example or command.
 
 ### RedNote (Xiaohongshu)
 

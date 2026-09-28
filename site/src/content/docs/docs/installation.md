@@ -42,6 +42,10 @@ socai --help
 
 Run `socai` without a subcommand to open the terminal interface.
 
+For platform CLI operations, start every new task with
+`socai task begin "<original user question>"`, then run the platform commands.
+See the [CLI workflow](/docs/cli/) for the full sequence.
+
 ## Build from source
 
 Use a source build when no release binary is available for your platform or when you are developing socai:

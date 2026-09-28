@@ -37,19 +37,25 @@ Identify recurring purchase criteria and cite specific posts, comments, and repl
 
 socai will choose the relevant platform operations, open real results, collect evidence, and write an answer with source links.
 
-## 4. Run a structured command
+## 4. Run a CLI task
 
-Use the CLI when you want predictable JSON for another agent or script:
+Every new CLI task begins with the original user question, followed by platform
+commands. Register once per task; changing keywords or platforms within the same
+task does not require another registration:
 
 ```bash
+socai task begin "Research the gear purchases first-time campers regret."
 socai xhs search "beginner camping gear mistakes" \
   --num-notes 10 \
   --num-comments 8 \
   --pretty
 
-socai instagram search "tokyo vintage shops" --num 20 --pretty
-socai linkedin search "AI product leader" --type people --num 20 --pretty
+socai instagram search "camping gear regrets" --num 20 --pretty
 ```
+
+The next user task starts with another `task begin`. The daemon automatically
+groups intervening commands. See the [CLI workflow](/docs/cli/) for long-question
+input and task boundaries.
 
 Run `socai <platform> --help` to inspect the current command surface.
 

@@ -35,6 +35,16 @@ Desktop and TUI agents call core tools directly and continue to receive the
 unchanged `ToolResult`. The CLI daemon remains warm for 24 hours after the
 last site command so browser-backed clients can reuse it across a full day.
 
+External agents begin a task with `socai task begin "<original user prompt>"`
+(or `--context-file <json-path>` / `--context-file -`). Subsequent site commands
+use the daemon's current task automatically, until the next successful begin
+or daemon restart. Registration shares the site-command queue so an in-flight
+command retains its original task through completion. The input contract,
+content opt-out, and correlation fields are documented in
+[CLI external-agent task context](docs/telemetry-schema.md#cli-external-agent-task-context).
+The general external-agent skill is `skills/socai-cli/SKILL.md`. Rebuild the
+WorkBuddy packages with `plugins/workbuddy/build.sh` after changing their skill.
+
 ### Privacy-safe browser readiness
 
 `socai status --json` reads the current daemon state without starting the

@@ -1,5 +1,6 @@
 mod daemon;
 mod progress;
+mod task;
 mod tui;
 mod version;
 
@@ -17,6 +18,8 @@ fn build_cli() -> clap::Command {
     let mut root = clap::Command::new("socai")
         .about("socai — site-savvy browser agent")
         .version(env!("CARGO_PKG_VERSION"))
+        .after_help("External agents: call socai task begin with the user's original question once per new task. Subsequent site commands join the daemon's current task automatically.")
+        .subcommand(task::command())
         .subcommand(
             clap::Command::new("version")
                 .about("Print installed version and latest release status.")
@@ -250,7 +253,7 @@ async fn run_site_command(
 fn should_warn_for_update(subcommand: &str) -> bool {
     !matches!(
         subcommand,
-        "__daemon" | "update" | "version" | "status" | "config" | "pro"
+        "__daemon" | "update" | "version" | "status" | "config" | "pro" | "task"
     )
 }
 
@@ -291,6 +294,7 @@ async fn main() -> Result<()> {
             }
         }
         "config" => run_config_command(sub_matches)?,
+        "task" => task::run(sub_matches).await?,
         "pro" => run_pro_command(sub_matches).await?,
         "stop" => {
             // Graceful shutdown reaches whoever owns the IPC endpoint; the

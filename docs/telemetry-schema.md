@@ -54,6 +54,7 @@ included by default.
 | --- | --- |
 | `SOCAI_TELEMETRY=off` | Disables telemetry for that CLI command request. |
 | `SOCAI_TELEMETRY_QUERY_TEXT=off` | Keeps telemetry enabled but omits `query_text`. |
+| `SOCAI_TELEMETRY_TASK_TEXT=off` | CLI external-agent task registration only: omits the user prompt before IPC and capture. Keeps task correlation. Does not change desktop task text or search query controls. |
 | `SOCAI_TELEMETRY_CHAT_TEXT=off` | Keeps telemetry enabled but omits content from run traces: LLM chat content (`gen_ai.input.messages` / `gen_ai.output.messages` / `gen_ai.system_instructions`) on `chat` spans and note summaries (`socai.notes`) on `execute_tool` spans. |
 
 The off values accepted by the CLI are:
@@ -187,6 +188,78 @@ Current metadata keys:
 | `recovery_tool` | string | Agent tool recommended for the recognized blocker; currently `wait_for_rate_limit`. |
 | `waited_seconds` | integer | Actual randomized cooldown duration returned by a wait tool. |
 | `proxy_version` | number | Added by the proxy. Current value: `1`. |
+
+## CLI external-agent task context
+
+External agents begin each new task with the user's original question:
+
+```bash
+socai task begin "Research why consumers repurchase sugar-free tea"
+socai xhs search "sugar-free tea repeat purchase"
+socai dy search "sugar-free tea reviews"
+```
+
+The daemon keeps a **current task** in memory. Each successful `task begin`
+sets a new boundary; subsequent site commands join it automatically. No extra
+parameters or shell environment variables are needed on ordinary commands.
+Registration and site commands share the same FIFO command gate: a begin waits
+for an in-flight command, which retains its original task on all lifecycle
+rows. Multiple agents sharing a daemon share this boundary; the latest begin
+applies to all subsequent commands, regardless of which agent invokes them.
+Use separate `SOCAI_HOME` directories when independent daemon sessions are needed.
+A daemon restart (including idle expiry or replacement after an upgrade) clears
+the current task; register again before continuing. Earlier on-disk per-task
+metadata is not read. There is no implicit recovery from other agent sessions.
+
+For long or multiline prompts, `socai task begin --context-file <path>` accepts
+UTF-8 JSON containing `user_prompt` (string or null when unavailable) and optional
+`agent_host` (short identifier, default `unknown`). `--context-file -` reads
+stdin. Positional input optionally accepts `--agent-host <identifier>`.
+Unknown JSON fields are rejected; input is bounded to 128 KiB. The response is
+JSON with `schema_version: 1`, `task_id`, `task_context_status`, and
+`telemetry_enabled`. The returned ID is for analysis, not a required CLI argument.
+Registration starts/reuses the daemon without connecting Chrome. Only the user
+prompt is collected as task content; there is no generated task summary.
+
+The daemon emits **`socai_cli_task_context`**, `source: cli_daemon`, once per
+registration. Associated tool start, browser, terminal, and interruption events
+carry a snapshot of `task_id`, `agent_host`, `capture_method`, and
+`task_context_status`; they never repeat task text.
+
+| Field | Meaning |
+| --- | --- |
+| `task_id` | UUID shared by CLI commands between task boundaries. Independent of daemon `session_id` and command `request_id`. |
+| `task_context_schema_version` | `1`, on the registration event. |
+| `agent_host` | Explicit caller identifier or `unknown`; not inferred from parent processes. |
+| `capture_method` | Fixed to `agent_reported`; not independently verified host capture. |
+| `task_text` | Supplied `user_prompt`, scrubbed before IPC and capped at 8,000 characters. Registration event only. |
+| `task_text_truncated` | Whether the prompt exceeded the client cap. Present with that text. |
+| `task_context_status` | `provided`: original prompt supplied; `missing`: registered without the original prompt; `disabled`: task content disabled; `not_provided`: no current task in this daemon. |
+
+Join registration and tool events using **`install_id` + `task_id`**. Report
+coverage separately from captured use cases. `provided` describes registration,
+not confirmed remote delivery; telemetry remains best-effort and registration
+events can be lost. Repeating `task begin` is a new task, even for identical text;
+an immediate IPC retry with the same generated ID does not duplicate the event.
+
+Prompt collection is enabled by default. `SOCAI_TELEMETRY_TASK_TEXT=off` removes
+the prompt before IPC and capture while retaining the task boundary and metadata.
+`SOCAI_TELEMETRY=off` suppresses all events for the invocation. Both switches are
+evaluated per invocation, independently of the daemon's startup environment.
+They do not retract earlier events. Search query text and desktop task prompts
+retain their existing controls. Ordinary use requires no settings interaction.
+
+Only correlation metadata is retained in daemon state. Enabled registration
+text appears in the existing local `telemetry/events.jsonl` buffer; no additional
+per-task files are written. The caller owns its JSON input file and can remove
+it after registration. Missing original text does not block research. Invalid
+registration leaves the previous current task unchanged; it does not create a
+new boundary. Older CLIs do not support registration and can still run ordinary
+site commands.
+
+Implementation: `core/src/telemetry/task_context.rs`, `cli/src/task.rs`, and
+`cli/src/daemon.rs`. The existing proxy accepts these scalar fields and the
+`task_text` 8,000-character allowance; no proxy deployment is required.
 
 ## Desktop events
 

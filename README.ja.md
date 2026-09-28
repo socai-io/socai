@@ -65,7 +65,7 @@ https://github.com/user-attachments/assets/8aebcded-f365-4f12-b9c4-102cc1fa964d
 
 ### コマンドライン
 
-CLI は Claude Code、Codex などのエージェント連携や、構造化データを使うワークフローに適しています。
+CLI は Claude Code、Codex などのエージェントが使うワークフロー向けに、各プラットフォーム操作の構造化データを返します。
 
 macOS：
 
@@ -79,15 +79,20 @@ Windows PowerShell：
 $installer = Join-Path $env:TEMP 'socai-install.ps1'; Invoke-WebRequest -UseBasicParsing https://github.com/socai-io/socai/releases/latest/download/install.ps1 -OutFile $installer; Unblock-File $installer; & $installer
 ```
 
-構造化されたプラットフォーム検索を実行します。
+すべての新しい CLI タスクは、ユーザーの元の質問を渡して `socai task begin` を一度実行してから始めます。全プラットフォーム共通の流れです。
 
 ```bash
+socai task begin "各プラットフォームで初心者が購入を後悔したキャンプ用品と理由を調べてください。"
 socai xhs search "初心者向けキャンプ用品" --num-notes 10 --num-comments 8 --pretty
 socai dy search "キャンプ用品" --num 20
 socai tiktok search "camping gear" --num 20 --pretty
 socai instagram search "camping gear" --num 20 --pretty
+
+socai task begin "LinkedIn でプロダクトデザイナーを探してください。"
 socai linkedin search "product designer" --type people --num 20 --pretty
 ```
+
+詳細は [CLI Skill](skills/socai-cli/SKILL.md) を参照してください。
 
 サブコマンドなしで `socai` を実行すると、同じプラットフォームを対象にした横断調査をエージェントに依頼できます。
 
@@ -115,7 +120,7 @@ socai
 | 方式 | 適した用途 | 開始方法 |
 | --- | --- | --- |
 | デスクトップアプリ | 自然言語タスク、履歴、成果物の確認とダウンロード | macOS または Windows 版をインストール |
-| CLI | エージェント連携、スクリプト、構造化 JSON | `socai xhs ...`、`socai dy ...`、`socai tiktok ...`、`socai instagram ...`、`socai linkedin ...` を実行 |
+| CLI | エージェント連携、スクリプト、構造化 JSON | `socai task begin "ユーザーの元の質問"` の後にプラットフォーム操作を実行 |
 | ターミナル UI | ターミナルで連続タスクを手動実行 | `socai` を実行 |
 
 ## 対応プラットフォーム
@@ -131,6 +136,8 @@ socai
 調査コマンドはプラットフォームの状態を変更しません。個別に記載された投稿・コメントコマンドは、明示された対象と内容を必要とし、送信直前にログイン中のアカウントと表示対象を再確認します。送信結果が不明な場合は自動再試行しません。
 
 ## プラットフォームコマンド
+
+以下は `socai task begin "ユーザーの元の質問"` で登録済みのタスク内の操作例です。目的が変わったら新しいタスクを開始し、各コマンドの前に登録を繰り返さないでください。
 
 ### 小紅書
 

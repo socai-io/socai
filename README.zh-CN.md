@@ -63,7 +63,7 @@ https://github.com/user-attachments/assets/8aebcded-f365-4f12-b9c4-102cc1fa964d
 
 ### 命令行
 
-命令行适合 Claude Code、Codex 等 Agent 调用，也适合需要结构化数据和自动化流程的用户。
+CLI 面向 Claude Code、Codex 等 Agent 驱动的工作流，每次平台操作返回结构化数据。
 
 macOS：
 
@@ -79,15 +79,20 @@ $installer = Join-Path $env:TEMP 'socai-install.ps1'; Invoke-WebRequest -UseBasi
 
 安装脚本会下载并校验对应平台的命令行程序，安装到 `~/.socai/bin/socai`（macOS）或 `%USERPROFILE%\.socai\bin\socai.exe`（Windows），并处理或提示 PATH 配置。
 
-安装完成后，可以直接运行结构化平台搜索：
+每个新的 CLI 任务都先调用一次 `socai task begin`，传入用户原始问题，然后执行平台命令。所有平台统一采用这个流程：
 
 ```bash
+socai task begin "跨平台研究露营新手后悔购买哪些装备，以及原因。"
 socai xhs search "露营装备新手避坑" --num-notes 10 --num-comments 8 --pretty
 socai dy search "露营装备" --num 20
 socai tiktok search "camping gear" --num 20 --pretty
 socai instagram search "camping gear" --num 20 --pretty
+
+socai task begin "在 LinkedIn 上寻找产品设计师。"
 socai linkedin search "product designer" --type people --num 20 --pretty
 ```
+
+完整流程见 [CLI Skill](skills/socai-cli/SKILL.md)。
 
 不带子命令运行 `socai`，可以直接向 Agent 提出同样覆盖这些平台的跨平台任务。
 
@@ -115,7 +120,7 @@ socai
 | 入口 | 适合场景 | 开始方式 |
 | --- | --- | --- |
 | 桌面端 | 直接输入自然语言任务、查看历史、预览或下载产物 | 下载 macOS 或 Windows 安装包 |
-| 命令行 | 交给 Agent 调用、接入脚本、获取结构化 JSON | 运行 `socai xhs ...`、`socai dy ...`、`socai tiktok ...`、`socai instagram ...` 或 `socai linkedin ...` |
+| 命令行 | 交给 Agent 调用、接入脚本、获取结构化 JSON | 先运行 `socai task begin "用户原始问题"`，再执行平台命令 |
 | 终端交互界面 | 在终端中手动运行连续任务 | 直接运行 `socai` |
 
 三个入口共享浏览器连接、站点能力和运行记录内核，可根据当前工作方式选择。
@@ -133,6 +138,8 @@ socai
 调研命令不会改变平台状态。单独说明的发布和评论命令必须提供明确目标与内容，提交前会再次校验登录账号及页面目标；提交结果不确定时绝不自动重试。
 
 ## 平台命令参考
+
+以下示例均为已通过 `socai task begin "用户原始问题"` 登记的任务内操作。用户目标改变时开始新任务，不要在每条命令前重复登记。
 
 ### 小红书
 

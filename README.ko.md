@@ -65,7 +65,7 @@ https://github.com/user-attachments/assets/8aebcded-f365-4f12-b9c4-102cc1fa964d
 
 ### 명령줄
 
-CLI는 Claude Code, Codex 등의 에이전트 연동과 구조화된 데이터 또는 스크립트 기반 워크플로에 적합합니다.
+CLI는 Claude Code, Codex 등 에이전트 기반 워크플로를 위해 각 플랫폼 작업의 구조화된 데이터를 반환합니다.
 
 macOS:
 
@@ -79,15 +79,20 @@ Windows PowerShell:
 $installer = Join-Path $env:TEMP 'socai-install.ps1'; Invoke-WebRequest -UseBasicParsing https://github.com/socai-io/socai/releases/latest/download/install.ps1 -OutFile $installer; Unblock-File $installer; & $installer
 ```
 
-구조화된 플랫폼 검색을 실행합니다.
+모든 새 CLI 작업은 사용자의 원래 질문으로 `socai task begin`을 한 번 호출한 뒤 시작합니다. 모든 플랫폼에 같은 흐름이 적용됩니다.
 
 ```bash
+socai task begin "여러 플랫폼에서 초보 캠퍼가 구매를 후회하는 장비와 이유를 조사해 주세요."
 socai xhs search "초보 캠핑 장비" --num-notes 10 --num-comments 8 --pretty
 socai dy search "캠핑 장비" --num 20
 socai tiktok search "camping gear" --num 20 --pretty
 socai instagram search "camping gear" --num 20 --pretty
+
+socai task begin "LinkedIn에서 제품 디자이너를 찾아 주세요."
 socai linkedin search "product designer" --type people --num 20 --pretty
 ```
+
+전체 흐름은 [CLI Skill](skills/socai-cli/SKILL.md)을 참고하세요.
 
 하위 명령 없이 `socai`를 실행하면 같은 플랫폼을 대상으로 크로스 플랫폼 조사를 에이전트에게 요청할 수 있습니다.
 
@@ -115,7 +120,7 @@ socai
 | 방식 | 적합한 작업 | 시작 방법 |
 | --- | --- | --- |
 | 데스크톱 앱 | 자연어 작업, 작업 기록, 산출물 미리 보기와 다운로드 | macOS 또는 Windows 앱 설치 |
-| CLI | 에이전트 호출, 스크립트, 구조화된 JSON | `socai xhs ...`, `socai dy ...`, `socai tiktok ...`, `socai instagram ...`, `socai linkedin ...` 실행 |
+| CLI | 에이전트 호출, 스크립트, 구조화된 JSON | `socai task begin "사용자의 원래 질문"` 후 플랫폼 명령 실행 |
 | 터미널 UI | 터미널에서 연속 작업 수동 실행 | `socai` 실행 |
 
 ## 지원 플랫폼
@@ -131,6 +136,8 @@ socai
 조사 명령은 플랫폼 상태를 변경하지 않습니다. 별도로 문서화된 게시·댓글 명령은 명확한 대상과 내용을 요구하고, 전송 직전에 로그인 계정과 표시된 대상을 다시 확인합니다. 전송 결과가 불확실하면 자동으로 재시도하지 않습니다.
 
 ## 플랫폼 명령어
+
+아래 예시는 `socai task begin "사용자의 원래 질문"`으로 이미 등록한 작업 안에서 실행하는 명령입니다. 목표가 바뀌면 새 작업을 시작하고, 각 명령 앞에서 등록을 반복하지 마세요.
 
 ### 小红书
 
