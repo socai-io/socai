@@ -29,6 +29,12 @@ local/
 # Rust workspace
 target/
 
+# Packaged marketplace uploads (regenerate with plugins/workbuddy/build.sh)
+plugins/workbuddy/dist/
+
+# Skill deliverables written into whatever workspace the skill runs in
+socai-reports/
+
 # Parity scratch runs (commit fixtures intentionally, not ad-hoc smoke runs)
 parity/phase1_smoke/
 parity/extract_note/

@@ -103,6 +103,29 @@ Gotchas:
   file changes don't cause spurious frontend reloads. Rust edits trigger a
   full Tauri shell restart instead.
 
+## WorkBuddy ecosystem packages — `plugins/workbuddy/`
+
+Skill and expert packages published to the WorkBuddy / CodeBuddy marketplace.
+Layout, packaging, and upload paths are documented in
+[`plugins/workbuddy/README.md`](./plugins/workbuddy/README.md).
+
+Rules:
+
+- **The skill source of truth is `plugins/workbuddy/xiaohongshu-socai/`.**
+  `xiaohongshu-research-expert/skills/` is a build artifact injected by
+  `build.sh` — never edit it by hand.
+- **Run `plugins/workbuddy/build.sh` after any skill change.** It validates
+  frontmatter / `plugin.json` against the open-platform spec before zipping, so
+  a spec violation fails the build instead of failing upload. Two zips are
+  produced: the skill, and the expert (with the skill inlined).
+- Expert display copy has hard constraints the validator enforces:
+  `displayDescription.zh` must be 40–50 characters, `tags` and `quickPrompts`
+  must each have exactly 3 entries, `defaultInitPrompt` must equal
+  `quickPrompts[0]`, and the avatar must be ≤500KB.
+- Keep the expert's product category at `05-MarketingGrowth`. Do not move it to
+  `02-Engineering` — WorkBuddy's audience is office knowledge workers, and that
+  category gets no traffic.
+
 ## WeChat group QR maintenance
 
 The WeChat group QR lives in two places that must stay in sync:
