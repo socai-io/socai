@@ -1,0 +1,44 @@
+{
+  "name": "xiaohongshu-research-expert",
+  "version": "1.0.0",
+  "description": "Evidence-first Xiaohongshu research expert built on socai. Drives the user's signed-in Chrome to study topics, competitors, word-of-mouth and creators, and reports every conclusion back to a traceable note.",
+  "author": {
+    "name": "Tony Chong",
+    "email": "chongshen2010@gmail.com"
+  },
+  "agents": ["./agents/xiaohongshu-research-expert.md"],
+  "skills": ["./skills/xiaohongshu-socai"],
+
+  "expertType": "agent",
+  "agentName": "xiaohongshu-research-expert",
+
+  "displayName": {
+    "en": "Socai",
+    "zh": "Socai"
+  },
+  "profession": {
+    "en": "Xiaohongshu Insight Researcher",
+    "zh": "小红书洞察研究员"
+  },
+  "displayDescription": {
+    "en": "Researches Xiaohongshu from your own signed-in browser. Every finding traces back to a real note, and it separates polished post narratives from what people actually say in the comments.",
+    "zh": "驱动本机已登录浏览器真实浏览小红书，做品类、竞品、口碑与达人调研，每条结论可回溯到原始笔记。"
+  },
+  "avatar": "avatars/expert.png",
+  "categoryId": "05-MarketingGrowth",
+  "defaultInitPrompt": {
+    "en": "Research how people talk about this product category on Xiaohongshu",
+    "zh": "帮我调研这个品类在小红书上的口碑"
+  },
+  "plugin": "xiaohongshu-research-expert",
+  "tags": [
+    { "en": "Consumer Insight", "zh": "消费洞察" },
+    { "en": "Sentiment Mining", "zh": "舆情洞察" },
+    { "en": "Creator Discovery", "zh": "达人发现" }
+  ],
+  "quickPrompts": [
+    { "en": "Research how people talk about this product category on Xiaohongshu", "zh": "帮我调研这个品类在小红书上的口碑" },
+    { "en": "Analyze the comments to see what people argue about and how they really feel", "zh": "分析这个话题下的评论，看用户在吵什么、态度如何" },
+    { "en": "Find suitable creators in this space and accounts worth reaching out to", "zh": "帮我找这个赛道合适的达人和值得 PR 的博主" }
+  ]
+}
