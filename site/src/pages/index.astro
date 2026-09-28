@@ -75,6 +75,7 @@ const messages = {
             description:
                 "Jev chooses each bounded research operation. The local socai CLI runs it in your signed-in Chrome; captured cards stay visible while a source-linked report streams in.",
             try: "try Jev Social",
+            replay: "watch the recorded run",
             source: "view source",
             quickstart: "DIRECT QUICKSTART",
         },
@@ -151,6 +152,7 @@ const messages = {
             description:
                 "Jev 负责选择每一步有边界的调研操作，本地 socai CLI 在你已登录的 Chrome 里执行；已抓取的卡片持续可见，带来源的报告流式生成。",
             try: "试用 Jev Social",
+            replay: "观看录制回放",
             source: "查看源码",
             quickstart: "快速开始",
         },
@@ -552,6 +554,14 @@ const socialImageAlt = message("meta.socialImageAlt");
                                     rel="noopener noreferrer"
                                     data-i18n="project.try"
                                     >{message("project.try")}</a
+                                >
+                                <a
+                                    class="button button--secondary"
+                                    href="https://socai-io.github.io/jev-social/recorded-run/"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    data-i18n="project.replay"
+                                    >{message("project.replay")}</a
                                 >
                                 <a
                                     class="button button--secondary"
