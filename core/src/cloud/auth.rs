@@ -19,6 +19,7 @@ pub struct AuthSession {
     pub logged_in: bool,
     pub user_id: String,
     pub phone: String,
+    pub email: String,
     pub device_id: String,
     pub status: String,
 }
@@ -55,6 +56,8 @@ pub struct CloudCredentials {
     #[serde(default)]
     pub phone: String,
     #[serde(default)]
+    pub email: String,
+    #[serde(default)]
     pub status: String,
     #[serde(default)]
     pub hosted_llm_default_applied: bool,
@@ -81,11 +84,15 @@ pub struct LlmGatewayConfig {
 }
 
 #[derive(Debug, Deserialize)]
-struct LoginResponse {
+pub(super) struct LoginResponse {
     user_id: String,
     device_id: String,
     device_token: String,
     status: String,
+    #[serde(default)]
+    phone: String,
+    #[serde(default)]
+    email: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,13 +107,14 @@ pub fn auth_session() -> Result<AuthSession> {
     let Some(creds) = load_credentials() else {
         return Ok(logged_out_session());
     };
-    if creds.user_id.trim().is_empty() || creds.phone.trim().is_empty() {
+    if creds.user_id.trim().is_empty() || creds.device_token.trim().is_empty() {
         return Ok(logged_out_session());
     }
     Ok(AuthSession {
         logged_in: true,
         user_id: creds.user_id,
         phone: creds.phone,
+        email: creds.email,
         device_id: creds.device_id,
         status: if creds.status.trim().is_empty() {
             "active".into()
@@ -167,6 +175,7 @@ pub async fn activate_with_base_url(
         device_token: body.device_token,
         user_id: String::new(),
         phone: String::new(),
+        email: String::new(),
         status: String::new(),
         hosted_llm_default_applied: false,
         hosted_llm_selected: false,
@@ -246,21 +255,36 @@ pub async fn verify_sms_code(
     save_login_credentials(&base_url, canonical_phone, body)
 }
 
-fn save_login_credentials(
+pub(super) fn save_login_credentials(
     base_url: &str,
     canonical_phone: String,
     body: LoginResponse,
 ) -> Result<AuthSession> {
+    if body.user_id.trim().is_empty()
+        || body.device_id.trim().is_empty()
+        || body.device_token.trim().is_empty()
+        || body.status != "active"
+    {
+        anyhow::bail!("invalid login response");
+    }
+    let previous = load_credentials().filter(|creds| creds.user_id == body.user_id);
     save_credentials(&CloudCredentials {
         device_id: body.device_id,
         device_token: body.device_token,
         user_id: body.user_id,
-        phone: canonical_phone,
+        phone: if body.phone.is_empty() {
+            canonical_phone
+        } else {
+            body.phone
+        },
+        email: body.email,
         status: body.status,
-        hosted_llm_default_applied: false,
-        hosted_llm_selected: false,
-        balance_points: None,
-        active_until: None,
+        hosted_llm_default_applied: previous
+            .as_ref()
+            .is_some_and(|c| c.hosted_llm_default_applied),
+        hosted_llm_selected: previous.as_ref().is_some_and(|c| c.hosted_llm_selected),
+        balance_points: previous.as_ref().and_then(|c| c.balance_points),
+        active_until: previous.and_then(|c| c.active_until),
     })?;
     // Keep the CLI and future app builds pointed at the same accepted service,
     // even when this build received the URL through SOCAI_PRO_BASE_URL. The
@@ -392,6 +416,7 @@ fn logged_out_session() -> AuthSession {
         logged_in: false,
         user_id: String::new(),
         phone: String::new(),
+        email: String::new(),
         device_id: String::new(),
         status: String::new(),
     }

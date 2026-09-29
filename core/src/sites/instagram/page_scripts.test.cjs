@@ -560,3 +560,51 @@ test('account suggestions keep homepage dropdown order and skip the nav profile'
   assert.equal(result.accounts[1].position, 2);
   assert.equal(result.accounts[1].name, 'Nike Running');
 });
+
+test('loginState reads the observed Instagram shell', () => {
+  const rect = () => ({ width: 80, height: 24, top: 12, left: 16, bottom: 36, right: 96 });
+  const node = (tag, href, name) => ({
+    tag,
+    hrefAttr: href,
+    name,
+    getAttribute: (attr) => (attr === 'href' ? href : attr === 'name' ? name : ''),
+    getBoundingClientRect: rect,
+  });
+  const load = (nodes, pathname) => {
+    const document = {
+      querySelectorAll: (selector) => nodes.filter((item) => {
+        if (selector === 'a[href^="/direct/inbox"]') return item.tag === 'a' && item.hrefAttr.startsWith('/direct/inbox');
+        if (selector === 'input[name="pass"]') return item.tag === 'input' && item.name === 'pass';
+        if (selector === 'a[href^="/accounts/login"]') return item.tag === 'a' && item.hrefAttr.startsWith('/accounts/login');
+        return false;
+      }),
+    };
+    const context = {
+      document,
+      location: { href: `https://www.instagram.com${pathname}`, pathname },
+      window: { getComputedStyle: () => ({ visibility: 'visible', display: 'block' }) },
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'page_scripts.js'), 'utf8'), context);
+    return context;
+  };
+
+  const signedIn = load([node('a', '/direct/inbox/', '')], '/');
+  assert.equal(signedIn.window.SocaiInstagramPageScripts.loginState().login, 'in');
+
+  const loggedOutHome = load([node('input', '', 'pass')], '/');
+  assert.equal(loggedOutHome.window.SocaiInstagramPageScripts.loginState().login, 'out');
+
+  const guestProfile = load([
+    node('a', '/accounts/login/?next=%2Finstagram%2F&source=desktop_nav', ''),
+  ], '/instagram/');
+  assert.equal(guestProfile.window.SocaiInstagramPageScripts.loginState().login, 'out');
+
+  const signedInWins = load([
+    node('a', '/direct/inbox/', ''),
+    node('a', '/accounts/login/', ''),
+  ], '/');
+  assert.equal(signedInWins.window.SocaiInstagramPageScripts.loginState().login, 'in');
+
+  const unknown = load([], '/explore/');
+  assert.equal(unknown.window.SocaiInstagramPageScripts.loginState().login, 'unknown');
+});

@@ -4,6 +4,12 @@ mod asr;
 mod auth;
 mod billing;
 mod browser;
+mod google;
+mod guest;
+pub use guest::{
+    is_guest_task, llm_gateway_config_for_task, prepare_account_task, prepare_guest_trial,
+    GuestTrialGuard,
+};
 
 pub use asr::{cloud_asr_access_rejected, transcribe_audio_file, CloudAsrResult};
 pub use auth::{
@@ -18,5 +24,6 @@ pub use billing::{
     PaymentPlan, RechargeReceipt, WalletBalance,
 };
 pub use browser::{create_browser_session, release_browser_session, BrowserSessionInfo};
+pub use google::sign_in_with_google;
 
 pub(crate) use auth::telemetry_account_snapshot;

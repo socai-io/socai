@@ -18,6 +18,7 @@
 
 import type { AgentArtifact, AgentTaskEventPayload, AgentTaskSnapshot, NoteData, Status } from "../main";
 import { esc } from "../lib/html";
+import { platformIcon, platformLabel, RESEARCH_PLATFORMS } from "../lib/platforms";
 import {
   formatStepCount,
   formatTaskApiError,
@@ -35,12 +36,14 @@ import feishuLogo from "../assets/connectors/feishu.png";
 import chromeRemoteDebuggingImage from "../assets/chrome-remote-debugging.png";
 import chromeAllowDialogImage from "../assets/chrome-allow-dialog.png";
 import { mergeNoteRegistry, noteDataForRef, renderNoteAnswer, renderNoteCards } from "./notes";
-import { artifactFileIcon, downloadIcon, eyeIcon, formatArtifactSize } from "./artifact_preview";
+import { artifactFileIcon, formatArtifactSize, renderArtifactActionMenu } from "./artifact_preview";
 import type { AgentTaskView } from "./tasks";
 
 export type ChromeSetupState = "waiting" | "ready" | "permission_required";
 
 export interface ComposerProps {
+  sites: string[];
+  sourcesExpanded: boolean;
   mode: "new" | "reply";
   /** Existing task controlled by the reply composer. */
   taskId?: string;
@@ -60,6 +63,7 @@ export interface ComposerProps {
    * reconnects on demand, so the connect overlay and send gating don't apply.
    */
   remoteProfile: boolean;
+  managedProfile: boolean;
   chromeSetupState: ChromeSetupState;
   chromeSetupError: string;
   /** Cloud microphone availability and the current recording phase. */
@@ -74,6 +78,7 @@ export interface ConversationProps {
   /** Download/open progress survives the full-shell rerenders owned by tasks.ts. */
   artifactDownloadState: (path: string) => ArtifactDownloadState | undefined;
   artifactPreviewPath: string | null;
+  isIntermediateOpen: (turnIndex: number) => boolean;
   composer: ComposerProps;
 }
 
@@ -111,6 +116,7 @@ export function renderConversation(props: ConversationProps): string {
             props.isActivityOpen,
             props.artifactDownloadState,
             props.artifactPreviewPath,
+            props.isIntermediateOpen,
           )}
         </div>
       </div>
@@ -125,7 +131,7 @@ export function renderConversation(props: ConversationProps): string {
 // A centered hero + the same chat composer. When chrome isn't connected the
 // form is masked behind the connect overlay.
 export function renderComposePane(composer: ComposerProps): string {
-  const gated = !composer.remoteProfile && composer.status.state !== "connected";
+  const gated = !composer.remoteProfile && !composer.managedProfile && composer.status.state !== "connected";
   return `
     <div class="compose-pane">
       <div class="new-task-compose">
@@ -238,6 +244,7 @@ function renderThread(
   isActivityOpen: ConversationProps["isActivityOpen"],
   artifactDownloadState: ConversationProps["artifactDownloadState"],
   artifactPreviewPath: ConversationProps["artifactPreviewPath"],
+  isIntermediateOpen: ConversationProps["isIntermediateOpen"],
 ): string {
   const duplicateIndex = finalAnswerEventIndex(task);
   const groups = groupRunEvents(task, duplicateIndex);
@@ -252,6 +259,7 @@ function renderThread(
       isActivityOpen,
       artifactDownloadState,
       artifactPreviewPath,
+      isIntermediateOpen,
     ))
     .join("");
   return `${turns}${renderSocialMaterials(task)}`;
@@ -305,6 +313,7 @@ function renderTurn(
   isActivityOpen: ConversationProps["isActivityOpen"],
   artifactDownloadState: ConversationProps["artifactDownloadState"],
   artifactPreviewPath: ConversationProps["artifactPreviewPath"],
+  isIntermediateOpen: ConversationProps["isIntermediateOpen"],
 ): string {
   const { userText, userAt, body, answerText, answerAt } = buildTurn(events, index === 0, isLast, task);
   const showWorking = isLast && running;
@@ -383,6 +392,7 @@ function renderTurn(
     index,
     artifactDownloadState,
     artifactPreviewPath,
+    isIntermediateOpen(index),
   );
   const exportAction = exportText
     ? `<div class="conv-answer-actions">
@@ -418,41 +428,29 @@ function renderArtifactCards(
   turnIndex: number,
   downloadState: ConversationProps["artifactDownloadState"],
   previewPath: string | null,
+  intermediateOpen: boolean,
+): string {
+  const turnFiles = artifacts.filter((artifact) => artifact.turn_index === turnIndex);
+  const intermediate = turnFiles.filter((artifact) => /^artifacts[\\/]/.test(artifact.relative_path));
+  const outputs = turnFiles.filter((artifact) => !intermediate.includes(artifact));
+  return renderArtifactCardList(taskId, outputs, turnIndex, downloadState, previewPath)
+    + (intermediate.length ? `<details class="artifact-intermediates" data-intermediate-turn="${turnIndex}"${intermediateOpen ? " open" : ""}>
+      <summary class="t-small">${esc(t("artifact.intermediate", { count: intermediate.length }))}</summary>
+      ${renderArtifactCardList(taskId, intermediate, turnIndex, downloadState, previewPath)}
+    </details>` : "");
+}
+
+function renderArtifactCardList(
+  taskId: string,
+  artifacts: AgentArtifact[],
+  turnIndex: number,
+  downloadState: ConversationProps["artifactDownloadState"],
+  previewPath: string | null,
 ): string {
   const cards = artifacts
     .filter((artifact) => artifact.turn_index === turnIndex)
     .map((artifact) => {
       const state = downloadState(artifact.path);
-      const statusKey = state?.status === "downloading"
-        ? "artifact.downloading"
-        : state?.status === "downloaded"
-          ? "artifact.open"
-          : state?.status === "opening"
-            ? "artifact.opening"
-            : state?.status === "open_failed"
-              ? "artifact.openFailed"
-              : state?.status === "download_failed"
-                ? "artifact.downloadFailed"
-                : "artifact.download";
-      const openingState = state?.status === "downloaded"
-        || state?.status === "opening"
-        || state?.status === "open_failed";
-      const stateClass = openingState
-        ? " is-downloaded"
-        : state?.status === "download_failed"
-          ? " is-error"
-          : "";
-      const ariaLabel = state?.status === "downloading"
-        ? t("artifact.downloadingAria", { name: artifact.name })
-        : state?.status === "download_failed"
-          ? t("artifact.downloadFailedAria", { name: artifact.name })
-          : state?.status === "opening"
-            ? t("artifact.openingAria", { name: artifact.name })
-            : state?.status === "open_failed"
-              ? t("artifact.openFailedAria", { name: artifact.name })
-              : openingState
-                ? t("artifact.openAria", { name: artifact.name })
-                : t("artifact.downloadAria", { name: artifact.name });
       const previewable = !!artifact.preview_kind;
       const main = previewable
         ? `<button
@@ -466,30 +464,20 @@ function renderArtifactCards(
             <span class="artifact-card__icon" aria-hidden="true">${artifactFileIcon(artifact.name)}</span>
             <span class="artifact-card__copy">
               <span class="artifact-card__name">${esc(artifact.name)}</span>
-              <span class="artifact-card__meta">${esc(artifact.kind)} · ${esc(formatArtifactSize(artifact.size_bytes))}</span>
+              <span class="artifact-card__meta">${esc(formatArtifactSize(artifact.size_bytes))}</span>
             </span>
-            <span class="artifact-card__eye" aria-hidden="true">${eyeIcon()}</span>
           </button>`
         : `<div class="artifact-card__main artifact-card__main--static">
             <span class="artifact-card__icon" aria-hidden="true">${artifactFileIcon(artifact.name)}</span>
             <span class="artifact-card__copy">
               <span class="artifact-card__name">${esc(artifact.name)}</span>
-              <span class="artifact-card__meta">${esc(artifact.kind)} · ${esc(formatArtifactSize(artifact.size_bytes))}</span>
+              <span class="artifact-card__meta">${esc(formatArtifactSize(artifact.size_bytes))}</span>
             </span>
           </div>`;
       return `
-        <div class="artifact-card${stateClass}${state?.status === "open_failed" ? " is-error" : ""}${previewPath === artifact.path ? " is-previewing" : ""}" title="${esc(state?.destination ?? artifact.relative_path)}">
+        <div class="artifact-card${previewPath === artifact.path ? " is-previewing" : ""}" title="${esc(artifact.relative_path)}">
           ${main}
-          <button
-            type="button"
-            class="artifact-card__action"
-            data-artifact-action="${esc(taskId)}"
-            data-artifact-path="${esc(artifact.path)}"
-            title="${esc(t(statusKey))}"
-            aria-label="${esc(ariaLabel)}"
-            ${state?.status === "downloading" || state?.status === "opening" ? 'aria-disabled="true" aria-busy="true"' : ""}
-          >${downloadIcon()}</button>
-          <span class="sr-only" role="status" aria-live="polite">${esc(t(statusKey))}</span>
+          ${renderArtifactActionMenu(taskId, artifact.path, artifact.name, state, "card")}
         </div>
       `;
     })
@@ -688,8 +676,8 @@ export function renderSocialMaterials(task: AgentTaskView): string {
   const groups = new Map<string, { label: string; refs: string[] }>();
   for (const ref of refs) {
     const note = noteDataForRef(ref);
-    const site = note?.site || ref.split(":", 1)[0] || "xhs";
-    const platform = materialPlatform(site);
+    const site = note?.site || (ref.includes(":") ? ref.split(":", 1)[0] : "xhs");
+    const platform = platformLabel(site);
     const media = note?.media ?? [];
     const type = media.some((item) => item.kind === "video")
       ? t("task.materialVideo")
@@ -721,16 +709,6 @@ export function renderSocialMaterials(task: AgentTaskView): string {
   `;
 }
 
-function materialPlatform(site: string): string {
-  switch (site.toLowerCase()) {
-    case "linkedin": return "LinkedIn";
-    case "instagram": return "Instagram";
-    case "dy": return "Douyin";
-    case "tiktok": return "TikTok";
-    default: return "Xiaohongshu";
-  }
-}
-
 // ── quiet meta line under an agent message ───────────────────────────
 function renderConvMeta(bits: string[]): string {
   if (bits.length === 0) return "";
@@ -746,7 +724,7 @@ function renderComposer(c: ComposerProps): string {
   const disabled = c.submitting || c.running;
   // A remote profile submits while disconnected: the run reconnects (minting
   // a fresh hosted session) on demand.
-  const needsConnection = !connected && !c.remoteProfile;
+  const needsConnection = !connected && !c.remoteProfile && !c.managedProfile;
   const sendDisabled = disabled
     || !c.value.trim()
     || needsConnection
@@ -800,6 +778,8 @@ function renderComposer(c: ComposerProps): string {
     ? ""
     : c.remoteProfile
       ? `<p class="composer__hint">${esc(t("chrome.remoteAutoReconnect"))}</p>`
+      : c.managedProfile
+        ? `<p class="composer__hint">${esc(t("chrome.managedAutoReconnect"))}</p>`
       : `
       <p class="composer__hint">
         ${esc(t(c.mode === "new" ? "chrome.connectToStart" : "task.replyConnectHint"))}
@@ -831,6 +811,26 @@ function renderComposer(c: ComposerProps): string {
             >${voiceGlyph}</button>
           </span>
           ${action}
+        </div>
+        <div class="composer__sources">
+          <button id="composer-sources-toggle" type="button" class="composer__sources-toggle t-small"
+            aria-expanded="${c.sourcesExpanded}" aria-controls="composer-source-options"
+            aria-label="${esc(t("platform.select"))}: ${esc(c.sites.map(platformLabel).join(", "))}"
+            title="${esc(c.sites.map(platformLabel).join(", "))}">
+            <span class="composer__selected-icons">${c.sites.map(platformIcon).join("")}</span>
+            <svg class="composer__sources-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+          </button>
+          <fieldset id="composer-source-options" class="composer__source-options" ${c.sourcesExpanded ? "" : "hidden"}>
+            <legend class="t-small subtle">${esc(t("platform.select"))}</legend>
+            ${RESEARCH_PLATFORMS.map((site) => {
+              const selected = c.sites.includes(site);
+              return `<label class="composer__source t-small">
+                <input type="checkbox" data-composer-site="${site}" ${selected ? "checked" : ""}
+                  ${disabled || (selected && c.sites.length === 1) ? "disabled" : ""} />
+                ${platformIcon(site)}<span>${esc(platformLabel(site))}</span>
+              </label>`;
+            }).join("")}
+          </fieldset>
         </div>
       </form>
       ${connectHint}

@@ -65,8 +65,107 @@ fn instagram_tools(page: Arc<PageSession>) -> Vec<Arc<dyn Tool>> {
         Arc::new(ProfileTool { page: page.clone() }),
         Arc::new(GetPostsTool { page: page.clone() }),
         Arc::new(CommentTool { page: page.clone() }),
-        Arc::new(PageStateTool { page }),
+        Arc::new(PageStateTool { page: page.clone() }),
+        instagram_wait_for_login_tool(page),
     ]
+}
+
+pub fn instagram_wait_for_login_tool(page: Arc<PageSession>) -> Arc<dyn Tool> {
+    Arc::new(WaitForInstagramLoginTool { page })
+}
+
+/// Open Instagram if needed and read `loginState` until it is `in` or a settled `out`.
+/// `remote` means the hosted browser, where the user cannot sign in themselves.
+pub async fn probe_instagram_login(page: &PageSession) -> anyhow::Result<String> {
+    if page.is_remote_browser() {
+        return Ok("remote".into());
+    }
+    ensure_site_page(page, HOST_ROOT, HOME_URL).await?;
+    let mut state = poll_instagram_login(page, 8).await?;
+    if state == "out" {
+        let url = current_url(page).await.unwrap_or_default();
+        if !instagram_login_form_url(&url) {
+            navigate_https(page, HOME_URL).await?;
+            state = poll_instagram_login(page, 8).await?;
+        }
+    }
+    Ok(state)
+}
+
+pub fn instagram_login_agent_note(state: &str) -> String {
+    match state {
+        "in" => "\n\n## Instagram sign-in\n\
+            A fresh check just now shows Instagram is already signed in. \
+            Ignore any earlier message in this conversation that said Instagram was signed out \
+            or that the user still needs to log in. Do not mention login, do not ask the user \
+            to sign in, and do not call `wait_for_instagram_login`. Continue the task immediately.\n"
+            .into(),
+        "out" => "\n\n## Instagram sign-in\n\
+            Instagram is signed out in the connected Chrome, and the login page is open. \
+            Tell the user, in their language, to sign in to Instagram in that Chrome window. \
+            Then call `wait_for_instagram_login`. Continue the Instagram part of the task \
+            only after it returns `logged_in: true`. Do not treat the login page as an empty result.\n"
+            .into(),
+        "remote" => "\n\n## Instagram sign-in\n\
+            This session uses socai's hosted browser. If Instagram is signed out, tell the user \
+            hosted Instagram is temporarily unavailable and to try again later. Do not ask them \
+            to type an Instagram password, and do not call `wait_for_instagram_login`.\n"
+            .into(),
+        _ => "\n\n## Instagram sign-in\n\
+            Instagram login was not readable yet. After opening Instagram, run the `loginState` \
+            browser tool. If `login` is `out`, tell the user to sign in in the connected Chrome \
+            and call `wait_for_instagram_login`. If `login` is `in`, continue without asking \
+            them to sign in.\n"
+            .into(),
+    }
+}
+
+/// Instagram's first paint is often the logged-out form, then the signed-in
+/// shell replaces it. `in` returns immediately. `out` is returned only after
+/// that shell has stayed logged out, so a loading frame is not a login prompt.
+const INSTAGRAM_LOGGED_OUT_SETTLE: Duration = Duration::from_secs(6);
+
+async fn poll_instagram_login(page: &PageSession, seconds: u64) -> anyhow::Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(seconds.max(1));
+    let mut out_since: Option<Instant> = None;
+    let mut latest;
+    loop {
+        let state =
+            crate::sites::learning::run_site_browser_tool(page, SITE_ID, "loginState", None)
+                .await?;
+        latest = state
+            .get("login")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        if latest == "in" {
+            return Ok(latest);
+        }
+        if latest == "out" {
+            let since = out_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= INSTAGRAM_LOGGED_OUT_SETTLE {
+                return Ok(latest);
+            }
+        } else {
+            out_since = None;
+        }
+        if Instant::now() >= deadline {
+            // A short poll that only saw the loading login form is not signed out.
+            if latest == "out" {
+                return Ok("unknown".into());
+            }
+            return Ok(latest);
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+}
+
+fn instagram_login_form_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let path = parsed.path().trim_end_matches('/');
+    path.is_empty() || path == "/accounts/login" || path == "/accounts/emailsignup"
 }
 
 pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
@@ -155,7 +254,7 @@ pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
         SiteCommand {
             name: "profile",
             tool_name: "profile",
-            about: "Read an Instagram profile and collect visible post and reel cards.",
+            about: "Read an Instagram profile and collect visible post and reel cards. A private profile returns private and private_notice instead of a public grid.",
             args: &[
                 CommandArg {
                     key: "profile",
@@ -702,7 +801,7 @@ impl Tool for ProfileTool {
     }
 
     fn description(&self) -> &str {
-        "Read an Instagram profile by @handle or URL and collect visible post and reel cards."
+        "Read an Instagram profile by @handle or URL and collect visible post and reel cards. When the profile is private, the result includes private and private_notice; the grid is hidden and a displayed post count of 0 is not an empty public account."
     }
 
     fn input_schema(&self) -> Value {
@@ -1335,6 +1434,88 @@ impl Tool for PageStateTool {
         let _ = wait_for_browser_tool(&self.page, SITE_ID, "pageState", None, wait_seconds).await?;
         let state = invoke_browser_tool(&self.page, ctx, SITE_ID, "pageState", None, false).await?;
         Ok(json_result(&state))
+    }
+}
+
+struct WaitForInstagramLoginTool {
+    page: Arc<PageSession>,
+}
+
+const WAIT_FOR_INSTAGRAM_LOGIN_DEFAULT_SECS: i64 = 180;
+const WAIT_FOR_INSTAGRAM_LOGIN_MAX_SECS: i64 = 600;
+
+#[async_trait]
+impl Tool for WaitForInstagramLoginTool {
+    fn name(&self) -> &str {
+        "wait_for_instagram_login"
+    }
+
+    fn description(&self) -> &str {
+        "Call only after loginState has stayed out. If Instagram is already signed in, do not \
+         call this and do not ask the user to log in. When it is called, it opens the Instagram \
+         login page and waits until they sign in. Returns logged_in true when done, or \
+         logged_in false on timeout. Do not ask the user to type a password into a hosted browser."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Seconds to wait before returning (default 180, max 600)."
+                }
+            }
+        })
+    }
+
+    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        if self.page.is_remote_browser() {
+            return Ok(json_result(&json!({
+                "logged_in": false,
+                "remote_browser": true,
+                "message": "Hosted Instagram login is operated by socai. Tell the user hosted \
+                            Instagram is temporarily unavailable and to try again later.",
+            })));
+        }
+        ensure_site_page(&self.page, HOST_ROOT, HOME_URL).await?;
+        if poll_instagram_login(&self.page, 2).await? == "in" {
+            return Ok(json_result(&json!({
+                "logged_in": true,
+                "message": "Already logged in to Instagram. Continue the original task.",
+            })));
+        }
+        let url = current_url(&self.page).await.unwrap_or_default();
+        if !instagram_login_form_url(&url) {
+            navigate_https(&self.page, HOME_URL).await?;
+        }
+        let timeout = get_i64(
+            &input,
+            "timeout_seconds",
+            WAIT_FOR_INSTAGRAM_LOGIN_DEFAULT_SECS,
+        )
+        .clamp(10, WAIT_FOR_INSTAGRAM_LOGIN_MAX_SECS);
+        let deadline = Instant::now() + Duration::from_secs(timeout as u64);
+        loop {
+            if poll_instagram_login(&self.page, 2).await? == "in" {
+                return Ok(json_result(&json!({
+                    "logged_in": true,
+                    "message": "Instagram login detected. Continue the original task.",
+                })));
+            }
+            if Instant::now() >= deadline {
+                return Ok(json_result(&json!({
+                    "logged_in": false,
+                    "timed_out": true,
+                    "message": format!(
+                        "Still not logged in to Instagram after {timeout}s. Ask the user to \
+                         sign in on instagram.com in the connected Chrome, then call \
+                         wait_for_instagram_login again."
+                    ),
+                })));
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
     }
 }
 
@@ -2053,6 +2234,16 @@ fn compact_profile(state: &Value, posts: &Value) -> Value {
     for key in ["followers", "following", "post_count"] {
         if let Some(value) = state.get(key).and_then(Value::as_i64) {
             profile[key] = json!(value);
+        }
+    }
+    if state.get("private").and_then(Value::as_bool) == Some(true) {
+        profile["private"] = json!(true);
+        if let Some(notice) = state
+            .get("private_notice")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            profile["private_notice"] = json!(notice);
         }
     }
     profile

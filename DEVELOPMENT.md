@@ -80,6 +80,45 @@ pnpm run dev:desktop:local -- --release # dev loop, but write records/artifacts 
 pnpm exec tauri build --bundles app     # → target/release/bundle/macos/socai.app
 ```
 
+The desktop composer supports Auto or one or more research sources: Xiaohongshu,
+Douyin, TikTok, Instagram, LinkedIn, and X. Auto is exclusive and is the new-task
+default when no choice was saved; the agent chooses platforms from the request.
+The selection is saved per conversation and can change before a follow-up; old
+tasks default to Xiaohongshu. The source picker uses the original platform icons
+and checkboxes; it starts collapsed with the selected icons and remembers the
+new-task default locally. Auto exposes all supported
+site tools without pre-navigating to a platform. Explicit selections scope the
+site-learning tools and prompt to those sites. This is a research scope control,
+not a security sandbox for the agent's local environment tools.
+
+The app connects managed Chrome automatically at startup; runs also reconnect
+it on demand. The existing-browser mode retains its remote-debugging and Allow
+flow. The managed composer remains usable while Chrome is connecting, since the
+run's browser admission performs the same connection and reports failures.
+
+Files in `outputs/` appear as deliverables; automatic `artifacts/` extraction JSON
+appears in a separate, initially collapsed intermediate-files section with the
+same preview and file actions. HTTP(S) media URLs stay intact when resolving
+archived paths, including for older tasks. Instagram CDN image variants are
+deduplicated by resource path so refreshed URL signatures do not add slides.
+
+Artifact cards preview on click. Their ellipsis menu reveals the original file
+in Finder/Explorer or opens the native Save As dialog to choose a destination
+and filename; the same menu is available from the preview header. Source reveal
+and saving both reauthorize the current task artifact before reading it.
+
+`dev:desktop:local` keeps app data and runs in the project but shares the normal
+managed Chrome profile. `chrome.profile_dir` remains the explicit override;
+otherwise `SOCAI_CHROME_PROFILE_DIR` overrides the default profile directory.
+The local dev script captures the original `SOCAI_HOME/chrome-profile` (or
+`~/.socai/chrome-profile`) before setting the project-local `SOCAI_HOME`. Restart
+the dev command to apply this environment change; existing profiles are retained.
+
+Existing post cards are reused for supported archives. Non-Xiaohongshu cards
+without media show a text excerpt; X results currently use answer text and
+canonical links without archived post cards. Platform access still depends on
+the selected browser profile and the site's login and regional restrictions.
+
 Desktop builds bundle the official Feishu `lark-cli` sidecar. The Tauri
 pre-build hook runs `pnpm run prepare:lark-cli`, downloads the pinned release,
 verifies its published SHA-256, and prepares the target-triple binary under
@@ -137,6 +176,28 @@ file contracts. No parallel legacy/event/trace format is written.
 For app build targets, icon regeneration, the Tauri version-pinning rule, the
 monochrome design system, and macOS icon-cache gotchas, see the
 [Desktop app section in AGENTS.md](./AGENTS.md#desktop-app--app).
+
+### Google account login
+
+See [Google login setup](docs/google-login.md) for OAuth client creation, backend
+configuration, account linking, database rollout and acceptance checks. The
+companion private backend is `socai-server`; both it and the desktop app must
+include the Google login implementation.
+
+### Anonymous first answer
+
+The desktop allows one completed managed-model answer before sign-in. Local
+trial credentials and the consumed flag live separately in `~/.socai/guest.json`
+(mode 0600); `guest.lock` prevents simultaneous trials across app processes.
+Failed/cancelled answers can retry. New questions and follow-ups require sign-in
+after completion. In the signed-in account menu, **Use my own LLM API key instead**
+reveals the external provider/model/key fields; unchecking returns to the managed model.
+An in-flight guest task keeps its guest billing identity if the user signs in.
+
+The API requires `GUEST_TRIAL_ENABLED=true` and `/v1/auth/guest`. Quota is also
+checked server-side per installation; this is not a per-person anti-fraud identity.
+Guest tokens cannot access account, wallet, payment, or remote browser features.
+The backend has configurable issuance and call/cost limits; see its `.env.example`.
 
 ### LLM model catalog
 

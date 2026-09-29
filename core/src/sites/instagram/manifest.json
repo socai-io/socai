@@ -4,6 +4,14 @@
   "domains": ["instagram.com", "*.instagram.com"],
   "notes": ["knowledge.md"],
   "browserTools": {
+    "loginState": {
+      "description": "Read whether the current Instagram tab is signed in, signed out, or not yet hydrated. Signed in is the Messages nav link. Signed out is the homepage password form or a Log In link to /accounts/login.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "loginState",
+      "args": {},
+      "returns": { "type": "object", "description": "Tri-state Instagram login: in, out, or unknown." }
+    },
     "pageState": {
       "description": "Read the current Instagram route, authentication gate, challenge, rate-limit, and hydration state.",
       "path": "page_scripts.js",
@@ -99,12 +107,12 @@
       "returns": { "type": "object", "description": "Search scroll and candidate-count state." }
     },
     "profileDetail": {
-      "description": "Extract the active Instagram profile, biography, visible counts, external URL, and canonical identity.",
+      "description": "Extract the active Instagram profile, biography, visible counts, external URL, and canonical identity. Includes private and private_notice when the locked profile empty state is visible.",
       "path": "page_scripts.js",
       "binding": "window.SocaiInstagramPageScripts",
       "callable": "profileDetail",
       "args": {},
-      "returns": { "type": "object", "description": "Visible Instagram profile details or an explicit gate state." }
+      "returns": { "type": "object", "description": "Visible Instagram profile details. private and private_notice are present when the profile grid is locked behind follow. Otherwise an explicit gate state." }
     },
     "profilePosts": {
       "description": "Collect post and reel cards across the active Instagram profile's lazy grid up to limit.",

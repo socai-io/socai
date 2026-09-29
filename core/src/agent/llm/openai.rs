@@ -71,7 +71,7 @@ impl OpenAICompatBackend {
     ) -> anyhow::Result<Self> {
         let cfg: &'static ProviderConfig = config_for(provider);
         let gateway = if provider == Provider::Socai {
-            Some(crate::cloud::llm_gateway_config()?)
+            Some(crate::cloud::llm_gateway_config_for_task(task_id)?)
         } else {
             None
         };

@@ -196,7 +196,8 @@ fn is_content_tool(tool_name: &str) -> bool {
     )
 }
 
-fn upsert_record(ctx: &ToolContext, note_id: &str, incoming: Value) {
+fn upsert_record(ctx: &ToolContext, note_id: &str, mut incoming: Value) {
+    deduplicate_post_media(&mut incoming);
     if !ctx.update_recorded_note(note_id, |existing| merge_post_record(existing, &incoming)) {
         ctx.record_note(note_id, incoming);
     }
@@ -227,6 +228,7 @@ pub fn merge_post_record(existing: &mut Value, incoming: &Value) {
             target.insert(key.clone(), value.clone());
         }
     }
+    deduplicate_post_media(existing);
 }
 
 fn merge_record_field(key: &str, current: &mut Value, incoming: &Value) {
@@ -305,7 +307,31 @@ fn merge_media(target: &mut Vec<Value>, source: &[Value]) {
     }
 }
 
+/// Also normalize historical archives whose repeated observations used different
+/// CDN signatures. Preserve the first position and the most recent URL.
+pub fn deduplicate_post_media(record: &mut Value) {
+    if let Some(media) = record.get_mut("media").and_then(Value::as_array_mut) {
+        let original = std::mem::take(media);
+        merge_media(media, &original);
+    }
+}
+
 fn media_key(value: &Value) -> String {
+    let kind = text_at(value, &["kind", "type"]);
+    let source = text_at(value, &["src", "url"]);
+    if kind == "image" {
+        if let Ok(url) = reqwest::Url::parse(&source) {
+            let host = url.host_str().unwrap_or_default();
+            if matches!(url.scheme(), "http" | "https")
+                && (host == "cdninstagram.com" || host.ends_with(".cdninstagram.com"))
+            {
+                // CDN host, resize settings, and signatures vary between reads.
+                // The full path identifies the image; different carousel paths
+                // must remain separate. Keep the original URL for rendering.
+                return format!("image|instagram:{}", url.path());
+            }
+        }
+    }
     format!(
         "{}|{}|{}",
         text_at(value, &["kind", "type"]),

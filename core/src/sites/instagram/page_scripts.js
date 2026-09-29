@@ -125,6 +125,29 @@
     return /^\/accounts\/(?:login|signup)/i.test(location.pathname);
   }
 
+  // Signed-in app shell, observed on https://www.instagram.com/ while logged in:
+  // the left nav exposes a[href="/direct/inbox/"] (Messages). Logged-out pages
+  // do not. Two logged-out surfaces were observed the same day:
+  // - https://www.instagram.com/ is the login form, with input[name="pass"]
+  // - a public profile keeps a visible a[href^="/accounts/login"] ("Log In")
+  // Session chrome is checked first so a signed-in shell is never read as out.
+  function signedInChrome() {
+    return !!firstVisibleNode(document, ['a[href^="/direct/inbox"]']);
+  }
+
+  function loggedOutChrome() {
+    if (/^\/accounts\/(?:login|emailsignup|signup)(?:\/|$)/i.test(location.pathname)) return true;
+    if (firstVisibleNode(document, ['input[name="pass"]'])) return true;
+    return !!firstVisibleNode(document, ['a[href^="/accounts/login"]']);
+  }
+
+  function loginState() {
+    const url = location.href;
+    if (signedInChrome()) return { ok: true, login: 'in', url };
+    if (loggedOutChrome()) return { ok: true, login: 'out', url };
+    return { ok: true, login: 'unknown', url };
+  }
+
   function loginGatePresent() {
     if (loginRoute()) return true;
     const password = firstVisibleNode(document, ['input[type="password"]']);
@@ -133,16 +156,6 @@
       const text = cleanText(dialog, 2000);
       return /(log in|sign up|login|注册|登录|iniciar sesi[oó]n|connexion)/i.test(text);
     });
-  }
-
-  function authenticated() {
-    return !!firstVisibleNode(document, [
-      'a[href^="/direct/inbox"]',
-      'a[href^="/accounts/edit"]',
-      'a[href^="/accounts/activity"]',
-      'svg[aria-label="New post" i]',
-      'svg[aria-label="新帖子"]',
-    ]);
   }
 
   function currentCommentActor() {
@@ -837,6 +850,47 @@
     return '';
   }
 
+  // Signed-in private profiles keep the header (name, bio, counts) and replace
+  // the post grid with a padlock. Observed on a locked /<username>/ page: the
+  // icon is svg[role="img"][viewBox="0 0 96 96"] whose path starts
+  // "M60.931 70.001", and the visible lines under it are
+  // "This profile is private" and "Follow to see their photos and videos."
+  // The header can still read "0 posts"; that is the locked grid.
+  function profilePrivateNotice() {
+    const main = document.querySelector('main');
+    if (!main) return '';
+    const lock = Array.from(main.querySelectorAll('svg[role="img"]')).find((svg) => {
+      if (!visible(svg) || svg.closest('header')) return false;
+      if ((svg.getAttribute('viewBox') || '') !== '0 0 96 96') return false;
+      const path = svg.querySelector('path');
+      const d = path && path.getAttribute('d') || '';
+      return d.startsWith('M60.931 70.001');
+    });
+    if (lock) {
+      let node = lock.parentElement;
+      let notice = '';
+      for (let i = 0; node && node !== main && i < 8; i += 1, node = node.parentElement) {
+        if (node.querySelector('header')) break;
+        const lines = Array.from(node.querySelectorAll('span'))
+          .filter(visible)
+          .map((span) => cleanText(span, 200))
+          .filter(Boolean);
+        const text = lines.length ? lines.join('\n') : cleanText(node, 500);
+        if (text.length >= 12 && text.length <= 280) notice = text;
+      }
+      if (notice) return notice;
+    }
+    const lines = [];
+    for (const node of main.querySelectorAll('span')) {
+      if (!visible(node) || node.closest('header')) continue;
+      const text = cleanText(node, 200);
+      if (text === 'This profile is private' || text === 'Follow to see their photos and videos.') {
+        if (!lines.includes(text)) lines.push(text);
+      }
+    }
+    return lines.join('\n');
+  }
+
   function profileDetail() {
     const username = profileUsername(location.href);
     const state = pageState();
@@ -858,10 +912,11 @@
     };
     const external = externalProfileUrl(header) || externalProfileUrl(main);
     const visiblePosts = profilePosts({ limit: 100 });
-    const contentAvailable = hasProfileContent() && !!(title || description || visiblePosts.length);
+    const privateNotice = profilePrivateNotice();
+    const contentAvailable = hasProfileContent() && !!(title || description || visiblePosts.length || privateNotice);
     const stableFor = searchResultStability(visiblePosts.length, `profile-grid:${username}`);
-    const gridReady = stableFor >= 800 && (visiblePosts.length > 0 || stats.post_count === 0);
-    return {
+    const gridReady = !!privateNotice || (stableFor >= 800 && (visiblePosts.length > 0 || stats.post_count === 0));
+    const detail = {
       ok: contentAvailable && gridReady && !state.challenge_required && !state.rate_limited,
       status: !contentAvailable ? (state.login_required ? 'login_required' : 'unhydrated') : gridReady ? 'profile' : 'hydrating',
       id: username,
@@ -877,6 +932,11 @@
       visible_post_count: visiblePosts.length,
       login_gate_present: state.login_gate_present,
     };
+    if (privateNotice) {
+      detail.private = true;
+      detail.private_notice = privateNotice;
+    }
+    return detail;
   }
 
   function quotedCaption(description) {
@@ -1433,7 +1493,8 @@
     const bodyLength = cleanText(document.body, 200000).length;
     const challenge = challengeRequired();
     const limited = rateLimited();
-    const login = loginRoute();
+    const session = loginState();
+    const login = session.login === 'out';
     const loginGate = loginGatePresent();
     const searchCount = searchSurfaceActive() ? searchResultLinks().length : 0;
     const contentAvailable = hasPostContent() || hasProfileContent() || searchCount > 0;
@@ -1447,8 +1508,9 @@
       page_type: pageType(),
       ready_state: document.readyState,
       body_text_len: bodyLength,
-      authenticated: authenticated(),
-      login_required: login || loginGate,
+      authenticated: session.login === 'in',
+      login: session.login,
+      login_required: login,
       login_gate_present: loginGate,
       challenge_required: challenge,
       rate_limited: limited,
@@ -1509,6 +1571,7 @@
   }
 
   window.SocaiInstagramPageScripts = Object.freeze({
+    loginState,
     pageState,
     searchState,
     setSearchQuery,

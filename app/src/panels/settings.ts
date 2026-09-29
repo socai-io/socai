@@ -1,7 +1,7 @@
 //! Topbar settings menu. A gear button opens a popover that carries the
 //! language toggle plus the output preference that mirrors
 //! `~/.socai/config.json` and a display-only timezone. Chrome source selection
-//! lives under the dedicated chrome status pill.
+//! and connection status live in this settings menu.
 //!
 //! Settings save automatically: discrete controls (language and timezone)
 //! persist on change; path fields persist on commit (blur/enter). The
@@ -98,6 +98,10 @@ export namespace settingsMenu {
     return (draft?.chrome_source ?? config?.chrome_source) === "remote" && authMenu.hasProAccess();
   }
 
+  export function isManagedProfile(): boolean {
+    return (draft?.chrome_source ?? config?.chrome_source) === "managed";
+  }
+
   export function isRemoteSelected(): boolean {
     return (draft?.chrome_source ?? config?.chrome_source) === "remote";
   }
@@ -145,7 +149,7 @@ export namespace settingsMenu {
     return true;
   }
 
-  export function render(_shell: ShellState): string {
+  export function render(shell: ShellState): string {
     const expanded = open ? "true" : "false";
     return `
       <div class="settings-menu">
@@ -156,12 +160,12 @@ export namespace settingsMenu {
           aria-label="${esc(t("settings.aria"))}"
           aria-expanded="${expanded}"
         >${GEAR_SVG}</button>
-        ${open ? renderPopover() : ""}
+        ${open ? renderPopover(shell) : ""}
       </div>
     `;
   }
 
-  function renderPopover(): string {
+  function renderPopover(shell: ShellState): string {
     if (loadError) {
       return `
         <div class="topbar-popover settings-popover" role="dialog" aria-label="${esc(t("settings.title"))}">
@@ -181,6 +185,7 @@ export namespace settingsMenu {
     }
     return `
       <div class="topbar-popover settings-popover" role="dialog" aria-label="${esc(t("settings.title"))}">
+        ${renderChromeGroup(shell)}
         ${renderGeneralGroup(draft)}
         ${renderOutputGroup(config, draft)}
         ${renderInviteGroup(draft)}
@@ -188,6 +193,21 @@ export namespace settingsMenu {
         ${renderVersionFooter()}
       </div>
     `;
+  }
+
+  function renderChromeGroup(shell: ShellState): string {
+    const state = shell.status.state;
+    const connected = state === "connected";
+    const busy = state === "connecting" || status === "saving";
+    const blocked = isRemoteSelected() && !authMenu.hasProAccess();
+    return `<section class="settings-group settings-chrome">
+      <div class="settings-chrome-heading">
+        <span class="settings-group-label">Chrome</span>
+        <span class="badge"><i class="badge-dot ${connected ? "badge-dot-ink" : "badge-dot-hollow"} ${state === "connecting" ? "badge-dot-pulse" : ""}" aria-hidden="true"></i>${esc(t(connected ? "chrome.connected" : state === "connecting" ? "chrome.connecting" : "chrome.disconnected"))}</span>
+      </div>
+      ${renderChromeManager()}
+      <button id="settings-chrome-action" type="button" class="btn-ghost auth-full-button" ${busy || (!connected && blocked) ? "disabled" : ""}>${esc(t(connected ? "chrome.disconnect" : state === "connecting" ? "chrome.connectingCta" : "chrome.connectCta"))}</button>
+    </section>`;
   }
 
   function renderVersionFooter(): string {
@@ -314,6 +334,14 @@ export namespace settingsMenu {
 
     if (!open || !draft) return;
 
+    document.getElementById("settings-chrome-action")?.addEventListener("click", () => {
+      const command = shell.status.state === "connected" ? "cdp_disconnect" : "cdp_connect";
+      void invoke(command).catch(() => {
+        status = "error";
+        shell.rerender();
+      });
+    });
+
     document.querySelectorAll<HTMLButtonElement>("[data-settings-lang]").forEach((button) => {
       button.addEventListener("click", () => {
         const next = button.dataset.settingsLang;
@@ -382,6 +410,14 @@ export namespace settingsMenu {
       await invoke("config_set", { key: "chrome.profile", value });
       await loadConfig();
       seedDraft();
+      const reconnectManaged = value === "managed" && !shell.hasActiveTask()
+        && (shell.status.state !== "connected" || !shell.status.managed);
+      if (reconnectManaged && shell.status.state === "connected") {
+        await invoke("cdp_disconnect");
+      }
+      if (reconnectManaged) {
+        await invoke("cdp_connect");
+      }
       flashSaved(shell);
     } catch (err) {
       console.error("config_set chrome.profile failed:", err);

@@ -216,6 +216,9 @@ pub(crate) async fn endpoint_from_active_port(profile: &Path) -> anyhow::Result<
 }
 
 pub fn managed_chrome_user_data_dir() -> anyhow::Result<PathBuf> {
+    if let Some(path) = env_var("SOCAI_CHROME_PROFILE_DIR") {
+        return Ok(PathBuf::from(shellexpand(&path)));
+    }
     if let Some(home) = env_var("SOCAI_HOME") {
         return Ok(PathBuf::from(shellexpand(&home)).join("chrome-profile"));
     }

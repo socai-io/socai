@@ -398,7 +398,7 @@ pub fn provider_credential_kind(provider: Provider) -> Option<CredentialKind> {
 
 pub fn load_provider_credential(provider: Provider) -> Option<Credential> {
     if provider == Provider::Socai {
-        return crate::cloud::llm_gateway_config()
+        return crate::cloud::llm_gateway_config_for_task(None)
             .ok()
             .map(|config| Credential::ApiKey(config.device_token));
     }

@@ -32,6 +32,8 @@ struct AgentTaskRegistryInner {
 pub struct AgentTaskSnapshot {
     pub(crate) task_id: String,
     pub(crate) task: String,
+    #[serde(default = "default_task_sites")]
+    pub(crate) sites: Vec<String>,
     pub(crate) provider: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) status: String,
@@ -64,6 +66,10 @@ pub struct AgentTaskSnapshot {
     // which stays the thread's original title across replies. It is process-
     // local; interrupted startup recovery reads the canonical run.json task.
     pub(crate) current_message: Option<String>,
+}
+
+pub(crate) fn default_task_sites() -> Vec<String> {
+    vec!["xhs".into()]
 }
 
 impl Default for AgentTaskRegistry {
@@ -138,6 +144,7 @@ impl AgentTaskRegistry {
         model: Option<String>,
         run_dir: String,
         session_dir: String,
+        sites: Vec<String>,
     ) -> AgentTaskSnapshot {
         let mut guard = self.inner.lock().await;
         guard.next_seq += 1;
@@ -146,6 +153,7 @@ impl AgentTaskRegistry {
             task_id,
             current_message: Some(task.clone()),
             task,
+            sites,
             provider,
             model,
             status: "queued".into(),
@@ -628,6 +636,7 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
             serde_json::json!({
                 "task_id": &task.task_id,
                 "task": &task.task,
+                "sites": &task.sites,
                 "provider": &task.provider,
                 "model": &task.model,
                 "status": &task.status,

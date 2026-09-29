@@ -21,6 +21,7 @@ Use Instagram for read-only profile, post, reel, and comment research by default
 - Keyword search has no implemented server-side date or popularity filters. Filtering or sorting collected posts only changes the retrieved sample. Profile grids may start with pinned posts; read publication dates before describing posts as recent.
 - Short captions do not establish visual content. Use returned `media` and `video_url` to inspect shortlisted posts when the task depends on clothing, product placement, scenes, or presentation style; do not infer these from the caption alone.
 - Use `profileDetail` and `profilePosts` on a selected `/<username>/` profile.
+- A signed-in private profile keeps the header and replaces the post grid with a padlock plus the visible notice `profileDetail.private_notice` (observed copy: "This profile is private" / "Follow to see their photos and videos."). `private` is true only when that locked empty state is on the page. The header can still show `post_count: 0`; that is the locked grid, not evidence the account never posted or archived everything. Say the profile is private and posts are hidden until follow. Do not treat it as an empty public account.
 - Use `postDetail` and `comments` on a selected `/p/<shortcode>/`, `/reel/<shortcode>/`, or `/<username>/(p|reel)/<shortcode>/` page.
 - For a requested comment budget, call `postDetail`, then `comments`. The host automatically alternates extraction with `scrollComments`, expands collapsed replies, deduplicates, and returns the accumulated set up to `limit` (100 by default). The expansion action is read-only; never click Like, Reply, Follow, or Submit controls.
 - Prefer candidates that match the user's topic in the returned title/subtitle or media description. Open a candidate before making claims from it.
@@ -28,6 +29,12 @@ Use Instagram for read-only profile, post, reel, and comment research by default
 ## Public content and login overlays
 
 Public profiles and posts can remain readable while Instagram shows a sign-up or login overlay. Trust `profileDetail.ok` or `postDetail.ok` when content is present, while disclosing `pageState.login_gate_present` because additional posts or comments may be hidden. `login_gate_present` alone does not mean the visible public content failed.
+
+## Login
+
+`loginState.login` is `in`, `out`, or `unknown`. `in` means the signed-in Messages link (`/direct/inbox/`) is visible. `out` means the homepage password form (`input[name="pass"]`) or a visible Log In link to `/accounts/login` is showing. The logged-out homepage is `https://www.instagram.com/` itself, not only `/accounts/login`. `unknown` means that shell has not rendered yet.
+
+On `login: out`, tell the user to sign in to Instagram in the connected Chrome, then call `wait_for_instagram_login`. Do not retry the same read as if the login page were an empty result. When it returns `logged_in: true`, continue the original task. On `remote_browser: true`, say hosted Instagram is temporarily unavailable and do not ask the user to type a password.
 
 ## Pagination and stopping
 

@@ -214,7 +214,10 @@ pub async fn settle_llm_task(task_id: &str, final_status: &str) -> Result<LlmSet
         anyhow::bail!("invalid hosted LLM final status");
     }
     let path = format!("/v1/llm/tasks/{task_id}/settle?final_status={final_status}");
-    let response = authenticated_request(reqwest::Method::POST, &path)?
+    let gateway = super::guest::llm_gateway_config_for_task(Some(task_id))?;
+    let response = http_client()?
+        .post(format!("{}{path}", gateway.base_url))
+        .bearer_auth(gateway.device_token)
         .send()
         .await
         .context("failed to settle hosted LLM task")?;
@@ -222,6 +225,8 @@ pub async fn settle_llm_task(task_id: &str, final_status: &str) -> Result<LlmSet
         .await?
         .json()
         .await?;
-    cache_balance_points(settlement.balance_points);
+    if !super::guest::is_guest_task(task_id) {
+        cache_balance_points(settlement.balance_points);
+    }
     Ok(settlement)
 }

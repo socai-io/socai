@@ -37,20 +37,6 @@ export function renderArtifactPreview(
   width: number,
 ): string {
   if (!preview) return "";
-  const openingState = downloadState?.status === "downloaded"
-    || downloadState?.status === "opening"
-    || downloadState?.status === "open_failed";
-  const downloadLabel = downloadState?.status === "downloading"
-    ? t("artifact.downloadingAria", { name: preview.name })
-    : downloadState?.status === "download_failed"
-      ? t("artifact.downloadFailedAria", { name: preview.name })
-      : downloadState?.status === "opening"
-        ? t("artifact.openingAria", { name: preview.name })
-        : downloadState?.status === "open_failed"
-          ? t("artifact.openFailedAria", { name: preview.name })
-          : openingState
-            ? t("artifact.openAria", { name: preview.name })
-            : t("artifact.downloadAria", { name: preview.name });
   return `
     <aside class="artifact-preview" style="--artifact-preview-width: ${width}px" aria-label="${esc(t("artifact.previewPanelAria", { name: preview.name }))}">
       <div
@@ -67,18 +53,10 @@ export function renderArtifactPreview(
       <header class="artifact-preview__head">
         <div class="artifact-preview__identity">
           <span class="artifact-preview__name" title="${esc(preview.name)}">${esc(preview.name)}</span>
-          <span class="artifact-preview__meta">${esc(preview.kind)} · ${esc(formatArtifactSize(preview.sizeBytes))}</span>
+          <span class="artifact-preview__meta">${esc(formatArtifactSize(preview.sizeBytes))}</span>
         </div>
         <div class="artifact-preview__actions">
-          <button
-            type="button"
-            class="artifact-preview__action${downloadState?.status === "open_failed" || downloadState?.status === "download_failed" ? " is-error" : ""}"
-            data-artifact-action="${esc(preview.taskId)}"
-            data-artifact-path="${esc(preview.path)}"
-            title="${esc(downloadLabel)}"
-            aria-label="${esc(downloadLabel)}"
-            ${downloadState?.status === "downloading" || downloadState?.status === "opening" ? 'aria-disabled="true" aria-busy="true"' : ""}
-          >${downloadIcon()}</button>
+          ${renderArtifactActionMenu(preview.taskId, preview.path, preview.name, downloadState, "preview")}
           <button type="button" class="artifact-preview__action" data-artifact-preview-close aria-label="${esc(t("artifact.previewClose"))}" title="${esc(t("artifact.previewClose"))}">${closeIcon()}</button>
         </div>
       </header>
@@ -87,6 +65,27 @@ export function renderArtifactPreview(
       </div>
     </aside>
   `;
+}
+
+export function renderArtifactActionMenu(
+  taskId: string,
+  path: string,
+  name: string,
+  state: ArtifactDownloadState | undefined,
+  surface: "card" | "preview",
+): string {
+  const busy = state?.status === "downloading";
+  const status = state?.status === "download_failed" ? t("artifact.saveFailed") : "";
+  return `<details class="artifact-menu artifact-menu--${surface}" data-artifact-menu>
+    <summary class="${surface === "card" ? "artifact-card__action" : "artifact-preview__action"}"
+      aria-label="${esc(t("artifact.moreAria", { name }))}" title="${esc(t("artifact.more"))}">${moreIcon()}</summary>
+    <div class="artifact-menu__items">
+      <button type="button" data-artifact-reveal="${esc(taskId)}" data-artifact-path="${esc(path)}">${esc(t("artifact.openInFinder"))}</button>
+      <button type="button" data-artifact-save="${esc(taskId)}" data-artifact-path="${esc(path)}"
+        ${busy ? 'disabled aria-busy="true"' : ""}>${esc(t(busy ? "artifact.saving" : "artifact.saveAs"))}</button>
+      ${status ? `<span class="artifact-menu__status is-error t-small" role="alert">${esc(status)}</span>` : ""}
+    </div>
+  </details>`;
 }
 
 function renderPreviewBody(preview: ArtifactPreviewPaneState): string {
@@ -281,15 +280,11 @@ export function artifactFileIcon(name: string): string {
   const extensionIndex = name.lastIndexOf(".");
   const extension = extensionIndex > 0 ? name.slice(extensionIndex + 1).toLowerCase() : "";
   const label = artifactIconLabels[extension] ?? "FILE";
-  return `<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.5h9l5 5v14H5z"></path><path d="M14 2.5v5h5"></path><text x="12" y="17.5" fill="currentColor" stroke="none" text-anchor="middle" font-family="ui-monospace, monospace" font-size="5.2" font-weight="700">${label}</text></svg>`;
+  return `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.5h9l5 5v14H5z"></path><path d="M14 2.5v5h5"></path><text x="12" y="17.5" fill="currentColor" stroke="none" text-anchor="middle" font-family="ui-monospace, monospace" font-size="5.2" font-weight="700">${label}</text></svg>`;
 }
 
-export function eyeIcon(): string {
-  return `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.4-5.5 9.5-5.5 9.5 5.5 9.5 5.5-3.4 5.5-9.5 5.5S2.5 12 2.5 12z"></path><circle cx="12" cy="12" r="2.4"></circle></svg>`;
-}
-
-export function downloadIcon(): string {
-  return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"></path><path d="m8 10 4 4 4-4"></path><path d="M5 17v3h14v-3"></path></svg>`;
+function moreIcon(): string {
+  return `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>`;
 }
 
 function closeIcon(): string {

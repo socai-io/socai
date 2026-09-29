@@ -6,6 +6,7 @@
 //! upgraded into pills, and any reference opens one lightbox viewer. Media is served from disk via
 //! the Tauri asset protocol (convertFileSrc) — images/video play locally.
 
+import { platformLabel } from "../lib/platforms";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { esc } from "../lib/html";
 import { getLocale, t } from "../lib/i18n";
@@ -20,7 +21,7 @@ let RUN_DIR = "";
 export function setNoteRegistry(notes: NoteData[] | undefined, runDir: string | null | undefined): void {
   REGISTRY = {};
   for (const note of notes ?? []) {
-    if (note && typeof note.note_id === "string" && note.note_id) REGISTRY[note.note_id] = note;
+    if (note && typeof note.note_id === "string" && note.note_id) REGISTRY[note.note_id] = normalizeNoteMedia(note);
   }
   RUN_DIR = runDir ?? "";
 }
@@ -38,8 +39,30 @@ function resolveNote(ref: string): NoteData | null {
   return noteDataForRef(ref);
 }
 
+// Events may arrive before the normalized archive poll, including old histories.
+function normalizeNoteMedia(note: NoteData): NoteData {
+  if (!note.media?.length) return note;
+  const media = new Map<string, NoteMedia>();
+  for (const item of note.media) {
+    let key = `${item.kind}|${item.src ?? ""}|${item.poster ?? ""}`;
+    if (item.kind === "image" && item.src) {
+      try {
+        const url = new URL(item.src);
+        if (["http:", "https:"].includes(url.protocol)
+          && (url.hostname === "cdninstagram.com" || url.hostname.endsWith(".cdninstagram.com"))) {
+          key = `image|instagram:${url.pathname}`;
+        }
+      } catch { /* Local file paths keep their exact identity. */ }
+    }
+    media.set(key, { ...media.get(key), ...item });
+  }
+  return { ...note, media: [...media.values()] };
+}
+
 function mergeNoteData(current: NoteData | undefined, incoming: NoteData): NoteData {
+  incoming = normalizeNoteMedia(incoming);
   if (!current) return incoming;
+  current = normalizeNoteMedia(current);
   const richerText = (before: string | undefined, after: string | undefined): string | undefined => {
     if (!after?.trim()) return before;
     if (!before?.trim()) return after;
@@ -135,15 +158,7 @@ function authorInitial(note: NoteData): string {
   return n ? Array.from(n)[0] : "·";
 }
 function platformName(note: NoteData): string {
-  switch (note.site) {
-    case "linkedin": return "LinkedIn";
-    case "instagram": return "Instagram";
-    case "dy": return "Douyin";
-    case "tiktok": return "TikTok";
-    case "xhs": return "Xiaohongshu";
-    // Archives created before the multi-site card contract are XHS records.
-    default: return "Xiaohongshu";
-  }
+  return platformLabel(note.site || "xhs");
 }
 // Resolve a note media path (absolute, or media_dir-relative to run_dir) to a
 // webview-loadable asset URL. Empty when the file isn't available.
@@ -392,8 +407,10 @@ function renderCard(note: NoteData, density: "rich" | "compact" = "rich"): strin
   const title = esc(note.title || "");
   const name = esc((note.author && note.author.name) || "");
   const platform = platformName(note);
-  const cover =
-    density === "rich"
+  const hasMedia = note.media?.some((item) => item.src || item.poster || item.status === "loading");
+  const cover = !hasMedia && note.site && note.site !== "xhs"
+    ? `<div class="note-card__text-preview t-small">${esc(note.excerpt || note.content || note.title || platform)}</div>`
+    : density === "rich"
       ? `<div class="note-card__cover" data-note-cover="${esc(note.note_id)}" data-idx="0">${coverInner(note, 0)}</div>`
       : `<div class="note-card__cover">${mediaFrame(note, coverOf(note), "cover", (note.media || []).length)}</div>`;
   return `
@@ -451,6 +468,25 @@ export function renderNoteAnswer(src: string): string {
     const note = resolveNote(id);
     const holder = doc.createElement("span");
     holder.innerHTML = note ? pillHTML(id, label, note) : esc(label);
+    a.replaceWith(...Array.from(holder.childNodes));
+  });
+  // Older and imperfect agent answers sometimes cite an archived Instagram
+  // post by URL. Resolve that shortcode to its local card so those links open
+  // the same in-app viewer as an explicit note: citation.
+  root.querySelectorAll('a[href^="https://"], a[href^="http://"]').forEach((a) => {
+    const href = a.getAttribute("href");
+    if (!href) return;
+    let url: URL;
+    try { url = new URL(href); } catch { return; }
+    if (url.hostname !== "instagram.com" && url.hostname !== "www.instagram.com") return;
+    const parts = url.pathname.split("/").filter(Boolean);
+    const kind = parts.findIndex((part) => part === "p" || part === "reel" || part === "tv");
+    if (kind < 0 || !parts[kind + 1]) return;
+    const id = `instagram:${parts[kind + 1]}`;
+    const note = resolveNote(id);
+    if (!note || note.site !== "instagram") return;
+    const holder = doc.createElement("span");
+    holder.innerHTML = pillHTML(id, a.textContent || note.title || id, note);
     a.replaceWith(...Array.from(holder.childNodes));
   });
   return root.innerHTML;
@@ -618,6 +654,17 @@ let bound = false;
 export function bindNoteInteractions(): void {
   if (bound) return;
   bound = true;
+
+  // Expired remote URLs and unavailable local files should show an explicit
+  // fallback instead of an empty image frame. Image errors do not bubble.
+  document.addEventListener("error", (event) => {
+    const image = event.target;
+    if (!(image instanceof HTMLImageElement) || !image.matches(".note-media__img")) return;
+    const fallback = document.createElement("span");
+    fallback.className = "note-media__unavailable t-small";
+    fallback.textContent = t("note.imageUnavailable");
+    image.replaceWith(fallback);
+  }, true);
 
   document.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;

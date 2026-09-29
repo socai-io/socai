@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { voiceInput, type VoiceRoute } from "./lib/voice-input";
+import { bindExternalLinks } from "./lib/external-links";
 
 import {
   applyLanguageToDocument,
@@ -56,6 +57,7 @@ export interface ModelInfo {
 export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface AgentTaskSnapshot {
+  sites?: string[];
   task_id: string;
   task: string;
   provider: string | null;
@@ -218,10 +220,10 @@ export interface ShellState {
   status: Status;
   rerender: () => void;
   notifyTaskCommandError: (error: unknown) => boolean;
+  hasActiveTask: () => boolean;
 }
 
 let status: Status = { state: "disconnected", reason: "starting" };
-let connectionDetailsOpen = false;
 // The sidebar (task history rail) starts expanded; the topbar toggle collapses it.
 let sidebarOpen = true;
 type RuntimeErrorNotice =
@@ -248,6 +250,7 @@ function shell(): ShellState {
     status,
     rerender: render,
     notifyTaskCommandError: captureTaskCommandErrorNotice,
+    hasActiveTask: agentPanel.hasActiveTask,
   };
 }
 
@@ -269,15 +272,7 @@ function render(): void {
           ${renderUpdateChip()}
         </div>
         <div class="topbar-controls" data-tauri-drag-region>
-          <div class="status-capsule" role="group" aria-label="${htmlEsc(t("status.capsuleAria"))}">
-            ${connectionStatusBar()}
-            <span class="status-capsule__divider" aria-hidden="true"></span>
-            ${authMenu.render(
-              agentPanel.currentModelLabel(),
-              agentPanel.renderAccountConfig(),
-              subscriptionMenu.render(),
-            )}
-          </div>
+          ${authMenu.render(agentPanel.renderAccountConfig(), subscriptionMenu.render())}
           ${settingsMenu.render(state)}
         </div>
       </header>
@@ -291,7 +286,6 @@ function render(): void {
       </div>
     </div>
   `;
-  bindConnectionStatusBar();
   bindUpdateChip();
   bindSidebarToggle();
   bindRuntimeErrorNotice();
@@ -432,68 +426,6 @@ function bindSidebarToggle(): void {
   document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
     sidebarOpen = !sidebarOpen;
     render();
-  });
-}
-
-function connectionStatusBar(): string {
-  return `
-    <div class="connection-status" aria-live="polite">
-      ${connectionBadge()}
-      ${connectionDetailsOpen ? renderConnectionDialog() : ""}
-    </div>
-  `;
-}
-
-function connectionBadge(): string {
-  const expanded = connectionDetailsOpen ? "true" : "false";
-  switch (status.state) {
-    case "disconnected":
-      return `<button id="chrome-status-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}" aria-label="${htmlEsc(t("chrome.statusToggleAria"))}"><i class="badge-dot badge-dot-muted" aria-hidden="true"></i>${htmlEsc(t("chrome.label"))} · ${htmlEsc(t("chrome.disconnected"))}</button>`;
-    case "connecting":
-      return `<button id="chrome-status-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}" aria-label="${htmlEsc(t("chrome.statusToggleAria"))}"><i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i>${htmlEsc(t("chrome.label"))} · ${htmlEsc(t("chrome.connecting"))}</button>`;
-    case "connected":
-      return `<button id="chrome-status-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}" aria-label="${htmlEsc(t("chrome.statusToggleAria"))}"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${htmlEsc(t("chrome.label"))} · ${htmlEsc(t("chrome.connected"))}</button>`;
-  }
-}
-
-function renderConnectionDialog(): string {
-  const remoteBlocked = settingsMenu.isRemoteSelected() && !authMenu.hasProAccess();
-  const action = status.state === "connected"
-    ? `<button id="chrome-disconnect" type="button" class="btn-ghost chrome-manager-action">${htmlEsc(t("chrome.disconnect"))}</button>`
-    : status.state === "connecting"
-      ? `<button type="button" class="btn-primary chrome-manager-action" disabled>${htmlEsc(t("chrome.connectingCta"))}</button>`
-      : `<button id="chrome-connect-action" type="button" class="btn-primary chrome-manager-action" ${remoteBlocked || settingsMenu.isSaving() ? "disabled" : ""}>${htmlEsc(t("chrome.connectCta"))}</button>`;
-  return `
-    <div class="topbar-popover connection-dialog" role="dialog" aria-label="${htmlEsc(t("chrome.dialogAria"))}">
-      ${settingsMenu.renderChromeManager()}
-      ${action}
-    </div>
-  `;
-}
-
-function bindConnectionStatusBar(): void {
-  document.getElementById("chrome-connect-action")?.addEventListener("click", () => {
-    connectionDetailsOpen = false;
-    invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
-  });
-  document.getElementById("chrome-status-toggle")?.addEventListener("click", async (event) => {
-    event.stopPropagation();
-    const opening = !connectionDetailsOpen;
-    if (opening) {
-      settingsMenu.closePopover();
-      authMenu.closePopover();
-      try {
-        status = await invoke<Status>("cdp_status");
-      } catch (e) {
-        console.error("cdp_status failed:", e);
-      }
-    }
-    connectionDetailsOpen = opening;
-    render();
-  });
-  document.getElementById("chrome-disconnect")?.addEventListener("click", () => {
-    connectionDetailsOpen = false;
-    invoke("cdp_disconnect").catch((e) => console.error("cdp_disconnect failed:", e));
   });
 }
 
@@ -678,10 +610,6 @@ function bindGlobalDismiss(): void {
   document.addEventListener("click", (event) => {
     let changed = false;
 
-    if (connectionDetailsOpen && !eventPathHasClass(event, "connection-status")) {
-      connectionDetailsOpen = false;
-      changed = true;
-    }
     if (settingsMenu.isOpen() && !eventPathHasClass(event, "settings-menu") && settingsMenu.closePopover()) {
       changed = true;
     }
@@ -699,27 +627,6 @@ function bindGlobalDismiss(): void {
 
 function eventPathHasClass(event: Event, className: string): boolean {
   return event.composedPath().some((item) => item instanceof Element && item.classList.contains(className));
-}
-
-// Tauri's webview neither follows target="_blank" nor hands external links to
-// the OS browser, so clicking a web link (e.g. a note URL in a final answer)
-// does nothing. Delegate every http(s) anchor click to the backend
-// `open_external` command, which opens the system default browser. The raw
-// attribute is checked (not `anchor.href`) so app-internal links — `note:`
-// citations, `#` anchors — which the DOM would resolve against the app origin
-// are left alone.
-function bindExternalLinks(): void {
-  document.addEventListener("click", (event) => {
-    if (event.defaultPrevented) return;
-    const anchor = event
-      .composedPath()
-      .find((item): item is HTMLAnchorElement => item instanceof HTMLAnchorElement);
-    if (!anchor) return;
-    const href = anchor.getAttribute("href") ?? "";
-    if (!/^https?:\/\//i.test(href)) return;
-    event.preventDefault();
-    invoke("open_external", { url: href }).catch((e) => console.error("open_external failed:", e));
-  });
 }
 
 async function main(): Promise<void> {
@@ -743,7 +650,6 @@ async function main(): Promise<void> {
 
   await listen<Status>("cdp:status_changed", (event) => {
     status = event.payload;
-    if (status.state !== "connected") connectionDetailsOpen = false;
     render();
   });
 
@@ -777,6 +683,7 @@ async function main(): Promise<void> {
     voiceInput.setTranscriptionRoute(event.payload);
   });
 
+  await Promise.all([settingsMenu.loadConfig(), authMenu.loadSession()]);
   let initialTasks: AgentTaskSnapshot[] = [];
   try {
     status = await invoke<Status>("cdp_status");
@@ -801,7 +708,6 @@ async function main(): Promise<void> {
   } catch (e) {
     console.error("getVersion failed:", e);
   }
-  await Promise.all([settingsMenu.loadConfig(), authMenu.loadSession()]);
   await subscriptionMenu.refresh(authMenu.isLoggedIn());
   await agentPanel.prepareArtifactDownloads();
   render();

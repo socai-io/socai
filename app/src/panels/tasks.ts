@@ -5,7 +5,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentArtifact,
-  AgentArtifactDownload,
   AgentTaskEventPayload,
   AgentTaskSnapshot,
   AgentTaskStatus,
@@ -18,6 +17,7 @@ import { t } from "../lib/i18n";
 import { isSendShortcut } from "../lib/shortcuts";
 import { voiceInput } from "../lib/voice-input";
 import { bindTextareaAutosize } from "../lib/autosize";
+import { authMenu } from "./auth";
 import { settingsMenu } from "./settings";
 import { renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup } from "./task_history";
 import {
@@ -28,6 +28,7 @@ import {
   renderEventRow,
   renderSocialMaterials,
 } from "./conversation";
+import { savedSources, saveSources } from "../lib/platforms";
 import type { ArtifactDownloadState, ChromeSetupState, ComposerProps } from "./conversation";
 import { artifactPreviewMime, renderArtifactPreview } from "./artifact_preview";
 import type { ArtifactPreviewPaneState } from "./artifact_preview";
@@ -46,7 +47,6 @@ export type AgentTaskView = AgentTaskSnapshot & {
   notes?: NoteData[];
   artifacts?: AgentArtifact[];
 };
-type CodexLoginStart = { message: string };
 type PersistedArtifactDownload = {
   taskId: string;
   sourcePath: string;
@@ -66,6 +66,11 @@ const ARTIFACT_PREVIEW_CONVERSATION_MIN_WIDTH = 360;
 export namespace agentPanel {
   let view: WorkspaceView = "compose";
   let draft = "";
+  const rememberedSources = savedSources();
+  let draftSites = rememberedSources ?? ["auto"];
+  let sourcesChosen = rememberedSources !== undefined;
+  let sourcesExpanded = false;
+  const replySites = new Map<string, string[]>();
   let model = "";
   let modelProvider = "";
   let modelByProvider = new Map<string, string>();
@@ -99,6 +104,7 @@ export namespace agentPanel {
   // terminal transition clears a task's entries so the fold lands with the
   // answer even if the user toggled mid-run.
   const activityOpen = new Map<string, boolean>();
+  const intermediateOpen = new Map<string, boolean>();
   const artifactDownloads = restoreArtifactDownloads();
   const artifactLoadGenerations = new Map<string, number>();
   let artifactPreview: ArtifactPreviewPaneState | null = null;
@@ -159,16 +165,18 @@ export namespace agentPanel {
   // Key-entry sub-state — used by the header configuration popover.
   let pendingKey = "";
   let savingKey = false;
-  let codexStarting = false;
+  let switchingKeyMode = false;
+  let lastOwnProvider = "";
   let keyMessage = "";
   let keyError = "";
-  let configOpen = false;
-  // Shows the key-entry form for a provider that already has a credential.
-  let editingKey = false;
 
   export function setModels(models: ModelInfo[]): void {
     modelsCache = models;
     rememberConfiguredModels(models);
+    if (!authMenu.isLoggedIn()) {
+      selectModelInfo(models.find((m) => m.provider === "socai"));
+      return;
+    }
     const current = models.find((m) => sameModel(m, modelProvider, model));
     if (current) {
       modelProvider = current.provider;
@@ -438,54 +446,41 @@ export namespace agentPanel {
     return tasks.some((task) => task.status === "running" || task.status === "queued");
   }
 
-  export function renderHeader(): string {
-    const showConfig = configOpen || selectedNeedsKey();
-    return `
-      <div class="agent-status">
-        ${renderAgentBadge()}
-        ${showConfig ? renderConfigPopover() : ""}
-      </div>
-    `;
-  }
-
   export function bindHeader(shell: ShellState): void {
-    document.getElementById("agent-config-toggle")?.addEventListener("click", (event) => {
-      event.stopPropagation();
-      configOpen = selectedNeedsKey() ? true : !configOpen;
-      if (!configOpen) editingKey = false;
-      shell.rerender();
-    });
-
-    document.getElementById("agent-header-key-edit")?.addEventListener("click", () => {
-      editingKey = true;
+    document.getElementById("agent-own-key")?.addEventListener("change", async (event) => {
+      const enabled = (event.currentTarget as HTMLInputElement).checked;
+      const previous = selectedModel();
+      const ownProvider = lastOwnProvider
+        || modelsCache.find((item) => item.provider !== "socai" && item.has_key)?.provider
+        || providerSummaries()[0]?.provider;
+      const picked = preferredModelForProvider(enabled ? ownProvider || "" : "socai");
+      if (!picked || switchingKeyMode) { shell.rerender(); return; }
       pendingKey = "";
-      keyMessage = "";
       keyError = "";
-      shell.rerender();
-    });
-
-    document.getElementById("agent-header-key-cancel")?.addEventListener("click", () => {
-      editingKey = false;
-      pendingKey = "";
       keyMessage = "";
-      keyError = "";
+      switchingKeyMode = true;
+      selectModelInfo(picked);
       shell.rerender();
-    });
-
-    document.querySelectorAll<HTMLButtonElement>(".agent-provider-option").forEach((opt) => {
-      opt.addEventListener("click", () => {
-        const nextProvider = opt.dataset.provider;
-        if (!nextProvider || nextProvider === modelProvider) return;
-        keyMessage = "";
-        keyError = "";
-        pendingKey = "";
-        editingKey = false;
-        const picked = preferredModelForProvider(nextProvider);
-        selectModelInfo(picked);
-        if (picked) persistModelChoice(picked);
-        configOpen = true;
+      try {
+        await invoke("agent_set_default_model", { provider: picked.provider, model: modelId(picked) });
+      } catch (error) {
+        selectModelInfo(previous);
+        keyError = String(error);
+      } finally {
+        switchingKeyMode = false;
         shell.rerender();
-      });
+      }
+    });
+
+    const providerSelect = document.getElementById("agent-provider-select") as HTMLSelectElement | null;
+    providerSelect?.addEventListener("change", () => {
+      keyMessage = "";
+      keyError = "";
+      pendingKey = "";
+      const picked = preferredModelForProvider(providerSelect.value);
+      selectModelInfo(picked);
+      if (picked) persistModelChoice(picked);
+      shell.rerender();
     });
 
     const modelSelect = document.getElementById("agent-model-select") as HTMLSelectElement | null;
@@ -496,11 +491,9 @@ export namespace agentPanel {
       keyMessage = "";
       keyError = "";
       pendingKey = "";
-      editingKey = false;
       const picked = modelsCache.find((m) => sameModel(m, nextProvider, next));
       selectModelInfo(picked);
       if (picked) persistModelChoice(picked);
-      configOpen = true;
       shell.rerender();
     });
 
@@ -524,7 +517,6 @@ export namespace agentPanel {
         await invoke("agent_save_api_key", { provider, apiKey: key });
         setModels(await invoke<ModelInfo[]>("agent_list_models"));
         pendingKey = "";
-        editingKey = false;
       } catch (err) {
         keyError = `${err}`;
       } finally {
@@ -533,203 +525,68 @@ export namespace agentPanel {
       }
     });
 
-    document.getElementById("agent-header-codex-login")?.addEventListener("click", async () => {
-      if (codexStarting) return;
-      codexStarting = true;
-      keyMessage = "";
-      keyError = "";
-      shell.rerender();
-      try {
-        const login = await invoke<CodexLoginStart>("agent_open_codex_login");
-        keyMessage = login.message;
-        codexStarting = false;
-        shell.rerender();
-        void pollCodexOAuth(shell);
-      } catch (err) {
-        keyError = `${err}`;
-        codexStarting = false;
-        shell.rerender();
-      }
-    });
-
-  }
-
-  export function closeHeaderConfig(): boolean {
-    if (selectedNeedsKey()) return false;
-    if (!configOpen) return false;
-    configOpen = false;
-    editingKey = false;
-    return true;
-  }
-
-  export function currentModelLabel(): string {
-    const selected = selectedModel();
-    if (!selected) return t("agent.label");
-    return selected.provider === "socai"
-      ? providerDisplayLabel(selected)
-      : modelDisplayLabel(selected);
   }
 
   export function renderAccountConfig(): string {
-    return `<div class="agent-account-config">${renderConfigContent()}</div>`;
-  }
-
-  function renderAgentBadge(): string {
-    const selected = selectedModel();
-    const expanded = configOpen || selectedNeedsKey() ? "true" : "false";
-    if (!selected) {
-      return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-muted" aria-hidden="true"></i><span class="badge-text">${esc(t("agent.label"))} · ${esc(t("agent.loading"))}</span></button>`;
-    }
-    const label = selected.provider === "socai"
-      ? providerDisplayLabel(selected)
-      : modelDisplayLabel(selected);
-    if (!selected.has_key) {
-      return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-hollow" aria-hidden="true"></i><span class="badge-text">${esc(t("agent.label"))} · ${esc(label)} · ${esc(t("agent.keyNeeded"))}</span></button>`;
-    }
-    return `<button id="agent-config-toggle" type="button" class="badge badge-button" aria-expanded="${expanded}"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i><span class="badge-text">${esc(t("agent.label"))} · ${esc(label)}</span></button>`;
-  }
-
-  function renderConfigPopover(): string {
-    return `
-      <div class="topbar-popover agent-config-popover" role="dialog" aria-label="${esc(t("agent.configurationAria"))}">
-        ${renderConfigContent()}
-      </div>
-    `;
+    const ownKey = !!selectedModel() && modelProvider !== "socai";
+    return `<div class="agent-account-config">
+      <label class="agent-own-key-toggle t-small">
+        <input id="agent-own-key" type="checkbox" aria-controls="agent-own-key-fields" aria-expanded="${ownKey}" ${ownKey ? "checked" : ""} ${savingKey || switchingKeyMode || !modelsCache.length ? "disabled" : ""} />
+        <span>${esc(t("agent.useOwnKey"))}</span>
+      </label>
+      ${ownKey ? `<div id="agent-own-key-fields" class="agent-own-key-fields">${renderConfigContent()}</div>` : ""}
+      ${!ownKey && keyError ? `<p class="t-small result-error" role="alert">${esc(keyError)}</p>` : ""}
+    </div>`;
   }
 
   function renderConfigContent(): string {
     const selected = selectedModel();
-    const disabled = savingKey || submittingTask;
+    if (!selected || selected.provider === "socai") return "";
+    const disabled = savingKey || submittingTask || switchingKeyMode;
     const activeProvider = modelProvider || selected?.provider || providerSummaries()[0]?.provider || "";
     const activeModel = selected?.provider === activeProvider ? selected : preferredModelForProvider(activeProvider);
     const selectedModelId = modelId(activeModel);
-    const providerOptions = providerSummaries()
-      .map((provider) => {
-        const active = provider.provider === activeProvider;
-        const dotClass = active ? "badge-dot-ink" : "badge-dot-hollow";
-        const flag = provider.hasKey ? "" : `<span class="t-small subtle">${esc(t("agent.keyNeeded"))}</span>`;
-        const selectedForProvider = preferredModelForProvider(provider.provider);
-        const hint = provider.provider === "socai"
-          ? t("agent.managedModel")
-          : selectedForProvider ? modelNameLabel(selectedForProvider) : t("common.loading");
-        return `
-          <button
-            type="button"
-            class="agent-provider-option${active ? " is-active" : ""}"
-            data-provider="${esc(provider.provider)}"
-            role="option"
-            aria-selected="${active ? "true" : "false"}"
-            ${disabled ? "disabled" : ""}
-          >
-            <i class="badge-dot ${dotClass}" aria-hidden="true"></i>
-            <span class="agent-model-copy">
-              <span class="agent-model-name">${esc(provider.displayName)}</span>
-              <span class="agent-model-id">${esc(hint)}</span>
-            </span>
-            ${flag}
-          </button>
-        `;
-      })
-      .join("");
+    const providerOptions = providerSummaries().map((provider) =>
+      `<option value="${esc(provider.provider)}" ${provider.provider === activeProvider ? "selected" : ""}>${esc(provider.displayName)}</option>`
+    ).join("");
 
     const modelRows = modelsForProvider(activeProvider);
-    const modelOptions = modelRows
-      .map((m) => {
-        const id = modelId(m);
-        return `<option value="${esc(id)}" ${id === selectedModelId ? "selected" : ""}>${esc(modelOptionLabel(m))}</option>`;
-      })
-      .join("");
+    const modelOptions = modelRows.map((m) => {
+      const id = modelId(m);
+      return `<option value="${esc(id)}" ${id === selectedModelId ? "selected" : ""}>${esc(modelOptionLabel(m))}</option>`;
+    }).join("");
 
     return `
       <section class="agent-config-field">
-        <div class="agent-model-list agent-provider-list" role="listbox" aria-label="${esc(t("agent.selectProviderAria"))}">
-          ${providerOptions || `<p class="t-small subtle agent-picker-empty">${esc(t("common.loading"))}</p>`}
-        </div>
+        <label class="t-small" for="agent-provider-select">${esc(t("agent.provider"))}</label>
+        <select id="agent-provider-select" class="input-field agent-model-select" ${disabled ? "disabled" : ""}>${providerOptions}</select>
+      </section>
+      <section class="agent-config-field">
+        <label class="t-small" for="agent-model-select">${esc(t("agent.modelVersion"))}</label>
+        <select id="agent-model-select" class="input-field agent-model-select" data-provider="${esc(activeProvider)}" ${disabled || modelRows.length === 0 ? "disabled" : ""}>${modelOptions}</select>
       </section>
       ${renderCredentialSection(activeModel)}
-      ${activeProvider === "socai" ? "" : `<section class="agent-config-field">
-        <label class="t-eyebrow agent-config-title" for="agent-model-select">${esc(t("agent.modelVersion"))}</label>
-        <select
-          id="agent-model-select"
-          class="input-field agent-model-select"
-          data-provider="${esc(activeProvider)}"
-          aria-label="${esc(t("agent.selectModelAria"))}"
-          ${disabled || modelRows.length === 0 ? "disabled" : ""}
-        >
-          ${modelOptions}
-        </select>
-      </section>`}
     `;
   }
 
   function renderCredentialSection(selected: ModelInfo | undefined): string {
-    if (!selected) return "";
-    if (selected.provider === "socai") return "";
-    if (selected.has_key && !editingKey) return renderCredentialConfigured(selected);
+    if (!selected || selected.provider === "socai") return "";
     return renderHeaderKeyEntry(selected);
   }
 
-  function renderCredentialConfigured(selected: ModelInfo): string {
-    return `
-      <div class="agent-config-key agent-config-key-ready">
-        <p class="t-eyebrow agent-config-title">${esc(t("agent.apiKey"))}</p>
-        <p class="t-small subtle">${esc(
-          selected.credential_kind === "codex_oauth"
-            ? t("agent.chatgptConnected")
-            : t("agent.credentialPreview", {
-                preview: selected.credential_preview || t("agent.apiKey"),
-              }),
-        )}</p>
-        <div class="agent-config-actions">
-          <button id="agent-header-key-edit" type="button" class="btn-ghost btn-compact" ${savingKey || submittingTask ? "disabled" : ""}>
-            ${esc(t("agent.updateCredential"))}
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
   function renderHeaderKeyEntry(selected: ModelInfo): string {
-    const openai = selected.provider === "openai";
-    return `
-      <div class="agent-config-key">
-        <p class="t-eyebrow agent-config-title">${esc(t("agent.apiKey"))}</p>
-        <p class="t-small subtle">${esc(
-          selected.has_key
-            ? t("agent.replaceCredential", { provider: providerDisplayLabel(selected) })
-            : t("agent.needsCredential", { model: providerDisplayLabel(selected) }),
-        )}</p>
-        ${openai ? `
-          <div class="agent-config-actions">
-            <button id="agent-header-codex-login" type="button" class="btn-primary btn-compact" ${codexStarting ? "disabled" : ""}>
-              ${codexStarting ? esc(t("agent.opening")) : esc(t("agent.connectChatgpt"))}
-            </button>
-          </div>
-        ` : ""}
-        ${openai ? `<p class="t-small subtle">${esc(t("common.or"))}</p>` : ""}
-        <div class="agent-config-key-row">
-          <input
-            id="agent-header-key-input"
-            class="input-field"
-            type="password"
-            placeholder="${esc(t("agent.pasteApiKey"))}"
-            value="${esc(pendingKey)}"
-            autocomplete="off"
-            ${savingKey ? "disabled" : ""}
-          />
-          <button id="agent-header-key-save" type="button" data-provider="${esc(selected.provider)}" class="btn-primary btn-compact" ${savingKey ? "disabled" : ""}>
-            ${savingKey ? esc(t("common.saving")) : esc(t("common.save"))}
-          </button>
-          ${selected.has_key ? `
-            <button id="agent-header-key-cancel" type="button" class="btn-ghost btn-compact" ${savingKey ? "disabled" : ""}>
-              ${esc(t("common.cancel"))}
-            </button>
-          ` : ""}
-        </div>
-        ${keyMessage ? `<p class="t-small subtle">${esc(keyMessage)}</p>` : ""}
-        ${keyError ? `<p class="t-small result-error">${esc(keyError)}</p>` : ""}
+    const placeholder = selected.has_key
+      ? selected.credential_kind === "codex_oauth" ? t("agent.chatgptConnected") : selected.credential_preview || t("agent.pasteApiKey")
+      : t("agent.pasteApiKey");
+    return `<div class="agent-config-key">
+      <label class="t-small" for="agent-header-key-input">${esc(t("agent.apiKey"))}</label>
+      <div class="agent-config-key-row">
+        <input id="agent-header-key-input" class="input-field" type="password" placeholder="${esc(placeholder)}" value="${esc(pendingKey)}" autocomplete="off" ${savingKey ? "disabled" : ""} />
+        <button id="agent-header-key-save" type="button" data-provider="${esc(selected.provider)}" class="btn-primary btn-compact" ${savingKey ? "disabled" : ""}>${esc(t(savingKey ? "common.saving" : "common.save"))}</button>
       </div>
-    `;
+      ${keyMessage ? `<p class="t-small subtle">${esc(keyMessage)}</p>` : ""}
+      ${keyError ? `<p class="t-small result-error">${esc(keyError)}</p>` : ""}
+    </div>`;
   }
 
   function modelId(info: ModelInfo | undefined): string {
@@ -755,6 +612,7 @@ export namespace agentPanel {
     model = modelId(info);
     modelProvider = info?.provider || "";
     if (info && model) modelByProvider.set(info.provider, model);
+    if (info && info.provider !== "socai") lastOwnProvider = info.provider;
   }
 
   function persistModelChoice(info: ModelInfo): Promise<void> {
@@ -769,7 +627,7 @@ export namespace agentPanel {
     const seen = new Set<string>();
     const providers: Array<{ provider: string; displayName: string; hasKey: boolean }> = [];
     for (const info of modelsCache) {
-      if (seen.has(info.provider)) continue;
+      if (info.provider === "socai" || seen.has(info.provider)) continue;
       seen.add(info.provider);
       providers.push({
         provider: info.provider,
@@ -807,19 +665,8 @@ export namespace agentPanel {
     return `${name}${recommended}`;
   }
 
-  function modelDisplayLabel(info: ModelInfo): string {
-    const provider = providerDisplayLabel(info);
-    const name = modelNameLabel(info);
-    return name.startsWith(provider) ? name : `${provider} · ${name}`;
-  }
-
   function selectedModel(): ModelInfo | undefined {
     return modelsCache.find((m) => sameModel(m, modelProvider, model));
-  }
-
-  function selectedNeedsKey(): boolean {
-    const selected = selectedModel();
-    return !!selected && !selected.has_key;
   }
 
   // Append a streamed event and update state. Returns true when the shell
@@ -878,6 +725,7 @@ export namespace agentPanel {
       task,
       running,
       isActivityOpen: (turnIndex, defaultOpen) => isActivityOpen(task.task_id, turnIndex, defaultOpen),
+      isIntermediateOpen: (turnIndex) => intermediateOpen.get(`${task.task_id}#${turnIndex}`) ?? false,
       artifactDownloadState: (path) => artifactDownloads.get(artifactDownloadKey(task.task_id, path)),
       artifactPreviewPath: artifactPreview?.taskId === task.task_id ? artifactPreview.path : null,
       composer: replyComposer(shell, task.task_id, running),
@@ -899,10 +747,16 @@ export namespace agentPanel {
     return `<div class="workspace-overlay-root">${dialog}${renderFeishuConnector(tasks)}</div>`;
   }
 
+  function taskSites(taskId: string): string[] {
+    return replySites.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.sites ?? ["xhs"];
+  }
+
   function newComposer(shell: ShellState): ComposerProps {
     const selected = selectedModel();
     return {
       mode: "new",
+      sites: draftSites,
+      sourcesExpanded,
       value: draft,
       submitting: submittingTask,
       cancelling: false,
@@ -911,6 +765,7 @@ export namespace agentPanel {
       modelReady: !!selected && selected.has_key,
       running: false,
       remoteProfile: settingsMenu.isRemoteProfile(),
+      managedProfile: settingsMenu.isManagedProfile(),
       chromeSetupState,
       chromeSetupError: chromeSetupError || chromeSetupDetectionError,
       voice: voiceInput.composerState(),
@@ -920,6 +775,8 @@ export namespace agentPanel {
   function replyComposer(shell: ShellState, taskId: string, running: boolean): ComposerProps {
     return {
       mode: "reply",
+      sites: taskSites(taskId),
+      sourcesExpanded,
       taskId,
       value: replyDraft,
       submitting: submittingReply,
@@ -929,6 +786,7 @@ export namespace agentPanel {
       modelReady: true,
       running,
       remoteProfile: settingsMenu.isRemoteProfile(),
+      managedProfile: settingsMenu.isManagedProfile(),
       chromeSetupState,
       chromeSetupError: chromeSetupError || chromeSetupDetectionError,
       voice: voiceInput.composerState(),
@@ -944,6 +802,7 @@ export namespace agentPanel {
     document.getElementById("sidebar-new")?.addEventListener("click", () => {
       voiceInput.cancelRecording();
       clearArtifactPreview();
+      if (sourcesChosen) sourcesExpanded = false;
       view = "compose";
       shell.rerender();
     });
@@ -959,6 +818,15 @@ export namespace agentPanel {
         if (!taskId || turn === undefined) return;
         activityOpen.set(`${taskId}#${turn}`, !btn.classList.contains("is-open"));
         shell.rerender();
+      });
+    });
+
+    document.querySelectorAll<HTMLDetailsElement>("[data-intermediate-turn]").forEach((details) => {
+      const taskId = selectedTaskId;
+      details.addEventListener("toggle", () => {
+        if (taskId && details.isConnected) {
+          intermediateOpen.set(`${taskId}#${details.dataset.intermediateTurn}`, details.open);
+        }
       });
     });
 
@@ -1042,6 +910,7 @@ export namespace agentPanel {
         voiceInput.cancelRecording();
         if (artifactPreview?.taskId !== taskId) clearArtifactPreview();
         selectedTaskId = taskId;
+        if (sourcesChosen) sourcesExpanded = false;
         view = "detail";
         replyDraft = "";
         replyError = "";
@@ -1266,73 +1135,89 @@ export namespace agentPanel {
     artifactPreview = null;
   }
 
+  let artifactMenuDismissBound = false;
+
   function bindArtifactActions(shell: ShellState): void {
-    document.querySelectorAll<HTMLButtonElement>("[data-artifact-action]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const taskId = button.dataset.artifactAction;
+    if (!artifactMenuDismissBound) {
+      artifactMenuDismissBound = true;
+      document.addEventListener("click", (event) => {
+        const current = event.target instanceof Element ? event.target.closest(".artifact-menu") : null;
+        document.querySelectorAll<HTMLDetailsElement>(".artifact-menu[open]").forEach((menu) => {
+          if (menu !== current) menu.open = false;
+        });
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        const openMenu = document.querySelector<HTMLDetailsElement>(".artifact-menu[open]");
+        if (!openMenu) return;
+        event.preventDefault();
+        openMenu.open = false;
+        openMenu.querySelector<HTMLElement>("summary")?.focus();
+      });
+    }
+
+    document.querySelectorAll<HTMLButtonElement>("[data-artifact-reveal]").forEach((button) => {
+      button.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const taskId = button.dataset.artifactReveal;
+        const path = button.dataset.artifactPath;
+        const menu = button.closest<HTMLDetailsElement>(".artifact-menu");
+        if (!taskId || !path || !menu || button.disabled) return;
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        try {
+          await invoke("agent_task_artifact_reveal", { taskId, path });
+          menu.open = false;
+          menu.querySelector<HTMLElement>("summary")?.focus();
+        } catch (error) {
+          console.error("agent_task_artifact_reveal failed:", error);
+          let status = menu.querySelector<HTMLElement>(".artifact-menu__status");
+          if (!status) {
+            status = document.createElement("span");
+            status.className = "artifact-menu__status t-small";
+            menu.querySelector(".artifact-menu__items")?.append(status);
+          }
+          status.classList.add("is-error");
+          status.setAttribute("role", "alert");
+          status.textContent = t("artifact.revealFailed");
+        } finally {
+          button.disabled = false;
+          button.removeAttribute("aria-busy");
+        }
+      });
+    });
+
+    document.querySelectorAll<HTMLButtonElement>("[data-artifact-save]").forEach((button) => {
+      button.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const taskId = button.dataset.artifactSave;
         const path = button.dataset.artifactPath;
         if (!taskId || !path) return;
         const actionSurface = button.closest(".artifact-preview") ? "preview" : "card";
         const key = artifactDownloadKey(taskId, path);
-        const current = artifactDownloads.get(key);
-        if (current?.status === "downloading" || current?.status === "opening") return;
-        if (current?.destination && current.identity) {
-          const destination = current.destination;
-          const identity = current.identity;
-          artifactDownloads.set(key, { status: "opening", destination, identity });
-          rerenderAndFocusArtifactAction(shell, taskId, path, actionSurface);
-          try {
-            const exists = await invoke<boolean>("agent_task_artifact_open", {
-              taskId,
-              path,
-              downloadPath: destination,
-              downloadIdentity: identity,
-            });
-            const pending = artifactDownloads.get(key);
-            if (pending?.status !== "opening"
-              || pending.destination !== destination
-              || pending.identity !== identity) return;
-            if (exists) {
-              artifactDownloads.set(key, { status: "downloaded", destination, identity });
-            } else {
-              artifactDownloads.delete(key);
-              persistArtifactDownloads();
-            }
-          } catch (error) {
-            console.error("agent_task_artifact_open failed:", error);
-            const pending = artifactDownloads.get(key);
-            if (pending?.status === "opening"
-              && pending.destination === destination
-              && pending.identity === identity) {
-              artifactDownloads.set(key, { status: "open_failed", destination, identity });
-            }
-          } finally {
-            rerenderAndFocusArtifactAction(shell, taskId, path, actionSurface);
-          }
-          return;
-        }
-
+        if (artifactDownloads.get(key)?.status === "downloading") return;
+        const previousState = artifactDownloads.get(key);
         artifactDownloads.set(key, { status: "downloading" });
         rerenderAndFocusArtifactAction(shell, taskId, path, actionSurface);
+        let failed = false;
         try {
-          const downloaded = await invoke<AgentArtifactDownload>("agent_task_artifact_download", {
+          const destination = await invoke<string | null>("agent_task_artifact_save_as", {
             taskId,
             path,
           });
           if (artifactDownloads.get(key)?.status !== "downloading") return;
-          artifactDownloads.set(key, {
-            status: "downloaded",
-            destination: downloaded.path,
-            identity: downloaded.identity,
-          });
+          if (destination) artifactDownloads.delete(key);
+          else if (previousState) artifactDownloads.set(key, previousState);
+          else artifactDownloads.delete(key);
           persistArtifactDownloads();
         } catch (error) {
-          console.error("agent_task_artifact_download failed:", error);
+          console.error("agent_task_artifact_save_as failed:", error);
           if (artifactDownloads.get(key)?.status === "downloading") {
             artifactDownloads.set(key, { status: "download_failed" });
+            failed = true;
           }
         } finally {
-          rerenderAndFocusArtifactAction(shell, taskId, path, actionSurface);
+          rerenderAndFocusArtifactAction(shell, taskId, path, actionSurface, failed);
         }
       });
     });
@@ -1343,20 +1228,24 @@ export namespace agentPanel {
     taskId: string,
     path: string,
     surface: "card" | "preview",
+    keepOpen = true,
   ): void {
     shell.rerender();
+    const menus = [...document.querySelectorAll<HTMLDetailsElement>("[data-artifact-menu]")];
+    const matchingMenu = menus.find((menu) => {
+      const button = menu.querySelector<HTMLButtonElement>("[data-artifact-save]");
+      return button?.dataset.artifactSave === taskId
+        && button.dataset.artifactPath === path
+        && (surface === "preview" ? !!menu.closest(".artifact-preview") : !menu.closest(".artifact-preview"));
+    });
+    if (!matchingMenu) return;
+    matchingMenu.open = keepOpen;
     requestAnimationFrame(() => {
-      const candidates = [...document.querySelectorAll<HTMLButtonElement>("[data-artifact-action]")]
-        .filter((button) => button.dataset.artifactAction === taskId && button.dataset.artifactPath === path);
-      const matchingSurface = candidates.find((button) => (
-        surface === "preview" ? !!button.closest(".artifact-preview") : !button.closest(".artifact-preview")
-      ));
-      (matchingSurface ?? candidates[0])?.focus();
+      if (keepOpen) matchingMenu.querySelector<HTMLButtonElement>("[data-artifact-save]")?.focus();
+      else matchingMenu.querySelector<HTMLElement>("summary")?.focus();
     });
   }
 
-  // A shell render rebuilds the left rail, so restore the task list's previous
-  // viewport and keep recording it for the next render.
   function restoreSidebarScroll(): void {
     const list = document.querySelector<HTMLDivElement>(".sidebar-list");
     if (!list) return;
@@ -1381,37 +1270,6 @@ export namespace agentPanel {
     });
   }
 
-  async function pollCodexOAuth(shell: ShellState): Promise<void> {
-    for (let attempt = 0; attempt < 120; attempt += 1) {
-      await delay(1000);
-      try {
-        const models = await refreshModels();
-        if (models.some((item) => item.provider === "openai" && item.has_key)) {
-          keyMessage = "";
-          keyError = "";
-          savingKey = false;
-          editingKey = false;
-          shell.rerender();
-          return;
-        }
-      } catch (err) {
-        keyMessage = "";
-        keyError = `${err}`;
-        savingKey = false;
-        shell.rerender();
-        return;
-      }
-    }
-
-    keyMessage = "";
-    keyError = t("agent.codexLoginMissing");
-    savingKey = false;
-    shell.rerender();
-  }
-
-  function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => window.setTimeout(resolve, ms));
-  }
 
   // The pinned composer: one input, two modes. Compose mode (no task shown)
   // starts a fresh task; a shown task takes a follow-up reply instead.
@@ -1426,6 +1284,50 @@ export namespace agentPanel {
       if (composerTask) replyDraft = input.value;
       else draft = input.value;
       updateComposerButton(shell);
+    });
+    const syncSourceOptions = (): void => {
+      const toggle = document.getElementById("composer-sources-toggle");
+      const options = document.getElementById("composer-source-options");
+      toggle?.setAttribute("aria-expanded", String(sourcesExpanded));
+      if (options) options.hidden = !sourcesExpanded;
+    };
+    document.getElementById("composer-sources-toggle")?.addEventListener("click", () => {
+      sourcesExpanded = !sourcesExpanded;
+      syncSourceOptions();
+    });
+    document.querySelector(".composer__sources")?.addEventListener("keydown", (event) => {
+      if ((event as KeyboardEvent).key !== "Escape") return;
+      sourcesExpanded = false;
+      syncSourceOptions();
+      document.getElementById("composer-sources-toggle")?.focus();
+    });
+    input?.addEventListener("focus", () => {
+      if (!sourcesChosen) return;
+      sourcesExpanded = false;
+      syncSourceOptions();
+    });
+    document.querySelectorAll<HTMLInputElement>("[data-composer-site]").forEach((checkbox) => {
+      checkbox.addEventListener("change", () => {
+        const site = checkbox.dataset.composerSite!;
+        const current = composerTask ? taskSites(composerTask.task_id) : draftSites;
+        if (current.includes(site) && current.length === 1) return;
+        const next = site === "auto"
+          ? ["auto"]
+          : current.includes("auto")
+            ? [site]
+            : current.includes(site)
+              ? current.filter((id) => id !== site)
+              : [...current, site];
+        if (composerTask) replySites.set(composerTask.task_id, next);
+        draftSites = next;
+        saveSources(next);
+        const firstSelection = !sourcesChosen;
+        sourcesChosen = true;
+        if (firstSelection) sourcesExpanded = false;
+        shell.rerender();
+        if (firstSelection) document.getElementById("composer-sources-toggle")?.focus();
+        else document.querySelector<HTMLInputElement>(`[data-composer-site="${site}"]`)?.focus();
+      });
     });
     // Enter sends; routed through the button so its disabled state (empty
     // draft, disconnected, no model key, task running) keeps gating submission.
@@ -1493,7 +1395,7 @@ export namespace agentPanel {
     chromeSetupStatus = shell.status;
 
     const overlayVisible = document.querySelector(".connect-overlay") !== null;
-    if (!overlayVisible || shell.status.state === "connected" || settingsMenu.isRemoteProfile()) {
+    if (!overlayVisible || shell.status.state === "connected" || settingsMenu.isRemoteProfile() || settingsMenu.isManagedProfile()) {
       stopChromeSetupPolling();
       if (shell.status.state === "connected") {
         chromeSetupState = "ready";
@@ -1547,7 +1449,7 @@ export namespace agentPanel {
     const running = !!task && (task.status === "running" || task.status === "queued");
     // Remote profiles submit while disconnected; the run reconnects on demand.
     const needsConnection =
-      shell.status.state !== "connected" && !settingsMenu.isRemoteProfile();
+      shell.status.state !== "connected" && !settingsMenu.isRemoteProfile() && !settingsMenu.isManagedProfile();
     const selected = selectedModel();
     const modelReady = task ? true : !!selected && selected.has_key;
     const disabled = submitting
@@ -1564,9 +1466,16 @@ export namespace agentPanel {
     return prefix ? `${prefix}\n${transcript.trim()}` : transcript.trim();
   }
 
+  function handleLoginRequired(error: unknown, shell: ShellState): boolean {
+    if (!String(error).includes("guest_login_required")) return false;
+    authMenu.requireSignIn(shell);
+    return true;
+  }
+
   async function startAgentTask(shell: ShellState): Promise<void> {
     const value = draft.trim();
     if (!value || submittingTask) return;
+    sourcesExpanded = false;
     submittingTask = true;
     submitError = "";
     shell.rerender();
@@ -1574,6 +1483,7 @@ export namespace agentPanel {
       const selected = selectedModel();
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_start", {
         task: value,
+        sites: draftSites,
         provider: selected?.provider || modelProvider || null,
         model: selected ? modelId(selected) : model || null,
       });
@@ -1583,7 +1493,7 @@ export namespace agentPanel {
       draft = "";
     } catch (err) {
       console.error("agent_task_start failed:", err);
-      submitError = shell.notifyTaskCommandError(err) ? "" : `${err}`;
+      submitError = handleLoginRequired(err, shell) || shell.notifyTaskCommandError(err) ? "" : `${err}`;
     } finally {
       submittingTask = false;
       shell.rerender();
@@ -1600,6 +1510,7 @@ export namespace agentPanel {
 
   async function submitReplyValue(shell: ShellState, taskId: string, value: string): Promise<void> {
     if (!value.trim() || submittingReply) return;
+    sourcesExpanded = false;
     submittingReply = true;
     replyError = "";
     // Sending snaps the thread back to the newest content (and re-arms
@@ -1610,12 +1521,14 @@ export namespace agentPanel {
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_reply", {
         taskId,
         message: value,
+        sites: taskSites(taskId),
       });
+      replySites.delete(taskId);
       upsertTask(snapshot);
       replyDraft = "";
     } catch (err) {
       console.error("agent_task_reply failed:", err);
-      replyError = shell.notifyTaskCommandError(err) ? "" : `${err}`;
+      replyError = handleLoginRequired(err, shell) || shell.notifyTaskCommandError(err) ? "" : `${err}`;
     } finally {
       submittingReply = false;
       shell.rerender();

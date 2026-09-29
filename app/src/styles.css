@@ -631,6 +631,10 @@ body.has-paper > * { position: relative; z-index: 1; }
   letter-spacing: 0.22em;
 }
 .auth-full-button { width: 100%; }
+.auth-login-divider { display: flex; align-items: center; gap: var(--sp-3); }
+.auth-login-divider::before,
+.auth-login-divider::after { content: ""; flex: 1; border-top: var(--hairline); }
+.auth-account-identity { min-width: 0; overflow-wrap: anywhere; }
 .auth-secondary-actions {
   display: flex;
   align-items: center;
@@ -1641,38 +1645,39 @@ body.has-paper > * { position: relative; z-index: 1; }
 /* citation pills need to sit comfortably in the larger prose */
 .conv-answer .note-cite { font-size: 0.82em; }
 
-/* Generated-file attachments: previewable files open the right pane from the
-   main control; the separate icon action downloads first, then reveals the
-   downloaded copy in Finder/Explorer while that copy still exists. */
+/* Generated-file attachments: the main control previews; the ellipsis opens
+   source-file reveal and Save As actions. */
 .artifact-cards {
   margin-top: var(--sp-3);
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-2);
+  gap: 6px;
 }
 .artifact-card {
-  width: min(100%, 360px);
+  position: relative;
+  width: min(100%, 320px);
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: minmax(0, 1fr) 30px;
   align-items: center;
   border: var(--hairline);
   border-radius: var(--r-3);
   background: var(--surface);
   color: var(--fg);
-  overflow: hidden;
+  overflow: visible;
   transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
 .artifact-card:hover { border-color: var(--line-strong); background: var(--surface-2); }
 .artifact-card.is-previewing { border-color: var(--ink-2); }
+.artifact-card:has(.artifact-menu[open]) { z-index: 12; }
 .artifact-card__main {
   appearance: none;
   min-width: 0;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-columns: 26px minmax(0, 1fr);
   align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
+  gap: 7px;
+  padding: 5px 8px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -1680,28 +1685,28 @@ body.has-paper > * { position: relative; z-index: 1; }
   cursor: pointer;
 }
 .artifact-card__main--static {
-  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-columns: 26px minmax(0, 1fr);
   cursor: default;
 }
 .artifact-card__main:focus-visible,
 .artifact-card__action:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .artifact-card__icon {
-  width: 36px;
-  height: 36px;
+  width: 26px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--r-2);
-  background: var(--ink-8);
-  color: var(--ink-2);
+  color: var(--fg-soft);
 }
-.artifact-card__copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.artifact-card__copy { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .artifact-card__name {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-sans);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--ink-1);
 }
@@ -1709,14 +1714,9 @@ body.has-paper > * { position: relative; z-index: 1; }
 .artifact-card__action {
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.02em;
   color: var(--fg-faint);
 }
-.artifact-card__eye {
-  display: inline-flex;
-  align-items: center;
-  color: var(--fg-soft);
-}
+.artifact-card__meta { flex: 0 0 auto; }
 .artifact-card__action {
   appearance: none;
   align-self: stretch;
@@ -1730,10 +1730,49 @@ body.has-paper > * { position: relative; z-index: 1; }
   cursor: pointer;
 }
 .artifact-card__action:hover { background: var(--ink-7); color: var(--ink-0); }
-.artifact-card__action:disabled,
-.artifact-card__action[aria-disabled="true"] { cursor: wait; color: var(--fg-faint); }
-.artifact-card.is-downloaded .artifact-card__action { color: var(--ink-1); }
-.artifact-card.is-error .artifact-card__action { color: var(--status-error-fg); }
+.artifact-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+.artifact-menu--card { align-self: stretch; }
+.artifact-menu[open] { z-index: 20; }
+.artifact-menu > summary { list-style: none; }
+.artifact-menu > summary::-webkit-details-marker { display: none; }
+.artifact-menu--card > summary { min-width: 30px; height: 100%; }
+.artifact-menu--preview > summary { width: 28px; height: 28px; }
+.artifact-menu__items {
+  position: absolute;
+  z-index: 21;
+  top: calc(100% + 3px);
+  right: 0;
+  min-width: 142px;
+  padding: 3px;
+  border: var(--hairline);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+.artifact-menu__items > button {
+  appearance: none;
+  width: 100%;
+  display: block;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.artifact-menu__items > button:hover,
+.artifact-menu__items > button:focus-visible { background: var(--ink-8); outline: none; }
+.artifact-menu__items > button:disabled { color: var(--fg-faint); cursor: wait; }
+.artifact-menu__status { display: block; padding: 4px 8px; color: var(--fg-muted); }
+.artifact-menu__status.is-error { color: var(--status-error-fg); }
 
 /* Right-side artifact preview. It is a sibling of the conversation, so the
    thread and composer keep their own scroll/size contract while the panel is
@@ -1772,6 +1811,8 @@ body.has-paper > * { position: relative; z-index: 1; }
 .artifact-preview__resize.is-resizing::after { background: var(--ink-3); }
 .artifact-preview__resize:focus-visible { outline: 0; }
 .artifact-preview__head {
+  position: relative;
+  z-index: 5;
   flex: 0 0 auto;
   min-height: 46px;
   display: flex;
@@ -2772,3 +2813,62 @@ code {
   color: var(--fg-soft);
   cursor: not-allowed;
 }
+
+/* Research source picker; selected icons remain visible when collapsed. */
+.composer__sources { padding: var(--sp-2) var(--sp-1) 0; }
+.platform-icon { display: inline-flex; flex: 0 0 18px; width: 18px; height: 18px; align-items: center; justify-content: center; }
+.platform-icon svg, .platform-icon img { width: 100%; height: 100%; object-fit: contain; }
+.composer__sources-toggle {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  border: 0; border-radius: var(--r-2); padding: var(--sp-1) var(--sp-2);
+  background: transparent; color: var(--fg-muted); cursor: pointer;
+}
+.composer__sources-toggle:hover { background: var(--surface-2); }
+.composer__selected-icons { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.composer__sources-toggle[aria-expanded="true"] .composer__sources-chevron { transform: rotate(180deg); }
+.composer__source-options {
+  display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-3);
+  border: 0; border-top: var(--hairline); margin: var(--sp-2) 0 0; padding: var(--sp-2) 0 0; min-width: 0;
+}
+.composer__source-options[hidden] { display: none; }
+.composer__source-options legend { padding: 0 var(--sp-2) 0 0; }
+.composer__source {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  color: var(--fg-muted); padding: var(--sp-1) 0; cursor: pointer;
+}
+.composer__source:has(:checked) { color: var(--fg); }
+.composer__source:has(:disabled) { cursor: default; }
+.composer__source input { margin: 0; width: 14px; height: 14px; accent-color: var(--fg); }
+.composer__sources-toggle:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.note-card__text-preview {
+  padding: var(--sp-3);
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+}
+
+.note-media__unavailable { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: var(--sp-2); color: var(--fg-soft); background: var(--surface-2); text-align: center; }
+
+/* Raw extraction files are available without competing with deliverables. */
+.artifact-intermediates { margin-top: var(--sp-3); color: var(--fg-muted); }
+.artifact-intermediates > summary { cursor: pointer; padding: var(--sp-2) 0; }
+.artifact-intermediates > .artifact-cards { margin-top: var(--sp-2); }
+
+/* Compact account controls. Brand art is supplied by the Google login button. */
+.auth-sign-in { min-height: 30px; padding: 5px 14px; }
+.auth-chip { max-width: min(320px, 55vw); }
+.auth-chip .badge-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-login-options { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
+.auth-login-option { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 8px; white-space: normal; }
+.auth-login-option img { flex: 0 0 20px; width: 20px; height: 20px; object-fit: contain; }
+.auth-model-picker .agent-account-config { margin-top: 0; }
+.auth-model-picker .agent-config-key { padding: 0; border: 0; background: transparent; }
+.settings-chrome-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.settings-chrome-heading .settings-group-label { margin: 0; }
+
+.agent-own-key-toggle { display: flex; align-items: center; gap: var(--sp-2); cursor: pointer; }
+.agent-own-key-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--fg); flex-shrink: 0; }
+.agent-own-key-fields { display: flex; flex-direction: column; gap: var(--sp-3); }

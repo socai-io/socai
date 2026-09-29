@@ -1,16 +1,18 @@
-//! Compact account control for the desktop topbar. Phone login uses the
-//! server's SMS challenge flow; the returned device token is persisted by the
-//! Rust core and shared with existing managed cloud features.
+//! Account control for the desktop topbar. Phone and Google login return a
+//! device token persisted by the Rust core and shared with managed cloud features.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import googleLogo from "../assets/google-logo.jpg";
 import type { ShellState } from "../main";
 import { esc } from "../lib/html";
-import { SIGNUP_BONUS_POINTS, setAccountSignedIn, t } from "../lib/i18n";
+import { setAccountSignedIn, t } from "../lib/i18n";
 
 interface AuthSession {
   logged_in: boolean;
   user_id: string;
   phone: string;
+  email: string;
   device_id: string;
   status: string;
 }
@@ -28,12 +30,13 @@ interface WalletBalance {
   active_until: string | null;
 }
 
-type AuthPhase = "loading" | "idle" | "sending" | "verifying" | "logging_out";
+type AuthPhase = "loading" | "idle" | "sending" | "verifying" | "google" | "logging_out";
 
 const EMPTY_SESSION: AuthSession = {
   logged_in: false,
   user_id: "",
   phone: "",
+  email: "",
   device_id: "",
   status: "",
 };
@@ -53,9 +56,8 @@ export namespace authMenu {
   let wallet: WalletBalance | null = null;
   let walletUnavailable = false;
   let loginExpanded = false;
-  let byokExpanded = false;
-  let modelExpanded = false;
   let upgradeExpanded = false;
+  let googleBrowserOpened = false;
 
   export async function loadSession(): Promise<void> {
     phase = "loading";
@@ -94,6 +96,12 @@ export namespace authMenu {
     return open;
   }
 
+  export function requireSignIn(shell: ShellState): void {
+    open = true;
+    error = t("auth.trialUsed");
+    shell.rerender();
+  }
+
   export function isLoggedIn(): boolean {
     return session.logged_in;
   }
@@ -112,37 +120,32 @@ export namespace authMenu {
   export function closePopover(): boolean {
     if (!open) return false;
     open = false;
-    byokExpanded = false;
-    modelExpanded = false;
-    if (!challenge) loginExpanded = false;
+    if (!challenge && phase !== "google") loginExpanded = false;
     stopCountdown();
     return true;
   }
 
   export function render(
-    modelLabel: string,
     modelConfigContent = "",
     subscriptionContent = "",
   ): string {
-    const accountLabel = session.logged_in ? maskPhone(session.phone) : t("auth.loggedOut");
-    const label = `${modelLabel} · ${accountLabel}`;
+    const accountLabel = session.logged_in ? (session.phone ? maskPhone(session.phone) : session.email || t("auth.title")) : t("auth.signIn");
     const dot = session.logged_in ? "badge-dot-ink" : "badge-dot-hollow";
     return `
       <div class="auth-menu">
         <button
           id="auth-toggle"
           type="button"
-          class="badge badge-button auth-chip"
+          class="${session.logged_in ? "badge badge-button auth-chip" : "btn-ghost auth-sign-in"}"
           aria-label="${esc(session.logged_in ? t("auth.accountAria") : t("auth.loginAria"))}"
           aria-expanded="${open ? "true" : "false"}"
-        ><i class="badge-dot ${dot}" aria-hidden="true"></i><span class="badge-text">${esc(label)}</span></button>
-        ${open ? renderPopover(modelLabel, modelConfigContent, subscriptionContent) : ""}
+        >${session.logged_in ? `<i class="badge-dot ${dot}" aria-hidden="true"></i>` : ""}<span class="badge-text">${esc(accountLabel)}</span></button>
+        ${open ? renderPopover(modelConfigContent, subscriptionContent) : ""}
       </div>
     `;
   }
 
   function renderPopover(
-    modelLabel: string,
     modelConfigContent: string,
     subscriptionContent: string,
   ): string {
@@ -152,60 +155,48 @@ export namespace authMenu {
     return `
       <div class="topbar-popover auth-popover" role="dialog" aria-label="${esc(t("auth.title"))}">
         ${session.logged_in
-          ? renderAccount(modelLabel, modelConfigContent, subscriptionContent)
-          : renderSignedOut(modelConfigContent)}
+          ? renderAccount(modelConfigContent, subscriptionContent)
+          : renderSignedOut()}
         ${error ? `<p class="t-small result-error auth-error" role="alert">${esc(error)}</p>` : ""}
       </div>
     `;
   }
 
-  function renderSignedOut(modelConfigContent: string): string {
+  function renderSignedOut(): string {
+    return renderLoginOptions();
+  }
+
+  function renderGooglePending(): string {
+    return `<div class="auth-form" role="status">
+      <p class="t-small subtle auth-copy">${esc(t(googleBrowserOpened ? "auth.googleWaiting" : "auth.googlePreparing"))}</p>
+      <button id="auth-google-cancel" type="button" class="auth-text-button">${esc(t("auth.googleCancel"))}</button>
+    </div>`;
+  }
+
+  function renderLoginOptions(): string {
+    if (phase === "google") return renderGooglePending();
     return `
-      <section class="auth-choice">
-        <div class="auth-choice-copy">
-          <p class="t-small subtle">${esc(t("auth.loginAgentHint", { points: SIGNUP_BONUS_POINTS }))}</p>
-        </div>
-        <button id="auth-start-login" type="button" class="btn-primary btn-compact" aria-expanded="${loginExpanded || challenge ? "true" : "false"}">${esc(t("auth.login"))}</button>
-      </section>
+      <div class="auth-login-options">
+        <button id="auth-google-login" type="button" class="btn-ghost auth-login-option" ${phase !== "idle" ? "disabled" : ""}><img src="${googleLogo}" width="20" height="20" alt="" /><span>${esc(t("auth.googleLogin"))}</span></button>
+        <button id="auth-start-login" type="button" class="btn-ghost auth-login-option" aria-expanded="${loginExpanded || challenge ? "true" : "false"}" ${phase !== "idle" ? "disabled" : ""}>${esc(t("auth.phoneLogin"))}</button>
+      </div>
       ${loginExpanded || challenge ? `<div class="auth-expanded-panel">${challenge ? renderCodeForm() : renderPhoneForm()}</div>` : ""}
-      <section class="auth-byok">
-        <button id="auth-byok-toggle" type="button" class="auth-disclosure" aria-expanded="${byokExpanded ? "true" : "false"}">
-          <span>${esc(t("auth.useOwnApiKey"))}</span>
-          <span class="auth-disclosure-mark" aria-hidden="true">${byokExpanded ? "−" : "+"}</span>
-        </button>
-        ${byokExpanded ? `<div class="auth-expanded-panel">${modelConfigContent}</div>` : ""}
-      </section>
     `;
   }
 
   function renderAccount(
-    modelLabel: string,
     modelConfigContent: string,
     subscriptionContent: string,
   ): string {
     const activeUntil = activeUntilDate();
     return `
-      <div class="auth-account-summary">
-        <span class="t-mono">${esc(formatPhone(session.phone))}</span>
-        <span class="badge"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>${esc(t("auth.loggedIn"))}</span>
-      </div>
       <div class="auth-balance-summary">
         <span class="t-small subtle">${esc(t("billing.remaining"))}</span>
         <span class="t-h2 auth-wallet-points">${wallet
           ? esc(t("billing.points", { points: wallet.balance_points }))
           : esc(walletUnavailable ? t("billing.unavailable") : t("common.loading"))}</span>
       </div>
-      <section class="auth-byok auth-model-picker">
-        <button id="auth-model-toggle" type="button" class="auth-disclosure" aria-expanded="${modelExpanded ? "true" : "false"}">
-          <span>${esc(t("agent.label"))}</span>
-          <span class="auth-disclosure-value">${esc(modelLabel)}</span>
-          <span class="auth-disclosure-chevron ${modelExpanded ? "is-open" : ""}" aria-hidden="true">
-            <svg viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5" /></svg>
-          </span>
-        </button>
-        <p class="t-small subtle auth-model-hint">${esc(t("auth.useOwnApiKeyNoPoints"))}</p>
-        ${modelExpanded ? modelConfigContent : ""}
-      </section>
+      <section class="auth-model-picker">${modelConfigContent}</section>
       ${activeUntil ? `
         <div class="auth-pro-status">
           <span class="badge"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>Pro</span>
@@ -220,8 +211,10 @@ export namespace authMenu {
         </ul>
       `}
       ${upgradeExpanded ? `<section class="auth-upgrade-panel" aria-label="${esc(t("subscription.upgradePro"))}">${subscriptionContent}</section>` : ""}
+      ${phase === "google" ? renderGooglePending() : session.email ? ""
+        : `<button id="auth-google-link" type="button" class="auth-text-button" ${phase !== "idle" ? "disabled" : ""}>${esc(t("auth.googleLink"))}</button>`}
       <div class="auth-session-actions">
-        <button id="auth-logout" type="button" class="auth-text-button" ${phase === "logging_out" ? "disabled" : ""}>${esc(phase === "logging_out" ? t("auth.loggingOut") : t("auth.logout"))}</button>
+        <button id="auth-logout" type="button" class="auth-text-button" ${phase !== "idle" ? "disabled" : ""}>${esc(phase === "logging_out" ? t("auth.loggingOut") : t("auth.logout"))}</button>
       </div>
     `;
   }
@@ -300,16 +293,22 @@ export namespace authMenu {
 
     if (!open) return;
 
-    if (session.logged_in) {
-      document.getElementById("auth-model-toggle")?.addEventListener("click", () => {
-        modelExpanded = !modelExpanded;
-        upgradeExpanded = false;
-        error = "";
+    document.getElementById("auth-google-login")?.addEventListener("click", () => {
+      void googleLogin(shell, onSessionChanged, false);
+    });
+    document.getElementById("auth-google-link")?.addEventListener("click", () => {
+      void googleLogin(shell, onSessionChanged, true);
+    });
+    document.getElementById("auth-google-cancel")?.addEventListener("click", () => {
+      void invoke("auth_google_cancel").catch(() => {
+        error = t("auth.requestFailed");
         shell.rerender();
       });
+    });
+
+    if (session.logged_in) {
       document.getElementById("auth-upgrade")?.addEventListener("click", () => {
         upgradeExpanded = !upgradeExpanded;
-        modelExpanded = false;
         shell.rerender();
       });
       document.getElementById("auth-logout")?.addEventListener("click", () => {
@@ -319,18 +318,10 @@ export namespace authMenu {
     }
 
     document.getElementById("auth-start-login")?.addEventListener("click", () => {
-      loginExpanded = true;
-      byokExpanded = false;
+      loginExpanded = !loginExpanded;
       error = "";
       shell.rerender();
     });
-    document.getElementById("auth-byok-toggle")?.addEventListener("click", () => {
-      byokExpanded = !byokExpanded;
-      if (byokExpanded && !challenge) loginExpanded = false;
-      error = "";
-      shell.rerender();
-    });
-
     const phoneInput = document.getElementById("auth-phone") as HTMLInputElement | null;
     phoneInput?.addEventListener("input", () => {
       phone = phoneInput.value;
@@ -364,6 +355,41 @@ export namespace authMenu {
       void sendCode(shell);
     });
     if (challenge) startCountdown();
+  }
+
+  async function googleLogin(shell: ShellState, onSessionChanged: () => Promise<void>, link: boolean): Promise<void> {
+    if (phase !== "idle") return;
+    phase = "google";
+    googleBrowserOpened = false;
+    error = "";
+    shell.rerender();
+    let unlisten: UnlistenFn | undefined;
+    try {
+      unlisten = await listen("auth-google-browser-opened", () => {
+        googleBrowserOpened = true;
+        shell.rerender();
+      });
+      setSession(await invoke<AuthSession>("auth_google_login", { link }));
+      challenge = null;
+      code = "";
+      retryAt = 0;
+      loginExpanded = false;
+          upgradeExpanded = false;
+      stopExpiryTimer();
+      stopCountdown();
+      await refreshWallet();
+      await onSessionChanged();
+    } catch (err) {
+      if (!String(err).toLowerCase().includes("google login cancelled")) {
+        error = friendlyError(err);
+        open = true;
+        loginExpanded = !session.logged_in;
+      }
+    } finally {
+      unlisten?.();
+      phase = "idle";
+      shell.rerender();
+    }
   }
 
   async function sendCode(shell: ShellState): Promise<void> {
@@ -409,9 +435,7 @@ export namespace authMenu {
       code = "";
       retryAt = 0;
       loginExpanded = false;
-      byokExpanded = false;
-      modelExpanded = false;
-      upgradeExpanded = false;
+          upgradeExpanded = false;
       stopExpiryTimer();
       stopCountdown();
       await refreshWallet();
@@ -426,7 +450,7 @@ export namespace authMenu {
   }
 
   async function logout(shell: ShellState, onSessionChanged: () => Promise<void>): Promise<void> {
-    if (phase === "logging_out") return;
+    if (phase !== "idle") return;
     phase = "logging_out";
     error = "";
     shell.rerender();
@@ -441,9 +465,7 @@ export namespace authMenu {
       wallet = null;
       walletUnavailable = false;
       loginExpanded = false;
-      byokExpanded = false;
-      modelExpanded = false;
-      upgradeExpanded = false;
+          upgradeExpanded = false;
       stopExpiryTimer();
       phase = "idle";
       await onSessionChanged();
@@ -532,12 +554,17 @@ export namespace authMenu {
 
   function maskPhone(value: string): string {
     const national = normalizedNationalPhone(value);
-    if (national.length !== 11) return t("auth.loggedIn");
+    if (national.length !== 11) return value;
     return `${national.slice(0, 3)}****${national.slice(-4)}`;
   }
 
   function friendlyError(value: unknown): string {
     const message = String(value).toLowerCase();
+    if (message.includes("google login is not configured")) return t("auth.googleNotConfigured");
+    if (message.includes("failed to open google login browser")) return t("auth.googleBrowserFailed");
+    if (message.includes("google login timed out")) return t("auth.googleTimeout");
+    if (message.includes("already linked") || message.includes("already has a google")) return t("auth.googleConflict");
+    if (message.includes("google")) return t("auth.googleFailed");
     if (message.includes("invalid mainland china phone")) return t("auth.invalidPhone");
     if (message.includes("too frequently") || message.includes("429")) return t("auth.tooFrequent");
     if (message.includes("invalid sms code")) return t("auth.invalidCode");
