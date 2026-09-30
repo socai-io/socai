@@ -7,15 +7,44 @@
 //! JSON artifact.
 
 use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::DateTime;
 use serde_json::{json, Map, Value};
 
 use crate::agent::ToolContext;
 use crate::cdp::PageSession;
+use crate::media::{
+    background_media_is_stopped, background_video_download_semaphore, emit_background_media_event,
+    reserve_background_video_download, subscribe_background_media_cancellation,
+    wait_for_background_media_cancellation, BackgroundMediaEvent,
+};
 
 const INSTAGRAM_MEDIA_HOST_SUFFIXES: &[&str] = &["cdninstagram.com", "fbcdn.net", "instagram.com"];
+const TIKTOK_MEDIA_HOST_SUFFIXES: &[&str] = &[
+    "tiktokcdn.com",
+    "tiktokcdn-us.com",
+    "tiktokv.com",
+    "tiktok.com",
+    "byteoversea.com",
+    "ibytedtos.com",
+    "muscdn.com",
+    "akamaized.net",
+];
+const DOUYIN_MEDIA_HOST_SUFFIXES: &[&str] = &[
+    "douyinvod.com",
+    "douyinpic.com",
+    "douyin.com",
+    "byteimg.com",
+    "zjcdn.com",
+    "bytecdn.cn",
+    "snssdk.com",
+    "pstatp.com",
+    "volccdn.com",
+];
 const MAX_INSTAGRAM_VIDEO_BYTES: usize = 512 * 1024 * 1024;
+const MAX_PREVIEW_VIDEO_BYTES: usize = 512 * 1024 * 1024;
 
 /// Persist an extraction result and update any post cards it contains.
 pub fn persist_site_tool_result(
@@ -65,6 +94,508 @@ pub fn persist_site_tool_result(
             }
         }
     }
+}
+
+/// Download playable video files for posts just archived from TikTok, Douyin,
+/// or Instagram. Runs beside the agent, one file at a time, and stops when the
+/// user sends another question. Covers stay in the note until each file lands.
+pub fn schedule_background_preview_videos(
+    page: Arc<PageSession>,
+    ctx: &ToolContext,
+    site_id: &str,
+    tool_name: &str,
+    result: &Value,
+) {
+    let Some(generation) = ctx.background_media_generation else {
+        return;
+    };
+    let hosts: &'static [&'static str] = match site_id {
+        "instagram" => INSTAGRAM_MEDIA_HOST_SUFFIXES,
+        "tiktok" => TIKTOK_MEDIA_HOST_SUFFIXES,
+        "dy" => DOUYIN_MEDIA_HOST_SUFFIXES,
+        _ => return,
+    };
+    let run_dir = ctx.run_dir.to_string_lossy().into_owned();
+    if background_media_is_stopped(generation, &run_dir) {
+        return;
+    }
+    for note in preview_video_notes(site_id, tool_name, result) {
+        let files: Vec<(usize, String)> = note
+            .files
+            .into_iter()
+            .filter(|(_, url)| preview_video_url_allowed(url, hosts))
+            .collect();
+        if files.is_empty() {
+            continue;
+        }
+        for (index, _) in &files {
+            set_preview_video_state(ctx, &note.note_id, *index, Some("loading"), None, None);
+        }
+        let Some(reservation) =
+            reserve_background_video_download(generation, &run_dir, &note.note_id)
+        else {
+            continue;
+        };
+        let page = page.clone();
+        let ctx = ctx.clone();
+        let note_id = note.note_id.clone();
+        let run_dir = run_dir.clone();
+        tokio::spawn(async move {
+            let _reservation = reservation;
+            let mut cancellation = subscribe_background_media_cancellation();
+            let semaphore = background_video_download_semaphore();
+            let permit = tokio::select! {
+                permit = semaphore.acquire_owned() => match permit {
+                    Ok(permit) => permit,
+                    Err(_) => return,
+                },
+                _ = wait_for_background_media_cancellation(generation, &run_dir, &mut cancellation) => {
+                    clear_preview_video_downloads(&ctx, &note_id, &files);
+                    return;
+                }
+            };
+            for (index, source_url) in &files {
+                if background_media_is_stopped(generation, &run_dir) {
+                    clear_preview_video_downloads(&ctx, &note_id, &files);
+                    return;
+                }
+                let relative = preview_video_relative(&note_id, *index);
+                let destination = PathBuf::from(&run_dir).join(&relative);
+                if let Some(parent) = destination.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let partial = destination.with_extension("mp4.part");
+                let download = page.fetch_file_with_browser(
+                    source_url,
+                    MAX_PREVIEW_VIDEO_BYTES,
+                    &partial,
+                    hosts,
+                );
+                let fetched = tokio::select! {
+                    fetched = download => fetched,
+                    _ = wait_for_background_media_cancellation(generation, &run_dir, &mut cancellation) => {
+                        page.cancel_browser_resource_fetches().await;
+                        let _ = std::fs::remove_file(&partial);
+                        clear_preview_video_downloads(&ctx, &note_id, &files);
+                        return;
+                    }
+                };
+                if background_media_is_stopped(generation, &run_dir) {
+                    page.cancel_browser_resource_fetches().await;
+                    let _ = std::fs::remove_file(&partial);
+                    clear_preview_video_downloads(&ctx, &note_id, &files);
+                    return;
+                }
+                let saved = match fetched {
+                    Ok((content_type, _))
+                        if preview_video_content_type_ok(&content_type)
+                            && mp4_file_ok(&partial) =>
+                    {
+                        if std::fs::rename(&partial, &destination).is_ok() {
+                            true
+                        } else {
+                            let _ = std::fs::remove_file(&partial);
+                            false
+                        }
+                    }
+                    Ok(_) => {
+                        let _ = std::fs::remove_file(&partial);
+                        false
+                    }
+                    Err(error) => {
+                        let _ = std::fs::remove_file(&partial);
+                        tracing::warn!(
+                            note_id,
+                            error = %error,
+                            "background preview video download failed"
+                        );
+                        false
+                    }
+                };
+                if saved {
+                    if set_preview_video_state(
+                        &ctx,
+                        &note_id,
+                        *index,
+                        None,
+                        None,
+                        Some(relative.as_str()),
+                    ) {
+                        emit_background_media_event(BackgroundMediaEvent {
+                            run_dir: run_dir.clone(),
+                            note_id: note_id.clone(),
+                        });
+                    }
+                } else if set_preview_video_state(
+                    &ctx,
+                    &note_id,
+                    *index,
+                    Some("failed"),
+                    Some("video download failed"),
+                    None,
+                ) {
+                    emit_background_media_event(BackgroundMediaEvent {
+                        run_dir: run_dir.clone(),
+                        note_id: note_id.clone(),
+                    });
+                }
+            }
+            drop(permit);
+        });
+    }
+}
+
+struct PreviewVideoNote {
+    note_id: String,
+    files: Vec<(usize, String)>,
+}
+
+fn preview_video_notes(site_id: &str, tool_name: &str, result: &Value) -> Vec<PreviewVideoNote> {
+    match (site_id, tool_name) {
+        ("instagram", "searchResults" | "profilePosts") => result
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| instagram_card_video(item))
+            .collect(),
+        ("instagram", "postDetail") => instagram_detail_videos(result).into_iter().collect(),
+        ("tiktok" | "dy", "videoCards") => result
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| platform_card_video(site_id, item))
+            .collect(),
+        ("tiktok" | "dy", "search") => result
+            .get("cards")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| platform_card_video(site_id, item))
+            .collect(),
+        ("tiktok" | "dy", "author_scan") => result
+            .pointer("/profile/video_cards")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| platform_card_video(site_id, item))
+            .collect(),
+        ("tiktok" | "dy", "videoDetail") => {
+            platform_detail_video(site_id, result).into_iter().collect()
+        }
+        ("tiktok" | "dy", "get_videos") => result
+            .get("videos")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| platform_detail_video(site_id, item.get("entity").unwrap_or(item)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn instagram_card_video(item: &Value) -> Option<PreviewVideoNote> {
+    let native_id = text_at(item, &["shortcode", "id"]);
+    let source = text_at(item, &["video_url"]);
+    if native_id.is_empty() || !is_remote_url(&source) {
+        return None;
+    }
+    Some(PreviewVideoNote {
+        note_id: post_note_id("instagram", &native_id),
+        files: vec![(0, source)],
+    })
+}
+
+fn instagram_detail_videos(item: &Value) -> Option<PreviewVideoNote> {
+    let native_id = text_at(item, &["shortcode", "id"]);
+    if native_id.is_empty() {
+        return None;
+    }
+    let from_media = video_files_from_media_list(item.get("media"));
+    let files = if from_media.is_empty() {
+        let source = text_at(item, &["video_url"]);
+        if is_remote_url(&source) {
+            vec![(0, source)]
+        } else {
+            Vec::new()
+        }
+    } else {
+        from_media
+    };
+    if files.is_empty() {
+        return None;
+    }
+    Some(PreviewVideoNote {
+        note_id: post_note_id("instagram", &native_id),
+        files,
+    })
+}
+
+fn platform_card_video(site_id: &str, item: &Value) -> Option<PreviewVideoNote> {
+    let native_id = text_at(item, &["video_id", "id"]);
+    let source = text_at(item, &["video_url"]);
+    if native_id.is_empty() || !is_remote_url(&source) {
+        return None;
+    }
+    Some(PreviewVideoNote {
+        note_id: post_note_id(site_id, &native_id),
+        files: vec![(0, source)],
+    })
+}
+
+fn platform_detail_video(site_id: &str, item: &Value) -> Option<PreviewVideoNote> {
+    let native_id = text_at(item, &["video_id", "id"]);
+    let video = item.get("video").unwrap_or(&Value::Null);
+    let local = text_at(video, &["local_path"]);
+    if native_id.is_empty() || (!local.is_empty() && !is_remote_url(&local)) {
+        return None;
+    }
+    let source = remote_video_url(video);
+    if source.is_empty() {
+        return None;
+    }
+    Some(PreviewVideoNote {
+        note_id: post_note_id(site_id, &native_id),
+        files: vec![(0, source)],
+    })
+}
+
+fn video_files_from_media_list(media: Option<&Value>) -> Vec<(usize, String)> {
+    let mut files = Vec::new();
+    let mut video_index = 0usize;
+    for item in media.and_then(Value::as_array).into_iter().flatten() {
+        if text_at(item, &["type", "kind"]) != "video" {
+            continue;
+        }
+        let raw_src = text_at(item, &["local_path", "url", "src"]);
+        let poster = text_at(item, &["poster_local_path", "poster_url", "poster"]);
+        let local = text_at(item, &["local_path"]);
+        let has_local = !local.is_empty() && !is_remote_url(&local);
+        let remote = if is_remote_url(&raw_src) && !is_hls_url(&raw_src) {
+            raw_src
+        } else {
+            String::new()
+        };
+        if !has_local && poster.is_empty() && remote.is_empty() {
+            continue;
+        }
+        if !has_local && !remote.is_empty() {
+            files.push((video_index, remote));
+        }
+        video_index += 1;
+    }
+    files
+}
+
+fn clear_preview_video_downloads(ctx: &ToolContext, note_id: &str, files: &[(usize, String)]) {
+    let mut changed = false;
+    for (index, _) in files {
+        changed |= set_preview_video_state(ctx, note_id, *index, None, None, None);
+    }
+    if changed {
+        emit_background_media_event(BackgroundMediaEvent {
+            run_dir: ctx.run_dir.to_string_lossy().into_owned(),
+            note_id: note_id.to_string(),
+        });
+    }
+}
+
+fn set_preview_video_state(
+    ctx: &ToolContext,
+    note_id: &str,
+    video_index: usize,
+    status: Option<&str>,
+    error: Option<&str>,
+    src: Option<&str>,
+) -> bool {
+    ctx.update_recorded_note(note_id, |record| {
+        let wrote_src = {
+            let Some(items) = record.get_mut("media").and_then(Value::as_array_mut) else {
+                return;
+            };
+            let Some(video) = items
+                .iter_mut()
+                .filter(|item| item.get("kind").and_then(Value::as_str) == Some("video"))
+                .nth(video_index)
+                .and_then(Value::as_object_mut)
+            else {
+                return;
+            };
+            match status {
+                Some(status) => {
+                    video.insert("status".into(), Value::String(status.into()));
+                }
+                None => {
+                    video.remove("status");
+                }
+            }
+            match error {
+                Some(error) => {
+                    video.insert("error".into(), Value::String(error.into()));
+                }
+                None => {
+                    video.remove("error");
+                }
+            }
+            if let Some(src) = src {
+                video.insert("src".into(), Value::String(src.into()));
+                true
+            } else {
+                false
+            }
+        };
+        if wrote_src {
+            if let Some(map) = record.as_object_mut() {
+                map.insert("saved".into(), Value::Bool(true));
+            }
+            // The cover is media[0]. A grid card may have archived the thumbnail
+            // as an image before the playable file existed; the downloaded video
+            // is the preview the app should play.
+            if video_index == 0 {
+                if let Some(items) = record.get_mut("media").and_then(Value::as_array_mut) {
+                    if let Some(position) = items
+                        .iter()
+                        .position(|item| item.get("kind").and_then(Value::as_str) == Some("video"))
+                    {
+                        if position > 0 {
+                            let video = items.remove(position);
+                            items.insert(0, video);
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn preview_video_relative(note_id: &str, index: usize) -> String {
+    let safe: String = note_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if index == 0 {
+        format!("site_media/{safe}/video.mp4")
+    } else {
+        format!("site_media/{safe}/video-{index}.mp4")
+    }
+}
+
+fn preview_video_url_allowed(url: &str, suffixes: &[&str]) -> bool {
+    if is_hls_url(url) || !is_remote_url(url) {
+        return false;
+    }
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+    {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    let host_allowed = suffixes
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")));
+    host_allowed && !is_site_page_url(&parsed)
+}
+
+/// www.tiktok.com / www.douyin.com / www.instagram.com share a suffix with real
+/// media hosts. A search or profile page is not a video file.
+fn is_site_page_url(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str().map(|host| host.to_ascii_lowercase()) else {
+        return false;
+    };
+    let site = matches!(
+        host.as_str(),
+        "tiktok.com"
+            | "www.tiktok.com"
+            | "m.tiktok.com"
+            | "douyin.com"
+            | "www.douyin.com"
+            | "m.douyin.com"
+            | "instagram.com"
+            | "www.instagram.com"
+    );
+    if !site {
+        return false;
+    }
+    let path = url.path().to_ascii_lowercase();
+    let query = url.query().unwrap_or("").to_ascii_lowercase();
+    let media = path.ends_with(".mp4")
+        || path.contains("/video/tos/")
+        || path.contains("/aweme/v1/play")
+        || query.contains("mime_type=video");
+    !media
+}
+
+fn preview_video_content_type_ok(content_type: &str) -> bool {
+    let kind = content_type.to_ascii_lowercase();
+    kind.is_empty()
+        || kind.starts_with("video/mp4")
+        || kind.starts_with("application/mp4")
+        || kind.starts_with("application/octet-stream")
+        || kind.starts_with("binary/octet-stream")
+}
+
+fn mp4_file_ok(path: &Path) -> bool {
+    let mut prefix = [0u8; 32];
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(count) = file.read(&mut prefix) else {
+        return false;
+    };
+    count >= 12 && &prefix[4..8] == b"ftyp"
+}
+
+fn remote_video_url(video: &Value) -> String {
+    for key in ["resolved_url", "play_url", "url"] {
+        let value = text_at(video, &[key]);
+        if is_remote_url(&value) && !is_hls_url(&value) {
+            return value;
+        }
+    }
+    if let Some(values) = video.get("source_urls").and_then(Value::as_array) {
+        for value in values {
+            if let Some(url) = value.as_str() {
+                if is_remote_url(url) && !is_hls_url(url) {
+                    return url.to_string();
+                }
+            }
+        }
+    }
+    if let Some(values) = video.get("candidates").and_then(Value::as_array) {
+        for value in values {
+            if let Some(url) = value.get("url").and_then(Value::as_str) {
+                if is_remote_url(url) && !is_hls_url(url) {
+                    return url.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+fn is_remote_url(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with("https://") || value.starts_with("http://")
+}
+
+fn is_hls_url(value: &str) -> bool {
+    reqwest::Url::parse(value.trim())
+        .ok()
+        .is_some_and(|url| url.path().to_ascii_lowercase().ends_with(".m3u8"))
+        || value.to_ascii_lowercase().contains(".m3u8")
 }
 
 /// Save playable Instagram Reel/video files through the logged-in browser
@@ -498,8 +1029,14 @@ fn instagram_card_record(item: &Value) -> Option<(String, Value)> {
     );
     let thumbnail = text_at(item, &["thumbnail_url"]);
     let video_url = text_at(item, &["video_url"]);
-    let media = if !video_url.is_empty() {
-        vec![json!({ "kind": "video", "src": video_url, "ratio": "1:1" })]
+    let is_video =
+        !video_url.is_empty() || item.get("kind").and_then(Value::as_str) == Some("reel");
+    let media = if is_video {
+        let mut media = Map::new();
+        media.insert("kind".into(), Value::String("video".into()));
+        media.insert("ratio".into(), Value::String("1:1".into()));
+        insert_nonempty(&mut media, "poster", &thumbnail);
+        vec![Value::Object(media)]
     } else if !thumbnail.is_empty() {
         vec![json!({ "kind": "image", "src": thumbnail, "ratio": "1:1" })]
     } else {
@@ -622,11 +1159,15 @@ fn video_card_record(site_id: &str, item: &Value) -> Option<(String, Value)> {
         parse_metric(&text_at(item, &["comments", "comments_count"])),
         parse_metric(&text_at(item, &["shares"])),
     );
-    let cover = text_at(item, &["cover_url"]);
-    let media = if cover.is_empty() {
+    let cover = http_url(&text_at(item, &["cover_url"]));
+    let media = if cover.is_empty() && text_at(item, &["video_url"]).is_empty() {
         Vec::new()
     } else {
-        vec![json!({ "kind": "image", "src": cover, "ratio": "9:16" })]
+        let mut media = Map::new();
+        media.insert("kind".into(), Value::String("video".into()));
+        media.insert("ratio".into(), Value::String("9:16".into()));
+        insert_nonempty(&mut media, "poster", &cover);
+        vec![Value::Object(media)]
     };
     record.insert("media".into(), Value::Array(media));
     Some((post_note_id(site_id, &native_id), Value::Object(record)))
@@ -764,16 +1305,20 @@ fn media_items(value: Option<&Value>) -> Vec<Value> {
             if media_type == "document" {
                 return None;
             }
-            let src = text_at(item, &["local_path", "url", "src"]);
+            let raw_src = text_at(item, &["local_path", "url", "src"]);
             let poster = text_at(item, &["poster_local_path", "poster_url", "poster"]);
-            if src.is_empty() && poster.is_empty() {
-                return None;
-            }
             let kind = if media_type == "video" {
                 "video"
             } else {
                 "image"
             };
+            // Remote video URLs expire and are blocked in the webview. Keep the
+            // cover, and let the background downloader fill `src` with a file.
+            let remote_video = kind == "video" && is_remote_url(&raw_src);
+            let src = if remote_video { String::new() } else { raw_src };
+            if src.is_empty() && poster.is_empty() && !remote_video {
+                return None;
+            }
             let mut media = Map::new();
             media.insert("kind".into(), Value::String(kind.into()));
             insert_nonempty(&mut media, "src", &src);
@@ -789,7 +1334,12 @@ fn media_items(value: Option<&Value>) -> Vec<Value> {
 
 fn video_media(item: &Value) -> Vec<Value> {
     let video = item.get("video").unwrap_or(&Value::Null);
-    let src = text_at(video, &["local_path", "resolved_url", "play_url", "url"]);
+    let local_src = text_at(video, &["local_path"]);
+    let src = if is_remote_url(&local_src) {
+        String::new()
+    } else {
+        local_src
+    };
     let poster = {
         let local = text_at(video, &["poster_local_path"]);
         if local.is_empty() {
@@ -803,7 +1353,7 @@ fn video_media(item: &Value) -> Vec<Value> {
             local
         }
     };
-    if src.is_empty() && poster.is_empty() {
+    if src.is_empty() && poster.is_empty() && remote_video_url(video).is_empty() {
         return Vec::new();
     }
     vec![json!({
@@ -968,6 +1518,15 @@ fn parse_metric(value: &str) -> Option<u64> {
         1.0
     };
     Some((number * multiplier).round() as u64)
+}
+
+fn http_url(value: &str) -> String {
+    let value = value.trim();
+    if value.starts_with("https://") || value.starts_with("http://") {
+        value.to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn text_at(value: &Value, keys: &[&str]) -> String {

@@ -224,7 +224,10 @@ impl SnapshotRecorder {
         // Take the viewport screenshot and skip the node if it's pixel-identical
         // to the last one written. A failed screenshot can't be deduped, so fall
         // through and capture the node anyway.
-        let shot = page.screenshot_jpeg(false, SCREENSHOT_JPEG_QUALITY).await.ok();
+        let shot = page
+            .screenshot_jpeg(false, SCREENSHOT_JPEG_QUALITY)
+            .await
+            .ok();
         if let Some(bytes) = &shot {
             let shot_hash = hash_bytes(bytes);
             if state.last_shot_hash == Some(shot_hash) {
@@ -236,7 +239,10 @@ impl SnapshotRecorder {
         // Take the full-page companion immediately after the viewport shot so
         // the two depict (as nearly as possible) the same instant — anything
         // slower (the a11y fetch in write_node) happens after both shots.
-        let full_shot = page.screenshot_jpeg(true, SCREENSHOT_JPEG_QUALITY).await.ok();
+        let full_shot = page
+            .screenshot_jpeg(true, SCREENSHOT_JPEG_QUALITY)
+            .await
+            .ok();
 
         // Enable the Accessibility domain once so AXNodeIds stay stable across
         // nodes (not required for getFullAXTree to return data).

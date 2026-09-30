@@ -191,8 +191,168 @@
     return cards;
   }
 
+  function mediaUrlValue(value) {
+    if (typeof value === 'string') return value.trim();
+    if (!value || typeof value !== 'object') return '';
+    const list = value.UrlList || value.urlList || value.url_list;
+    if (Array.isArray(list)) {
+      const first = list.find((item) => typeof item === 'string' && item.trim());
+      if (first) return first.trim();
+    }
+    return typeof value.url === 'string' ? value.url.trim() : '';
+  }
+
+  function httpsUrl(raw) {
+    const value = mediaUrlValue(raw);
+    if (!value || /^(data|blob):/i.test(value)) return '';
+    try {
+      const url = new URL(value, location.href);
+      return url.protocol === 'https:' ? url.href : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function playUrlFromItem(item) {
+    const video = item && item.video || {};
+    const bitrate = Array.isArray(video.bitrateInfo) ? video.bitrateInfo : [];
+    const fromBitrate = bitrate
+      .map((entry) => entry && entry.PlayAddr && entry.PlayAddr.UrlList && entry.PlayAddr.UrlList[0])
+      .find(Boolean);
+    return allowedMediaUrl(
+      mediaUrlValue(video.playAddr) ||
+      mediaUrlValue(video.downloadAddr) ||
+      mediaUrlValue(video.playApi) ||
+      fromBitrate ||
+      ''
+    );
+  }
+
+  function coverUrlFromItem(item) {
+    const video = item && item.video || {};
+    return httpsUrl(video.cover) ||
+      httpsUrl(video.originCover) ||
+      httpsUrl(video.dynamicCover) ||
+      httpsUrl(video.zoomCover) ||
+      httpsUrl(item && item.cover) ||
+      '';
+  }
+
+  function embeddedMedia() {
+    const play = {};
+    const cover = {};
+    const remember = (item) => {
+      if (!item || typeof item !== 'object') return;
+      const id = String(item.id || item.video_id || '');
+      if (!id) return;
+      const videoUrl = playUrlFromItem(item);
+      if (videoUrl && !play[id]) play[id] = videoUrl;
+      const coverUrl = coverUrlFromItem(item);
+      if (coverUrl && !cover[id]) cover[id] = coverUrl;
+    };
+    const sigi = parseJsonScript('#SIGI_STATE');
+    const items = sigi && sigi.ItemModule || {};
+    for (const item of Object.values(items)) remember(item);
+    const universal = parseJsonScript('#__UNIVERSAL_DATA_FOR_REHYDRATION__');
+    const walk = (node, depth) => {
+      if (!node || depth > 6) return;
+      if (Array.isArray(node)) {
+        if (node.length > 400) return;
+        for (const item of node) walk(item, depth + 1);
+        return;
+      }
+      if (typeof node !== 'object') return;
+      if (node.video && (node.id || node.video_id)) remember(node);
+      const keys = Object.keys(node);
+      if (keys.length > 80) return;
+      for (const key of keys) walk(node[key], depth + 1);
+    };
+    walk(universal && universal.__DEFAULT_SCOPE__, 0);
+    return { play, cover };
+  }
+
+  function reactItem(card, videoId) {
+    let el = card;
+    let key = '';
+    let climbed = 0;
+    while (el && !key && climbed < 8) {
+      key = Object.keys(el).find((name) => name.startsWith('__reactFiber$') || name.startsWith('__reactInternalInstance$')) || '';
+      if (!key) {
+        el = el.parentElement;
+        climbed += 1;
+      }
+    }
+    const seen = new Set();
+    const queue = key && el ? [el[key]] : [];
+    let steps = 0;
+    while (queue.length && steps < 400) {
+      const node = queue.shift();
+      if (!node || seen.has(node)) continue;
+      seen.add(node);
+      steps += 1;
+      const props = node.memoizedProps;
+      if (props && typeof props === 'object') {
+        for (const candidate of [props, props.item, props.data, props.videoData]) {
+          if (!candidate || typeof candidate !== 'object' || !candidate.video) continue;
+          const id = String(candidate.id || candidate.video_id || '');
+          if (id && id === String(videoId)) return candidate;
+        }
+      }
+      if (node.return) queue.unshift(node.return);
+      if (node.child) queue.push(node.child);
+      if (node.sibling) queue.push(node.sibling);
+    }
+    return null;
+  }
+
+  // Search cards keep the signed file on the rendered item. The rehydration
+  // JSON on a search page does not include it, and the visible <img> is often
+  // still the 1x1 placeholder. A cover whose signature contains %2F fails in
+  // the desktop webview, so prefer one that does not.
+  function cardMedia(card, videoId) {
+    const video = (reactItem(card, videoId) || {}).video || {};
+    const zoom = video.zoomCover || {};
+    const covers = [
+      video.cover,
+      video.originCover,
+      zoom['720'],
+      zoom['480'],
+      zoom['960'],
+      zoom['240'],
+      video.dynamicCover,
+    ].map(httpsUrl).filter(Boolean);
+    const visible = coverFromCard(card);
+    if (visible) covers.push(visible);
+    return {
+      cover: covers.find((url) => !/%2F/i.test(url)) || covers[0] || '',
+      play: playUrlFromItem({ video }),
+    };
+  }
+
+  function coverFromCard(card) {
+    const found = [];
+    const push = (raw) => {
+      const url = httpsUrl(raw);
+      if (url && !found.includes(url)) found.push(url);
+    };
+    for (const node of card.querySelectorAll('img, source')) {
+      push(node.currentSrc);
+      push(node.getAttribute('src'));
+      push(node.getAttribute('data-src'));
+      for (const part of (node.getAttribute('srcset') || '').split(',')) {
+        push(part.trim().split(/\s+/)[0]);
+      }
+    }
+    for (const node of card.querySelectorAll('[style*="background"]')) {
+      const match = (node.getAttribute('style') || '').match(/url\((['"]?)(https:[^)'"]+)\1\)/i);
+      if (match) push(match[2]);
+    }
+    return found[0] || '';
+  }
+
   function videoCards(arg) {
     const limit = Math.max(1, Number(arg && arg.limit || 30));
+    const embedded = embeddedMedia();
     const root = arg && arg.root && arg.root.querySelectorAll ? arg.root : document;
     const expectedHandle = String(arg && arg.author_id || '').replace(/^@/, '').trim().toLowerCase();
     const viewportOnly = !!(arg && arg.viewport_only);
@@ -215,6 +375,8 @@
       if (expectedHandle && handle.toLowerCase() !== expectedHandle) continue;
       const desc = text(card.querySelector('[data-e2e="search-card-desc"], [data-e2e="video-desc"], [class*="Desc"]'));
       const duration = text(card.querySelector('[data-e2e="video-duration"], time, [class*="Duration"]'));
+      const media = cardMedia(card, videoId);
+      const player = card.querySelector('video');
       cards.push({
         video_id: videoId,
         url,
@@ -226,7 +388,8 @@
         comments: text(card.querySelector('[data-e2e="comment-count"]')),
         shares: text(card.querySelector('[data-e2e="share-count"]')),
         views: text(card.querySelector('[data-e2e="video-views"], [class*="VideoViews"]')),
-        cover_url: normUrl(img && (img.currentSrc || img.src) || ''),
+        cover_url: media.cover || embedded.cover[videoId] || '',
+        video_url: media.play || embedded.play[videoId] || allowedMediaUrl((player && (player.currentSrc || player.src)) || ''),
         duration_seconds: durationSeconds(duration),
         position: cards.length,
       });
@@ -236,19 +399,25 @@
   }
 
   function allowedMediaUrl(raw) {
+    const value = mediaUrlValue(raw);
+    if (!value || /^(data|blob):/i.test(value)) return '';
     try {
-      const url = new URL(raw, location.href);
+      const url = new URL(value, location.href);
       if (url.protocol !== 'https:' || url.username || url.password || url.port) return '';
       if (url.pathname.toLowerCase().endsWith('.m3u8')) return '';
       const host = url.hostname.toLowerCase();
-      const canonicalPage = /^\/@[^/]+\/video\/\d+\/?$/.test(url.pathname) ||
-        /^\/player\/v1\/\d+\/?$/.test(url.pathname);
-      if ((host === 'tiktok.com' || host.endsWith('.tiktok.com')) && canonicalPage) return '';
-      const suffixes = [
-        'tiktokcdn.com', 'tiktokcdn-us.com', 'tiktokv.com', 'tiktok.com',
+      const cdn = [
+        'tiktokcdn.com', 'tiktokcdn-us.com', 'tiktokv.com',
         'byteoversea.com', 'ibytedtos.com', 'muscdn.com', 'akamaized.net',
       ];
-      return suffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`)) ? url.href : '';
+      if (cdn.some((suffix) => host === suffix || host.endsWith(`.${suffix}`))) return url.href;
+      // Play files also live on v*-webapp.tiktok.com. An empty input must not
+      // fall through to the current search/profile page.
+      const onTikTok = host === 'tiktok.com' || host.endsWith('.tiktok.com');
+      if (onTikTok && /mime_type=video|\.mp4(?:[?#]|$)|\/video\/tos\//i.test(`${url.pathname}${url.search}`)) {
+        return url.href;
+      }
+      return '';
     } catch (_) {
       return '';
     }

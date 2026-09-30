@@ -641,6 +641,28 @@ return (async () => {{
         result
     }
 
+    /// Abort in-page media fetches started by [`Self::fetch_file_with_browser`].
+    /// Preview downloads call this when a newer user question needs the link.
+    pub async fn cancel_browser_resource_fetches(&self) {
+        let _ = self
+            .evaluate_json_raw_with_timeout(
+                r#"
+return (async () => {
+  const registry = globalThis.__socaiResourceFetches;
+  if (!registry) return true;
+  for (const state of registry.values()) {
+    try { await state.reader.cancel(); } catch (_) {}
+    clearTimeout(state.expiry);
+  }
+  registry.clear();
+  return true;
+})();
+"#,
+                Duration::from_secs(5),
+            )
+            .await;
+    }
+
     pub async fn click(&self, x: f64, y: f64) -> anyhow::Result<()> {
         self.snapshot_before().await;
         self.dispatch_mouse("mouseMoved", x, y, "none", 0).await?;

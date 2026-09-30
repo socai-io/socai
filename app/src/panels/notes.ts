@@ -24,6 +24,9 @@ export function setNoteRegistry(notes: NoteData[] | undefined, runDir: string | 
     if (note && typeof note.note_id === "string" && note.note_id) REGISTRY[note.note_id] = normalizeNoteMedia(note);
   }
   RUN_DIR = runDir ?? "";
+  // A note refresh replaces the cards under the pointer. Restore hover playback
+  // once the new nodes exist and :hover applies to them.
+  requestAnimationFrame(syncHoveredVideoPlayback);
 }
 /** Merge records carried by a just-finished tool event before the next archive poll. */
 export function mergeNoteRegistry(notes: NoteData[]): void {
@@ -160,11 +163,18 @@ function authorInitial(note: NoteData): string {
 function platformName(note: NoteData): string {
   return platformLabel(note.site || "xhs");
 }
+// WKWebView decodes %2F into a slash before the image request, which breaks
+// TikTok CDN signatures. Encode that sequence once more so the request keeps it.
+function webviewMediaUrl(url: string): string {
+  if (!/^https?:/i.test(url)) return url;
+  return url.replace(/%2F/gi, "%252F");
+}
+
 // Resolve a note media path (absolute, or media_dir-relative to run_dir) to a
 // webview-loadable asset URL. Empty when the file isn't available.
 function assetUrl(note: NoteData, path: string | undefined): string {
-  if (!path) return "";
-  if (/^(asset|https?):/.test(path)) return path;
+  if (!path || /^(data|blob):/i.test(path)) return "";
+  if (/^(asset|https?):/i.test(path)) return webviewMediaUrl(path);
   // Absolute: unix, or a Windows drive path (the backend absolutizes media
   // paths when aggregating notes across a conversation's run dirs).
   if (path.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(path)) return convertFileSrc(path);
@@ -208,16 +218,17 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
   if (m.kind === "video") {
     const posterUrl = assetUrl(note, m.poster);
     const posterImg = posterUrl ? `<img class="note-media__img" src="${esc(posterUrl)}" alt="" loading="lazy" />` : "";
-    const loading = !m.src && m.status === "loading";
+    const videoFile = localMediaPath(m.src);
+    const loading = !videoFile && m.status === "loading";
     const loadingIndicator = loading
       ? `<span class="note-media__loading" aria-hidden="true"></span>`
       : "";
-    const failedIndicator = !m.src && m.status === "failed"
+    const failedIndicator = !videoFile && m.status === "failed"
       ? `<span class="note-media__failed" aria-hidden="true">!</span>`
       : "";
     const statusIndicator = loadingIndicator || failedIndicator;
     if (variant === "gallery") {
-      const videoUrl = assetUrl(note, m.src);
+      const videoUrl = assetUrl(note, videoFile);
       const inner = videoUrl
         ? `<video class="note-media__img" controls preload="metadata"${posterUrl ? ` poster="${esc(posterUrl)}"` : ""} src="${esc(videoUrl)}"></video>`
         : `${posterImg}${statusIndicator}`;
@@ -228,7 +239,7 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
     // frame as play; the button itself is the keyboard-focusable control).
     // Without a file the glyph stays decorative and the click bubbles to the
     // card (viewer opens).
-    const videoUrl = decorative ? "" : assetUrl(note, m.src);
+    const videoUrl = decorative ? "" : assetUrl(note, videoFile);
     const play = decorative
       ? ""
       : videoUrl
@@ -244,6 +255,17 @@ function mediaFrame(note: NoteData, m: NoteMedia, variant: MediaVariant, count =
     : `<span class="note-media--placeholder" style="position:absolute;inset:0"></span>`;
   const badge = count > 1 && !decorative ? `<span class="note-media__count">${IC.stack()}${count}</span>` : "";
   return `<span class="note-media" data-kind="image">${img}${badge}</span>`;
+}
+
+// Remote CDN URLs are not playable in the webview. Only a downloaded file is.
+function localMediaPath(path: string | undefined): string {
+  if (!path || /^(https?:|blob:)/i.test(path)) return "";
+  return path;
+}
+function localVideoAsset(note: NoteData): string {
+  const cover = coverOf(note);
+  if (cover.kind !== "video") return "";
+  return assetUrl(note, localMediaPath(cover.src));
 }
 
 function fmtClock(s: number): string {
@@ -265,6 +287,7 @@ function playInline(btn: HTMLElement): void {
   const frame = btn.closest<HTMLElement>(".note-media__inner") ?? btn.closest<HTMLElement>(".note-media");
   const src = btn.getAttribute("data-note-play");
   if (!frame || !src) return;
+  frame.querySelector("video.note-media__preview")?.remove();
   // video + glyph live in the pillarbox inner; the bar spans the whole cover
   const barHost = btn.closest<HTMLElement>(".note-media") ?? frame;
   const poster = frame.querySelector<HTMLImageElement>("img.note-media__img")?.getAttribute("src") || "";
@@ -629,6 +652,7 @@ function galleryGo(gallery: HTMLElement, idx: number): void {
   gallery.querySelectorAll(".note-gallery__thumb").forEach((th, i) =>
     th.classList.toggle("is-active", i === next),
   );
+  playVisibleGalleryVideo(gallery);
 }
 function closeViewer(): void {
   document.querySelector(".note-viewer-backdrop")?.parentElement?.remove();
@@ -645,6 +669,77 @@ function openViewer(id: string): void {
   host.className = "note-viewer note-viewer--lightbox";
   host.innerHTML = viewerHTML(note);
   document.body.appendChild(host);
+  playVisibleGalleryVideo(host);
+}
+
+// The lightbox opens from a click, so playback with sound is allowed. Hidden
+// slides stay paused; only the visible frame starts.
+function playVisibleGalleryVideo(root: ParentNode): void {
+  const video = root.querySelector<HTMLVideoElement>(".note-gallery__frame:not([hidden]) video");
+  if (!video) return;
+  video.play().catch(() => {});
+}
+
+// Hover preview: muted, looping, no controls. A click still opens the
+// scrubber player. Remote URLs are skipped until the file is on disk.
+function startCoverPlayback(card: HTMLElement): void {
+  const note = resolveNote(card.getAttribute("data-note-open") || "");
+  const src = note ? localVideoAsset(note) : "";
+  if (!src) return;
+  const host = card.querySelector<HTMLElement>(".note-media__inner")
+    ?? card.querySelector<HTMLElement>(".note-media");
+  if (!host) return;
+  const existing = host.querySelector<HTMLVideoElement>("video.note-media__preview");
+  if (existing?.getAttribute("src") === src) {
+    if (existing.paused) existing.play().catch(() => {});
+    return;
+  }
+  existing?.remove();
+  const video = document.createElement("video");
+  video.className = "note-media__preview";
+  video.muted = true;
+  video.defaultMuted = true;
+  video.loop = true;
+  video.playsInline = true;
+  video.autoplay = true;
+  video.setAttribute("src", src);
+  host.appendChild(video);
+  video.play().catch(() => video.remove());
+}
+function stopCoverPlayback(card: HTMLElement): void {
+  card.querySelectorAll<HTMLVideoElement>("video.note-media__preview").forEach((video) => {
+    video.pause();
+    video.remove();
+  });
+}
+function showCitePreview(wrap: HTMLElement): void {
+  if (wrap.querySelector(".note-cite-pop")) return;
+  const note = resolveNote(wrap.getAttribute("data-note-cite") || "");
+  if (!note) return;
+  const r = wrap.getBoundingClientRect();
+  const W = 208,
+    H = 372,
+    gap = 8;
+  const above = r.top > H + gap;
+  const left = Math.max(W / 2 + 8, Math.min(window.innerWidth - W / 2 - 8, r.left + r.width / 2));
+  const top = above ? r.top - gap : r.bottom + gap;
+  const pop = document.createElement("span");
+  pop.className = "note-cite-pop";
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+  pop.style.transform = above ? "translate(-50%, -100%)" : "translate(-50%, 0)";
+  pop.innerHTML = renderCard(note, "rich");
+  wrap.appendChild(pop);
+  const card = pop.querySelector<HTMLElement>(".note-card");
+  if (card) startCoverPlayback(card);
+}
+function syncHoveredVideoPlayback(): void {
+  document.querySelectorAll<HTMLElement>(".note-cite-wrap:hover").forEach((wrap) => showCitePreview(wrap));
+  document.querySelectorAll<HTMLElement>(".social-materials__cards .note-card").forEach((card) => {
+    if (card.matches(":hover")) startCoverPlayback(card);
+    else stopCoverPlayback(card);
+  });
+  document.querySelectorAll<HTMLElement>(".note-cite-pop .note-card").forEach((card) => startCoverPlayback(card));
 }
 
 // ── interactions (one delegated listener set, attached once) ────────
@@ -785,28 +880,15 @@ export function bindNoteInteractions(): void {
   );
 
   // citation hover preview — the same rich card the search strips render
-  // (position:fixed popover so it escapes overflow)
+  // (position:fixed popover so it escapes overflow). A downloaded video plays
+  // as soon as the card is shown.
   document.addEventListener(
     "mouseover",
     (e) => {
       const wrap = (e.target as HTMLElement).closest<HTMLElement>(".note-cite-wrap[data-note-cite]");
-      if (!wrap || wrap.querySelector(".note-cite-pop")) return;
-      const note = resolveNote(wrap.getAttribute("data-note-cite") || "");
-      if (!note) return;
-      const r = wrap.getBoundingClientRect();
-      const W = 208,
-        H = 372,
-        gap = 8;
-      const above = r.top > H + gap;
-      const left = Math.max(W / 2 + 8, Math.min(window.innerWidth - W / 2 - 8, r.left + r.width / 2));
-      const top = above ? r.top - gap : r.bottom + gap;
-      const pop = document.createElement("span");
-      pop.className = "note-cite-pop";
-      pop.style.left = `${left}px`;
-      pop.style.top = `${top}px`;
-      pop.style.transform = above ? "translate(-50%, -100%)" : "translate(-50%, 0)";
-      pop.innerHTML = renderCard(note, "rich");
-      wrap.appendChild(pop);
+      if (wrap) showCitePreview(wrap);
+      const card = (e.target as HTMLElement).closest<HTMLElement>(".social-materials__cards .note-card");
+      if (card) startCoverPlayback(card);
     },
     true,
   );
@@ -820,6 +902,17 @@ export function bindNoteInteractions(): void {
       const to = e.relatedTarget as Node | null;
       if (to && wrap.contains(to)) return;
       wrap.querySelector(".note-cite-pop")?.remove();
+    },
+    true,
+  );
+  document.addEventListener(
+    "mouseout",
+    (e) => {
+      const card = (e.target as HTMLElement).closest<HTMLElement>(".social-materials__cards .note-card");
+      if (!card) return;
+      const to = e.relatedTarget as Node | null;
+      if (to && card.contains(to)) return;
+      stopCoverPlayback(card);
     },
     true,
   );

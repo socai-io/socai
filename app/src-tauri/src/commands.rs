@@ -724,6 +724,7 @@ pub async fn agent_task_start(
     } else {
         socai_core::cloud::prepare_account_task(&task_id).map_err(|e| e.to_string())?;
     }
+    socai_core::media::cancel_all_background_media();
     let background_media_generation = socai_core::media::begin_background_media_generation();
     let runtime = runtime.inner().clone();
     let telemetry = telemetry.inner().clone();
@@ -822,9 +823,7 @@ pub async fn agent_task_reply(
         model
     };
     let guest_trial = run_task_preflight(provider.as_deref(), model.as_deref()).await?;
-    if let Some(previous_run_dir) = existing.run_dir.as_deref() {
-        socai_core::media::cancel_background_media_for_run(previous_run_dir);
-    }
+    socai_core::media::cancel_all_background_media();
 
     // This turn's run dir nests inside the conversation dir. Tasks created
     // before nesting have their session dir under ~/.socai/sessions; their
@@ -867,6 +866,7 @@ pub async fn agent_task_reply(
     } else {
         socai_core::cloud::prepare_account_task(&task_id).map_err(|e| e.to_string())?;
     }
+    socai_core::media::cancel_all_background_media();
     let background_media_generation = socai_core::media::begin_background_media_generation();
     let runtime = runtime.inner().clone();
     let telemetry = telemetry.inner().clone();

@@ -384,14 +384,18 @@ impl Tool for RunSiteBrowserTool {
         }
         let mut result =
             run_site_browser_tool_collecting(&self.page, site_id, tool_name, args).await?;
-        crate::sites::post_archive::save_site_media(
-            &self.page,
-            ctx,
-            site_id,
-            tool_name,
-            &mut result,
-        )
-        .await;
+        let background_videos = ctx.background_media_generation.is_some()
+            && matches!(site_id, "instagram" | "tiktok" | "dy");
+        if !background_videos {
+            crate::sites::post_archive::save_site_media(
+                &self.page,
+                ctx,
+                site_id,
+                tool_name,
+                &mut result,
+            )
+            .await;
+        }
         let page_url = self
             .page
             .page_info()
@@ -405,6 +409,15 @@ impl Tool for RunSiteBrowserTool {
             &result,
             page_url.as_deref(),
         );
+        if background_videos {
+            crate::sites::post_archive::schedule_background_preview_videos(
+                self.page.clone(),
+                ctx,
+                site_id,
+                tool_name,
+                &result,
+            );
+        }
         Ok(ToolResult::text(serde_json::to_string_pretty(&result)?))
     }
 }

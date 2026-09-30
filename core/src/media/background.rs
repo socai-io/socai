@@ -13,6 +13,10 @@ pub struct BackgroundMediaEvent {
 
 struct BackgroundMediaState {
     generation: AtomicU64,
+    /// Downloads captured at this generation or earlier must stop. A new user
+    /// question sets this to the current generation before allocating the next
+    /// one, so the new turn's own downloads stay eligible.
+    obsolete_through: AtomicU64,
     generation_tx: watch::Sender<u64>,
     events_tx: broadcast::Sender<BackgroundMediaEvent>,
     cancelled_runs: Mutex<CancelledRuns>,
@@ -26,6 +30,7 @@ fn state() -> &'static BackgroundMediaState {
         let (events_tx, _) = broadcast::channel(128);
         BackgroundMediaState {
             generation: AtomicU64::new(1),
+            obsolete_through: AtomicU64::new(0),
             generation_tx,
             events_tx,
             cancelled_runs: Mutex::new(CancelledRuns::default()),
@@ -44,6 +49,19 @@ pub fn begin_background_media_generation() -> u64 {
 
 pub fn current_background_media_generation() -> u64 {
     state().generation.load(Ordering::Acquire)
+}
+
+/// Stop every in-flight preview download so the next user question gets the
+/// link. Call this before [`begin_background_media_generation`] for that question.
+pub fn cancel_all_background_media() {
+    let signal = state().generation.fetch_add(1, Ordering::AcqRel) + 1;
+    state().obsolete_through.fetch_max(signal, Ordering::AcqRel);
+    state().generation_tx.send_replace(signal);
+}
+
+pub(crate) fn background_media_is_stopped(generation: u64, run_dir: &str) -> bool {
+    generation <= state().obsolete_through.load(Ordering::Acquire)
+        || background_media_run_is_cancelled(run_dir)
 }
 
 pub fn cancel_background_media_for_run(run_dir: &str) {
@@ -104,8 +122,10 @@ pub(crate) fn subscribe_background_media_cancellation() -> watch::Receiver<u64> 
 
 pub(crate) fn background_video_download_semaphore() -> Arc<Semaphore> {
     static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    // One file at a time. The download shares the link with the agent turn
+    // that discovered the post; the next user question cancels the queue.
     SEMAPHORE
-        .get_or_init(|| Arc::new(Semaphore::new(3)))
+        .get_or_init(|| Arc::new(Semaphore::new(1)))
         .clone()
 }
 
@@ -135,11 +155,12 @@ pub(crate) fn reserve_background_video_download(
 }
 
 pub(crate) async fn wait_for_background_media_cancellation(
+    generation: u64,
     run_dir: &str,
     receiver: &mut watch::Receiver<u64>,
 ) {
     loop {
-        if background_media_run_is_cancelled(run_dir) {
+        if background_media_is_stopped(generation, run_dir) {
             return;
         }
         if receiver.changed().await.is_err() {

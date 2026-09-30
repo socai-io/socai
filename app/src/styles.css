@@ -2376,6 +2376,10 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .note-media__inner .note-media__img,
 .note-media__inner video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.note-media__preview {
+  position: absolute; inset: 0; z-index: 1;
+  width: 100%; height: 100%; object-fit: cover; pointer-events: none;
+}
 .note-media__label {
   font-size: 10px; letter-spacing: 0.04em; color: var(--fg-soft);
   background: rgba(250, 250, 249, 0.82); padding: 2px 7px; border-radius: var(--r-pill);

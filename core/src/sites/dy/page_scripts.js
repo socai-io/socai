@@ -283,11 +283,17 @@
   }
 
   function allowedMediaUrl(raw) {
+    const value = String(raw || '').trim();
+    if (!value || /^(data|blob):/i.test(value)) return '';
     try {
-      const url = new URL(raw, location.href);
+      const url = new URL(value, location.href);
       if (url.protocol !== 'https:' || url.username || url.password || url.port) return '';
       if (url.pathname.toLowerCase().endsWith('.m3u8')) return '';
       const host = url.hostname.toLowerCase();
+      const sitePage = host === 'douyin.com' || host === 'www.douyin.com' || host === 'm.douyin.com';
+      if (sitePage && !/mime_type=video|\.mp4(?:[?#]|$)|\/aweme\/v1\/play|\/video\/tos\//i.test(`${url.pathname}${url.search}`)) {
+        return '';
+      }
       const suffixes = [
         'douyinvod.com', 'douyinpic.com', 'douyin.com', 'byteimg.com',
         'zjcdn.com', 'bytecdn.cn', 'snssdk.com', 'pstatp.com', 'volccdn.com',
@@ -344,6 +350,28 @@
       source_urls: candidates.filter((item) => item.kind === 'video').map((item) => item.url),
       candidates,
     };
+  }
+
+  function httpsCover(img) {
+    const found = [];
+    const push = (raw) => {
+      const value = String(raw || '').trim();
+      if (!value || /^(data|blob):/i.test(value)) return;
+      try {
+        const url = new URL(value, location.href);
+        if (url.protocol === 'https:' && !found.includes(url.href)) found.push(url.href);
+      } catch (_) {}
+    };
+    const nodes = img ? [img, ...Array.from((img.parentElement || img).querySelectorAll('img, source'))] : [];
+    for (const node of nodes) {
+      push(node.currentSrc);
+      push(node.getAttribute('src'));
+      push(node.getAttribute('data-src'));
+      for (const part of (node.getAttribute('srcset') || '').split(',')) {
+        push(part.trim().split(/\s+/)[0]);
+      }
+    }
+    return found[0] || '';
   }
 
   function videoCards(arg) {
@@ -432,7 +460,8 @@
         comments: '',
         shares: '',
         views: '',
-        cover_url: normUrl((img && (img.currentSrc || img.src)) || ''),
+        cover_url: httpsCover(img),
+        video_url: allowedMediaUrl((card.querySelector('video') && (card.querySelector('video').currentSrc || card.querySelector('video').src)) || ''),
         duration_seconds: durationSeconds(duration),
         position: cards.length,
       });

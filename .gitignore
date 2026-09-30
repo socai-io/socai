@@ -7,6 +7,11 @@ __pycache__/
 !.claude/skills/
 !.claude/skills/**
 
+# WorkBuddy local agent memory (per-project notes, never commit)
+# Root-scoped: only the repo-root .workbuddy/ (agent memory) is ignored.
+# plugins/workbuddy/ is committed source — different path, unaffected.
+/.workbuddy/
+
 # macOS
 .DS_Store
 **/.DS_Store

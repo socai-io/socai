@@ -18,7 +18,7 @@ use crate::agent::tool::{
 use crate::agent::{make_run_dir, Backend as LlmProvider, Tool, ToolContext, ToolResult};
 use crate::cdp::{with_snapshot_recording, PageSession};
 use crate::media::{
-    background_media_run_is_cancelled, background_video_download_semaphore,
+    background_media_is_stopped, background_video_download_semaphore,
     current_background_media_generation, emit_background_media_event, ocr_diagnostics, ocr_warm_up,
     reserve_background_video_download, subscribe_background_media_cancellation, timing_delta,
     wait_for_background_media_cancellation, BackgroundMediaEvent, MediaProcessor, TimingSnapshot,
@@ -2264,7 +2264,7 @@ fn spawn_background_video_downloads(
         .background_media_generation
         .unwrap_or_else(current_background_media_generation);
     let run_dir = ctx.run_dir.to_string_lossy().into_owned();
-    if background_media_run_is_cancelled(&run_dir) {
+    if background_media_is_stopped(generation, &run_dir) {
         return;
     }
 
@@ -2371,7 +2371,7 @@ fn spawn_background_video_downloads(
                     Ok(permit) => permit,
                     Err(_) => return,
                 },
-                _ = wait_for_background_media_cancellation(&run_dir, &mut cancellation) => {
+                _ = wait_for_background_media_cancellation(generation, &run_dir, &mut cancellation) => {
                     if set_recorded_video_status(&ctx, &note_id, None, None) {
                         emit_background_note_update(&ctx, &note_id);
                     }
@@ -2381,7 +2381,7 @@ fn spawn_background_video_downloads(
             let download = media.download_video_file(&video, &note_id, &title, &referer);
             let completed_video = tokio::select! {
                 video = download => video,
-                _ = wait_for_background_media_cancellation(&run_dir, &mut cancellation) => {
+                _ = wait_for_background_media_cancellation(generation, &run_dir, &mut cancellation) => {
                     if set_recorded_video_status(&ctx, &note_id, None, None) {
                         emit_background_note_update(&ctx, &note_id);
                     }
@@ -2389,7 +2389,7 @@ fn spawn_background_video_downloads(
                 },
             };
             drop(permit);
-            if background_media_run_is_cancelled(&run_dir) {
+            if background_media_is_stopped(generation, &run_dir) {
                 if set_recorded_video_status(&ctx, &note_id, None, None) {
                     emit_background_note_update(&ctx, &note_id);
                 }
