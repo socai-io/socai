@@ -13,6 +13,7 @@ pub mod r#loop;
 pub mod memory;
 pub mod note_store;
 pub mod provider;
+pub(crate) mod reactive_workflow;
 pub mod report;
 pub mod run_logging;
 pub mod run_state;
@@ -20,6 +21,7 @@ pub mod signature;
 pub mod skills;
 pub mod system_prompt;
 pub mod tool;
+pub(crate) mod workflow;
 
 pub use self::conversation::{default_sessions_root, Conversation, Run};
 pub use self::file_bash_tools::{
