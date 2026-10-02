@@ -19,9 +19,9 @@ pub use auth::{
     InviteRedemption, LlmGatewayConfig, SmsChallengeResponse,
 };
 pub use billing::{
-    create_alipay_order, create_wechat_order, mock_recharge, paid_asr_access, payment_order,
-    payment_plan, settle_llm_task, wallet_balance, LlmSettlement, PaidAsrAccess, PaymentOrder,
-    PaymentPlan, RechargeReceipt, WalletBalance,
+    cancel_stripe_subscription, create_alipay_order, create_stripe_order, create_wechat_order,
+    mock_recharge, paid_asr_access, payment_order, payment_plan, settle_llm_task, wallet_balance,
+    LlmSettlement, PaidAsrAccess, PaymentOrder, PaymentPlan, RechargeReceipt, WalletBalance,
 };
 pub use browser::{create_browser_session, release_browser_session, BrowserSessionInfo};
 pub use google::sign_in_with_google;

@@ -102,6 +102,10 @@ export namespace authMenu {
     shell.rerender();
   }
 
+  export function isGlobalUser(): boolean {
+    return Boolean(session.email);
+  }
+
   export function isLoggedIn(): boolean {
     return session.logged_in;
   }
@@ -202,13 +206,9 @@ export namespace authMenu {
           <span class="badge"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>Pro</span>
           <span class="t-small subtle">${esc(t("billing.activeUntil", { date: formatDate(activeUntil) }))}</span>
         </div>
-        <button id="auth-upgrade" type="button" class="btn-primary auth-full-button" aria-expanded="${upgradeExpanded ? "true" : "false"}">${esc(t("subscription.renewPro"))}</button>
+        <button id="auth-upgrade" type="button" class="btn-primary auth-full-button" aria-expanded="${upgradeExpanded ? "true" : "false"}">${esc(t("subscription.manage"))}</button>
       ` : `
         <button id="auth-upgrade" type="button" class="btn-primary auth-full-button" aria-expanded="${upgradeExpanded ? "true" : "false"}">${esc(t("subscription.upgradePro"))}</button>
-        <ul class="auth-pro-benefits t-small">
-          <li>${esc(t("subscription.proPoints"))}</li>
-          <li>${esc(t("subscription.proXhs"))}</li>
-        </ul>
       `}
       ${upgradeExpanded ? `<section class="auth-upgrade-panel" aria-label="${esc(t("subscription.upgradePro"))}">${subscriptionContent}</section>` : ""}
       ${phase === "google" ? renderGooglePending() : session.email ? ""

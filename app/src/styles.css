@@ -547,6 +547,8 @@ body.has-paper > * { position: relative; z-index: 1; }
 }
 .subscription-plan-details > div:last-child { border-bottom: 0; }
 .subscription-payment-options { display: flex; flex-direction: column; gap: var(--sp-2); }
+.subscription-payment-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.subscription-option { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-3); }
 .subscription-qr-wrap {
   display: flex;
   align-items: center;

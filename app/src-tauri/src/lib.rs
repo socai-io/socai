@@ -374,6 +374,8 @@ pub fn run() {
             commands::billing_plan,
             commands::billing_create_wechat_order,
             commands::billing_create_alipay_order,
+            commands::billing_create_stripe_order,
+            commands::billing_cancel_stripe_subscription,
             commands::billing_order_status,
             commands::billing_mock_recharge,
             voice_input::voice_input_status,

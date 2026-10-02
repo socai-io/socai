@@ -5,7 +5,18 @@ import type { ShellState } from "../main";
 import { esc } from "../lib/html";
 import { t } from "../lib/i18n";
 
+interface StripePlan {
+  plan_id: string;
+  amount_minor: number;
+  currency: string;
+  points: number;
+  sandbox: boolean;
+  subscription_status: string | null;
+  cancel_at_period_end: boolean;
+}
+
 interface PaymentPlan {
+  stripe?: StripePlan | null;
   enabled: boolean;
   wechat_enabled: boolean;
   alipay_enabled: boolean;
@@ -23,6 +34,8 @@ interface PaymentOrder {
   code_url: string | null;
   payment_url: string | null;
   amount_fen: number;
+  amount_minor?: number | null;
+  currency?: string | null;
   points: number;
   duration_days: number;
   expires_at: string | null;
@@ -31,7 +44,7 @@ interface PaymentOrder {
 }
 
 type Phase = "idle" | "loading" | "creating" | "waiting" | "paid";
-type PaymentProvider = "wechat" | "alipay";
+type PaymentProvider = "wechat" | "alipay" | "stripe";
 
 export namespace subscriptionMenu {
   let phase: Phase = "idle";
@@ -68,16 +81,16 @@ export namespace subscriptionMenu {
     }
   }
 
-  export function render(): string {
+  export function render(globalUser: boolean): string {
     return `
       <div class="subscription-content">
-        ${renderContent()}
+        ${renderContent(globalUser)}
         ${error ? `<p class="t-small result-error subscription-error" role="alert">${esc(error)}</p>` : ""}
       </div>
     `;
   }
 
-  function renderContent(): string {
+  function renderContent(globalUser: boolean): string {
     if ((phase === "loading" || plan === null) && !error) {
       return `<p class="t-small subtle subscription-copy">${esc(t("common.loading"))}</p>`;
     }
@@ -100,40 +113,63 @@ export namespace subscriptionMenu {
     if (!plan?.enabled) {
       return `<p class="t-small subtle subscription-copy">${esc(t("subscription.unavailable"))}</p>`;
     }
+    if (globalUser) {
+      return plan.stripe ? renderStripePlan(plan.stripe) : `<p class="t-small subtle subscription-copy">${esc(t("subscription.unavailable"))}</p>`;
+    }
+    return `
+      <div class="subscription-payment-options subscription-payment-choice">
+        ${plan.alipay_enabled ? `<button id="subscription-buy-alipay" type="button" class="btn-primary subscription-option" ${phase === "creating" ? "disabled" : ""}>
+          <span>${esc(t("subscription.alipay"))}</span>
+          <span class="t-small">${esc(t("subscription.pointCount", { points: plan.points }))}</span>
+          <span class="t-small">${esc(formatCny(plan.amount_fen))}</span>
+        </button>` : ""}
+        ${plan.stripe && !plan.stripe.subscription_status ? `<button id="subscription-buy-stripe" type="button" class="btn-primary subscription-option" ${phase === "creating" ? "disabled" : ""}>
+          <span>${esc(t("subscription.stripePayment"))}</span>
+          <span class="t-small">${esc(t("subscription.pointCount", { points: plan.stripe.points }))}</span>
+          <span class="t-small">${esc(formatMoney(plan.stripe.amount_minor, plan.stripe.currency))}${esc(t("subscription.perMonth"))}</span>
+        </button>` : ""}
+      </div>
+      ${plan.stripe ? renderStripeStatus(plan.stripe) : ""}
+    `;
+  }
+
+  function renderStripeStatus(stripe: StripePlan): string {
+    return `
+      ${stripe.sandbox ? `<p class="t-small subtle subscription-copy">${esc(t("subscription.sandbox"))}</p>` : ""}
+      ${stripe.subscription_status ? `<p class="t-small">${esc(t(stripe.cancel_at_period_end ? "subscription.renewalCancelled" : stripe.subscription_status === "active" ? "subscription.active" : "subscription.paymentAttention"))}</p>
+        ${!stripe.cancel_at_period_end ? `<button id="subscription-cancel-renewal" type="button" class="btn-ghost subscription-full-button">${esc(t("subscription.cancelRenewal"))}</button>` : ""}` : ""}
+    `;
+  }
+
+  function renderStripePlan(stripe: StripePlan): string {
     return `
       <div class="subscription-plan-head">
-        <p class="t-h2 subscription-plan-name">${esc(plan.name)}</p>
-        <p class="t-h2 subscription-price">${esc(formatCny(plan.amount_fen))}</p>
+        <p class="t-h2 subscription-plan-name">socai pro</p>
+        <p class="t-h2 subscription-price">${esc(formatMoney(stripe.amount_minor, stripe.currency))}${esc(t("subscription.perMonth"))}</p>
       </div>
-      <div class="subscription-plan-details">
-        <div><span class="t-small">${esc(plan.duration_days === 30
-          ? t("subscription.oneMonth")
-          : t("subscription.days", { days: plan.duration_days }))}</span></div>
-      </div>
-      <div class="subscription-payment-options">
-        ${plan.wechat_enabled ? `<button id="subscription-buy-wechat" type="button" class="btn-primary subscription-full-button">${esc(t("subscription.wechatPay"))}</button>` : ""}
-        ${plan.alipay_enabled ? `<button id="subscription-buy-alipay" type="button" class="${plan.wechat_enabled ? "btn-ghost" : "btn-primary"} subscription-full-button">${esc(t("subscription.alipay"))}</button>` : ""}
-      </div>
+      <p class="t-small subtle subscription-copy">${esc(t("subscription.monthlyPoints", { points: stripe.points }))}</p>
+      ${renderStripeStatus(stripe)}
+      ${!stripe.subscription_status ? `<button id="subscription-buy-stripe" type="button" class="btn-primary subscription-full-button" ${phase === "creating" ? "disabled" : ""}>${esc(t("subscription.stripe"))}</button>` : ""}
     `;
   }
 
   function renderCheckout(value: PaymentOrder): string {
-    const isAlipay = paymentProvider === "alipay";
+    const isStripe = paymentProvider === "stripe";
+    const browserPayment = paymentProvider === "alipay" || isStripe;
     const waitingForQr = phase === "creating" || !qrDataUrl;
     return `
       <div class="subscription-checkout-head">
         <div>
-          <p class="t-eyebrow">${esc(t(isAlipay ? "subscription.alipay" : "subscription.wechatPay"))}</p>
-          <p class="t-h2 subscription-price">${esc(formatCny(value.amount_fen))}</p>
+          <p class="t-eyebrow">${esc(t(isStripe ? "subscription.stripe" : browserPayment ? "subscription.alipay" : "subscription.wechatPay"))}</p>
+          <p class="t-h2 subscription-price">${esc(formatMoney(value.amount_minor ?? value.amount_fen, value.currency ?? "CNY"))}</p>
         </div>
-        <span class="badge"><i class="badge-dot badge-dot-hollow" aria-hidden="true"></i>${esc(t("subscription.awaitingPayment"))}</span>
       </div>
-      ${isAlipay ? `
+      ${browserPayment ? `
         <div class="subscription-browser-payment">
           <span class="subscription-browser-glyph" aria-hidden="true">↗</span>
-          <p class="t-small">${esc(t("subscription.alipayOpened"))}</p>
+          <p class="t-small">${esc(t(isStripe ? "subscription.stripeOpened" : "subscription.alipayOpened"))}</p>
         </div>
-        <button id="subscription-open-payment" type="button" class="btn-primary subscription-full-button">${esc(t("subscription.openAlipay"))}</button>
+        <button id="subscription-open-payment" type="button" class="btn-primary subscription-full-button">${esc(t(isStripe ? "subscription.openCheckout" : "subscription.openAlipay"))}</button>
       ` : `
         <div class="subscription-qr-wrap">
           ${waitingForQr
@@ -142,13 +178,24 @@ export namespace subscriptionMenu {
         </div>
         <p class="t-small subscription-scan-hint">${esc(t("subscription.scanHint"))}</p>
       `}
-      <p class="t-small subtle subscription-copy">${esc(t("subscription.expires", { time: formatTime(value.expires_at) }))}</p>
       <button id="subscription-cancel" type="button" class="btn-ghost subscription-full-button">${esc(t("common.cancel"))}</button>
     `;
   }
 
   export function bind(shell: ShellState, onWalletChanged: () => Promise<void>): void {
     walletChanged = onWalletChanged;
+    document.getElementById("subscription-buy-stripe")?.addEventListener("click", () => {
+      void createOrder("stripe", shell);
+    });
+    document.getElementById("subscription-cancel-renewal")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget as HTMLButtonElement;
+      button.disabled = true;
+      try {
+        await invoke("billing_cancel_stripe_subscription");
+        await refresh(true);
+      } catch (err) { error = friendlyError(err); }
+      shell.rerender();
+    });
     document.getElementById("subscription-buy-wechat")?.addEventListener("click", () => {
       void createOrder("wechat", shell);
     });
@@ -186,11 +233,13 @@ export namespace subscriptionMenu {
       const requestId = typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const command = provider === "wechat"
+      const command = provider === "stripe"
+        ? "billing_create_stripe_order"
+        : provider === "wechat"
         ? "billing_create_wechat_order"
         : "billing_create_alipay_order";
       order = await invoke<PaymentOrder>(command, {
-        planId: plan.plan_id,
+        planId: provider === "stripe" ? plan.stripe?.plan_id : plan.plan_id,
         requestId,
       });
       if (provider === "wechat") {
@@ -205,7 +254,7 @@ export namespace subscriptionMenu {
         if (!order.payment_url) throw new Error("payment order has no payment_url");
         await openPaymentUrl(order.payment_url);
       }
-      phase = "waiting";
+      phase = order.status === "paid" ? "paid" : "waiting";
       startPolling(shell);
     } catch (err) {
       console.error(`billing_create_${provider}_order failed:`, err);
@@ -231,14 +280,18 @@ export namespace subscriptionMenu {
 
   async function pollOrder(shell: ShellState): Promise<void> {
     if (!order || polling) return;
+    const orderId = order.order_id;
     polling = true;
     try {
-      order = await invoke<PaymentOrder>("billing_order_status", { orderId: order.order_id });
+      const updated = await invoke<PaymentOrder>("billing_order_status", { orderId });
+      if (order?.order_id !== orderId) return;
+      order = updated;
       if (order.status === "paid") {
         phase = "paid";
         error = "";
         stopPolling();
         if (walletChanged) await walletChanged();
+        if (paymentProvider === "stripe") await refresh(true);
       } else if (["expired", "closed", "revoked", "payerror"].includes(order.status)) {
         phase = "idle";
         qrDataUrl = "";
@@ -259,6 +312,10 @@ export namespace subscriptionMenu {
     pollTimer = null;
   }
 
+  function formatMoney(amount: number, currency: string): string {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amount / 100);
+  }
+
   function formatCny(amountFen: number): string {
     return `¥${(amountFen / 100).toFixed(amountFen % 100 === 0 ? 0 : 2)}`;
   }
@@ -271,16 +328,6 @@ export namespace subscriptionMenu {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
-    }).format(date);
-  }
-
-  function formatTime(value: string | null): string {
-    if (!value) return "—";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
     }).format(date);
   }
 

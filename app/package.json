@@ -19,7 +19,8 @@
     "preview": "vite preview",
     "sync-models": "node ../scripts/sync-model-catalog.mjs --write",
     "check-models": "node ../scripts/sync-model-catalog.mjs --no-official --check",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "dev:stripe": "bash scripts/dev-stripe-sandbox.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

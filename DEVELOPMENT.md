@@ -184,6 +184,52 @@ configuration, account linking, database rollout and acceptance checks. The
 companion private backend is `socai-server`; both it and the desktop app must
 include the Google login implementation.
 
+### Stripe sandbox checkout
+
+The desktop supports the private backend's optional Stripe Managed Payments
+plan alongside WeChat and Alipay. Its current plan is USD 19/month with
+1000 points per paid invoice, hosted browser checkout, automatic renewal, and
+end-of-period cancellation. The UI marks sandbox payments explicitly.
+
+Follow `socai-server`'s **Stripe Managed Payments sandbox** instructions to
+configure the test key, forward signed webhooks, provision/reuse the product,
+and run the isolated local backend. No Stripe secret belongs in this repository.
+The server verifies payment and credits the wallet; browser redirects do not.
+
+With Stripe CLI installed and a sandbox key configured, run `pnpm run dev:stripe`
+from `app/`. It starts the webhook listener, captures its signing secret without
+printing credentials, provisions the sandbox product, prepares an isolated login,
+starts the local backend and frontend, builds and opens the desktop. It uses a sibling
+`socai-server` checkout by default; `SOCAI_SERVER_DIR` overrides that location.
+It refuses occupied ports instead of stopping other running apps.
+
+The launcher reads the optional private `$HOME/.config/socai/stripe/sandbox.env`
+file (`SOCAI_STRIPE_ENV_FILE` overrides the path), or the backend's `.env`.
+Only a sandbox key is accepted. `STRIPE_CLI_PATH` overrides the CLI executable;
+otherwise it uses `stripe` on PATH or the npm installation under
+`$HOME/.local/share/socai-stripe-tools`. Closing the app stops its local services.
+On macOS it uses a separate `socai sandbox.app` under the ignored `.socai/`
+directory so the installed production app and its login remain separate.
+The CLI forwards real sandbox events; no Dashboard webhook endpoint is needed
+for this local setup. A deployed live backend needs its own HTTPS webhook endpoint.
+To try another initial purchase without deleting earlier test records, set a new
+`SOCAI_STRIPE_PROFILE` value before launching; each profile has its own local user.
+
+For a manual launch, set these runtime variables:
+
+```bash
+export SOCAI_PRO_BASE_URL=http://127.0.0.1:8010
+export SOCAI_CLOUD_AUTH_FILE=/absolute/path/to/sandbox/auth.json
+export SOCAI_HOME=/absolute/path/to/sandbox/app-data
+```
+
+`SOCAI_CLOUD_AUTH_FILE` isolates cloud login credentials; `SOCAI_HOME` alone does
+not isolate the existing default cloud auth file. The backend's
+`python -m app.scripts.prepare_stripe_sandbox --auth-file ...` command creates a
+local test user/session without sending SMS. It only accepts a local Stripe
+sandbox SQLite database. Keep both variables set while testing and never point
+the sandbox backend at the production database.
+
 ### Anonymous first answer
 
 The desktop allows one completed managed-model answer before sign-in. Local

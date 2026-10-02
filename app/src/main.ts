@@ -272,7 +272,7 @@ function render(): void {
           ${renderUpdateChip()}
         </div>
         <div class="topbar-controls" data-tauri-drag-region>
-          ${authMenu.render(agentPanel.renderAccountConfig(), subscriptionMenu.render())}
+          ${authMenu.render(agentPanel.renderAccountConfig(), subscriptionMenu.render(authMenu.isGlobalUser()))}
           ${settingsMenu.render(state)}
         </div>
       </header>

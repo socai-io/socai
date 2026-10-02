@@ -3746,6 +3746,26 @@ pub async fn billing_create_alipay_order(
 }
 
 #[tauri::command]
+pub async fn billing_create_stripe_order(
+    telemetry: State<'_, DesktopTelemetry>,
+    plan_id: String,
+    request_id: String,
+) -> Result<socai_core::cloud::PaymentOrder, String> {
+    let result = socai_core::cloud::create_stripe_order(&plan_id, &request_id)
+        .await
+        .map_err(|err| format!("{err:#}"));
+    capture_subscription_checkout(&telemetry, "stripe", &plan_id, &result);
+    result
+}
+
+#[tauri::command]
+pub async fn billing_cancel_stripe_subscription() -> Result<(), String> {
+    socai_core::cloud::cancel_stripe_subscription()
+        .await
+        .map_err(|err| format!("{err:#}"))
+}
+
+#[tauri::command]
 pub async fn billing_order_status(
     telemetry: State<'_, DesktopTelemetry>,
     order_id: String,
