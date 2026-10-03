@@ -303,9 +303,7 @@ Relative values passed to `runs.dir` are stored as absolute paths from the curre
 
 ## Extending and developing socai
 
-To add another site or custom capability, follow the [site extension guide](../core/src/sites/creation/SKILL.md). It covers requirement confirmation, site capability design, and implementation steps for coding agents such as Claude Code, Codex, and Cursor.
-
-Local development, build instructions, repository conventions, and the reference-document index live in [DEVELOPMENT.md](../DEVELOPMENT.md).
+Repository conventions for coding agents, including how to add a feature or support a new platform, live in [AGENTS.md](../AGENTS.md). Local development, build instructions, and the reference-document index live in [DEVELOPMENT.md](../DEVELOPMENT.md).
 
 ## Built with socai
 

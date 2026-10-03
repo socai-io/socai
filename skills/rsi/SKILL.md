@@ -1,5 +1,5 @@
 ---
-name: create-site-skill
+name: rsi
 description: 为 socai 新增或维护按域名发现的站点 skill；用于页面探索、DOM browser tool、站点知识沉淀以及确有必要的 native 工具接入。
 ---
 

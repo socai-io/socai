@@ -16,6 +16,9 @@ product pitch. Install, commands, and browser setup live in
   without a test. It is fine (and expected) to *update* an existing test when you
   change an API it already covers, but do not create new `#[test]` functions or
   grow `mod tests` on your own initiative.
+- **Add new features and new platforms by following [rsi](./skills/rsi/SKILL.md).**
+  When adding a capability or supporting another site, follow that skill's
+  instructions.
 
 ## Rust core — `core/`
 
