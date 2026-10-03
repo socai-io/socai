@@ -14,6 +14,7 @@ use crate::sites::registry::{
     required_string, ArgKind, BoxFuture, CommandArg, NativeSiteAdapter, SiteCommand, SlowWhen,
 };
 use crate::sites::runner::{get_f64, get_i64, json_result, ToolCommand};
+use crate::sites::post_archive::is_byte_range_preview;
 use crate::sites::skill_cli::{
     current_url, ensure_site_page, failure_payload, gate_reason, invoke_browser_tool,
     navigate_https, percent_encode_query, run_skill_command, wait_for_browser_tool,
@@ -2197,11 +2198,7 @@ async fn wait_for_post_media(
             .get("video_url")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let video_url = if overlay_video.is_empty() {
-            card_video_url
-        } else {
-            overlay_video
-        };
+        let video_url = playable_instagram_video_url(overlay_video, card_video_url);
         let has_video = latest.get("kind").and_then(Value::as_str) == Some("reel");
         let author_ready = latest
             .pointer("/author/username")
@@ -2389,15 +2386,42 @@ fn compact_opened_post(id: &str, entity: &Value, comments: &Value, card_video_ur
     {
         post["media"] = json!(media);
     }
-    let video_url = entity
-        .get("video_url")
-        .and_then(Value::as_str)
-        .filter(|url| !url.is_empty())
-        .unwrap_or(card_video_url);
+    let video_url = playable_instagram_video_url(
+        entity
+            .get("video_url")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        card_video_url,
+    );
     if !video_url.is_empty() {
         post["video_url"] = json!(video_url);
+        if let Some(media) = post.get_mut("media").and_then(Value::as_array_mut) {
+            if let Some(video) = media
+                .iter_mut()
+                .find(|item| item.get("type").and_then(Value::as_str) == Some("video"))
+            {
+                let current = video.get("url").and_then(Value::as_str).unwrap_or("");
+                if current.is_empty() || is_byte_range_preview(current) {
+                    if let Some(object) = video.as_object_mut() {
+                        object.insert("url".into(), json!(video_url));
+                    }
+                }
+            }
+        }
     }
     post
+}
+
+/// A search card carries the full file. The open reel often exposes only a
+/// `bytestart`/`byteend` fragment, which is not playable and must not replace it.
+fn playable_instagram_video_url<'a>(overlay: &'a str, card: &'a str) -> &'a str {
+    if !overlay.is_empty() && !is_byte_range_preview(overlay) {
+        overlay
+    } else if !card.is_empty() && !is_byte_range_preview(card) {
+        card
+    } else {
+        ""
+    }
 }
 
 fn compact_comments(comments: &Value) -> Value {

@@ -313,7 +313,7 @@ fn instagram_detail_videos(item: &Value) -> Option<PreviewVideoNote> {
     let from_media = video_files_from_media_list(item.get("media"));
     let files = if from_media.is_empty() {
         let source = text_at(item, &["video_url"]);
-        if is_remote_url(&source) {
+        if is_remote_url(&source) && !is_byte_range_preview(&source) {
             vec![(0, source)]
         } else {
             Vec::new()
@@ -370,7 +370,10 @@ fn video_files_from_media_list(media: Option<&Value>) -> Vec<(usize, String)> {
         let poster = text_at(item, &["poster_local_path", "poster_url", "poster"]);
         let local = text_at(item, &["local_path"]);
         let has_local = !local.is_empty() && !is_remote_url(&local);
-        let remote = if is_remote_url(&raw_src) && !is_hls_url(&raw_src) {
+        let remote = if is_remote_url(&raw_src)
+            && !is_hls_url(&raw_src)
+            && !is_byte_range_preview(&raw_src)
+        {
             raw_src
         } else {
             String::new()
@@ -586,6 +589,17 @@ fn remote_video_url(video: &Value) -> String {
     String::new()
 }
 
+pub(crate) fn is_byte_range_preview(url: &str) -> bool {
+    reqwest::Url::parse(url.trim())
+        .ok()
+        .is_some_and(|parsed| {
+            parsed.query_pairs().any(|(key, _)| {
+                let key = key.to_ascii_lowercase();
+                key == "bytestart" || key == "byteend"
+            })
+        })
+}
+
 fn is_remote_url(value: &str) -> bool {
     let value = value.trim();
     value.starts_with("https://") || value.starts_with("http://")
@@ -614,6 +628,7 @@ pub async fn save_site_media(
     let native_id = text_at(result, &["shortcode", "id"]);
     let title = text_at(result, &["caption"]);
     let referer = text_at(result, &["url"]);
+    let fallback_video = text_at(result, &["video_url"]);
     let Some(media) = result.get_mut("media").and_then(Value::as_array_mut) else {
         return;
     };
@@ -622,7 +637,15 @@ pub async fn save_site_media(
         {
             continue;
         }
-        let source = text_at(item, &["url", "src"]);
+        let mut source = text_at(item, &["url", "src"]);
+        if is_byte_range_preview(&source) {
+            source.clear();
+        }
+        if source.is_empty() {
+            if is_remote_url(&fallback_video) && !is_byte_range_preview(&fallback_video) {
+                source = fallback_video.clone();
+            }
+        }
         if source.is_empty() {
             item["download_error"] =
                 Value::String("playable Instagram video URL was not exposed by the page".into());
@@ -828,14 +851,37 @@ fn record_level(value: &str) -> u8 {
 }
 
 fn merge_media(target: &mut Vec<Value>, source: &[Value]) {
+    // A search card often archives a reel before its cover exists: a video
+    // with no file and no poster. The opened post then has the same video
+    // plus the still. Merging those as two items paints a gray slide first.
+    let incoming_videos = source
+        .iter()
+        .filter(|item| text_at(item, &["kind", "type"]) == "video")
+        .count();
+    let bare_videos = target.iter().filter(|item| bare_video(item)).count();
     for incoming in source {
         let key = media_key(incoming);
         if let Some(existing) = target.iter_mut().find(|item| media_key(item) == key) {
             merge_record_field("media_item", existing, incoming);
-        } else {
-            target.push(incoming.clone());
+            continue;
         }
+        if incoming_videos == 1
+            && bare_videos == 1
+            && text_at(incoming, &["kind", "type"]) == "video"
+        {
+            if let Some(existing) = target.iter_mut().find(|item| bare_video(item)) {
+                merge_record_field("media_item", existing, incoming);
+                continue;
+            }
+        }
+        target.push(incoming.clone());
     }
+}
+
+fn bare_video(value: &Value) -> bool {
+    text_at(value, &["kind", "type"]) == "video"
+        && text_at(value, &["src", "url"]).is_empty()
+        && text_at(value, &["poster", "poster_url", "poster_local_path"]).is_empty()
 }
 
 /// Also normalize historical archives whose repeated observations used different
@@ -1086,7 +1132,8 @@ fn instagram_detail_record(item: &Value) -> Option<(String, Value)> {
             None,
         );
     }
-    let media = media_items(item.get("media"));
+    let prepared = normalize_instagram_detail_media(item);
+    let media = media_items(Some(&prepared));
     record.insert(
         "saved".into(),
         Value::Bool(media.iter().any(media_is_local)),
@@ -1094,6 +1141,62 @@ fn instagram_detail_record(item: &Value) -> Option<(String, Value)> {
     record.insert("media".into(), Value::Array(media));
     record.insert("level".into(), Value::String("deep".into()));
     Some((post_note_id("instagram", &native_id), Value::Object(record)))
+}
+
+/// Drop unplayable byte-range previews and use the sibling still as the video
+/// poster. Otherwise the card leads with an empty gray frame and hides the
+/// cover on the next slide.
+fn normalize_instagram_detail_media(item: &Value) -> Value {
+    let mut media = item
+        .get("media")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for entry in &mut media {
+        if text_at(entry, &["type", "kind"]) != "video" {
+            continue;
+        }
+        let url = text_at(entry, &["url", "src"]);
+        if !is_byte_range_preview(&url) {
+            continue;
+        }
+        if let Some(object) = entry.as_object_mut() {
+            object.insert("url".into(), Value::String(String::new()));
+            object.insert("src".into(), Value::String(String::new()));
+        }
+    }
+    let fallback = text_at(item, &["video_url"]);
+    if is_remote_url(&fallback) && !is_byte_range_preview(&fallback) {
+        if let Some(video) = media
+            .iter_mut()
+            .find(|entry| text_at(entry, &["type", "kind"]) == "video")
+        {
+            if text_at(video, &["url", "src"]).is_empty() {
+                if let Some(object) = video.as_object_mut() {
+                    object.insert("url".into(), Value::String(fallback));
+                }
+            }
+        }
+    }
+    let is_video = |entry: &Value| text_at(entry, &["type", "kind"]) == "video";
+    let is_image = |entry: &Value| text_at(entry, &["type", "kind"]) == "image";
+    let video_at = media.iter().position(is_video);
+    let image_at = media.iter().position(is_image);
+    let video_count = media.iter().filter(|entry| is_video(entry)).count();
+    let image_count = media.iter().filter(|entry| is_image(entry)).count();
+    if video_count == 1 && image_count == 1 {
+        if let (Some(video_at), Some(image_at)) = (video_at, image_at) {
+            let image_url = text_at(&media[image_at], &["url", "src"]);
+            let poster = text_at(&media[video_at], &["poster_url", "poster", "poster_local_path"]);
+            if poster.is_empty() && !image_url.is_empty() {
+                if let Some(object) = media[video_at].as_object_mut() {
+                    object.insert("poster_url".into(), Value::String(image_url));
+                }
+                media.remove(image_at);
+            }
+        }
+    }
+    Value::Array(media)
 }
 
 fn video_platform_records(site_id: &str, tool_name: &str, result: &Value) -> Vec<(String, Value)> {

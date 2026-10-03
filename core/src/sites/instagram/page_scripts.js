@@ -997,6 +997,44 @@
     return match ? match[1] : '';
   }
 
+  // Instagram's player reports a few-kilobyte byte range (`bytestart` /
+  // `byteend`) as the video address. That fragment is not a file: it fails
+  // download and leaves a blank gray slide in front of the real cover.
+  function byteRangePreview(url) {
+    try {
+      const parsed = new URL(url);
+      return parsed.searchParams.has('bytestart') || parsed.searchParams.has('byteend');
+    } catch (_) {
+      return /(?:^|[?&])byte(?:start|end)=/i.test(String(url || ''));
+    }
+  }
+
+  function videoSourceUrl(video) {
+    if (!video) return '';
+    const source = video.querySelector && video.querySelector('source[src]');
+    const candidates = [
+      video.getAttribute && video.getAttribute('src'),
+      source && source.getAttribute && source.getAttribute('src'),
+      video.currentSrc,
+      video.src,
+      source && source.src,
+    ];
+    for (const candidate of candidates) {
+      if (/^https:\/\//i.test(candidate || '') && !byteRangePreview(candidate)) return candidate;
+    }
+    return '';
+  }
+
+  // A reel paints its still as a sibling <img> and leaves <video poster> empty.
+  // That still is the video's cover, not a second carousel slide.
+  function foldCoverIntoVideo(output) {
+    const videos = output.filter((item) => item.type === 'video');
+    const images = output.filter((item) => item.type === 'image');
+    if (videos.length !== 1 || images.length !== 1 || videos[0].poster_url) return output;
+    videos[0].poster_url = images[0].url;
+    return output.filter((item) => item.type !== 'image');
+  }
+
   function postMedia() {
     const output = [];
     const seen = new Map();
@@ -1045,8 +1083,7 @@
         const linkedIdentity = linkedPost && postIdentity(linkedPost.href);
         if (linkedIdentity && activeIdentity && linkedIdentity.shortcode !== activeIdentity.shortcode) continue;
         const video = media.tagName === 'VIDEO' ? media : media.closest('video');
-        const source = video && video.querySelector('source[src]');
-        const rawUrl = media.currentSrc || media.src || video && (video.currentSrc || video.src) || source && source.src || '';
+        const rawUrl = video ? videoSourceUrl(video) : (media.currentSrc || media.src || '');
         const rawPoster = video && video.poster || '';
         append(video ? 'video' : 'image', rawUrl, rawPoster, alt);
         if (output.length >= 20) break;
@@ -1066,7 +1103,7 @@
       try {
         for (const entry of performance.getEntriesByType('resource').slice().reverse()) {
           const url = String(entry.name || '');
-          if (/^https:\/\//i.test(url) && /(?:\.mp4(?:\?|$)|\/t16\/|cdninstagram\.com\/.*video)/i.test(url)) {
+          if (/^https:\/\//i.test(url) && !byteRangePreview(url) && /(?:\.mp4(?:\?|$)|\/t16\/|cdninstagram\.com\/.*video)/i.test(url)) {
             candidates.push(url);
           }
           if (candidates.length >= 30) break;
@@ -1074,7 +1111,7 @@
       } catch (_) {}
       const poster = output.find((item) => item.type === 'image');
       for (const candidate of candidates) {
-        if (!/^https:\/\//i.test(candidate || '')) continue;
+        if (!/^https:\/\//i.test(candidate || '') || byteRangePreview(candidate)) continue;
         append('video', candidate, poster && poster.url || '', metaContent('og:title'));
         break;
       }
@@ -1085,7 +1122,7 @@
       metadataIdentity.shortcode === activeIdentity.shortcode) {
       append('image', ogImage, '', metaContent('og:title'));
     }
-    return output;
+    return foldCoverIntoVideo(output);
   }
 
   function postPublishedAt(root) {
@@ -1416,20 +1453,7 @@
   }
 
   function overlayVideoUrl(article) {
-    const video = article.querySelector('video');
-    if (!video) return '';
-    const source = video.querySelector('source[src]');
-    const candidates = [
-      video.getAttribute('src'),
-      source && source.getAttribute('src'),
-      video.currentSrc,
-      video.src,
-      source && source.src,
-    ];
-    for (const candidate of candidates) {
-      if (/^https:\/\//i.test(candidate || '')) return candidate;
-    }
-    return '';
+    return videoSourceUrl(article.querySelector('video'));
   }
 
   function commentState() {
@@ -1451,18 +1475,33 @@
     const output = [];
     for (const node of article.querySelectorAll('video, img[src]')) {
       if (node.tagName === 'IMG' && /(profile picture|头像)/i.test(node.alt || '')) continue;
+      if (node.tagName === 'IMG' && (/\.gif(?:\?|$)/i.test(node.src) || /\/t51\.\d+-19\//i.test(node.src))) continue;
       const video = node.tagName === 'VIDEO' ? node : null;
-      const url = video ? (video.currentSrc || video.src || '') : (node.currentSrc || node.src || '');
-      if (!/^https:\/\//i.test(url) && !(video && video.poster)) continue;
+      const url = video ? videoSourceUrl(video) : (node.currentSrc || node.src || '');
+      const poster = video && /^https:\/\//i.test(video.poster || '') ? video.poster : '';
+      // Keep a video that only exposed a byte-range fragment. The cover <img>
+      // is folded onto it below; dropping the video here would leave the still
+      // as a second slide behind a blank frame archived earlier.
+      if (!video && !/^https:\/\//i.test(url)) continue;
+      if (video && !url && !poster) {
+        output.push({
+          type: 'video',
+          url: '',
+          poster_url: '',
+          alt: cleanText(node.alt || '', 3000),
+        });
+        if (output.length >= 20) break;
+        continue;
+      }
       output.push({
         type: video ? 'video' : 'image',
         url: /^https:\/\//i.test(url) ? url : '',
-        poster_url: video && /^https:\/\//i.test(video.poster || '') ? video.poster : '',
+        poster_url: poster,
         alt: cleanText(node.alt || '', 3000),
       });
       if (output.length >= 20) break;
     }
-    return output;
+    return foldCoverIntoVideo(output);
   }
 
   function postDetail() {

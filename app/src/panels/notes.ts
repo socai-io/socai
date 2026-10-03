@@ -59,7 +59,20 @@ function normalizeNoteMedia(note: NoteData): NoteData {
     }
     media.set(key, { ...media.get(key), ...item });
   }
-  return { ...note, media: [...media.values()] };
+  return { ...note, media: foldBlankVideoCover([...media.values()]) };
+}
+
+// A reel download can fail before the still is attached, leaving a posterless
+// video in front of the cover image. That first slide paints as a gray frame.
+function foldBlankVideoCover(items: NoteMedia[]): NoteMedia[] {
+  if (items.length !== 2) return items;
+  const blank = items.findIndex((item) => {
+    if (item.kind !== "video" || item.poster) return false;
+    return !item.src || /^(https?:|blob:)/i.test(item.src);
+  });
+  const cover = items.findIndex((item) => item.kind === "image" && item.src);
+  if (blank < 0 || cover < 0) return items;
+  return [items[cover]];
 }
 
 function mergeNoteData(current: NoteData | undefined, incoming: NoteData): NoteData {

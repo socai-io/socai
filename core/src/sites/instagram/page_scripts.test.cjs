@@ -112,6 +112,57 @@ test('post detail exposes the playable Instagram video URL', () => {
   assert.equal(detail.media[0].url, videoUrl);
 });
 
+test('reel overlay uses the cover still instead of a byte-range preview', () => {
+  const coverUrl = 'https://scontent.cdninstagram.com/v/t51.82787-15/cover.jpg';
+  const fragment = 'https://scontent.cdninstagram.com/o1/v/t2/f2/m78/clip.mp4?bytestart=1012&byteend=8375';
+  const video = {
+    tagName: 'VIDEO',
+    currentSrc: fragment,
+    src: fragment,
+    poster: '',
+    alt: 'Pour over reel',
+    getAttribute: () => '',
+    querySelector: () => null,
+  };
+  const image = {
+    tagName: 'IMG',
+    currentSrc: coverUrl,
+    src: coverUrl,
+    alt: 'Pour over reel',
+  };
+  const dialog = {
+    querySelector: (selector) => selector === 'video' ? video : null,
+    querySelectorAll: (selector) => selector === 'video, img[src]' ? [video, image] : [],
+  };
+  const document = {
+    body: { innerText: 'Hydrated Instagram reel overlay' },
+    readyState: 'complete',
+    title: 'Reel fixture',
+    querySelector: (selector) => selector === '[role="dialog"]' ? dialog : null,
+    querySelectorAll: () => [],
+  };
+  const window = { getComputedStyle: () => ({ visibility: 'visible', display: 'block' }) };
+  const context = {
+    URL,
+    document,
+    location: {
+      href: 'https://www.instagram.com/p/Reel123/',
+      pathname: '/p/Reel123/',
+    },
+    window,
+  };
+  const source = fs.readFileSync(path.join(__dirname, 'page_scripts.js'), 'utf8');
+  vm.runInNewContext(source, context);
+
+  const detail = window.SocaiInstagramPageScripts.postDetail();
+
+  assert.equal(detail.media.length, 1);
+  assert.equal(detail.media[0].type, 'video');
+  assert.equal(detail.media[0].url, '');
+  assert.equal(detail.media[0].poster_url, coverUrl);
+  assert.equal(detail.video_url, '');
+});
+
 test('comments retain visible replies as a nested tree', () => {
   const body = { parentElement: null };
   const list = {
