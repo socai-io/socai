@@ -62,6 +62,7 @@ function tweetFixture(id, {
     text: `OpenAI\n@${username}`,
     selectors: { 'a[href]': [authorLink] },
   });
+  const replyContext = reply ? new FakeNode({ text: `${replyLabel} @${replyTo}` }) : null;
   const body = new FakeNode({ text });
   const image = new FakeNode({ src: 'https://pbs.twimg.com/media/fixture.jpg', attributes: { alt: 'Fixture image' } });
   const photo = new FakeNode({ selectors: { 'img[src]': [image] } });
@@ -84,9 +85,10 @@ function tweetFixture(id, {
       '[data-testid="like"], [data-testid="unlike"]': [likeButton],
       '[data-testid="bookmark"], [data-testid="removeBookmark"]': [],
       '[data-testid="quoteTweet"]': [],
+      'span, div[dir="ltr"]': replyContext ? [replyContext] : [],
     },
   });
-  for (const child of [status, time, userName, body, photo, image, replyButton, repostButton, likeButton]) {
+  for (const child of [status, time, userName, body, photo, image, replyButton, repostButton, likeButton, replyContext].filter(Boolean)) {
     child.parentElement = article;
   }
   return article;
@@ -158,6 +160,62 @@ test('post detail returns canonical identity, content, media, and metrics', () =
   assert.equal(detail.metrics.likes, 56);
 });
 
+test('post-open state requires hydrated author, timestamp, and root content', () => {
+  const hydrated = tweetFixture('1234567890');
+  const hydratedScripts = loadScripts({
+    href: 'https://x.com/openai/status/1234567890',
+    pathname: '/openai/status/1234567890',
+    articles: [hydrated],
+  });
+  assert.equal(hydratedScripts.postOpenState({ id: '1234567890' }).ok, true);
+
+  const missingAuthor = tweetFixture('1234567890');
+  missingAuthor.selectors['[data-testid="User-Name"]'] = [];
+  const missingAuthorScripts = loadScripts({
+    href: 'https://x.com/openai/status/1234567890',
+    pathname: '/openai/status/1234567890',
+    articles: [missingAuthor],
+  });
+  assert.equal(missingAuthorScripts.postOpenState({ id: '1234567890' }).status, 'post_unhydrated');
+
+  const emptyAuthor = tweetFixture('1234567890');
+  const emptyAuthorRoot = emptyAuthor.querySelector('[data-testid="User-Name"]');
+  emptyAuthorRoot.innerText = '';
+  emptyAuthorRoot.textContent = '';
+  emptyAuthorRoot.selectors['a[href]'] = [];
+  const emptyAuthorScripts = loadScripts({
+    href: 'https://x.com/openai/status/1234567890',
+    pathname: '/openai/status/1234567890',
+    articles: [emptyAuthor],
+  });
+  assert.equal(emptyAuthorScripts.postOpenState({ id: '1234567890' }).status, 'post_unhydrated');
+
+  const missingTimestamp = tweetFixture('1234567890');
+  missingTimestamp.selectors['a[href*="/status/"] time[datetime]'] = [];
+  const missingTimestampScripts = loadScripts({
+    href: 'https://x.com/openai/status/1234567890',
+    pathname: '/openai/status/1234567890',
+    articles: [missingTimestamp],
+  });
+  assert.equal(missingTimestampScripts.postOpenState({ id: '1234567890' }).status, 'post_unhydrated');
+});
+
+test('restoration metadata stays out of the legacy page-state shape', () => {
+  const article = tweetFixture('555');
+  const scripts = loadScripts({
+    href: 'https://x.com/search?q=AI%20agents&src=typed_query&f=live',
+    pathname: '/search',
+    articles: [article],
+  });
+  const legacy = scripts.pageState();
+  const restoration = scripts.sourceSurfaceState();
+
+  assert.equal(Object.hasOwn(legacy, 'search_query'), false);
+  assert.equal(Object.hasOwn(legacy, 'scroll_y'), false);
+  assert.equal(restoration.search_query, 'AI agents');
+  assert.equal(restoration.scroll_y, 0);
+});
+
 test('comments exclude the root post and retain reply posts', () => {
   const root = tweetFixture('100');
   const reply = tweetFixture('101', { username: 'reply_user', text: 'A visible reply', reply: true });
@@ -174,6 +232,42 @@ test('comments exclude the root post and retain reply posts', () => {
   assert.equal(comments[0].id, '101');
   assert.equal(comments[0].author.username, 'reply_user');
   assert.equal(comments[0].text, 'A visible reply');
+});
+
+test('comments fail closed on an unlabeled post inside the conversation region', () => {
+  const root = tweetFixture('100');
+  const directReply = tweetFixture('101', {
+    username: 'reply_user',
+    text: 'An unlabeled module that may be a reply or recommendation',
+    reply: false,
+  });
+  conversationFixture([root, directReply]);
+  const scripts = loadScripts({
+    href: 'https://x.com/openai/status/100',
+    pathname: '/openai/status/100',
+    articles: [root, directReply],
+  });
+
+  const comments = scripts.comments({ limit: 10 });
+
+  assert.deepEqual(Array.from(comments, (comment) => comment.id), []);
+});
+
+test('comments ignore reply-like text inside the post body', () => {
+  const root = tweetFixture('100');
+  const unrelated = tweetFixture('101', {
+    username: 'other_user',
+    text: 'This article literally says Replying to @openai but is not a reply',
+    reply: false,
+  });
+  conversationFixture([root, unrelated]);
+  const scripts = loadScripts({
+    href: 'https://x.com/openai/status/100',
+    pathname: '/openai/status/100',
+    articles: [root, unrelated],
+  });
+
+  assert.deepEqual(Array.from(scripts.comments({ limit: 10 }), (comment) => comment.id), []);
 });
 
 test('comments reject unrelated recommendations and conversation ancestors', () => {

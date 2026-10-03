@@ -74,7 +74,7 @@ pub static X_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
         SiteCommand {
             name: "search",
             tool_name: "search",
-            about: "Search X and print structured post candidates as JSON.",
+            about: "Search X and optionally click visible posts for details and replies.",
             args: &[
                 CommandArg {
                     key: "query",
@@ -93,6 +93,22 @@ pub static X_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     kind: ArgKind::Int,
                 },
                 CommandArg {
+                    key: "deep",
+                    long: Some("deep"),
+                    value_name: "N",
+                    help: "Open up to N collected posts by clicking the current search timeline. Defaults to 0.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "num_comments",
+                    long: Some("num-comments"),
+                    value_name: "N",
+                    help: "Visible replies to collect per deeply read post. Defaults to 8.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
                     key: "wait_seconds",
                     long: Some("wait-seconds"),
                     value_name: "SECONDS",
@@ -107,7 +123,7 @@ pub static X_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
         SiteCommand {
             name: "profile",
             tool_name: "profile",
-            about: "Read an X profile and collect visible timeline posts.",
+            about: "Read an X profile and optionally click visible timeline posts for details and replies.",
             args: &[
                 CommandArg {
                     key: "profile",
@@ -122,6 +138,22 @@ pub static X_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     long: Some("num"),
                     value_name: "N",
                     help: "Number of visible posts to collect by scrolling. Defaults to 10.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "deep",
+                    long: Some("deep"),
+                    value_name: "N",
+                    help: "Open up to N collected posts by clicking the current profile timeline. Defaults to 0.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "num_comments",
+                    long: Some("num-comments"),
+                    value_name: "N",
+                    help: "Visible replies to collect per deeply read post. Defaults to 8.",
                     required: false,
                     kind: ArgKind::Int,
                 },
@@ -317,7 +349,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search X for posts matching `query`. This tool is read-only."
+        "Search X for posts matching `query`. Set `deep` to open that many posts with trusted clicks in the current search timeline, read details/replies, and restore the search URL and scroll position. Deep-read click or restoration failures fail closed and never fall back to direct post navigation."
     }
 
     fn input_schema(&self) -> Value {
@@ -326,6 +358,8 @@ impl Tool for SearchTool {
             "properties": {
                 "query": { "type": "string", "maxLength": 512 },
                 "num": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 },
+                "deep": { "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
+                "num_comments": { "type": "integer", "default": 8, "minimum": 0, "maximum": 100 },
                 "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
             },
             "required": ["query"]
@@ -338,6 +372,9 @@ impl Tool for SearchTool {
             anyhow::bail!("query must contain at most 512 characters");
         }
         let num = get_i64(&input, "num", DEFAULT_RESULT_COUNT).clamp(1, MAX_TOOL_ITEMS);
+        let deep = get_i64(&input, "deep", 0).clamp(0, num);
+        let num_comments =
+            get_i64(&input, "num_comments", DEFAULT_COMMENT_COUNT).clamp(0, MAX_TOOL_ITEMS);
         let wait_seconds =
             get_f64(&input, "wait_seconds", DEFAULT_WAIT_SECONDS).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
         let target = format!(
@@ -403,14 +440,31 @@ impl Tool for SearchTool {
                 }),
             )));
         }
-        Ok(json_result(&json!({
+        let mut payload = json!({
             "ok": true,
             "query": query,
             "url": current_url(&self.page).await.unwrap_or_default(),
             "count": results.as_array().map(Vec::len).unwrap_or(0),
             "results": results,
             "state": final_state,
-        })))
+        });
+        if deep > 0 {
+            let deep_posts = read_clicked_x_posts(
+                &self.page,
+                ctx,
+                &payload["results"],
+                deep,
+                num_comments,
+                wait_seconds,
+            )
+            .await?;
+            let deep_status = x_deep_read_status(&payload["results"], &deep_posts, deep);
+            payload["ok"] = json!(deep_status.get("ok").and_then(Value::as_bool) == Some(true));
+            payload["deep_posts"] = deep_posts;
+            payload["deep_status"] = deep_status;
+            payload["navigation_policy"] = json!("card_click_only");
+        }
+        Ok(json_result(&payload))
     }
 }
 
@@ -425,7 +479,7 @@ impl Tool for ProfileTool {
     }
 
     fn description(&self) -> &str {
-        "Read an X profile and its visible posts by @handle or URL."
+        "Read an X profile and its visible posts by @handle or URL. Set `deep` to open that many posts with trusted clicks in the current profile timeline, read details/replies, and restore the profile URL and scroll position. Deep-read click or restoration failures fail closed and never fall back to direct post navigation."
     }
 
     fn input_schema(&self) -> Value {
@@ -434,6 +488,8 @@ impl Tool for ProfileTool {
             "properties": {
                 "profile": { "type": "string" },
                 "num": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 },
+                "deep": { "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
+                "num_comments": { "type": "integer", "default": 8, "minimum": 0, "maximum": 100 },
                 "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
             },
             "required": ["profile"]
@@ -444,6 +500,9 @@ impl Tool for ProfileTool {
         let locator = required_string(&input, "profile")?;
         let url = x_profile_url(&locator)?;
         let num = get_i64(&input, "num", DEFAULT_RESULT_COUNT).clamp(1, MAX_TOOL_ITEMS);
+        let deep = get_i64(&input, "deep", 0).clamp(0, num);
+        let num_comments =
+            get_i64(&input, "num_comments", DEFAULT_COMMENT_COUNT).clamp(0, MAX_TOOL_ITEMS);
         let wait_seconds =
             get_f64(&input, "wait_seconds", DEFAULT_WAIT_SECONDS).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
         navigate_https(&self.page, &url).await?;
@@ -512,12 +571,29 @@ impl Tool for ProfileTool {
                 }),
             )));
         }
-        Ok(json_result(&json!({
+        let mut payload = json!({
             "ok": true,
             "profile": state,
             "posts": posts,
             "count": posts.as_array().map(Vec::len).unwrap_or(0),
-        })))
+        });
+        if deep > 0 {
+            let deep_posts = read_clicked_x_posts(
+                &self.page,
+                ctx,
+                &payload["posts"],
+                deep,
+                num_comments,
+                wait_seconds,
+            )
+            .await?;
+            let deep_status = x_deep_read_status(&payload["posts"], &deep_posts, deep);
+            payload["ok"] = json!(deep_status.get("ok").and_then(Value::as_bool) == Some(true));
+            payload["deep_posts"] = deep_posts;
+            payload["deep_status"] = deep_status;
+            payload["navigation_policy"] = json!("card_click_only");
+        }
+        Ok(json_result(&payload))
     }
 }
 
@@ -978,6 +1054,810 @@ fn verified_write_target(target: &Value, post_id: &str) -> Option<(f64, f64)> {
     Some((target.get("x")?.as_f64()?, target.get("y")?.as_f64()?))
 }
 
+async fn read_clicked_x_posts(
+    page: &PageSession,
+    ctx: &ToolContext,
+    candidates: &Value,
+    deep: i64,
+    num_comments: i64,
+    wait_seconds: f64,
+) -> anyhow::Result<Value> {
+    if deep <= 0 {
+        return Ok(Value::Array(Vec::new()));
+    }
+    let Some(items) = candidates.as_array() else {
+        return Ok(Value::Array(Vec::new()));
+    };
+    let mut output = Vec::new();
+    for candidate in items {
+        if output.len() >= deep as usize {
+            break;
+        }
+        let Some(post_id) = candidate
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()))
+        else {
+            continue;
+        };
+        let result = match read_clicked_x_post(page, ctx, post_id, num_comments, wait_seconds).await
+        {
+            Ok(result) => result,
+            Err(error) => failure_payload(
+                "deep_read_error",
+                json!({
+                    "post_id": post_id,
+                    "navigation_policy": "card_click_only",
+                    "origin_preserved": false,
+                    "error": format!("{error:#}"),
+                }),
+            ),
+        };
+        let restored = result
+            .get("close")
+            .and_then(|close| close.get("ok"))
+            .and_then(Value::as_bool)
+            .or_else(|| result.get("origin_preserved").and_then(Value::as_bool))
+            .unwrap_or(false);
+        output.push(result);
+        if !restored {
+            break;
+        }
+    }
+    Ok(Value::Array(output))
+}
+
+fn x_deep_read_status(candidates: &Value, deep_posts: &Value, deep: i64) -> Value {
+    let available = candidates.as_array().map(Vec::len).unwrap_or(0);
+    let requested = (deep.max(0) as usize).min(available);
+    let attempted = deep_posts.as_array().map(Vec::len).unwrap_or(0);
+    let completed = deep_posts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("ok").and_then(Value::as_bool) == Some(true))
+        .count();
+    json!({
+        "ok": deep <= 0 || (attempted == requested && completed == requested),
+        "requested": requested,
+        "attempted": attempted,
+        "completed": completed,
+    })
+}
+
+fn relocatable_x_post_target(target: &Value) -> bool {
+    matches!(
+        target.get("status").and_then(Value::as_str),
+        Some("post_not_found" | "post_link_not_visible")
+    )
+}
+
+async fn locate_x_post_card(page: &PageSession, post_id: &str) -> anyhow::Result<Value> {
+    let args = json!({ "id": post_id });
+    let mut target =
+        crate::sites::learning::run_site_browser_tool(page, SITE_ID, "postCardTarget", Some(&args))
+            .await?;
+    if target.get("ok").and_then(Value::as_bool) == Some(true)
+        || !relocatable_x_post_target(&target)
+    {
+        return Ok(target);
+    }
+
+    let state =
+        crate::sites::learning::run_site_browser_tool(page, SITE_ID, "sourceSurfaceState", None)
+            .await?;
+    let scroll_tool = match state.get("page_type").and_then(Value::as_str) {
+        Some("search") => "scrollResults",
+        Some("profile") => "scrollPosts",
+        _ => return Ok(target),
+    };
+    let reset = crate::sites::learning::run_site_browser_tool(
+        page,
+        SITE_ID,
+        scroll_tool,
+        Some(&json!({ "to_top": true })),
+    )
+    .await?;
+    if reset.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(target);
+    }
+
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    for _ in 0..40 {
+        target = crate::sites::learning::run_site_browser_tool(
+            page,
+            SITE_ID,
+            "postCardTarget",
+            Some(&args),
+        )
+        .await?;
+        if target.get("ok").and_then(Value::as_bool) == Some(true)
+            || !relocatable_x_post_target(&target)
+        {
+            return Ok(target);
+        }
+        let scroll = crate::sites::learning::run_site_browser_tool(
+            page,
+            SITE_ID,
+            scroll_tool,
+            Some(&json!({})),
+        )
+        .await?;
+        if scroll.get("ok").and_then(Value::as_bool) != Some(true) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        target = crate::sites::learning::run_site_browser_tool(
+            page,
+            SITE_ID,
+            "postCardTarget",
+            Some(&args),
+        )
+        .await?;
+        if target.get("ok").and_then(Value::as_bool) == Some(true)
+            || !relocatable_x_post_target(&target)
+        {
+            return Ok(target);
+        }
+        let observed = crate::sites::learning::run_site_browser_tool(
+            page,
+            SITE_ID,
+            "sourceSurfaceState",
+            None,
+        )
+        .await?;
+        if observed.get("at_end").and_then(Value::as_bool) == Some(true) {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            target = crate::sites::learning::run_site_browser_tool(
+                page,
+                SITE_ID,
+                "postCardTarget",
+                Some(&args),
+            )
+            .await?;
+            if target.get("ok").and_then(Value::as_bool) == Some(true)
+                || !relocatable_x_post_target(&target)
+            {
+                return Ok(target);
+            }
+            let confirmed = crate::sites::learning::run_site_browser_tool(
+                page,
+                SITE_ID,
+                "sourceSurfaceState",
+                None,
+            )
+            .await?;
+            let no_result_growth = confirmed
+                .get("result_count")
+                .and_then(Value::as_u64)
+                .zip(observed.get("result_count").and_then(Value::as_u64))
+                .is_some_and(|(confirmed, observed)| confirmed <= observed);
+            let no_height_growth = confirmed
+                .get("document_height")
+                .and_then(Value::as_u64)
+                .zip(observed.get("document_height").and_then(Value::as_u64))
+                .is_some_and(|(confirmed, observed)| confirmed <= observed);
+            if confirmed.get("at_end").and_then(Value::as_bool) == Some(true)
+                && no_result_growth
+                && no_height_growth
+            {
+                break;
+            }
+        }
+    }
+    Ok(target)
+}
+
+fn validated_x_post_click_target(target: &Value, expected_id: &str) -> anyhow::Result<(f64, f64)> {
+    if target.get("ok").and_then(Value::as_bool) != Some(true)
+        || target.get("hit_owned").and_then(Value::as_bool) != Some(true)
+        || target.get("id").and_then(Value::as_str) != Some(expected_id)
+    {
+        anyhow::bail!("X post click target is not owned by the expected timeline post");
+    }
+    let target_url = target
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if x_post_id(target_url).as_deref() != Some(expected_id) {
+        anyhow::bail!("X post identity changed before click");
+    }
+    let x = target
+        .get("x")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| anyhow::anyhow!("X post target is missing x"))?;
+    let y = target
+        .get("y")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| anyhow::anyhow!("X post target is missing y"))?;
+    Ok((x, y))
+}
+
+fn x_source_surface_identity_matches(
+    source_url: &str,
+    source_state: &Value,
+    current_url: &str,
+    current_state: &Value,
+) -> bool {
+    if source_url != current_url
+        || gate_reason(current_state).is_some()
+        || current_state.get("ok").and_then(Value::as_bool) != Some(true)
+        || current_state.get("hydrated").and_then(Value::as_bool) != Some(true)
+    {
+        return false;
+    }
+    let expected_type = source_state
+        .get("page_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let actual_type = current_state
+        .get("page_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !matches!(expected_type, "search" | "profile") || expected_type != actual_type {
+        return false;
+    }
+    if expected_type == "search" {
+        let expected_query = source_state
+            .get("search_query")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let actual_query = current_state
+            .get("search_query")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if expected_query.is_empty() || expected_query != actual_query {
+            return false;
+        }
+    }
+    if expected_type == "profile" {
+        let expected_profile = source_state
+            .get("profile_username")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let actual_profile = current_state
+            .get("profile_username")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if expected_profile.is_empty() || expected_profile != actual_profile {
+            return false;
+        }
+    }
+    current_state
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .is_some_and(|count| count > 0)
+}
+
+fn x_source_surface_extent_matches(source_state: &Value, current_state: &Value) -> bool {
+    let expected_count = source_state
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let actual_count = current_state
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let expected_height = source_state
+        .get("document_height")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let actual_height = current_state
+        .get("document_height")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    actual_count >= expected_count && actual_height.saturating_add(8) >= expected_height
+}
+
+fn x_source_surface_matches(
+    source_url: &str,
+    source_state: &Value,
+    current_url: &str,
+    current_state: &Value,
+) -> bool {
+    x_source_surface_identity_matches(source_url, source_state, current_url, current_state)
+        && x_source_surface_extent_matches(source_state, current_state)
+}
+
+async fn restore_x_source_surface(
+    page: &PageSession,
+    source_url: &str,
+    source_state: &Value,
+    wait_seconds: f64,
+) -> anyhow::Result<Value> {
+    let mut url = current_url(page).await.unwrap_or_default();
+    let mut state =
+        crate::sites::learning::run_site_browser_tool(page, SITE_ID, "sourceSurfaceState", None)
+            .await?;
+    let mut back_error = None;
+    let mut probe_error = None;
+    let mut used_history = false;
+    if !x_source_surface_identity_matches(source_url, source_state, &url, &state) {
+        let can_history_return = state.get("page_type").and_then(Value::as_str) == Some("post")
+            || (gate_reason(&state).is_some() && url != source_url);
+        if !can_history_return {
+            return Ok(json!({
+                "ok": false,
+                "strategy": "refused_wrong_surface",
+                "source_url": source_url,
+                "url": url,
+                "state": state,
+                "reason": "originating_list_not_restored",
+            }));
+        }
+        used_history = true;
+        back_error = page
+            .evaluate_json("history.back(); return {ok: true};")
+            .await
+            .err()
+            .map(|error| format!("{error:#}"));
+        let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.clamp(1.0, 15.0));
+        while Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            url = current_url(page).await.unwrap_or_default();
+            state = match crate::sites::learning::run_site_browser_tool(
+                page,
+                SITE_ID,
+                "sourceSurfaceState",
+                None,
+            )
+            .await
+            {
+                Ok(state) => state,
+                Err(error) => {
+                    probe_error = Some(format!("{error:#}"));
+                    continue;
+                }
+            };
+            if x_source_surface_identity_matches(source_url, source_state, &url, &state) {
+                break;
+            }
+        }
+    }
+    if !x_source_surface_identity_matches(source_url, source_state, &url, &state) {
+        return Ok(json!({
+            "ok": false,
+            "strategy": "history_back_failed",
+            "source_url": source_url,
+            "url": url,
+            "state": state,
+            "back_error": back_error,
+            "probe_error": probe_error,
+            "reason": "originating_list_not_restored",
+        }));
+    }
+
+    let extent_deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.clamp(1.0, 15.0));
+    let extent_scroll_tool = match source_state.get("page_type").and_then(Value::as_str) {
+        Some("search") => "scrollResults",
+        Some("profile") => "scrollPosts",
+        _ => "",
+    };
+    while !x_source_surface_extent_matches(source_state, &state)
+        && !extent_scroll_tool.is_empty()
+        && Instant::now() < extent_deadline
+    {
+        let scroll = crate::sites::learning::run_site_browser_tool(
+            page,
+            SITE_ID,
+            extent_scroll_tool,
+            Some(&json!({})),
+        )
+        .await?;
+        if scroll.get("ok").and_then(Value::as_bool) != Some(true) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        url = current_url(page).await.unwrap_or_default();
+        state = crate::sites::learning::run_site_browser_tool(
+            page,
+            SITE_ID,
+            "sourceSurfaceState",
+            None,
+        )
+        .await?;
+        if !x_source_surface_identity_matches(source_url, source_state, &url, &state) {
+            break;
+        }
+        // Being at the current document bottom does not prove exhaustion:
+        // X can append the next virtualized batch after more than one second.
+        // Keep probing until the captured extent is restored or the explicit
+        // restoration deadline expires.
+    }
+    if !x_source_surface_matches(source_url, source_state, &url, &state) {
+        return Ok(json!({
+            "ok": false,
+            "strategy": "lazy_extent_restore_failed",
+            "source_url": source_url,
+            "url": url,
+            "state": state,
+            "expected_result_count": source_state.get("result_count"),
+            "expected_document_height": source_state.get("document_height"),
+            "reason": "originating_list_not_restored",
+        }));
+    }
+
+    let expected_y = source_state
+        .get("scroll_y")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
+    let scroll_deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.clamp(1.0, 5.0));
+    let (final_url, final_state, final_y, scroll_restored) = loop {
+        let current_y = state
+            .get("scroll_y")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(0);
+        let delta = expected_y.saturating_sub(current_y);
+        if delta != 0 {
+            page.scroll(delta).await?;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let observed_url = current_url(page).await.unwrap_or_default();
+        let observed_state = crate::sites::learning::run_site_browser_tool(
+            page,
+            SITE_ID,
+            "sourceSurfaceState",
+            None,
+        )
+        .await?;
+        let observed_y = observed_state
+            .get("scroll_y")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(0);
+        let restored = expected_y.abs_diff(observed_y) <= 8;
+        if restored || Instant::now() >= scroll_deadline {
+            break (observed_url, observed_state, observed_y, restored);
+        }
+        state = observed_state;
+    };
+    let restored = scroll_restored
+        && x_source_surface_matches(source_url, source_state, &final_url, &final_state);
+    Ok(json!({
+        "ok": restored,
+        "strategy": if used_history && back_error.is_some() {
+            "history_back_after_context_change"
+        } else if used_history {
+            "history_back"
+        } else {
+            "scroll_restore"
+        },
+        "source_url": source_url,
+        "url": final_url,
+        "expected_scroll_y": expected_y,
+        "scroll_y": final_y,
+        "scroll_restored": scroll_restored,
+        "state": final_state,
+        "back_error": back_error,
+        "probe_error": probe_error,
+        "reason": if restored { Value::Null } else { json!("originating_list_not_restored") },
+    }))
+}
+
+async fn x_preclick_failure(
+    page: &PageSession,
+    post_id: &str,
+    source_url: &str,
+    source_state: &Value,
+    wait_seconds: f64,
+    reason: &str,
+    evidence: Value,
+) -> Value {
+    let close = restore_x_source_surface(page, source_url, source_state, wait_seconds)
+        .await
+        .unwrap_or_else(|error| json!({ "ok": false, "error": format!("{error:#}") }));
+    failure_payload(
+        reason,
+        json!({
+            "post_id": post_id,
+            "navigation_policy": "card_click_only",
+            "source_url": source_url,
+            "evidence": evidence,
+            "close": close,
+        }),
+    )
+}
+
+fn x_clicked_post_result(
+    post_id: &str,
+    source_url: &str,
+    entity: Value,
+    comments: Value,
+    state: Value,
+    stage_errors: Value,
+    close: Value,
+) -> Value {
+    let read_ok = stage_errors
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty);
+    let close_ok = close.get("ok").and_then(Value::as_bool) == Some(true);
+    json!({
+        "ok": read_ok && close_ok,
+        "reason": if !read_ok {
+            json!("post_read_failed")
+        } else if !close_ok {
+            json!("originating_list_not_restored")
+        } else {
+            Value::Null
+        },
+        "post_id": post_id,
+        "navigation_policy": "card_click_only",
+        "source_url": source_url,
+        "open_strategy": "trusted_cdp_timeline_click",
+        "entity": entity,
+        "comments": comments,
+        "state": state,
+        "stage_errors": stage_errors,
+        "close": close,
+    })
+}
+
+async fn read_clicked_x_post(
+    page: &PageSession,
+    ctx: &ToolContext,
+    post_id: &str,
+    num_comments: i64,
+    wait_seconds: f64,
+) -> anyhow::Result<Value> {
+    let source_url = current_url(page).await.unwrap_or_default();
+    let source_state =
+        crate::sites::learning::run_site_browser_tool(page, SITE_ID, "sourceSurfaceState", None)
+            .await?;
+    if !matches!(
+        source_state.get("page_type").and_then(Value::as_str),
+        Some("search" | "profile")
+    ) {
+        return Ok(failure_payload(
+            "unsupported_source_surface",
+            json!({
+                "post_id": post_id,
+                "navigation_policy": "card_click_only",
+                "source_url": source_url,
+                "origin_preserved": true,
+                "source_state": source_state,
+            }),
+        ));
+    }
+
+    let initial = match locate_x_post_card(page, post_id).await {
+        Ok(target) => target,
+        Err(error) => {
+            return Ok(x_preclick_failure(
+                page,
+                post_id,
+                &source_url,
+                &source_state,
+                wait_seconds,
+                "post_card_relocation_error",
+                json!({ "error": format!("{error:#}") }),
+            )
+            .await)
+        }
+    };
+    if initial.get("ok").and_then(Value::as_bool) != Some(true) {
+        let reason = initial
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("post_card_not_found")
+            .to_string();
+        return Ok(x_preclick_failure(
+            page,
+            post_id,
+            &source_url,
+            &source_state,
+            wait_seconds,
+            &reason,
+            json!({ "open": initial }),
+        )
+        .await);
+    }
+
+    tokio::time::sleep(Duration::from_millis(180)).await;
+    let args = json!({ "id": post_id });
+    let fresh = match crate::sites::learning::run_site_browser_tool(
+        page,
+        SITE_ID,
+        "postCardTarget",
+        Some(&args),
+    )
+    .await
+    {
+        Ok(target) => target,
+        Err(error) => {
+            return Ok(x_preclick_failure(
+                page,
+                post_id,
+                &source_url,
+                &source_state,
+                wait_seconds,
+                "post_target_refresh_error",
+                json!({ "initial_target": initial, "error": format!("{error:#}") }),
+            )
+            .await)
+        }
+    };
+    if fresh.get("ok").and_then(Value::as_bool) != Some(true)
+        || initial.get("url").and_then(Value::as_str) != fresh.get("url").and_then(Value::as_str)
+    {
+        return Ok(x_preclick_failure(
+            page,
+            post_id,
+            &source_url,
+            &source_state,
+            wait_seconds,
+            "post_card_changed_before_click",
+            json!({
+                "initial_target": initial,
+                "fresh_target": fresh,
+            }),
+        )
+        .await);
+    }
+    let (x, y) = match validated_x_post_click_target(&fresh, post_id) {
+        Ok(point) => point,
+        Err(error) => {
+            return Ok(x_preclick_failure(
+                page,
+                post_id,
+                &source_url,
+                &source_state,
+                wait_seconds,
+                "post_target_validation_error",
+                json!({ "target": fresh, "error": format!("{error:#}") }),
+            )
+            .await)
+        }
+    };
+    if let Err(error) = page.click(x, y).await {
+        let close = restore_x_source_surface(page, &source_url, &source_state, wait_seconds)
+            .await
+            .unwrap_or_else(
+                |close_error| json!({ "ok": false, "error": format!("{close_error:#}") }),
+            );
+        return Ok(failure_payload(
+            "post_click_error",
+            json!({
+                "post_id": post_id,
+                "navigation_policy": "card_click_only",
+                "source_url": source_url,
+                "error": format!("{error:#}"),
+                "close": close,
+            }),
+        ));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.clamp(1.0, 330.0));
+    let mut open = json!({ "ok": false, "status": "waiting" });
+    let mut open_probe_error = None;
+    while Instant::now() < deadline {
+        match crate::sites::learning::run_site_browser_tool(
+            page,
+            SITE_ID,
+            "postOpenState",
+            Some(&args),
+        )
+        .await
+        {
+            Ok(state) => open = state,
+            Err(error) => {
+                open_probe_error = Some(format!("{error:#}"));
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                continue;
+            }
+        }
+        if open.get("ok").and_then(Value::as_bool) == Some(true)
+            || gate_reason(&open).is_some()
+            || open.get("status").and_then(Value::as_str) == Some("wrong_post")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    if open.get("ok").and_then(Value::as_bool) != Some(true) {
+        let close = restore_x_source_surface(page, &source_url, &source_state, wait_seconds)
+            .await
+            .unwrap_or_else(|error| json!({ "ok": false, "error": format!("{error:#}") }));
+        let reason = gate_reason(&open).unwrap_or_else(|| {
+            open.get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("post_click_failed")
+        });
+        return Ok(failure_payload(
+            reason,
+            json!({
+                "post_id": post_id,
+                "navigation_policy": "card_click_only",
+                "source_url": source_url,
+                "open": open,
+                "probe_error": open_probe_error,
+                "close": close,
+            }),
+        ));
+    }
+
+    let mut entity = Value::Null;
+    let mut comments = if num_comments > 0 {
+        Value::Null
+    } else {
+        Value::Array(Vec::new())
+    };
+    let mut final_state = Value::Null;
+    let mut stage_errors = serde_json::Map::new();
+    match invoke_browser_tool(page, ctx, SITE_ID, "postDetail", None, false).await {
+        Ok(value) => {
+            let valid = value.get("ok").and_then(Value::as_bool) == Some(true)
+                && value.get("id").and_then(Value::as_str) == Some(post_id);
+            entity = value;
+            if !valid {
+                stage_errors.insert(
+                    "entity".into(),
+                    json!("X post identity changed during click-first read"),
+                );
+            }
+        }
+        Err(error) => {
+            stage_errors.insert("entity".into(), json!(format!("{error:#}")));
+        }
+    }
+    if !stage_errors.contains_key("entity") && num_comments > 0 {
+        match invoke_browser_tool(
+            page,
+            ctx,
+            SITE_ID,
+            "comments",
+            Some(&json!({ "limit": num_comments })),
+            true,
+        )
+        .await
+        {
+            Ok(value) => comments = value,
+            Err(error) => {
+                stage_errors.insert("comments".into(), json!(format!("{error:#}")));
+            }
+        }
+    }
+    if !stage_errors.contains_key("entity") {
+        match crate::sites::learning::run_site_browser_tool(
+            page,
+            SITE_ID,
+            "postOpenState",
+            Some(&args),
+        )
+        .await
+        {
+            Ok(value) => {
+                let valid = value.get("ok").and_then(Value::as_bool) == Some(true)
+                    && value.get("post_id").and_then(Value::as_str) == Some(post_id);
+                final_state = value;
+                if !valid {
+                    stage_errors.insert(
+                        "final_state".into(),
+                        json!("X post became unavailable during reply collection"),
+                    );
+                }
+            }
+            Err(error) => {
+                stage_errors.insert("final_state".into(), json!(format!("{error:#}")));
+            }
+        }
+    }
+    let close = restore_x_source_surface(page, &source_url, &source_state, wait_seconds)
+        .await
+        .unwrap_or_else(|error| json!({ "ok": false, "error": format!("{error:#}") }));
+    Ok(x_clicked_post_result(
+        post_id,
+        &source_url,
+        entity,
+        comments,
+        final_state,
+        Value::Object(stage_errors),
+        close,
+    ))
+}
+
 #[async_trait]
 impl Tool for PageStateTool {
     fn name(&self) -> &str {
@@ -1254,4 +2134,69 @@ fn valid_username_segment(username: &str) -> bool {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '_')
         && !RESERVED_PROFILE_NAMES.contains(&username.to_ascii_lowercase().as_str())
+}
+
+#[cfg(test)]
+mod deep_read_tests {
+    use super::*;
+
+    #[test]
+    fn source_surface_match_requires_the_original_lazy_extent() {
+        let source = json!({
+            "ok": true,
+            "hydrated": true,
+            "page_type": "search",
+            "search_query": "agents",
+            "result_count": 10,
+            "document_height": 5000,
+        });
+        let truncated = json!({
+            "ok": true,
+            "hydrated": true,
+            "page_type": "search",
+            "search_query": "agents",
+            "result_count": 3,
+            "document_height": 1800,
+        });
+
+        assert!(!x_source_surface_matches(
+            "https://x.com/search?q=agents&f=live",
+            &source,
+            "https://x.com/search?q=agents&f=live",
+            &truncated,
+        ));
+    }
+
+    #[test]
+    fn deep_read_failure_preserves_completed_entity_and_stage_error() {
+        let result = x_clicked_post_result(
+            "123",
+            "https://x.com/search?q=agents&f=live",
+            json!({ "ok": true, "id": "123", "text": "evidence" }),
+            Value::Null,
+            json!({ "ok": true, "post_id": "123" }),
+            json!({ "comments": "comment collection failed" }),
+            json!({ "ok": true }),
+        );
+
+        assert_eq!(result.get("ok").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            result.get("reason").and_then(Value::as_str),
+            Some("post_read_failed")
+        );
+        assert_eq!(
+            result
+                .get("entity")
+                .and_then(|entity| entity.get("id"))
+                .and_then(Value::as_str),
+            Some("123")
+        );
+        assert_eq!(
+            result
+                .get("stage_errors")
+                .and_then(|errors| errors.get("comments"))
+                .and_then(Value::as_str),
+            Some("comment collection failed")
+        );
+    }
 }

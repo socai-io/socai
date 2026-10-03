@@ -12,6 +12,14 @@
       "args": {},
       "returns": { "type": "object", "description": "Current X page state." }
     },
+    "sourceSurfaceState": {
+      "description": "Read internal search/profile restoration identity, scroll position, and lazy-list extent without changing the page.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "sourceSurfaceState",
+      "args": {},
+      "returns": { "type": "object", "description": "Internal source-surface identity and restoration state." }
+    },
     "searchState": {
       "description": "After navigating to https://x.com/search?q=<encoded-query>&src=typed_query&f=live, verify the requested search route and hydrated visible posts; login, challenge, consent, rate-limit, query-mismatch, and unhydrated states are not empty results.",
       "path": "page_scripts.js",
@@ -73,6 +81,26 @@
         "to_top": { "type": "boolean", "required": false, "description": "Reset to the top." }
       },
       "returns": { "type": "object", "description": "Profile scroll and post-count state." }
+    },
+    "postCardTarget": {
+      "description": "Locate an X timeline post by stable status id and return owned geometry for a trusted click on its visible timestamp link; never navigates by itself.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "postLinkTarget",
+      "args": {
+        "id": { "type": "string", "required": true, "description": "Expected numeric X status id." }
+      },
+      "returns": { "type": "object", "description": "Post identity, canonical URL, and fail-closed click-target geometry." }
+    },
+    "postOpenState": {
+      "description": "Verify that a timeline click opened the expected X status and that its root article is hydrated.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "postOpenState",
+      "args": {
+        "id": { "type": "string", "required": true, "description": "Expected numeric X status id." }
+      },
+      "returns": { "type": "object", "description": "Opened-post identity, hydration, and gate state." }
     },
     "postDetail": {
       "description": "Extract the active X post, author, text, media, publication time, and visible metrics.",

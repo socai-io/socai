@@ -72,7 +72,16 @@
   }
 
   function replyTargets(article) {
-    const raw = cleanText(article, 3000);
+    if (!article || !article.querySelectorAll) return [];
+    const postBody = article.querySelector('[data-testid="tweetText"]');
+    const quotedPost = article.querySelector('[data-testid="quoteTweet"]');
+    const contentRoots = [postBody, quotedPost].filter(Boolean);
+    const raw = Array.from(article.querySelectorAll('span, div[dir="ltr"]'))
+      .filter((node) => visible(node) && !contentRoots.some((content) =>
+        content === node || content.contains?.(node) || node.contains?.(content)))
+      .map((node) => cleanText(node, 500))
+      .filter(Boolean)
+      .join('\n');
     const labels = /(?:replying\s+to|in\s+reply\s+to|en\s+respuesta\s+a|respondendo\s+a|r[ée]ponse\s+[àa]|antwort\s+an|in\s+risposta\s+a|返信先|正在回复|回覆|回复|答复|回应)\s*[:：]?\s*@([A-Za-z0-9_]{1,15})/ig;
     return Array.from(raw.matchAll(labels), (match) => match[1].toLowerCase());
   }
@@ -292,6 +301,25 @@
       rate_limited: limited,
       hydrated,
       result_count: count,
+    };
+  }
+
+  function sourceSurfaceState() {
+    const state = pageState();
+    const documentHeight = Math.max(
+      Number(document.documentElement?.scrollHeight || 0),
+      Number(document.body?.scrollHeight || 0),
+    );
+    const scrollY = Math.max(0, Math.round(window.scrollY || 0));
+    const viewportHeight = Math.max(0, Math.round(window.innerHeight || 0));
+    return {
+      ...state,
+      search_query: cleanText(new URL(location.href).searchParams.get('q') || '', 1000),
+      profile_username: profileUsername(location.href),
+      scroll_y: scrollY,
+      viewport_height: viewportHeight,
+      document_height: documentHeight,
+      at_end: viewportHeight + scrollY >= documentHeight - 8,
     };
   }
 
@@ -520,6 +548,46 @@
     return tweetArticles().find((article) => articleIdentity(article)?.id === active.id) || null;
   }
 
+  function postOpenState(arg) {
+    const expected = cleanText(arg && (arg.id || arg.post_id) || '', 100);
+    const state = pageState();
+    const active = statusIdentity(location.href);
+    const matches = !!active && /^\d+$/.test(expected) && active.id === expected;
+    const article = matches ? activePostArticle() : null;
+    const detail = article ? postDetail() : null;
+    const authorRoot = article && firstVisible(article, ['[data-testid="User-Name"]']);
+    const authorText = cleanText(authorRoot, 1000);
+    const authorHandle = authorText.match(/@([A-Za-z0-9_]{1,15})/);
+    const authorProfile = authorRoot && Array.from(authorRoot.querySelectorAll('a[href]'))
+      .map((link) => profileUsername(link.href || link.getAttribute('href')))
+      .find(Boolean);
+    // Readiness must be proven by the visible author DOM. parseAuthor also
+    // accepts the status URL as a best-effort list fallback, which is not
+    // sufficient evidence that a just-opened post has hydrated.
+    const author = authorProfile || authorHandle && authorHandle[1].toLowerCase() || '';
+    const publishedAt = cleanText(detail && detail.published_at || '', 200);
+    const hasContent = !!cleanText(detail && detail.text || '', 12000)
+      || (Array.isArray(detail && detail.media) && detail.media.length > 0);
+    const ready = !!detail && detail.ok === true && detail.id === expected
+      && !!author && !!publishedAt && hasContent;
+    let status = 'post_not_open';
+    if (!/^\d+$/.test(expected)) status = 'invalid_post_id';
+    else if (active && !matches) status = 'wrong_post';
+    else if (matches && !ready) status = 'post_unhydrated';
+    else if (ready) status = 'post_open';
+    return {
+      ok: ready && state.ok,
+      status: state.ok ? status : state.status,
+      expected_post_id: expected,
+      post_id: active && active.id || '',
+      url: location.href,
+      content_ready: ready,
+      login_required: state.login_required,
+      challenge_required: state.challenge_required,
+      rate_limited: state.rate_limited,
+    };
+  }
+
   function postDetail() {
     const state = pageState();
     const active = statusIdentity(location.href);
@@ -549,9 +617,12 @@
     const output = [];
     for (const article of articles.slice(rootIndex + 1)) {
       const replying = replyTargets(article);
+      // Generic reads fail closed when X omits the relationship label. The
+      // broad conversation region can also contain recommendations, so list
+      // position alone is not enough authority to classify a direct reply.
       if (!replying.includes(rootHandle)) continue;
       const item = parseTweet(article, output.length + 1);
-      if (!item || !item.is_reply || item.id === active.id || output.some((entry) => entry.id === item.id)) continue;
+      if (!item || item.id === active.id || output.some((entry) => entry.id === item.id)) continue;
       output.push(item);
       if (output.length >= limit) break;
     }
@@ -644,6 +715,7 @@
 
   window.SocaiXPageScripts = Object.freeze({
     pageState,
+    sourceSurfaceState,
     searchState,
     searchInputTarget,
     searchResults,
@@ -652,6 +724,7 @@
     profileDetail,
     profilePosts,
     scrollPosts,
+    postOpenState,
     postDetail,
     comments,
     renderedReplyState,
