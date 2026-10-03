@@ -63,6 +63,9 @@ pub struct XhsAuthorProfile {
     pub avatar_url: String,
     pub bio: String,
     pub ip_location: String,
+    /// Gender shown on the profile header: "male" / "female". Empty when the
+    /// account doesn't show one.
+    pub gender: String,
     /// Official-verification (认证) badge on the profile header: `verified`
     /// flags it, `verification` carries the label ("企业认证" / "个人认证").
     /// Both stay off the wire for regular accounts.
@@ -89,6 +92,7 @@ impl XhsAuthorProfile {
         }
         map.insert("bio".into(), json!(self.bio));
         map.insert("ip_location".into(), json!(self.ip_location));
+        map.insert("gender".into(), json!(self.gender));
         // Official verification is the exception to always-emit: absent for
         // regular accounts so existing author payloads keep their shape.
         if self.verified {

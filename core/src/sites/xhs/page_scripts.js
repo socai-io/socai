@@ -1104,6 +1104,28 @@ const SocaiXhsPageScripts = (() => {
     return { verified, verification: label };
   }
 
+  // Gender shown on the profile being viewed: 'male' / 'female', or '' when
+  // the account doesn't show one. The page state carries a numeric enum
+  // (`user.userPageData.basicInfo.gender`: 0 = male, 1 = female, 2 = not
+  // set) — not `user.userInfo.gender`, which is the signed-in viewer's. 0 is
+  // a real value, so the state is matched strictly: a missing field must not
+  // coerce to male. The DOM renders the header's first tag inside a `.gender`
+  // wrapper whether or not a gender is set; only its sprite icon (`#male` /
+  // `#female`) carries the signal, so fall back to that.
+  function profileGender() {
+    try {
+      const user = unwrapStateValue((window.__INITIAL_STATE__ || {}).user) || {};
+      const pageData = unwrapStateValue(user.userPageData) || {};
+      const info = unwrapStateValue(pageData.basicInfo) || {};
+      const raw = unwrapStateValue(info.gender);
+      if (raw === 0 || raw === '0') return 'male';
+      if (raw === 1 || raw === '1') return 'female';
+    } catch (e) {}
+    const use = $('.user-tags .gender use');
+    const ref = use ? String(use.getAttribute('xlink:href') || use.getAttribute('href') || '') : '';
+    return ((ref.match(/#(male|female)$/i) || [])[1] || '').toLowerCase();
+  }
+
   function profileInfo() {
     const displayName = firstVisibleText(
       ['.user-name', '.profile-name', '.nickname', '.name', 'h1'],
@@ -1126,6 +1148,7 @@ const SocaiXhsPageScripts = (() => {
       avatar_url: profileAvatarUrl(),
       bio,
       ip_location: ipLocation,
+      gender: profileGender(),
       verified: verification.verified,
       verification: verification.verification,
       followers: statText('粉丝'),
