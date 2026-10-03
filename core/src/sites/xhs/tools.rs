@@ -121,6 +121,7 @@ pub fn xhs_tools_with_llm_provider(
         }),
         Arc::new(ExtractCommentsTool { page: page.clone() }),
         Arc::new(CommentTool { page: page.clone() }),
+        Arc::new(FollowTool { page: page.clone() }),
         Arc::new(ScrollInNoteTool { page: page.clone() }),
         Arc::new(CollectCarouselImagesTool { page: page.clone() }),
         Arc::new(ExtractProfileTool { page: page.clone() }),
@@ -179,6 +180,7 @@ pub fn xhs_macro_tools_with_llm_provider(
             asr_enabled,
         }),
         Arc::new(CommentTool { page: page.clone() }),
+        Arc::new(FollowTool { page: page.clone() }),
         Arc::new(WaitForLoginTool { page }),
         Arc::new(WaitForRateLimitTool),
     ]
@@ -466,6 +468,31 @@ pub static XHS_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
             run: run_comment,
         },
         SiteCommand {
+            name: "follow",
+            tool_name: "follow",
+            about: "Follow the verified author of one exact Xiaohongshu note with one trusted pointer click.",
+            args: &[
+                CommandArg {
+                    key: "note",
+                    long: None,
+                    value_name: "NOTE_URL",
+                    help: "Complete Xiaohongshu note URL (preserve xsec_token when present).",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "wait_seconds",
+                    long: Some("wait-seconds"),
+                    value_name: "SECONDS",
+                    help: "Maximum wait for hydration and post-click reconciliation. Defaults to 30.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_follow,
+        },
+        SiteCommand {
             name: "prepare-publish",
             tool_name: "prepare_publish",
             about: "Upload images and fill a Xiaohongshu note, then persist a receipt without publishing it.",
@@ -614,6 +641,17 @@ fn run_comment(
 ) -> BoxFuture<Value> {
     Box::pin(async move {
         run_xhs_tool_command(page, COMMENT_COMMAND, args, debug_snapshot, progress).await
+    })
+}
+
+fn run_follow(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
+    Box::pin(async move {
+        run_xhs_tool_command(page, FOLLOW_COMMAND, args, debug_snapshot, progress).await
     })
 }
 
@@ -815,6 +853,14 @@ const GET_NOTES_COMMAND: XhsCommandSpec = XhsCommandSpec {
 const COMMENT_COMMAND: XhsCommandSpec = XhsCommandSpec {
     command_name: "comment",
     tool_name: "comment",
+    before: CommandPageAction::None,
+    after: CommandPageAction::None,
+    include_run_metadata: false,
+};
+
+const FOLLOW_COMMAND: XhsCommandSpec = XhsCommandSpec {
+    command_name: "follow",
+    tool_name: "follow",
     before: CommandPageAction::None,
     after: CommandPageAction::None,
     include_run_metadata: false,
@@ -4250,6 +4296,497 @@ impl Tool for CommentTool {
     }
 }
 
+struct FollowTool {
+    page: Arc<PageSession>,
+}
+
+#[async_trait]
+impl Tool for FollowTool {
+    fn name(&self) -> &str {
+        "follow"
+    }
+
+    fn description(&self) -> &str {
+        "Follow the verified author of one explicitly selected Xiaohongshu note with one trusted pointer click. Requires an exact complete note URL, never unfollows, refuses target or actor drift, and never retries an ambiguous click."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "note": { "type": "string" },
+                "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
+            },
+            "required": ["note"]
+        })
+    }
+
+    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let locator = required_string(&input, "note")?;
+        let wait_seconds = get_f64(&input, "wait_seconds", 30.0).clamp(1.0, 330.0);
+        let url = xhs_note_url(&locator)?;
+        let expected_note_id = xhs_note_id_from_url(&url)
+            .ok_or_else(|| anyhow::anyhow!("canonical Xiaohongshu URL is missing a note id"))?;
+
+        navigate_https(&self.page, &url).await?;
+        let xhs = XhsPageRuntime::new(&self.page);
+        let page_state = xhs.run_script("pageState", None).await?;
+        if let Some(reason) = xhs_write_gate_reason(&page_state) {
+            return Ok(json_result(&failure_payload(
+                reason,
+                json!({ "note": locator, "url": url, "page_state": page_state, "submit_click_count": 0 }),
+            )));
+        }
+
+        let login_deadline = Instant::now() + Duration::from_secs(6);
+        let login_state = loop {
+            let state = xhs.run_script("loginState", None).await?;
+            match state.get("login").and_then(Value::as_str) {
+                Some("in") | Some("out") => break state,
+                _ if Instant::now() >= login_deadline => break state,
+                _ => tokio::time::sleep(Duration::from_millis(250)).await,
+            }
+        };
+        if login_state.get("login").and_then(Value::as_str) != Some("in") {
+            let reason = if login_state.get("login").and_then(Value::as_str) == Some("out") {
+                "login_required"
+            } else {
+                "login_state_unknown"
+            };
+            return Ok(json_result(&failure_payload(
+                reason,
+                json!({ "note": locator, "url": url, "login_state": login_state, "submit_click_count": 0 }),
+            )));
+        }
+
+        let hydrated = xhs
+            .run_script(
+                "noteWithWait",
+                Some(&json!({
+                    "timeout_ms": (wait_seconds * 1000.0).round() as i64,
+                    "settle_ms": 500,
+                })),
+            )
+            .await?;
+        let detail = hydrated
+            .get("note")
+            .cloned()
+            .unwrap_or_else(|| hydrated.clone());
+        let active_note_id = detail
+            .get("note_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if hydrated.get("ready").and_then(Value::as_bool) != Some(true)
+            || active_note_id != expected_note_id
+        {
+            let reason = if hydrated.get("ready").and_then(Value::as_bool) == Some(true) {
+                "wrong_note"
+            } else {
+                hydrated
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("note_unavailable")
+            };
+            return Ok(json_result(&failure_payload(
+                reason,
+                json!({
+                    "note": locator,
+                    "expected_note_id": expected_note_id,
+                    "url": url,
+                    "detail": detail,
+                    "hydration": hydrated,
+                    "submit_click_count": 0,
+                }),
+            )));
+        }
+        let author_id = detail
+            .get("author_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if author_id.is_empty() {
+            return Ok(json_result(&failure_payload(
+                "author_identity_unknown",
+                json!({ "note_id": expected_note_id, "url": url, "detail": detail, "submit_click_count": 0 }),
+            )));
+        }
+        let author_url = format!("https://www.xiaohongshu.com/user/profile/{author_id}");
+        let action_args = json!({ "note_id": expected_note_id, "author_id": author_id });
+        let before = xhs.run_script("followState", Some(&action_args)).await?;
+        if before.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Ok(json_result(&failure_payload(
+                before
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("follow_preflight_failed"),
+                json!({ "note_id": expected_note_id, "url": url, "follow_state": before, "submit_click_count": 0 }),
+            )));
+        }
+        let actor_value = before.get("actor").cloned().unwrap_or(Value::Null);
+        let actor = ActionActor {
+            id: actor_value
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            display_name: actor_value
+                .get("display_name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        };
+        if actor.id.is_empty() || actor.display_name.is_empty() {
+            return Ok(json_result(&failure_payload(
+                "current_user_unknown",
+                json!({ "note_id": expected_note_id, "url": url, "follow_state": before, "submit_click_count": 0 }),
+            )));
+        }
+        if before
+            .get("author")
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str)
+            != Some(author_id.as_str())
+        {
+            return Ok(json_result(&failure_payload(
+                "wrong_author",
+                json!({ "note_id": expected_note_id, "url": url, "follow_state": before, "submit_click_count": 0 }),
+            )));
+        }
+
+        let idempotency_key = format!("xhs:follow:{}:{author_id}", actor.id);
+        let store = ActionStore::open_default();
+        let action_id = ActionStore::action_id_for(&idempotency_key)?;
+        let mut receipt = store.load_optional(&action_id)?;
+        let following = before.get("following").and_then(Value::as_bool) == Some(true);
+        if following {
+            if let Some(existing) = receipt.as_ref() {
+                match existing.status() {
+                    SocialActionStatus::Committing | SocialActionStatus::CommitUnknown => {
+                        let reconciled = store.reconcile_committed(
+                            existing.action_id(),
+                            &format!("{author_id}:following"),
+                        );
+                        let reconciled = match reconciled {
+                            Ok(receipt) => receipt,
+                            Err(error) => {
+                                return Ok(json_result(&json!({
+                                    "ok": false,
+                                    "status": "commit_unknown",
+                                    "action_id": existing.action_id(),
+                                    "idempotent_replay": true,
+                                    "note_id": expected_note_id,
+                                    "author_id": author_id,
+                                    "author_url": author_url,
+                                    "submit_click_count": 0,
+                                    "receipt_error": format!("{error:#}"),
+                                    "follow_state": before,
+                                    "receipt": existing,
+                                })));
+                            }
+                        };
+                        return Ok(json_result(&json!({
+                            "ok": true,
+                            "status": "reconciled",
+                            "action_id": reconciled.action_id(),
+                            "idempotent_replay": true,
+                            "note_id": expected_note_id,
+                            "author_id": author_id,
+                            "author_url": author_url,
+                            "submit_click_count": 0,
+                            "follow_state": before,
+                            "receipt": reconciled,
+                        })));
+                    }
+                    SocialActionStatus::Committed | SocialActionStatus::Reconciled => {
+                        return Ok(json_result(&json!({
+                            "ok": true,
+                            "status": "already_following",
+                            "action_id": existing.action_id(),
+                            "idempotent_replay": true,
+                            "note_id": expected_note_id,
+                            "author_id": author_id,
+                            "author_url": author_url,
+                            "submit_click_count": 0,
+                            "follow_state": before,
+                            "receipt": existing,
+                        })));
+                    }
+                    SocialActionStatus::Draft | SocialActionStatus::Prepared => {}
+                }
+            }
+            return Ok(json_result(&json!({
+                "ok": true,
+                "status": "already_following",
+                "idempotent_replay": true,
+                "note_id": expected_note_id,
+                "author_id": author_id,
+                "author_url": author_url,
+                "submit_click_count": 0,
+                "follow_state": before,
+                "receipt": receipt,
+            })));
+        }
+
+        let mut receipt = match receipt.take() {
+            Some(existing) => match existing.status() {
+                SocialActionStatus::Committed | SocialActionStatus::Reconciled => {
+                    return Ok(json_result(&failure_payload(
+                        "follow_state_changed_after_prior_commit",
+                        json!({
+                            "action_id": existing.action_id(),
+                            "note_id": expected_note_id,
+                            "author_id": author_id,
+                            "author_url": author_url,
+                            "follow_state": before,
+                            "submit_click_count": 0,
+                            "receipt": existing,
+                        }),
+                    )));
+                }
+                SocialActionStatus::Committing | SocialActionStatus::CommitUnknown => {
+                    return Ok(json_result(&json!({
+                        "ok": false,
+                        "status": "commit_unknown",
+                        "reason": "a follow click was already reserved; reconcile instead of retrying",
+                        "action_id": existing.action_id(),
+                        "note_id": expected_note_id,
+                        "author_id": author_id,
+                        "author_url": author_url,
+                        "submit_click_count": 0,
+                        "follow_state": before,
+                        "receipt": existing,
+                    })));
+                }
+                SocialActionStatus::Prepared => {
+                    store.reset_prepared(existing.action_id(), &actor.id, &author_id)?
+                }
+                SocialActionStatus::Draft => existing,
+            },
+            None => store.create_draft(
+                &idempotency_key,
+                "xhs",
+                SocialActionKind::Follow,
+                ActionTarget {
+                    id: author_id.clone(),
+                    url: author_url.clone(),
+                },
+                actor.clone(),
+                ActionPreview {
+                    text: None,
+                    evidence: json!({ "author_id": author_id }),
+                },
+            )?,
+        };
+
+        let final_page_state = xhs.run_script("pageState", None).await?;
+        let final_login_state = xhs.run_script("loginState", None).await?;
+        let final_detail = xhs.run_script("note", None).await?;
+        let final_follow = xhs.run_script("followState", Some(&action_args)).await?;
+        if let Some(reason) = xhs_write_gate_reason(&final_page_state) {
+            return Ok(json_result(&failure_payload(
+                reason,
+                json!({ "note_id": expected_note_id, "author_id": author_id, "page_state": final_page_state, "submit_click_count": 0 }),
+            )));
+        }
+        if final_login_state.get("login").and_then(Value::as_str) != Some("in") {
+            return Ok(json_result(&failure_payload(
+                "login_required_before_submit",
+                json!({ "note_id": expected_note_id, "author_id": author_id, "login_state": final_login_state, "submit_click_count": 0 }),
+            )));
+        }
+        if final_page_state.get("state").and_then(Value::as_str) != Some("note_detail")
+            || final_detail.get("note_id").and_then(Value::as_str)
+                != Some(expected_note_id.as_str())
+            || final_detail.get("author_id").and_then(Value::as_str) != Some(author_id.as_str())
+            || final_follow
+                .get("actor")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str)
+                != Some(actor.id.as_str())
+        {
+            return Ok(json_result(&failure_payload(
+                "actor_or_target_changed_before_submit",
+                json!({
+                    "note_id": expected_note_id,
+                    "author_id": author_id,
+                    "page_state": final_page_state,
+                    "detail": final_detail,
+                    "follow_state": final_follow,
+                    "submit_click_count": 0,
+                }),
+            )));
+        }
+        if verified_xhs_follow_target(&final_follow, &expected_note_id, &author_id).is_none() {
+            return Ok(json_result(&failure_payload(
+                final_follow
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("follow_control_unavailable"),
+                json!({ "note_id": expected_note_id, "author_id": author_id, "follow_state": final_follow, "submit_click_count": 0 }),
+            )));
+        }
+
+        receipt = store.mark_prepared(receipt.action_id(), &actor.id, &author_id, 300)?;
+        receipt = store.begin_commit(
+            receipt.action_id(),
+            &actor.id,
+            &author_id,
+            vec![format!("{author_id}:not_following")],
+        )?;
+        let action_id = receipt.action_id().to_string();
+
+        // The receipt transitions above fsync to disk. Re-locate and re-own the
+        // follow control only after that potentially slow work, then dispatch
+        // immediately. A coordinate captured before reservation could now be
+        // an "已关注" toggle (and a second click would unfollow) or a different
+        // element after layout movement.
+        let dispatch_validation: anyhow::Result<(f64, f64, Value)> = async {
+            let page_state = xhs.run_script("pageState", None).await?;
+            let login_state = xhs.run_script("loginState", None).await?;
+            let detail = xhs.run_script("note", None).await?;
+            let follow = xhs.run_script("followState", Some(&action_args)).await?;
+            if let Some(reason) = xhs_write_gate_reason(&page_state) {
+                anyhow::bail!("{reason}");
+            }
+            if login_state.get("login").and_then(Value::as_str) != Some("in") {
+                anyhow::bail!("login_required_before_dispatch");
+            }
+            if page_state.get("state").and_then(Value::as_str) != Some("note_detail")
+                || detail.get("note_id").and_then(Value::as_str) != Some(expected_note_id.as_str())
+                || detail.get("author_id").and_then(Value::as_str) != Some(author_id.as_str())
+                || follow
+                    .get("actor")
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str)
+                    != Some(actor.id.as_str())
+            {
+                anyhow::bail!("actor_or_target_changed_before_dispatch");
+            }
+            let (x, y) = verified_xhs_follow_target(&follow, &expected_note_id, &author_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{}",
+                        follow
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("follow_control_unavailable_before_dispatch")
+                    )
+                })?;
+            Ok((x, y, follow))
+        }
+        .await;
+        let (follow_x, follow_y, dispatch_follow) = match dispatch_validation {
+            Ok(validated) => validated,
+            Err(error) => {
+                let (persisted_receipt, receipt_error) =
+                    match store.finish_commit(&action_id, false) {
+                        Ok(receipt) => (Some(receipt), None),
+                        Err(receipt_error) => (None, Some(format!("{receipt_error:#}"))),
+                    };
+                return Ok(json_result(&json!({
+                    "ok": false,
+                    "status": "commit_unknown",
+                    "reason": "pre_dispatch_revalidation_failed_after_reservation",
+                    "action_id": action_id,
+                    "note_id": expected_note_id,
+                    "author_id": author_id,
+                    "author_url": author_url,
+                    "interaction": "none",
+                    "platform_api_called": false,
+                    "submit_click_count": 0,
+                    "dispatch_skipped": true,
+                    "validation_error": format!("{error:#}"),
+                    "receipt_error": receipt_error,
+                    "receipt": persisted_receipt,
+                })));
+            }
+        };
+        let dispatch_error = self
+            .page
+            .click(follow_x, follow_y)
+            .await
+            .err()
+            .map(|error| format!("{error:#}"));
+
+        let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds);
+        let mut reconcile_error = None;
+        let mut reconciled = json!({ "ok": false, "status": "not_observed", "following": false });
+        loop {
+            match xhs.run_script("followState", Some(&action_args)).await {
+                Ok(state) => {
+                    let actor_matches = state
+                        .get("actor")
+                        .and_then(|value| value.get("id"))
+                        .and_then(Value::as_str)
+                        == Some(actor.id.as_str());
+                    let author_matches = state
+                        .get("author")
+                        .and_then(|value| value.get("id"))
+                        .and_then(Value::as_str)
+                        == Some(author_id.as_str());
+                    let committed = actor_matches
+                        && author_matches
+                        && state.get("following").and_then(Value::as_bool) == Some(true);
+                    reconciled = state;
+                    if committed || Instant::now() >= deadline {
+                        break;
+                    }
+                    if !actor_matches || !author_matches {
+                        reconcile_error =
+                            Some("actor or target changed after follow dispatch".to_string());
+                        break;
+                    }
+                }
+                Err(error) => {
+                    reconcile_error = Some(format!("{error:#}"));
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let committed = reconciled.get("following").and_then(Value::as_bool) == Some(true)
+            && reconciled
+                .get("actor")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str)
+                == Some(actor.id.as_str())
+            && reconciled
+                .get("author")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str)
+                == Some(author_id.as_str());
+        let (committed, persisted_receipt, receipt_error) = if committed {
+            match store.reconcile_committed(&action_id, &format!("{author_id}:following")) {
+                Ok(receipt) => (true, Some(receipt), None),
+                Err(error) => (false, None, Some(format!("{error:#}"))),
+            }
+        } else {
+            match store.finish_commit(&action_id, false) {
+                Ok(receipt) => (false, Some(receipt), None),
+                Err(error) => (false, None, Some(format!("{error:#}"))),
+            }
+        };
+        Ok(json_result(&json!({
+            "ok": committed,
+            "status": if committed { "committed" } else { "commit_unknown" },
+            "action_id": action_id,
+            "note_id": expected_note_id,
+            "author_id": author_id,
+            "author_url": author_url,
+            "interaction": "trusted_pointer",
+            "platform_api_called": false,
+            "submit_click_count": 1,
+            "dispatch_error": dispatch_error,
+            "reconcile_error": reconcile_error,
+            "receipt_error": receipt_error,
+            "dispatch_follow_state": dispatch_follow,
+            "follow_state": reconciled,
+            "receipt": persisted_receipt,
+        })))
+    }
+}
+
 fn value_string_array(value: &Value, key: &str) -> Vec<String> {
     value
         .get(key)
@@ -4265,6 +4802,27 @@ fn verified_xhs_write_target(target: &Value, note_id: &str) -> Option<(f64, f64)
     if target.get("ok").and_then(Value::as_bool) != Some(true)
         || target.get("hit_owned").and_then(Value::as_bool) != Some(true)
         || target.get("note_id").and_then(Value::as_str) != Some(note_id)
+    {
+        return None;
+    }
+    Some((target.get("x")?.as_f64()?, target.get("y")?.as_f64()?))
+}
+
+fn verified_xhs_follow_target(
+    target: &Value,
+    note_id: &str,
+    author_id: &str,
+) -> Option<(f64, f64)> {
+    if target.get("ok").and_then(Value::as_bool) != Some(true)
+        || target.get("status").and_then(Value::as_str) != Some("follow_ready")
+        || target.get("hit_owned").and_then(Value::as_bool) != Some(true)
+        || target.get("following").and_then(Value::as_bool) != Some(false)
+        || target.get("note_id").and_then(Value::as_str) != Some(note_id)
+        || target
+            .get("author")
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str)
+            != Some(author_id)
     {
         return None;
     }
@@ -4298,7 +4856,7 @@ fn xhs_note_url(locator: &str) -> anyhow::Result<String> {
         }
         return Ok(parsed.to_string());
     }
-    anyhow::bail!("comment requires a complete Xiaohongshu note URL; a bare note id cannot preserve the desktop access token")
+    anyhow::bail!("write action requires a complete Xiaohongshu note URL; a bare note id cannot preserve the desktop access token")
 }
 
 fn xhs_note_id_from_url(url: &str) -> Option<String> {

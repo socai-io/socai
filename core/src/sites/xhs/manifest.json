@@ -203,6 +203,17 @@
       },
       "returns": { "type": "object", "description": "Exact rendered comment count for reconciliation." }
     },
+    "followState": {
+      "description": "Inspect the verified active note author and return either the current followed state or owned pointer geometry for one follow action; never clicks and never unfollows.",
+      "path": "page_scripts.js",
+      "binding": "SocaiXhsPageScripts",
+      "callable": "followState",
+      "args": {
+        "note_id": { "type": "string", "required": true, "description": "Expected active Xiaohongshu note id." },
+        "author_id": { "type": "string", "required": true, "description": "Expected rendered note author id." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed follow state and optional click geometry bound to one note author." }
+    },
     "expandCommentReplies": {
       "description": "Expand visible Xiaohongshu comment replies.",
       "path": "page_scripts.js",
