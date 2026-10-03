@@ -1299,6 +1299,7 @@ impl<'a> XhsPageRuntime<'a> {
             avatar_url: string_field(&info, "avatar_url"),
             bio: string_field(&info, "bio"),
             ip_location: string_field(&info, "ip_location"),
+            gender: string_field(&info, "gender"),
             verified: info
                 .get("verified")
                 .and_then(Value::as_bool)
