@@ -26,6 +26,7 @@
       "returns": { "type": "object", "description": "Search input state and geometry." }
     },
     "setSearchInput": {
+      "action": true,
       "description": "Set and submit the Douyin search input using the active page DOM.",
       "path": "page_scripts.js",
       "binding": "window.SocaiDouyinPageScripts",
@@ -54,6 +55,7 @@
       "returns": { "type": "array", "description": "Visible Douyin video cards." }
     },
     "scrollFeed": {
+      "action": true,
       "description": "Scroll the current Douyin feed or grid by a bounded amount.",
       "path": "page_scripts.js",
       "binding": "window.SocaiDouyinPageScripts",
@@ -89,6 +91,7 @@
       "returns": { "type": "array", "description": "Accumulated, deduplicated comments." }
     },
     "scrollComments": {
+      "action": true,
       "description": "Scroll the active Douyin comment panel.",
       "path": "page_scripts.js",
       "binding": "window.SocaiDouyinPageScripts",

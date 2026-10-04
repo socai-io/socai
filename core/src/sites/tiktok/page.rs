@@ -769,14 +769,7 @@ impl<'a> TikTokPageRuntime<'a> {
     }
 
     async fn soft_navigate(&self, url: &str) -> Result<()> {
-        let url = serde_json::to_string(url)?;
-        let expr = format!(
-            "window.location.assign({url}); return {{ ok: true, url: window.location.href }};"
-        );
-        // Chrome can unload the frame before returning the evaluate result.
-        // The following state poll verifies the destination.
-        let _ = self.page.evaluate_json(&expr).await;
-        Ok(())
+        self.page.navigate_via_location(url).await
     }
 
     async fn wait_for_named_state(

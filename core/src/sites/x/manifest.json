@@ -13,12 +13,13 @@
       "returns": { "type": "object", "description": "Current X page state." }
     },
     "searchState": {
-      "description": "After navigating to https://x.com/search?q=<encoded-query>&src=typed_query&f=live, verify the requested search route and hydrated visible posts; login, challenge, consent, rate-limit, query-mismatch, and unhydrated states are not empty results.",
+      "description": "Verify the active X search route, selected tab, and hydrated results. filter is top, latest, people, media, or lists. Login, challenge, consent, rate-limit, query mismatch, filter mismatch, and unhydrated states are not empty results.",
       "path": "page_scripts.js",
       "binding": "window.SocaiXPageScripts",
       "callable": "searchState",
       "args": {
-        "query": { "type": "string", "required": false, "description": "Expected search query." }
+        "query": { "type": "string", "required": false, "description": "Expected search query." },
+        "filter": { "type": "string", "required": false, "description": "Expected tab: top, latest, people, media, or lists." }
       },
       "returns": { "type": "object", "description": "Search route, query, gate, and result state." }
     },
@@ -33,7 +34,41 @@
       },
       "returns": { "type": "array", "description": "Visible X posts." }
     },
+    "searchPeople": {
+      "description": "Collect visible account rows in the primary column of an X People search, up to limit.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "searchPeople",
+      "args": {
+        "limit": { "type": "integer", "required": false, "description": "Maximum accounts to return." },
+        "viewport_only": { "type": "boolean", "required": false, "description": "Only include rows intersecting the viewport." }
+      },
+      "returns": { "type": "array", "description": "Visible X accounts." }
+    },
+    "searchMedia": {
+      "description": "Collect visible photo and video tiles in the primary column of an X Media search, up to limit.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "searchMedia",
+      "args": {
+        "limit": { "type": "integer", "required": false, "description": "Maximum media posts to return." },
+        "viewport_only": { "type": "boolean", "required": false, "description": "Only include tiles intersecting the viewport." }
+      },
+      "returns": { "type": "array", "description": "Visible X media posts." }
+    },
+    "searchLists": {
+      "description": "Collect visible list rows in the primary column of an X Lists search, up to limit. Each row's destination is read from the control that navigates to /i/lists/<id>.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "searchLists",
+      "args": {
+        "limit": { "type": "integer", "required": false, "description": "Maximum lists to return." },
+        "viewport_only": { "type": "boolean", "required": false, "description": "Only include rows intersecting the viewport." }
+      },
+      "returns": { "type": "array", "description": "Visible X lists." }
+    },
     "scrollResults": {
+      "action": true,
       "description": "Scroll an X search surface by one bounded viewport step.",
       "path": "page_scripts.js",
       "binding": "window.SocaiXPageScripts",
@@ -45,7 +80,7 @@
       "returns": { "type": "object", "description": "Search scroll and result-count state." }
     },
     "profileDetail": {
-      "description": "Extract the active X profile identity, biography, and visible counts.",
+      "description": "Extract the active X profile identity, selected timeline tab, biography, and visible counts.",
       "path": "page_scripts.js",
       "binding": "window.SocaiXPageScripts",
       "callable": "profileDetail",
@@ -64,6 +99,7 @@
       "returns": { "type": "array", "description": "Visible X profile posts." }
     },
     "scrollPosts": {
+      "action": true,
       "description": "Scroll an X profile timeline by one bounded viewport step.",
       "path": "page_scripts.js",
       "binding": "window.SocaiXPageScripts",
@@ -93,6 +129,7 @@
       "returns": { "type": "array", "description": "Accumulated, deduplicated X replies." }
     },
     "scrollComments": {
+      "action": true,
       "description": "Scroll the active X conversation by one bounded step to hydrate more replies.",
       "path": "page_scripts.js",
       "binding": "window.SocaiXPageScripts",
@@ -120,6 +157,26 @@
       },
       "returns": { "type": "object", "description": "Current reply draft state bound to the active post." }
     },
+    "likeTarget": {
+      "description": "Inspect the active post's own Like control and return owned pointer geometry. Never clicks. liked is true when the control is already the Unlike button.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "likeTarget",
+      "args": {
+        "post_id": { "type": "string", "required": true, "description": "Expected active X status id." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed Like control geometry bound to the active post." }
+    },
+    "followTarget": {
+      "description": "Inspect the profile header Follow control for the requested username and return owned pointer geometry. Ignores Follow buttons inside account suggestion cells. Never clicks.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "followTarget",
+      "args": {
+        "username": { "type": "string", "required": true, "description": "Expected profile username without @." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed Follow control geometry bound to the active profile." }
+    },
     "replySubmitTarget": {
       "description": "Inspect the verified composer and return owned pointer geometry for its enabled Reply control; never clicks.",
       "path": "page_scripts.js",
@@ -140,6 +197,155 @@
         "text": { "type": "string", "required": true, "description": "Exact reply text." }
       },
       "returns": { "type": "object", "description": "Exact signed-in-author reply count and ids for reconciliation." }
+    },
+    "timelineState": {
+      "description": "Report whether the current X page is a home, search, or profile timeline rather than a post permalink.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "timelineState",
+      "args": {},
+      "returns": { "type": "object", "description": "Timeline surface, path, and gate state." }
+    },
+    "feedState": {
+      "description": "Verify the X home timeline and its selected tab. tab is the visible label, such as For you or Following. Login, challenge, rate-limit, a missing tab, and an unhydrated timeline are not empty results.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "feedState",
+      "args": {
+        "tab": { "type": "string", "required": false, "description": "Expected home tab label. For you is the usual default. Other labels must be visible on the account." }
+      },
+      "returns": { "type": "object", "description": "Selected home tab and hydrated post count." }
+    },
+    "feedTabTarget": {
+      "description": "Return owned pointer geometry for one visible X home tab. Never clicks.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "feedTabTarget",
+      "args": {
+        "tab": { "type": "string", "required": true, "description": "Home tab label, such as For you, Following, or another visible tab." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed home tab geometry." }
+    },
+    "feedPosts": {
+      "description": "Collect visible posts in the X home timeline up to limit.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "feedPosts",
+      "args": {
+        "limit": { "type": "integer", "required": false, "description": "Maximum posts to return." },
+        "viewport_only": { "type": "boolean", "required": false, "description": "Only include posts intersecting the viewport." }
+      },
+      "returns": { "type": "array", "description": "Visible home-timeline posts." }
+    },
+    "streamReplyTarget": {
+      "description": "Inspect the reply icon on one post already visible in the home, search, or profile timeline. Never clicks and never opens the post URL.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "streamReplyTarget",
+      "args": {
+        "post_id": { "type": "string", "required": true, "description": "Status id of the timeline post." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed reply-icon geometry bound to that timeline post." }
+    },
+    "overlayReplyEditorTarget": {
+      "description": "Inspect the single visible reply overlay composer for the timeline post that was just opened. Never focuses or types.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "overlayReplyEditorTarget",
+      "args": {
+        "username": { "type": "string", "required": true, "description": "Author username of the timeline post." },
+        "text": { "type": "string", "required": true, "description": "Visible text of the timeline post." },
+        "published_at": { "type": "string", "required": false, "description": "Publication time of the timeline post." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed overlay editor geometry." }
+    },
+    "overlayReplyDraftState": {
+      "description": "Read the draft and focus state of the visible reply overlay editor.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "overlayReplyDraftState",
+      "args": {
+        "username": { "type": "string", "required": true, "description": "Author username of the timeline post." },
+        "text": { "type": "string", "required": true, "description": "Visible text of the timeline post." },
+        "published_at": { "type": "string", "required": false, "description": "Publication time of the timeline post." }
+      },
+      "returns": { "type": "object", "description": "Current overlay reply draft." }
+    },
+    "overlayReplySubmitTarget": {
+      "description": "Inspect the Reply button inside the visible reply overlay. Never clicks.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "overlayReplySubmitTarget",
+      "args": {
+        "username": { "type": "string", "required": true, "description": "Author username of the timeline post." },
+        "text": { "type": "string", "required": true, "description": "Visible text of the timeline post." },
+        "published_at": { "type": "string", "required": false, "description": "Publication time of the timeline post." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed overlay Reply button geometry." }
+    },
+    "overlayCloseTarget": {
+      "description": "Inspect the close control of the visible reply overlay. Never clicks.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "overlayCloseTarget",
+      "args": {},
+      "returns": { "type": "object", "description": "Fail-closed overlay close geometry." }
+    },
+    "overlayClosed": {
+      "description": "Report whether the reply overlay is gone and the page has returned to the timeline path it started on.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "overlayClosed",
+      "args": {
+        "path": { "type": "string", "required": true, "description": "Pathname of the timeline page before the overlay opened." }
+      },
+      "returns": { "type": "object", "description": "Overlay dismissal and timeline return state." }
+    },
+    "streamNameTarget": {
+      "description": "Inspect a person's name link in the current home, search, or profile timeline. Never moves the pointer.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "streamNameTarget",
+      "args": {
+        "username": { "type": "string", "required": true, "description": "Username without @." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed name-link geometry." }
+    },
+    "hoverCardState": {
+      "description": "Read the visible hover card for one username, including bio, counts, and whether the account is already followed. Never clicks.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "hoverCardState",
+      "args": {
+        "username": { "type": "string", "required": true, "description": "Expected username without @." }
+      },
+      "returns": { "type": "object", "description": "Hover card profile details." }
+    },
+    "hoverFollowTarget": {
+      "description": "Inspect the Follow control inside the visible hover card for one username. Never clicks.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "hoverFollowTarget",
+      "args": {
+        "username": { "type": "string", "required": true, "description": "Expected username without @." }
+      },
+      "returns": { "type": "object", "description": "Fail-closed hover-card Follow geometry." }
+    },
+    "hoverDismissTarget": {
+      "description": "Return a pointer position on the Home navigation link, away from profile names, so a hover card can close. Never moves the pointer.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "hoverDismissTarget",
+      "args": {},
+      "returns": { "type": "object", "description": "Pointer position that dismisses a hover card." }
+    },
+    "hoverCardPresence": {
+      "description": "Report whether a visible profile hover card is open.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiXPageScripts",
+      "callable": "hoverCardPresence",
+      "args": {},
+      "returns": { "type": "object", "description": "Hover card open or closed state." }
     }
   }
 }

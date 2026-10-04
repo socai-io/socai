@@ -140,6 +140,55 @@
     }
   }
 
+  const PROFILE_TABS = {
+    with_replies: 'replies',
+    replies: 'replies',
+    reposts: 'reposts',
+    highlights: 'highlights',
+    articles: 'articles',
+    media: 'media',
+    likes: 'likes',
+  };
+
+  function profileRoute(raw) {
+    try {
+      const parts = new URL(raw || location.href, location.href).pathname.split('/').filter(Boolean);
+      if (!parts.length || parts.length > 2) return null;
+      const username = parts[0].toLowerCase();
+      if (!/^[a-z0-9_]{1,15}$/i.test(username) || RESERVED.has(username)) return null;
+      if (parts.length === 1) return { username, tab: 'posts' };
+      const tab = PROFILE_TABS[parts[1].toLowerCase()];
+      return tab ? { username, tab } : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function primaryColumn() {
+    return document.querySelector('[data-testid="primaryColumn"]') || document;
+  }
+
+  function searchFilterFromHref(raw) {
+    try {
+      const value = new URL(raw || location.href, location.href).searchParams.get('f') || '';
+      if (!value) return 'top';
+      if (value === 'live') return 'latest';
+      if (value === 'user') return 'people';
+      if (value === 'media') return 'media';
+      if (value === 'list') return 'lists';
+      return '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function activeSearchFilter() {
+    const selected = firstVisible(document, ['a[role="tab"][aria-selected="true"]'])
+      || document.querySelector('a[role="tab"][aria-selected="true"]');
+    const fromTab = selected && searchFilterFromHref(selected.getAttribute('href') || selected.href);
+    return fromTab || searchFilterFromHref(location.href);
+  }
+
   function loginRequired() {
     if (/^\/i\/(?:flow\/login|jf\/onboarding\/web)/i.test(location.pathname)) return true;
     return !!firstVisible(document, [
@@ -170,7 +219,7 @@
     if (challengeRequired()) return 'challenge';
     if (statusIdentity(location.href)) return 'post';
     if (/^\/search(?:\/|$)/i.test(path)) return 'search';
-    if (profileUsername(location.href)) return 'profile';
+    if (profileRoute(location.href)) return 'profile';
     if (/^\/(?:home|explore)(?:\/|$)/i.test(path) || path === '/') return 'feed';
     return 'unknown';
   }
@@ -295,17 +344,63 @@
     };
   }
 
+  function mediaStatusLinks(root) {
+    const seen = new Set();
+    const links = [];
+    for (const link of (root || primaryColumn()).querySelectorAll('a[href*="/status/"]')) {
+      const identity = mediaIdentity(link.href || link.getAttribute('href'));
+      if (!identity || seen.has(identity.id)) continue;
+      seen.add(identity.id);
+      links.push({ link, identity });
+    }
+    return links;
+  }
+
+  function mediaIdentity(raw) {
+    try {
+      const parts = new URL(raw, location.href).pathname.split('/').filter(Boolean);
+      const index = parts.findIndex((part) => part.toLowerCase() === 'status');
+      const id = parts[index + 1] || '';
+      const username = parts[index - 1] || '';
+      if (index <= 0 || !/^\d+$/.test(id) || !/^[A-Za-z0-9_]{1,15}$/.test(username)) return null;
+      const kind = (parts[index + 2] || '').toLowerCase();
+      return { username: username.toLowerCase(), id, kind: kind === 'video' ? 'video' : kind === 'photo' ? 'image' : 'post' };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function searchResultCount(filter) {
+    const root = primaryColumn();
+    if (filter === 'people') return root.querySelectorAll('[data-testid="UserCell"]').length;
+    if (filter === 'lists') return root.querySelectorAll('[data-testid="listCell"]').length;
+    if (filter === 'media') return mediaStatusLinks(root).length;
+    return tweetArticles(root).length;
+  }
+
   function searchState(arg) {
     const state = pageState();
     const query = cleanText(new URL(location.href).searchParams.get('q') || '', 1000);
     const expected = cleanText(arg && arg.query || '', 1000);
+    const expectedFilter = cleanText(arg && arg.filter || 'top', 40).toLowerCase() || 'top';
+    const filter = activeSearchFilter();
     const onSearch = /^\/search(?:\/|$)/i.test(location.pathname);
-    const count = tweetArticles().length;
+    const queryOk = !expected || query.toLowerCase() === expected.toLowerCase();
+    const filterOk = filter === expectedFilter;
+    const count = searchResultCount(expectedFilter);
+    const ready = onSearch && queryOk && filterOk && count > 0;
+    let status = state.status;
+    if (state.ok && !onSearch) status = 'not_search';
+    else if (state.ok && !queryOk) status = 'query_mismatch';
+    else if (state.ok && !filterOk) status = 'filter_mismatch';
+    else if (state.ok && count > 0) status = 'results';
+    else if (state.ok) status = 'unhydrated';
     return {
       ...state,
-      ok: state.ok && onSearch && (!expected || query.toLowerCase() === expected.toLowerCase()) && count > 0,
-      status: !state.ok ? state.status : !onSearch ? 'not_search' : count > 0 ? 'results' : 'unhydrated',
+      ok: state.ok && ready,
+      status,
       query,
+      filter,
       result_count: count,
       empty: false,
     };
@@ -413,8 +508,10 @@
     const editor = found.editor;
     if (!editor) return { ok: false, status: found.count > 1 ? 'ambiguous_reply_editor' : 'reply_editor_not_found' };
     const roots = [];
+    // The inline Reply control sits about twenty ancestors above the Draft.js
+    // editor, still inside the conversation region.
     for (let node = editor.parentElement, depth = 0;
-      node && node !== found.context.region && depth < 8;
+      node && node !== found.context.region && depth < 40;
       node = node.parentElement, depth += 1) roots.push(node);
     let button = null;
     for (const root of roots) {
@@ -444,13 +541,13 @@
     };
   }
 
-  function listTweets(arg) {
+  function listTweets(arg, root) {
     const input = arg || {};
     const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
     const viewportOnly = !!input.viewport_only;
     const output = [];
     const seen = new Set();
-    for (const article of tweetArticles()) {
+    for (const article of tweetArticles(root)) {
       if (viewportOnly && !inViewport(article)) continue;
       const item = parseTweet(article, output.length + 1);
       if (!item || seen.has(item.id)) continue;
@@ -461,8 +558,118 @@
     return output;
   }
 
-  function searchResults(arg) { return listTweets(arg); }
-  function profilePosts(arg) { return listTweets(arg); }
+  function nestedListPath(value, depth) {
+    if (!value || depth > 5) return '';
+    if (typeof value === 'string') {
+      const match = value.match(/\/i\/lists\/\d+/);
+      return match ? match[0] : '';
+    }
+    if (typeof value !== 'object') return '';
+    for (const key of Object.keys(value)) {
+      if (key === 'children') continue;
+      const found = nestedListPath(value[key], depth + 1);
+      if (found) return found;
+    }
+    return '';
+  }
+
+  // List rows are role=link controls without an href attribute. The destination
+  // /i/lists/<id> is on the row's React props, which is what the click opens.
+  function listPath(node) {
+    if (!node) return '';
+    const propKey = Object.keys(node).find((name) => name.startsWith('__reactProps'));
+    const direct = nestedListPath(propKey && node[propKey], 0);
+    if (direct) return direct;
+    const fiberKey = Object.keys(node).find((name) => name.startsWith('__reactFiber'));
+    let current = fiberKey && node[fiberKey];
+    for (let depth = 0; current && depth < 12; depth += 1, current = current.return) {
+      const found = nestedListPath(current.memoizedProps, 0);
+      if (found) return found;
+    }
+    return '';
+  }
+
+  function parseUserCell(cell, position) {
+    const username = Array.from(cell.querySelectorAll('a[href]'))
+      .map((link) => profileUsername(link.href || link.getAttribute('href')))
+      .find(Boolean);
+    if (!username) return null;
+    const lines = cleanText(cell, 2000).split('\n').map((line) => line.trim()).filter(Boolean)
+      .filter((line) => !/^follow(?:ing)?$/i.test(line));
+    const handle = `@${username}`;
+    const displayName = lines.find((line) => line.toLowerCase() !== handle && !line.startsWith('@')) || '';
+    const bio = lines.filter((line) => line !== displayName && line.toLowerCase() !== handle).join('\n');
+    return {
+      username,
+      display_name: displayName,
+      bio,
+      url: xUrl(`https://x.com/${username}`),
+      position: Number(position || 0),
+    };
+  }
+
+  function parseListCell(cell, position) {
+    const match = listPath(cell).match(/^\/i\/lists\/(\d+)$/);
+    if (!match) return null;
+    const nameNode = Array.from(cell.querySelectorAll('span')).find((span) => !span.closest('a'));
+    const text = cleanText(cell, 1000);
+    const members = text.match(/([\d.,]+)\s*([KMB万亿])?\s*(?:members\b|成员)/i);
+    const owner = Array.from(cell.querySelectorAll('a[href]'))
+      .map((link) => profileUsername(link.href || link.getAttribute('href')))
+      .find(Boolean) || '';
+    return {
+      id: match[1],
+      name: cleanText(nameNode, 200),
+      members: members ? metric(`${members[1]}${members[2] || ''}`) : null,
+      owner_username: owner,
+      url: xUrl(`https://x.com/i/lists/${match[1]}`),
+      position: Number(position || 0),
+    };
+  }
+
+  function collectCells(arg, selector, parse) {
+    const input = arg || {};
+    const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
+    const viewportOnly = !!input.viewport_only;
+    const output = [];
+    const seen = new Set();
+    for (const cell of primaryColumn().querySelectorAll(selector)) {
+      if (viewportOnly && !inViewport(cell)) continue;
+      const item = parse(cell, output.length + 1);
+      if (!item) continue;
+      const key = item.id || item.username || item.url;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      output.push(item);
+      if (output.length >= limit) break;
+    }
+    return output;
+  }
+
+  function searchMedia(arg) {
+    const input = arg || {};
+    const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
+    const viewportOnly = !!input.viewport_only;
+    const output = [];
+    for (const entry of mediaStatusLinks(primaryColumn())) {
+      if (viewportOnly && !inViewport(entry.link)) continue;
+      output.push({
+        id: entry.identity.id,
+        url: xUrl(`https://x.com/${entry.identity.username}/status/${entry.identity.id}`),
+        author: { username: entry.identity.username, url: xUrl(`https://x.com/${entry.identity.username}`) },
+        media_type: entry.identity.kind,
+        label: cleanText(entry.link, 80),
+        position: output.length + 1,
+      });
+      if (output.length >= limit) break;
+    }
+    return output;
+  }
+
+  function searchResults(arg) { return listTweets(arg, primaryColumn()); }
+  function searchPeople(arg) { return collectCells(arg, '[data-testid="UserCell"]', parseUserCell); }
+  function searchLists(arg) { return collectCells(arg, '[data-testid="listCell"]', parseListCell); }
+  function profilePosts(arg) { return listTweets(arg, primaryColumn()); }
 
   function scrollList(arg) {
     const input = arg || {};
@@ -486,32 +693,96 @@
   function scrollPosts(arg) { return scrollList(arg); }
 
   function profileDetail() {
-    const username = profileUsername(location.href);
+    const route = profileRoute(location.href);
     const state = pageState();
-    if (!username) return { ok: false, status: 'not_profile', url: location.href, page_state: state };
+    if (!route) return { ok: false, status: 'not_profile', url: location.href, page_state: state };
+    const username = route.username;
     const primary = document.querySelector('[data-testid="primaryColumn"]') || document.querySelector('main') || document;
     const nameRoot = primary.querySelector('[data-testid="UserName"]');
     const description = primary.querySelector('[data-testid="UserDescription"]');
     const text = cleanText(nameRoot, 1000);
     const lines = text.split('\n').filter(Boolean);
     const linkText = (suffix) => {
-      const link = primary.querySelector(`a[href="/${username}/${suffix}"], a[href$="/${suffix}"]`);
+      const link = Array.from(primary.querySelectorAll('a[href]')).find((node) => {
+        try {
+          const parts = new URL(node.getAttribute('href') || node.href, location.href).pathname.split('/').filter(Boolean);
+          return parts.length === 2 && parts[0].toLowerCase() === username && parts[1].toLowerCase() === suffix;
+        } catch (_) {
+          return false;
+        }
+      });
       return cleanText(link, 200);
     };
-    const contentReady = !!(nameRoot || tweetArticles().length);
+    const postsReady = tweetArticles(primary).length;
+    const timelineEmpty = postsReady === 0 && /No (?:posts|reposts|replies|likes|media)|hasn.?t (?:posted|reposted|liked)|还没有|没有转发|没有回复|没有喜欢/i.test(cleanText(primary, 4000));
+    const contentReady = !!(nameRoot && (postsReady > 0 || timelineEmpty));
     return {
       ok: state.ok && contentReady,
       status: !state.ok ? state.status : contentReady ? 'profile' : 'unhydrated',
       id: username,
       username,
+      tab: route.tab,
       display_name: lines.find((line) => !line.startsWith('@')) || '',
       bio: cleanText(description, 5000),
       followers: metric(linkText('followers')),
       following: metric(linkText('following')),
       url: xUrl(location.href),
-      visible_post_count: tweetArticles().length,
+      visible_post_count: tweetArticles(primary).length,
       page_state: state,
     };
+  }
+
+  function likeTarget(arg) {
+    const expected = cleanText(arg && (arg.post_id || arg.id) || '', 100);
+    if (!/^\d+$/.test(expected)) return { ok: false, status: 'invalid_post_id', liked: false };
+    const active = statusIdentity(location.href);
+    if (!active || active.id !== expected) return { ok: false, status: active ? 'wrong_post' : 'not_post', liked: false };
+    const article = activePostArticle();
+    if (!article) return { ok: false, status: 'post_unavailable', post_id: expected, liked: false };
+    const buttons = Array.from(article.querySelectorAll('[data-testid="like"], [data-testid="unlike"]'))
+      .filter((button) => article.contains(button) && !button.closest('[data-testid="quoteTweet"]') && visible(button));
+    if (buttons.length !== 1) {
+      return { ok: false, status: buttons.length ? 'ambiguous_like_button' : 'like_button_not_found', post_id: expected, liked: false };
+    }
+    const button = buttons[0];
+    const liked = button.getAttribute('data-testid') === 'unlike';
+    const point = ownedPoint(button);
+    const actor = currentUsername();
+    return point
+      ? { ok: true, status: liked ? 'liked' : 'like_ready', post_id: expected, liked, actor, hit_owned: true, text: cleanText(button, 80), ...point }
+      : { ok: false, status: 'like_button_obscured', post_id: expected, liked, actor, hit_owned: false };
+  }
+
+  function followTarget(arg) {
+    const username = cleanText(arg && (arg.username || arg.profile) || '', 40).replace(/^@/, '').toLowerCase();
+    const route = profileRoute(location.href);
+    if (!/^[a-z0-9_]{1,15}$/.test(username)) return { ok: false, status: 'invalid_username', following: false };
+    if (!route || route.username !== username) return { ok: false, status: route ? 'wrong_profile' : 'not_profile', following: false };
+    const primary = document.querySelector('[data-testid="primaryColumn"]') || document;
+    const buttons = Array.from(primary.querySelectorAll('button[data-testid$="-follow"], button[data-testid$="-unfollow"]'))
+      .filter((button) => {
+        const testId = button.getAttribute('data-testid') || '';
+        const aria = (button.getAttribute('aria-label') || '').toLowerCase();
+        return /^\d+-(?:follow|unfollow)$/.test(testId)
+          && !button.closest('[data-testid="UserCell"]')
+          && aria.includes(`@${username}`)
+          && visible(button);
+      });
+    if (buttons.length !== 1) {
+      return {
+        ok: false,
+        status: buttons.length ? 'ambiguous_follow_button' : 'follow_button_not_found',
+        username,
+        following: false,
+      };
+    }
+    const button = buttons[0];
+    const following = (button.getAttribute('data-testid') || '').endsWith('-unfollow');
+    const point = ownedPoint(button);
+    const actor = currentUsername();
+    return point
+      ? { ok: true, status: following ? 'following' : 'follow_ready', username, following, actor, hit_owned: true, text: cleanText(button, 80), ...point }
+      : { ok: false, status: 'follow_button_obscured', username, following, actor, hit_owned: false };
   }
 
   function activePostArticle() {
@@ -619,6 +890,402 @@
     };
   }
 
+  function normalizeLabel(value) {
+    return cleanText(value, 80).toLowerCase().replace(/[\s_-]+/g, '');
+  }
+
+  function timelineSurface() {
+    const path = location.pathname;
+    if (/^\/(?:home|explore)(?:\/|$)/i.test(path) || path === '/') return 'feed';
+    if (/^\/search(?:\/|$)/i.test(path)) return 'search';
+    if (profileRoute(location.href)) return 'profile';
+    return '';
+  }
+
+  function timelineState() {
+    const state = pageState();
+    const surface = timelineSurface();
+    return {
+      ok: !!surface && state.ok,
+      status: surface ? state.status : 'not_timeline',
+      surface,
+      url: location.href,
+      path: location.pathname,
+      login_required: state.login_required,
+      challenge_required: state.challenge_required,
+      rate_limited: state.rate_limited,
+    };
+  }
+
+  function homeTabs() {
+    return Array.from(primaryColumn().querySelectorAll('[role="tab"]')).filter((tab) => visible(tab));
+  }
+
+  function feedState(arg) {
+    const state = pageState();
+    const onHome = /^\/home(?:\/|$)/i.test(location.pathname);
+    const expected = normalizeLabel(arg && arg.tab || '');
+    const tabs = homeTabs();
+    const selected = tabs.find((tab) => tab.getAttribute('aria-selected') === 'true');
+    const tab = selected ? cleanText(selected, 80) : '';
+    const articles = onHome ? tweetArticles(primaryColumn()) : [];
+    const first = articles.length ? articleIdentity(articles[0]) : null;
+    const tabMatches = !expected || normalizeLabel(tab) === expected;
+    let status = 'results';
+    if (!onHome) status = 'not_home';
+    else if (!state.ok) status = state.status;
+    else if (!tab) status = 'tab_not_found';
+    else if (!tabMatches) status = 'tab_mismatch';
+    else if (!articles.length) status = 'unhydrated';
+    return {
+      ok: status === 'results',
+      status,
+      tab,
+      tabs: tabs.map((item) => cleanText(item, 80)),
+      first_id: first ? first.id : '',
+      result_count: articles.length,
+      url: location.href,
+      login_required: state.login_required,
+      challenge_required: state.challenge_required,
+      rate_limited: state.rate_limited,
+    };
+  }
+
+  function feedTabTarget(arg) {
+    const expected = normalizeLabel(arg && arg.tab || '');
+    if (!expected) return { ok: false, status: 'invalid_tab' };
+    if (!/^\/home(?:\/|$)/i.test(location.pathname)) return { ok: false, status: 'not_home', url: location.href };
+    const matches = homeTabs().filter((tab) => normalizeLabel(tab) === expected);
+    if (matches.length !== 1) {
+      return {
+        ok: false,
+        status: matches.length ? 'ambiguous_tab' : 'tab_not_found',
+        tabs: homeTabs().map((tab) => cleanText(tab, 80)),
+      };
+    }
+    const tab = matches[0];
+    const point = ownedPoint(tab);
+    return point
+      ? {
+        ok: true,
+        status: 'tab_ready',
+        tab: cleanText(tab, 80),
+        selected: tab.getAttribute('aria-selected') === 'true',
+        hit_owned: true,
+        ...point,
+      }
+      : { ok: false, status: 'tab_obscured', tab: cleanText(tab, 80), hit_owned: false };
+  }
+
+  function feedPosts(arg) { return listTweets(arg, primaryColumn()); }
+
+  function streamArticles() {
+    return tweetArticles(primaryColumn()).filter((article) => !article.closest?.('[role="dialog"]'));
+  }
+
+  function streamArticle(postId) {
+    const matches = streamArticles().filter((article) => articleIdentity(article)?.id === postId);
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function articleReplyButton(article) {
+    return Array.from(article.querySelectorAll('[data-testid="reply"]'))
+      .find((button) => !button.closest?.('[data-testid="quoteTweet"]')) || null;
+  }
+
+  function streamReplyTarget(arg) {
+    const postId = cleanText(arg && (arg.post_id || arg.id) || '', 40);
+    if (!/^\d+$/.test(postId)) return { ok: false, status: 'invalid_post_id' };
+    const surface = timelineSurface();
+    if (!surface) return { ok: false, status: 'not_timeline', url: location.href };
+    const article = streamArticle(postId);
+    if (!article) return { ok: false, status: 'post_not_found', post_id: postId, surface };
+    const parsed = parseTweet(article, 1);
+    const button = articleReplyButton(article);
+    if (!button) return { ok: false, status: 'reply_button_not_found', post_id: postId, surface };
+    if (!inViewport(button)) return { ok: false, status: 'reply_button_not_visible', post_id: postId, surface };
+    const point = ownedPoint(button);
+    return point && parsed
+      ? {
+        ok: true,
+        status: 'reply_ready',
+        post_id: postId,
+        surface,
+        username: parsed.author.username,
+        text: parsed.text,
+        published_at: parsed.published_at,
+        actor: currentUsername(),
+        hit_owned: true,
+        ...point,
+      }
+      : { ok: false, status: 'reply_button_obscured', post_id: postId, surface, hit_owned: false };
+  }
+
+  function visibleDialogs() {
+    return Array.from(document.querySelectorAll('[role="dialog"]')).filter((dialog) => {
+      const rect = dialog.getBoundingClientRect();
+      return visible(dialog) && rect.width > 40 && rect.height > 40;
+    });
+  }
+
+  function overlayDialog(arg) {
+    const dialogs = visibleDialogs();
+    if (dialogs.length !== 1) {
+      return { error: dialogs.length ? 'ambiguous_reply_overlay' : 'reply_overlay_not_found' };
+    }
+    const dialog = dialogs[0];
+    const article = dialog.querySelector('[data-testid="tweet"]');
+    const username = article ? parseAuthor(article, { username: '', id: '' }).username : '';
+    const text = cleanText(article && article.querySelector('[data-testid="tweetText"]'), 30000);
+    const time = article && article.querySelector('time[datetime]');
+    const published = time && (time.dateTime || time.getAttribute('datetime')) || '';
+    const expectedUser = cleanText(arg && arg.username || '', 40).toLowerCase();
+    const expectedText = cleanText(arg && arg.text || '', 30000);
+    const expectedTime = cleanText(arg && arg.published_at || '', 80);
+    if (!article || !expectedUser || username !== expectedUser) return { error: 'wrong_reply_target' };
+    if (expectedTime && published && published !== expectedTime) return { error: 'wrong_reply_target' };
+    if (!text || (expectedText && text !== expectedText && !expectedText.startsWith(text))) {
+      return { error: 'wrong_reply_target' };
+    }
+    return { dialog, username, text, published_at: published };
+  }
+
+  function overlayEditor(arg) {
+    const found = overlayDialog(arg);
+    if (found.error) return found;
+    const editors = Array.from(found.dialog.querySelectorAll(
+      '[data-testid="tweetTextarea_0"][contenteditable="true"]',
+    )).filter((editor) => visible(editor) && inViewport(editor));
+    return { ...found, editor: editors.length === 1 ? editors[0] : null, count: editors.length };
+  }
+
+  function overlayReplyEditorTarget(arg) {
+    const found = overlayEditor(arg);
+    if (found.error) return { ok: false, status: found.error };
+    if (!found.editor) {
+      return { ok: false, status: found.count > 1 ? 'ambiguous_reply_editor' : 'reply_editor_not_found' };
+    }
+    const point = ownedPoint(found.editor);
+    return point
+      ? { ok: true, status: 'reply_editor_ready', username: found.username, hit_owned: true, ...point }
+      : { ok: false, status: 'reply_editor_obscured', username: found.username, hit_owned: false };
+  }
+
+  function overlayReplyDraftState(arg) {
+    const found = overlayEditor(arg);
+    if (found.error) return { ok: false, status: found.error, value: '' };
+    if (!found.editor) {
+      return { ok: false, status: found.count > 1 ? 'ambiguous_reply_editor' : 'reply_editor_not_found', value: '' };
+    }
+    const active = document.activeElement;
+    return {
+      ok: true,
+      status: 'reply_editor_ready',
+      username: found.username,
+      focused: active === found.editor || found.editor.contains?.(active),
+      value: editableText(found.editor, 10000),
+    };
+  }
+
+  function overlayReplySubmitTarget(arg) {
+    const found = overlayEditor(arg);
+    if (found.error) return { ok: false, status: found.error };
+    if (!found.editor) {
+      return { ok: false, status: found.count > 1 ? 'ambiguous_reply_editor' : 'reply_editor_not_found' };
+    }
+    const buttons = Array.from(found.dialog.querySelectorAll('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]'))
+      .map((node) => node.closest?.('button, [role="button"]') || node)
+      .filter((button) => visible(button) && inViewport(button));
+    const unique = [];
+    for (const button of buttons) if (!unique.includes(button)) unique.push(button);
+    if (unique.length !== 1) {
+      return { ok: false, status: unique.length ? 'ambiguous_reply_submit' : 'reply_submit_not_found' };
+    }
+    const button = unique[0];
+    const point = ownedPoint(button);
+    const disabled = !!button.disabled || button.getAttribute('aria-disabled') === 'true';
+    return {
+      ok: !disabled && !!point,
+      status: disabled ? 'reply_submit_disabled' : point ? 'reply_submit_ready' : 'reply_submit_obscured',
+      username: found.username,
+      text: cleanText(button, 40),
+      disabled,
+      hit_owned: !!point,
+      ...(point || {}),
+    };
+  }
+
+  function overlayCloseTarget() {
+    const dialogs = visibleDialogs();
+    if (dialogs.length !== 1) {
+      return { ok: false, status: dialogs.length ? 'ambiguous_reply_overlay' : 'reply_overlay_not_found' };
+    }
+    const button = dialogs[0].querySelector('[data-testid="app-bar-close"]');
+    if (!button || !inViewport(button)) return { ok: false, status: 'overlay_close_not_found' };
+    const point = ownedPoint(button);
+    return point
+      ? { ok: true, status: 'overlay_close_ready', hit_owned: true, ...point }
+      : { ok: false, status: 'overlay_close_obscured', hit_owned: false };
+  }
+
+  function overlayClosed(arg) {
+    const expectedPath = cleanText(arg && arg.path || '', 200);
+    const dialogs = visibleDialogs().length;
+    const path = location.pathname;
+    const graduated = /graduated-access/i.test(path + location.search);
+    const compose = /\/compose\/(?:post|reply)/i.test(path);
+    const back = !!expectedPath && path === expectedPath;
+    let status = 'returned';
+    if (graduated) status = 'graduated_access';
+    else if (dialogs || compose) status = 'overlay_open';
+    else if (!back) status = 'left_timeline';
+    return {
+      ok: status === 'returned',
+      status,
+      url: location.href,
+      path,
+      dialogs,
+    };
+  }
+
+  function streamNameLinks(username) {
+    return Array.from(primaryColumn().querySelectorAll('[data-testid="User-Name"] a[href]')).filter((link) => {
+      if (profileUsername(link.href || link.getAttribute('href')) !== username) return false;
+      return !link.closest?.('[role="dialog"]') && !link.closest?.('[data-testid="HoverCard"]');
+    });
+  }
+
+  function streamNameTarget(arg) {
+    const username = cleanText(arg && arg.username || '', 40).toLowerCase();
+    if (!/^[a-z0-9_]{1,15}$/.test(username)) return { ok: false, status: 'invalid_username' };
+    if (!timelineSurface()) return { ok: false, status: 'not_timeline', url: location.href };
+    const links = streamNameLinks(username);
+    if (!links.length) return { ok: false, status: 'name_not_found', username };
+    const visibleLink = links.find((link) => inViewport(link));
+    if (!visibleLink) return { ok: false, status: 'name_not_visible', username };
+    const point = ownedPoint(visibleLink);
+    return point
+      ? { ok: true, status: 'name_ready', username, hit_owned: true, ...point }
+      : { ok: false, status: 'name_obscured', username, hit_owned: false };
+  }
+
+  function visibleHoverCard() {
+    const cards = Array.from(document.querySelectorAll('[data-testid="HoverCard"]')).filter((card) => {
+      const rect = card.getBoundingClientRect();
+      return visible(card) && rect.width > 40 && rect.height > 40;
+    });
+    return cards.length === 1 ? cards[0] : { count: cards.length };
+  }
+
+  function hoverCount(card, username, kind) {
+    const link = Array.from(card.querySelectorAll('a[href]')).find((node) => {
+      try {
+        const parts = new URL(node.getAttribute('href') || node.href, location.href).pathname.split('/').filter(Boolean);
+        if ((parts[0] || '').toLowerCase() !== username) return false;
+        const leaf = (parts[1] || '').toLowerCase();
+        return kind === 'following' ? leaf === 'following' : leaf === 'followers' || leaf === 'verified_followers';
+      } catch (_) {
+        return false;
+      }
+    });
+    return link ? metric(link) : null;
+  }
+
+  function hoverBio(card, username, displayName) {
+    const described = card.querySelector('[data-testid="UserDescription"], [data-testid="UserBio"]');
+    const direct = cleanText(described, 1000);
+    if (direct) return direct;
+    const skipped = new Set([
+      'follow', 'following', 'profile summary',
+      displayName.toLowerCase(), `@${username}`, username,
+    ]);
+    return cleanText(card, 4000).split('\n').map((line) => line.trim()).filter((line) => {
+      const lower = line.toLowerCase();
+      if (!line || skipped.has(lower)) return false;
+      if (/^followed by /i.test(line) || /^click to follow /i.test(line)) return false;
+      if (/^[\d,.]+$/.test(line)) return false;
+      if (/followers|following/i.test(line) && /\d/.test(line)) return false;
+      return true;
+    }).slice(0, 4).join('\n');
+  }
+
+  function hoverCardState(arg) {
+    const username = cleanText(arg && arg.username || '', 40).toLowerCase();
+    const card = visibleHoverCard();
+    if (!card || card.count !== undefined) {
+      return { ok: false, status: card && card.count ? 'ambiguous_hover_card' : 'hover_card_not_found', username };
+    }
+    const name = Array.from(card.querySelectorAll('a[href]')).find((link) => {
+      const handle = profileUsername(link.href || link.getAttribute('href'));
+      return handle === username && cleanText(link, 80) && !cleanText(link, 80).startsWith('@');
+    });
+    const handle = Array.from(card.querySelectorAll('a[href]')).some((link) => (
+      profileUsername(link.href || link.getAttribute('href')) === username
+    ));
+    if (!handle) return { ok: false, status: 'wrong_hover_card', username };
+    const displayName = name ? cleanText(name, 80) : '';
+    const buttons = Array.from(card.querySelectorAll('button')).filter((button) => (
+      /^\d+-(?:follow|unfollow)$/.test(button.getAttribute('data-testid') || '')
+    ));
+    const button = buttons.length === 1 ? buttons[0] : null;
+    const aria = button ? (button.getAttribute('aria-label') || '') : '';
+    const following = !!button && (button.getAttribute('data-testid') || '').endsWith('-unfollow');
+    return {
+      ok: true,
+      status: 'hover_card_ready',
+      username,
+      display_name: displayName,
+      bio: hoverBio(card, username, displayName),
+      following_count: hoverCount(card, username, 'following'),
+      followers_count: hoverCount(card, username, 'followers'),
+      following,
+      follow_status: !button ? (buttons.length ? 'ambiguous_follow_button' : 'follow_button_not_found')
+        : (aria.toLowerCase().includes(`@${username}`) ? (following ? 'following' : 'follow_ready') : 'wrong_follow_button'),
+      actor: currentUsername(),
+    };
+  }
+
+  function hoverFollowTarget(arg) {
+    const cardState = hoverCardState(arg);
+    if (!cardState.ok) return cardState;
+    if (cardState.follow_status !== 'following' && cardState.follow_status !== 'follow_ready') {
+      return { ok: false, status: cardState.follow_status, username: cardState.username, following: false };
+    }
+    const card = visibleHoverCard();
+    const button = Array.from(card.querySelectorAll('button')).find((node) => (
+      /^\d+-(?:follow|unfollow)$/.test(node.getAttribute('data-testid') || '')
+    ));
+    const point = button && ownedPoint(button);
+    const following = (button.getAttribute('data-testid') || '').endsWith('-unfollow');
+    return point
+      ? {
+        ok: true,
+        status: following ? 'following' : 'follow_ready',
+        username: cardState.username,
+        following,
+        actor: cardState.actor,
+        hit_owned: true,
+        text: cleanText(button, 40),
+        ...point,
+      }
+      : { ok: false, status: 'follow_button_obscured', username: cardState.username, following, hit_owned: false };
+  }
+
+  function hoverDismissTarget() {
+    const home = document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+    const point = home && ownedPoint(home);
+    return point
+      ? { ok: true, status: 'dismiss_ready', hit_owned: true, ...point }
+      : { ok: false, status: 'dismiss_point_not_found', hit_owned: false };
+  }
+
+  function hoverCardPresence() {
+    const card = visibleHoverCard();
+    const open = !!card && card.count === undefined;
+    const count = open ? 1 : card && card.count || 0;
+    return { ok: count === 0, status: count ? 'hover_card_open' : 'hover_card_closed', count };
+  }
+
   async function scrollComments() {
     if (!statusIdentity(location.href)) return { ok: false, status: 'not_post', url: location.href };
     const before = comments({ limit: 100 }).length;
@@ -647,6 +1314,9 @@
     searchState,
     searchInputTarget,
     searchResults,
+    searchPeople,
+    searchLists,
+    searchMedia,
     postLinkTarget,
     scrollResults,
     profileDetail,
@@ -659,5 +1329,22 @@
     replyEditorTarget,
     replyDraftState,
     replySubmitTarget,
+    likeTarget,
+    followTarget,
+    timelineState,
+    feedState,
+    feedTabTarget,
+    feedPosts,
+    streamReplyTarget,
+    overlayReplyEditorTarget,
+    overlayReplyDraftState,
+    overlayReplySubmitTarget,
+    overlayCloseTarget,
+    overlayClosed,
+    streamNameTarget,
+    hoverCardState,
+    hoverFollowTarget,
+    hoverDismissTarget,
+    hoverCardPresence,
   });
 })();

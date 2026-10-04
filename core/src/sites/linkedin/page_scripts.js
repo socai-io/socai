@@ -1,4 +1,5 @@
 (function () {
+  const browserAction = typeof socaiAction === "function" ? socaiAction : async (perform) => perform();
   const PROFILE_PATH = /^\/in\/([^/?#]+)/i;
   const PROFILE_LANDING_PATH = /^\/in\/[^/?#]+\/?$/i;
   const COMPANY_PATH = /^\/(?:company|showcase)\/([^/?#]+)/i;
@@ -1467,13 +1468,13 @@
       if (!visible(control) || control.disabled) continue;
       const label = cleanText(`${control.innerText || ''} ${control.getAttribute && control.getAttribute('aria-label') || ''}`, 500);
       if (!morePattern.test(label) && !repliesPattern.test(label)) continue;
-      control.click();
+      await browserAction(() => control.click());
       clicked += 1;
       if (clicked >= 6) break;
     }
     const rows = commentNodes(root);
     const last = rows[rows.length - 1];
-    if (last && last.scrollIntoView) last.scrollIntoView({ block: 'end', behavior: 'auto' });
+    if (last && last.scrollIntoView) await browserAction(() => last.scrollIntoView({ block: 'end', behavior: 'auto' }));
     await new Promise((resolve) => setTimeout(resolve, 450));
     const after = commentTreeCount(comments({ limit: 100 }));
     return {

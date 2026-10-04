@@ -61,6 +61,7 @@
       "returns": { "type": "object", "description": "Search input state and geometry." }
     },
     "selectSearchInput": {
+      "action": true,
       "description": "Select the current Xiaohongshu search input.",
       "path": "page_scripts.js",
       "binding": "SocaiXhsPageScripts",
@@ -69,6 +70,7 @@
       "returns": { "type": "object", "description": "Search input selection outcome." }
     },
     "setSearchInput": {
+      "action": true,
       "description": "Set the current Xiaohongshu search input value.",
       "path": "page_scripts.js",
       "binding": "SocaiXhsPageScripts",
@@ -204,6 +206,7 @@
       "returns": { "type": "object", "description": "Exact rendered comment count for reconciliation." }
     },
     "expandCommentReplies": {
+      "action": true,
       "description": "Expand visible Xiaohongshu comment replies.",
       "path": "page_scripts.js",
       "binding": "SocaiXhsPageScripts",
@@ -214,6 +217,7 @@
       "returns": { "type": "object", "description": "Reply expansion outcome." }
     },
     "scrollFeed": {
+      "action": true,
       "description": "Scroll the Xiaohongshu search feed.",
       "path": "page_scripts.js",
       "binding": "SocaiXhsPageScripts",
@@ -224,6 +228,7 @@
       "returns": { "type": "object", "description": "Feed scroll state." }
     },
     "scrollInNote": {
+      "action": true,
       "description": "Scroll within the active Xiaohongshu note.",
       "path": "page_scripts.js",
       "binding": "SocaiXhsPageScripts",

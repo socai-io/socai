@@ -103,17 +103,7 @@ impl<'a> DouyinPageRuntime<'a> {
     }
 
     async fn soft_navigate(&self, url: &str) -> Result<()> {
-        let url = serde_json::to_string(url)?;
-        let expr = format!(
-            "window.location.assign({url}); return {{ ok: true, url: window.location.href }};"
-        );
-        match self.page.evaluate_json(&expr).await {
-            Ok(_) => Ok(()),
-            // The page may start unloading before Chrome returns the evaluate
-            // result. Treat that as a successful navigation trigger; the
-            // polling path will verify where we actually landed.
-            Err(_) => Ok(()),
-        }
+        self.page.navigate_via_location(url).await
     }
 
     pub async fn detect_state(&self) -> Result<Value> {

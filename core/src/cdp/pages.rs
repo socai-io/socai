@@ -97,6 +97,11 @@ impl PageSessionManager {
         start_url: &str,
         background: bool,
     ) -> anyhow::Result<PageSession> {
+        let action = if blank_or_start_url(start_url) != "about:blank" {
+            Some(super::pacing::BrowserAction::begin(start_url).await?)
+        } else {
+            None
+        };
         let mut create_params = json!({ "url": blank_or_start_url(start_url) });
         if background {
             create_params["background"] = Value::Bool(true);
@@ -143,6 +148,14 @@ impl PageSessionManager {
             remote_browser,
             background,
         );
+        if let Some(action) = action {
+            if action.speed != super::BrowserActionSpeed::Instant
+                && !page.wait_for_load_state("domcontentloaded", 15.0).await?
+            {
+                anyhow::bail!("new browser page did not become DOM-ready after 15s");
+            }
+            action.finish().await;
+        }
         target_guard.disarm();
         Ok(page)
     }

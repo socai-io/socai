@@ -12,7 +12,7 @@ git clone https://github.com/socai-io/socai.git
 cd socai
 ```
 
-Read [`AGENTS.md`](https://github.com/socai-io/socai/blob/main/AGENTS.md) before changing implementation code and [`DEVELOPMENT.md`](https://github.com/socai-io/socai/blob/main/DEVELOPMENT.md) for the maintained local workflows.
+Read [`AGENTS.md`](https://github.com/socai-io/socai/blob/main/AGENTS.md) before changing implementation code and [the guide’s Local development section](https://github.com/socai-io/socai/blob/main/docs/guide.md#local-development) for the maintained local workflows.
 
 ## Rust workspace
 

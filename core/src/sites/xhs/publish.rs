@@ -558,7 +558,7 @@ async fn select_image_mode(page: &PageSession) -> anyhow::Result<()> {
     let mut latest = Value::Null;
     while Instant::now() < deadline {
         latest = page
-            .evaluate_json(
+            .evaluate_action(
                 r#"
 return (() => {
   const ready = document.querySelector("input[type='file'][accept*='.jpg']");
@@ -1077,9 +1077,9 @@ async fn collect_complete_manager_ids(
             anyhow::bail!("creator account changed during the precommit manager scan");
         }
         latest = page
-            .evaluate_json(
+            .evaluate_action(
                 r#"
-return (() => {
+return (async () => {
   const body = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim();
   const visible = el => {
     if (!el || !el.getBoundingClientRect) return false;
@@ -1122,7 +1122,7 @@ return (() => {
   const max = scrollRoot ? Math.max(0, scrollRoot.scrollHeight - scrollRoot.clientHeight) : 0;
   const atEnd = !scrollRoot || before >= max - 4;
   if (scrollRoot) {
-    scrollRoot.scrollTop = atEnd ? 0 : Math.min(max, before + Math.max(240, scrollRoot.clientHeight * 0.8));
+    await socaiAction(() => { scrollRoot.scrollTop = atEnd ? 0 : Math.min(max, before + Math.max(240, scrollRoot.clientHeight * 0.8)); });
   }
   const next = [...document.querySelectorAll('button,[role="button"]')].find(el => {
     const text = (el.innerText || el.textContent || '').trim();
@@ -1131,7 +1131,7 @@ return (() => {
   });
   let nextClicked = false;
   if (atEnd && next && !next.disabled && next.getAttribute('aria-disabled') !== 'true') {
-    next.click();
+    await socaiAction(() => next.click());
     nextClicked = true;
   }
   return {
@@ -1205,9 +1205,9 @@ async fn wait_for_manager_note(
             anyhow::bail!("creator account changed before reconciliation");
         }
         latest = page
-            .evaluate_json(
+            .evaluate_action(
                 r#"
-return (() => {
+return (async () => {
   const body = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim();
   const visible = el => {
     if (!el || !el.getBoundingClientRect) return false;
@@ -1268,7 +1268,7 @@ return (() => {
   const max = scrollRoot ? Math.max(0, scrollRoot.scrollHeight - scrollRoot.clientHeight) : 0;
   const atEnd = !scrollRoot || before >= max - 4;
   if (scrollRoot) {
-    scrollRoot.scrollTop = atEnd ? 0 : Math.min(max, before + Math.max(240, scrollRoot.clientHeight * 0.8));
+    await socaiAction(() => { scrollRoot.scrollTop = atEnd ? 0 : Math.min(max, before + Math.max(240, scrollRoot.clientHeight * 0.8)); });
   }
   const next = [...document.querySelectorAll('button,[role="button"]')].find(el => {
     const text = (el.innerText || el.textContent || '').trim();
@@ -1277,7 +1277,7 @@ return (() => {
   });
   let nextClicked = false;
   if (atEnd && next && !next.disabled && next.getAttribute('aria-disabled') !== 'true') {
-    next.click();
+    await socaiAction(() => next.click());
     nextClicked = true;
   }
   return {

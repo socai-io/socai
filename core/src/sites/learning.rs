@@ -51,6 +51,9 @@ pub struct SiteSkillManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserToolDefinition {
+    /// DOM action (scroll/input/click), paced globally rather than as a read probe.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub action: bool,
     pub description: String,
     pub path: String,
     /// Bundle expression that exposes the callable table, for example
@@ -496,7 +499,9 @@ fn pagination_scroll_tool(site_id: &str, tool_name: &str) -> Option<&'static str
     match (site_id, tool_name) {
         ("linkedin" | "instagram" | "dy" | "tiktok" | "x", "comments") => Some("scrollComments"),
         ("linkedin" | "instagram" | "x", "searchResults") => Some("scrollResults"),
+        ("x", "searchPeople" | "searchLists" | "searchMedia") => Some("scrollResults"),
         ("instagram" | "x", "profilePosts") => Some("scrollPosts"),
+        ("x", "feedPosts") => Some("scrollResults"),
         ("dy" | "tiktok", "videoCards") => Some("scrollFeed"),
         _ => None,
     }
@@ -602,7 +607,11 @@ pub async fn run_site_browser_tool(
     validate_tool_arguments(tool_name, tool, args)?;
     let source = skill.read_resource(&tool.path)?;
     let expression = browser_tool_expression(site_id, tool_name, tool, &source, args)?;
-    let result = page.evaluate_json(&expression).await?;
+    let result = if tool.action {
+        page.evaluate_action(&expression).await?
+    } else {
+        page.evaluate_json(&expression).await?
+    };
     validate_value_against_schema(
         &result,
         &tool.returns,

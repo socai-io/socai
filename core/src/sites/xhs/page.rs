@@ -742,7 +742,7 @@ impl<'a> XhsPageRuntime<'a> {
 
         let _ = self
             .page
-            .evaluate_json("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true}))")
+            .evaluate_action("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true}))")
             .await;
         let state = self.wait_for_note_closed(per_attempt).await?;
         if !note_is_open(&state) {
@@ -777,7 +777,7 @@ impl<'a> XhsPageRuntime<'a> {
         {
             let _ = self
                 .page
-                .evaluate_json("history.back(); return {ok: true};")
+                .evaluate_action("history.back(); return {ok: true};")
                 .await;
             let state = self.wait_for_note_closed(per_attempt.max(1.5)).await?;
             if !note_is_open(&state) {
@@ -1215,7 +1215,7 @@ impl<'a> XhsPageRuntime<'a> {
             trigger
         } else {
             self.page
-                .evaluate_json(
+                .evaluate_action(
                     "window.scrollTo({ left: 0, top: 0, behavior: 'instant' }); return { ok: true, y: scrollY };",
                 )
                 .await?;

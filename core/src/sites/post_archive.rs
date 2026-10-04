@@ -370,14 +370,13 @@ fn video_files_from_media_list(media: Option<&Value>) -> Vec<(usize, String)> {
         let poster = text_at(item, &["poster_local_path", "poster_url", "poster"]);
         let local = text_at(item, &["local_path"]);
         let has_local = !local.is_empty() && !is_remote_url(&local);
-        let remote = if is_remote_url(&raw_src)
-            && !is_hls_url(&raw_src)
-            && !is_byte_range_preview(&raw_src)
-        {
-            raw_src
-        } else {
-            String::new()
-        };
+        let remote =
+            if is_remote_url(&raw_src) && !is_hls_url(&raw_src) && !is_byte_range_preview(&raw_src)
+            {
+                raw_src
+            } else {
+                String::new()
+            };
         if !has_local && poster.is_empty() && remote.is_empty() {
             continue;
         }
@@ -590,14 +589,12 @@ fn remote_video_url(video: &Value) -> String {
 }
 
 pub(crate) fn is_byte_range_preview(url: &str) -> bool {
-    reqwest::Url::parse(url.trim())
-        .ok()
-        .is_some_and(|parsed| {
-            parsed.query_pairs().any(|(key, _)| {
-                let key = key.to_ascii_lowercase();
-                key == "bytestart" || key == "byteend"
-            })
+    reqwest::Url::parse(url.trim()).ok().is_some_and(|parsed| {
+        parsed.query_pairs().any(|(key, _)| {
+            let key = key.to_ascii_lowercase();
+            key == "bytestart" || key == "byteend"
         })
+    })
 }
 
 fn is_remote_url(value: &str) -> bool {
@@ -1187,7 +1184,10 @@ fn normalize_instagram_detail_media(item: &Value) -> Value {
     if video_count == 1 && image_count == 1 {
         if let (Some(video_at), Some(image_at)) = (video_at, image_at) {
             let image_url = text_at(&media[image_at], &["url", "src"]);
-            let poster = text_at(&media[video_at], &["poster_url", "poster", "poster_local_path"]);
+            let poster = text_at(
+                &media[video_at],
+                &["poster_url", "poster", "poster_local_path"],
+            );
             if poster.is_empty() && !image_url.is_empty() {
                 if let Some(object) = media[video_at].as_object_mut() {
                     object.insert("poster_url".into(), Value::String(image_url));

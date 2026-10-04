@@ -1,4 +1,5 @@
 (function () {
+  const browserAction = typeof socaiAction === "function" ? socaiAction : async (perform) => perform();
   const POST_PATH = /^\/(?:[A-Za-z0-9._]+\/)?(p|reel)\/([A-Za-z0-9_-]+)\/?/i;
   const SEARCH_PATH = /^\/explore\/search\/keyword\/?/i;
   const RESERVED_PROFILE_NAMES = new Set([
@@ -1337,13 +1338,13 @@
       if (!visible(control) || control.disabled) continue;
       const label = cleanText(`${control.innerText || ''} ${control.getAttribute && control.getAttribute('aria-label') || ''}`, 500);
       if (!commentsPattern.test(label) && !repliesPattern.test(label)) continue;
-      control.click();
+      await browserAction(() => control.click());
       clicked += 1;
       if (clicked >= 6) break;
     }
     const times = Array.from(root.querySelectorAll('a[href*="/c/"] time[datetime]'));
     const last = times[times.length - 1];
-    if (last && last.scrollIntoView) last.scrollIntoView({ block: 'end', behavior: 'auto' });
+    if (last && last.scrollIntoView) await browserAction(() => last.scrollIntoView({ block: 'end', behavior: 'auto' }));
     await new Promise((resolve) => setTimeout(resolve, 450));
     const after = commentCount(commentRows(100));
     return {

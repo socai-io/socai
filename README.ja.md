@@ -111,7 +111,7 @@ macOS の CLI：
 curl -fsSL https://github.com/socai-io/socai/releases/latest/download/install.sh | sh
 ```
 
-Windows のインストール、Agent 連携、プラットフォームコマンド、Chrome の設定、成果物は[ユーザーガイド](docs/guide.md)にあります。開発メモは [DEVELOPMENT.md](DEVELOPMENT.md) にあります。
+Windows のインストール、Agent 連携、プラットフォームコマンド、Chrome の設定、成果物、ローカル開発の手順は[利用・開発ガイド](docs/guide.md)にまとめています。
 
 ## socai で作ったもの
 

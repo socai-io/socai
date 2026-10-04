@@ -848,7 +848,7 @@ if (document.activeElement !== element) return {{ ok: false, error: 'type target
 return {{ ok: true, tag: element.tagName }};
 "#
         );
-        let value = self.page.evaluate_json(&script).await?;
+        let value = self.page.evaluate_action(&script).await?;
         if value.get("ok").and_then(Value::as_bool) != Some(true) {
             anyhow::bail!(
                 "{}",

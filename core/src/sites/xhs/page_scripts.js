@@ -1,4 +1,5 @@
 const SocaiXhsPageScripts = (() => {
+  const browserAction = typeof socaiAction === "function" ? socaiAction : async (perform) => perform();
   // ── tiny DOM helpers ─────────────────────────────────────────
   const $ = (sel, root = document) => (root || document).querySelector(sel);
   const $$ = (sel, root = document) => Array.from((root || document).querySelectorAll(sel));
@@ -1598,7 +1599,7 @@ const SocaiXhsPageScripts = (() => {
   // Click every visible "展开 N 条回复 / 展开更多回复" button to load the next batch
   // of replies. These are Vue-bound divs, so a synthetic .click() drives the same
   // handler a human click would. Skips "收起" (collapse). Returns how many fired.
-  function expandCommentReplies(opts = {}) {
+  async function expandCommentReplies(opts = {}) {
     const root = getNoteRoot();
     const scope = $('.comments-el', root) || root;
     const max = Number(opts.max_clicks) || 60;
@@ -1607,7 +1608,7 @@ const SocaiXhsPageScripts = (() => {
     let clicked = 0;
     for (const b of buttons) {
       if (clicked >= max) break;
-      try { b.click(); clicked += 1; } catch (e) { /* ignore */ }
+      try { await browserAction(() => b.click()); clicked += 1; } catch (e) { /* ignore */ }
     }
     return { ok: true, clicked, remaining: Math.max(0, buttons.length - clicked) };
   }

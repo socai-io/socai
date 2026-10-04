@@ -10,6 +10,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 
 use super::connection::Cdp;
+use super::pacing::BrowserAction;
 use super::raw_client::RawCdpClient;
 use super::snapshot::SnapshotRecorder;
 
@@ -48,6 +49,28 @@ struct PageConnection {
 pub(crate) struct PageJavascriptSession {
     client: RawCdpClient,
     session_id: Option<String>,
+}
+
+/// Cancel pending paced DOM primitives when their Rust caller is dropped.
+/// Terminating synchronous JS alone would not cancel a pending timer callback.
+struct ActionScriptCancellation {
+    session: Option<PageJavascriptSession>,
+    key: String,
+}
+
+impl Drop for ActionScriptCancellation {
+    fn drop(&mut self) {
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        let key = serde_json::to_string(&self.key).expect("script key is JSON-safe");
+        tokio::spawn(async move {
+            let _ = session.execute("Runtime.evaluate", json!({
+                "expression": format!("if (globalThis[{key}]) globalThis[{key}].cancelled = true;"),
+                "returnByValue": true,
+            })).await;
+        });
+    }
 }
 
 impl PageJavascriptSession {
@@ -245,6 +268,32 @@ impl PageSession {
         }
     }
 
+    async fn begin_action(&self) -> anyhow::Result<BrowserAction> {
+        // Read the committed URL through CDP, including across redirects and SPA
+        // history changes, without relying on page-owned JavaScript globals.
+        let connection = self.connection.read().await;
+        let session = PageJavascriptSession {
+            client: connection.client.clone(),
+            session_id: connection.session_id.clone(),
+        };
+        drop(connection);
+        BrowserAction::begin(&session.top_frame_url().await?).await
+    }
+
+    /// Some sites require a page-initiated navigation. Pace by the destination,
+    /// just like Page.navigate; callers still verify their site-specific state.
+    pub async fn navigate_via_location(&self, url: &str) -> anyhow::Result<()> {
+        let action = BrowserAction::begin(url).await?;
+        let url = serde_json::to_string(url)?;
+        // The frame can unload before the evaluate response arrives.
+        let _ = self
+            .evaluate_json(&format!("window.location.assign({url}); return true;"))
+            .await;
+        self.wait_for_load_state("domcontentloaded", 15.0).await?;
+        action.finish().await;
+        Ok(())
+    }
+
     /// Navigate to `url` and wait for DOM readiness.
     pub async fn navigate(&self, url: &str) -> anyhow::Result<()> {
         self.navigate_with_timeout(url, 15.0).await
@@ -255,6 +304,7 @@ impl PageSession {
         url: &str,
         timeout_seconds: f64,
     ) -> anyhow::Result<()> {
+        let action = BrowserAction::begin(url).await?;
         self.snapshot_before().await;
         let timeout = seconds(timeout_seconds);
         let resp = tokio::time::timeout(
@@ -269,8 +319,13 @@ impl PageSession {
         if let Some(err) = resp.get("errorText").and_then(Value::as_str) {
             anyhow::bail!("navigation to {url} failed: {err}");
         }
-        self.wait_for_load_state("domcontentloaded", timeout_seconds)
-            .await?;
+        if !self
+            .wait_for_load_state("domcontentloaded", timeout_seconds)
+            .await?
+        {
+            anyhow::bail!("navigation to {url} did not become DOM-ready after {timeout_seconds}s");
+        }
+        action.finish().await;
         Ok(())
     }
 
@@ -308,6 +363,54 @@ impl PageSession {
     pub async fn evaluate_json(&self, expression: &str) -> anyhow::Result<Value> {
         self.snapshot_before().await;
         self.evaluate_json_raw(expression).await
+    }
+
+    /// Execute a DOM action under the same pacing policy as trusted CDP input.
+    /// Compound scripts use `socaiAction(() => ...)` for each primitive action.
+    pub async fn evaluate_action(&self, expression: &str) -> anyhow::Result<Value> {
+        let action = self.begin_action().await?;
+        let (min, max) = action.speed.bounds_ms();
+        let body = wrap_expression(expression);
+        let session = self.javascript_session().await;
+        let key = format!("__socaiAction_{}", uuid::Uuid::new_v4().simple());
+        let mut cancellation = ActionScriptCancellation {
+            session: Some(session.clone()),
+            key: key.clone(),
+        };
+        let key = serde_json::to_string(&key)?;
+        let expression = format!(
+            r#"(async () => {{
+                const control = {{ cancelled: false }};
+                globalThis[{key}] = control;
+                let acted = false;
+                const socaiAction = async (perform) => {{
+                    if (control.cancelled) throw new Error('Browser action cancelled');
+                    if (acted && {max} > 0) {{
+                        await new Promise(resolve => setTimeout(resolve,
+                            {min} + Math.floor(Math.random() * ({max} - {min} + 1))));
+                    }}
+                    if (control.cancelled) throw new Error('Browser action cancelled');
+                    const result = await perform();
+                    acted = true;
+                    return result;
+                }};
+                try {{ return await ({body}); }}
+                finally {{ delete globalThis[{key}]; }}
+            }})()"#
+        );
+        // Batched reply expansion can contain dozens of separately paced clicks.
+        let timeout = if max == 0 { 30 } else { 600 };
+        let result = evaluate_json_on_session(
+            &session.client,
+            session.session_id.as_deref(),
+            &expression,
+            Duration::from_secs(timeout),
+            None,
+        )
+        .await?;
+        cancellation.session = None;
+        action.finish().await;
+        Ok(result)
     }
 
     /// Evaluate JavaScript with a caller-selected CDP response timeout. The
@@ -664,17 +767,22 @@ return (async () => {
     }
 
     pub async fn click(&self, x: f64, y: f64) -> anyhow::Result<()> {
+        let action = self.begin_action().await?;
         self.snapshot_before().await;
         self.dispatch_mouse("mouseMoved", x, y, "none", 0).await?;
         self.dispatch_mouse("mousePressed", x, y, "left", 1).await?;
         self.dispatch_mouse("mouseReleased", x, y, "left", 1)
             .await?;
+        action.finish().await;
         Ok(())
     }
 
     pub async fn mouse_move(&self, x: f64, y: f64) -> anyhow::Result<()> {
+        let action = self.begin_action().await?;
         self.snapshot_before().await;
-        self.dispatch_mouse("mouseMoved", x, y, "none", 0).await
+        self.dispatch_mouse("mouseMoved", x, y, "none", 0).await?;
+        action.finish().await;
+        Ok(())
     }
 
     async fn dispatch_mouse(
@@ -700,9 +808,11 @@ return (async () => {
     }
 
     pub async fn type_text(&self, text: &str) -> anyhow::Result<()> {
+        let action = self.begin_action().await?;
         self.snapshot_before().await;
         self.execute("Input.insertText", json!({ "text": text }))
             .await?;
+        action.finish().await;
         Ok(())
     }
 
@@ -732,6 +842,7 @@ return (async () => {
         selector: &str,
         files: &[PathBuf],
     ) -> anyhow::Result<()> {
+        let action = self.begin_action().await?;
         if files.is_empty() {
             anyhow::bail!("at least one upload file is required");
         }
@@ -770,12 +881,14 @@ return (async () => {
             json!({ "nodeId": node_id, "files": resolved }),
         )
         .await?;
+        action.finish().await;
         Ok(())
     }
 
     /// Focus a DOM field and select its current contents without writing to it.
     /// The subsequent text is still entered through trusted CDP keyboard input.
     pub async fn focus_and_select(&self, selector: &str) -> anyhow::Result<()> {
+        let action = self.begin_action().await?;
         self.snapshot_before().await;
         self.execute("DOM.enable", json!({})).await?;
         let document = self
@@ -814,6 +927,7 @@ return (async () => {
             }),
         )
         .await?;
+        action.finish().await;
         Ok(())
     }
 
@@ -953,6 +1067,7 @@ return (async () => {
     /// both stop responding). Per-char key events keep the page's key-driven
     /// behaviours (suggestion fetch, submit arming) working.
     pub async fn type_chars(&self, text: &str) -> anyhow::Result<()> {
+        let action = self.begin_action().await?;
         self.snapshot_before().await;
         for ch in text.chars() {
             let ch = ch.to_string();
@@ -968,10 +1083,12 @@ return (async () => {
             .await?;
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
+        action.finish().await;
         Ok(())
     }
 
     pub async fn press_key(&self, key: &str) -> anyhow::Result<()> {
+        let action = self.begin_action().await?;
         self.snapshot_before().await;
         let (vk, code, text) = key_definition(key);
         let base = |event_type: &str| {
@@ -991,15 +1108,18 @@ return (async () => {
             .await?;
         self.execute("Input.dispatchKeyEvent", base("keyUp"))
             .await?;
+        action.finish().await;
         Ok(())
     }
 
     pub async fn scroll(&self, delta_y: i64) -> anyhow::Result<()> {
+        let action = self.begin_action().await?;
         let expr = format!(
             "window.scrollBy({{left: 0, top: {}, behavior: 'instant'}}); return {{x: scrollX, y: scrollY}};",
             delta_y
         );
         self.evaluate_json(&expr).await?;
+        action.finish().await;
         Ok(())
     }
 

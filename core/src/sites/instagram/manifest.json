@@ -49,6 +49,7 @@
       "returns": { "type": "object", "description": "Ordered account suggestions, or an explicit empty or gate state." }
     },
     "setSearchQuery": {
+      "action": true,
       "description": "Set a query in the visible Instagram search input and dispatch input events; this never follows, likes, comments, or sends messages.",
       "path": "page_scripts.js",
       "binding": "window.SocaiInstagramPageScripts",
@@ -96,6 +97,7 @@
       "returns": { "type": "array", "description": "Visible Instagram search candidates." }
     },
     "scrollResults": {
+      "action": true,
       "description": "Scroll an Instagram search surface by one bounded viewport step to hydrate more candidates.",
       "path": "page_scripts.js",
       "binding": "window.SocaiInstagramPageScripts",
@@ -126,6 +128,7 @@
       "returns": { "type": "array", "description": "Visible Instagram profile posts and reels." }
     },
     "scrollPosts": {
+      "action": true,
       "description": "Scroll an Instagram profile grid by one bounded step to hydrate more posts and reels.",
       "path": "page_scripts.js",
       "binding": "window.SocaiInstagramPageScripts",
@@ -184,6 +187,7 @@
       "returns": { "type": "array", "description": "Accumulated, deduplicated Instagram comments." }
     },
     "scrollComments": {
+      "action": true,
       "description": "Load the next bounded batch of Instagram comments and collapsed replies using read-only expansion controls.",
       "path": "page_scripts.js",
       "binding": "window.SocaiInstagramPageScripts",

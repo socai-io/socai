@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -5,16 +6,37 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::cdp::{ChromeConnectOptions, ChromeProfile};
+use crate::cdp::{BrowserActionSpeed, ChromeConnectOptions, ChromeProfile};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SocaiConfig {
+    #[serde(default)]
+    pub browser: BrowserConfig,
     #[serde(default)]
     pub chrome: ChromeConfig,
     #[serde(default)]
     pub runs: RunsConfig,
     #[serde(default)]
     pub cloud: CloudConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BrowserConfig {
+    #[serde(default)]
+    pub action_speeds: BTreeMap<String, BrowserActionSpeed>,
+}
+
+impl BrowserConfig {
+    pub fn action_speed_for(&self, site_id: &str) -> BrowserActionSpeed {
+        self.action_speeds
+            .get(site_id)
+            .copied()
+            .unwrap_or_else(|| match site_id {
+                "xhs" | "instagram" => BrowserActionSpeed::Instant,
+                "linkedin" => BrowserActionSpeed::Slow,
+                _ => BrowserActionSpeed::Normal,
+            })
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,15 +98,26 @@ impl SocaiConfig {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum ConfigKey {
+enum ConfigKey<'a> {
+    BrowserActionSpeed(&'a str),
     ChromeProfile,
     ChromeProfileDir,
     RunsDir,
     CloudBaseUrl,
 }
 
-impl ConfigKey {
-    fn parse(key: &str) -> Result<Self> {
+impl<'a> ConfigKey<'a> {
+    fn parse(key: &'a str) -> Result<Self> {
+        if let Some(site_id) = key.trim().strip_prefix("browser.action_speeds.") {
+            if !site_id.is_empty()
+                && site_id
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
+            {
+                return Ok(Self::BrowserActionSpeed(site_id));
+            }
+            anyhow::bail!("invalid platform id in config key {key:?}");
+        }
         match key.trim() {
             "chrome.profile" => Ok(Self::ChromeProfile),
             "chrome.profile_dir" | "chrome.profile-dir" => Ok(Self::ChromeProfileDir),
@@ -94,26 +127,28 @@ impl ConfigKey {
                 Ok(Self::CloudBaseUrl)
             }
             other => anyhow::bail!(
-                "unknown config key {other:?}; supported keys: chrome.profile, chrome.profile_dir, runs.dir, cloud.base_url"
+                "unknown config key {other:?}; supported keys: browser.action_speeds.<platform>, chrome.profile, chrome.profile_dir, runs.dir, cloud.base_url"
             ),
         }
     }
 
-    fn path(self) -> &'static [&'static str] {
+    fn path(self) -> Vec<&'a str> {
         match self {
-            Self::ChromeProfile => &["chrome", "profile"],
-            Self::ChromeProfileDir => &["chrome", "profile_dir"],
-            Self::RunsDir => &["runs", "dir"],
-            Self::CloudBaseUrl => &["cloud", "base_url"],
+            Self::BrowserActionSpeed(site_id) => vec!["browser", "action_speeds", site_id],
+            Self::ChromeProfile => vec!["chrome", "profile"],
+            Self::ChromeProfileDir => vec!["chrome", "profile_dir"],
+            Self::RunsDir => vec!["runs", "dir"],
+            Self::CloudBaseUrl => vec!["cloud", "base_url"],
         }
     }
 
-    fn display(self) -> &'static str {
+    fn display(self) -> String {
         match self {
-            Self::ChromeProfile => "chrome.profile",
-            Self::ChromeProfileDir => "chrome.profile_dir",
-            Self::RunsDir => "runs.dir",
-            Self::CloudBaseUrl => "cloud.base_url",
+            Self::BrowserActionSpeed(site_id) => format!("browser.action_speeds.{site_id}"),
+            Self::ChromeProfile => "chrome.profile".into(),
+            Self::ChromeProfileDir => "chrome.profile_dir".into(),
+            Self::RunsDir => "runs.dir".into(),
+            Self::CloudBaseUrl => "cloud.base_url".into(),
         }
     }
 }
@@ -156,33 +191,46 @@ pub fn save_config_value(value: &Value) -> Result<PathBuf> {
     }
     let mut rendered = serde_json::to_string_pretty(value)?;
     rendered.push('\n');
-    fs::write(&path, rendered).with_context(|| format!("failed to write {}", path.display()))?;
+    // Browser actions read this file live; never expose a truncated JSON file
+    // while a desktop or CLI setting is being saved.
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let saved = (|| -> std::io::Result<()> {
+        fs::write(&temporary, rendered)?;
+        if let Ok(metadata) = fs::metadata(&path) {
+            fs::set_permissions(&temporary, metadata.permissions())?;
+        }
+        fs::rename(&temporary, &path)
+    })();
+    if saved.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    saved.with_context(|| format!("failed to write {}", path.display()))?;
     Ok(path)
 }
 
 pub fn get_config_key(key: &str) -> Result<Option<Value>> {
     let key = ConfigKey::parse(key)?;
     let value = load_config_value()?;
-    Ok(get_path(&value, key.path()).cloned())
+    Ok(get_path(&value, &key.path()).cloned())
 }
 
 pub fn set_config_key(key: &str, raw_value: &str) -> Result<PathBuf> {
     let key = ConfigKey::parse(key)?;
     let value = parse_key_value(key, raw_value)?;
     let mut config = load_config_value()?;
-    set_path(&mut config, key.path(), value)?;
+    set_path(&mut config, &key.path(), value)?;
     save_config_value(&config)
 }
 
 pub fn unset_config_key(key: &str) -> Result<PathBuf> {
     let key = ConfigKey::parse(key)?;
     let mut config = load_config_value()?;
-    unset_path(&mut config, key.path());
+    unset_path(&mut config, &key.path());
     prune_empty_objects(&mut config);
     save_config_value(&config)
 }
 
-pub fn canonical_config_key(key: &str) -> Result<&'static str> {
+pub fn canonical_config_key(key: &str) -> Result<String> {
     Ok(ConfigKey::parse(key)?.display())
 }
 
@@ -195,6 +243,9 @@ fn parse_key_value(key: ConfigKey, raw_value: &str) -> Result<Value> {
         );
     }
     match key {
+        ConfigKey::BrowserActionSpeed(_) => Ok(Value::String(
+            BrowserActionSpeed::parse(value)?.as_str().into(),
+        )),
         ConfigKey::ChromeProfile => Ok(Value::String(ChromeProfile::parse(value)?.as_str().into())),
         ConfigKey::ChromeProfileDir => Ok(Value::String(value.to_string())),
         ConfigKey::RunsDir => Ok(Value::String(normalized_path_value(value)?)),
@@ -304,6 +355,39 @@ mod tests {
 
     #[test]
     fn chrome_connect_options_default_to_existing() {
+        for config in [
+            SocaiConfig::default(),
+            serde_json::from_str::<SocaiConfig>(r#"{"browser":{"action_speed":"instant"}}"#)
+                .unwrap(),
+        ] {
+            for (site, expected) in [
+                ("xhs", BrowserActionSpeed::Instant),
+                ("instagram", BrowserActionSpeed::Instant),
+                ("linkedin", BrowserActionSpeed::Slow),
+                ("dy", BrowserActionSpeed::Normal),
+                ("tiktok", BrowserActionSpeed::Normal),
+                ("x", BrowserActionSpeed::Normal),
+                ("custom", BrowserActionSpeed::Normal),
+            ] {
+                assert_eq!(config.browser.action_speed_for(site), expected);
+            }
+        }
+        let config: SocaiConfig = serde_json::from_str(
+            r#"{"browser":{"action_speeds":{"linkedin":"instant","xhs":"slow"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.browser.action_speed_for("linkedin"),
+            BrowserActionSpeed::Instant
+        );
+        assert_eq!(
+            config.browser.action_speed_for("xhs"),
+            BrowserActionSpeed::Slow
+        );
+        assert_eq!(
+            config.browser.action_speed_for("instagram"),
+            BrowserActionSpeed::Instant
+        );
         let options = SocaiConfig::default().chrome_connect_options();
         assert_eq!(options.profile, ChromeProfile::Existing);
         assert_eq!(options.managed_user_data_dir, None);
@@ -331,6 +415,20 @@ mod tests {
     fn parse_chrome_profile_config_is_strict() {
         assert!(parse_key_value(ConfigKey::ChromeProfile, "managed").is_ok());
         assert!(parse_key_value(ConfigKey::ChromeProfile, "isolated").is_err());
+        assert!(ConfigKey::parse("browser.action_speeds.").is_err());
+        assert!(ConfigKey::parse("browser.action_speeds.xhs.extra").is_err());
+        assert!(ConfigKey::parse("browser.action_speed").is_err());
+        for speed in ["instant", "normal", "slow"] {
+            assert_eq!(
+                parse_key_value(ConfigKey::BrowserActionSpeed("linkedin"), speed).unwrap(),
+                Value::String(speed.into())
+            );
+        }
+        assert!(parse_key_value(ConfigKey::BrowserActionSpeed("linkedin"), "fast").is_err());
+        assert_eq!(
+            canonical_config_key("browser.action_speeds.linkedin").unwrap(),
+            "browser.action_speeds.linkedin"
+        );
     }
 
     #[test]

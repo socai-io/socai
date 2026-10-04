@@ -111,7 +111,7 @@ macOS 命令行：
 curl -fsSL https://github.com/socai-io/socai/releases/latest/download/install.sh | sh
 ```
 
-Windows 安装、Agent 接入、平台命令、Chrome 配置和运行产物见[使用指南](docs/guide.md)。开发说明见 [DEVELOPMENT.md](DEVELOPMENT.md)。
+Windows 安装、Agent 接入、平台命令、Chrome 配置、运行产物和本地开发流程统一见[使用与开发指南](docs/guide.md)。
 
 ## 用 socai 做的
 

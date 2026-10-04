@@ -1,4 +1,5 @@
 (function () {
+  const browserAction = typeof socaiAction === "function" ? socaiAction : async (perform) => perform();
   function text(node) {
     return (node && (node.innerText || node.textContent) || '').replace(/\s+/g, ' ').trim();
   }
@@ -738,7 +739,7 @@
       if (!visible(control) || control.disabled) continue;
       const label = `${text(control)} ${control.getAttribute('aria-label') || ''}`.trim();
       if (!expandPattern.test(label)) continue;
-      control.click();
+      await browserAction(() => control.click());
       clicked += 1;
       if (clicked >= 6) break;
     }
@@ -752,11 +753,13 @@
     if (!scrollable || scrollable === document) scrollable = document.scrollingElement || document.documentElement;
     const beforeY = scrollable.scrollTop || window.scrollY;
     const step = Math.max(360, Math.floor((scrollable.clientHeight || window.innerHeight) * 0.8));
-    if (typeof scrollable.scrollBy === 'function') {
-      scrollable.scrollBy({ top: step, left: 0, behavior: 'auto' });
-    } else {
-      scrollable.scrollTop = beforeY + step;
-    }
+    await browserAction(() => {
+      if (typeof scrollable.scrollBy === 'function') {
+        scrollable.scrollBy({ top: step, left: 0, behavior: 'auto' });
+      } else {
+        scrollable.scrollTop = beforeY + step;
+      }
+    });
     await new Promise((resolve) => setTimeout(resolve, 500));
     const after = commentTreeCount(comments({ limit: 999 }));
     const y = scrollable.scrollTop || window.scrollY;

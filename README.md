@@ -121,7 +121,7 @@ socai integrate status --json
 
 The portable [`socai-social-research` Skill](https://skills.sh/socai-io/socai/socai-social-research) keeps agent-driven research read-only and covers all six supported platforms.
 
-Windows install, agent setup, platform commands, Chrome profiles, and artifacts are in the [user guide](docs/guide.md). Development notes are in [DEVELOPMENT.md](DEVELOPMENT.md).
+Windows installation, agent setup, platform commands, Chrome profiles, run artifacts, and local development are documented in the [guide](docs/guide.md).
 
 Browser protocol compatibility and security boundaries are documented in the [browser backend support matrix](docs/browser-backends.md).
 

@@ -36,6 +36,7 @@
       "returns": { "type": "array", "description": "Visible LinkedIn search results." }
     },
     "scrollResults": {
+      "action": true,
       "description": "Scroll a LinkedIn search page by one bounded viewport step to hydrate more results.",
       "path": "page_scripts.js",
       "binding": "window.SocaiLinkedInPageScripts",
@@ -150,6 +151,7 @@
       "returns": { "type": "object", "description": "Exact rendered comment count for reconciliation." }
     },
     "scrollComments": {
+      "action": true,
       "description": "Load the next bounded batch of LinkedIn comments and collapsed replies using read-only expansion controls.",
       "path": "page_scripts.js",
       "binding": "window.SocaiLinkedInPageScripts",
