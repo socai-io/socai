@@ -874,8 +874,12 @@
         const chunk = JSON.parse(source.slice(source.indexOf('(') + 1, source.lastIndexOf(')')))[1];
         const record = find(JSON.parse(chunk.slice(chunk.indexOf(':') + 1)), 0);
         if (record) {
-          const desc = typeof record.desc === 'string' && record.desc !== '$undefined' ? record.desc : '';
-          return desc.replace(/\s+/g, ' ').trim();
+          // Flight string encoding: "$undefined" is no value, "$$…" is text
+          // that starts with "$", and any other "$…" points at another chunk.
+          const desc = typeof record.desc === 'string' ? record.desc : '';
+          if (desc === '$undefined') return '';
+          if (/^\$[^$]/.test(desc)) return null;
+          return desc.replace(/^\$\$/, '$').replace(/\s+/g, ' ').trim();
         }
       } catch (_) {}
     }

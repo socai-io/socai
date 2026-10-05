@@ -184,7 +184,8 @@ const AUTHOR_ID = 'MS4wLjABAAAAfixtureAuthor000000000000000000000000000000000';
 
 function replaceOnce(html, from, to) {
   assert.ok(html.includes(from), `fixture no longer contains: ${from.slice(0, 60)}`);
-  return html.replace(from, to);
+  // A replacer function keeps "$" in `to` literal.
+  return html.replace(from, () => to);
 }
 
 function withoutRecord(html) {
@@ -274,6 +275,16 @@ test('a bio the header cuts is returned whole from the author record', () => {
 
   assert.equal(loadPage(html).profile().bio, '发布示例信息 传递示例力量 示例投稿邮箱demo@example.com');
   assert.equal(loadPage(withoutRecord(html)).profile().bio, '发布示例信息 传递示例力量 示例投稿邮箱demo@...');
+});
+
+test('the author record is decoded as a Flight string', () => {
+  const withDesc = (desc) => loadPage(replaceOnce(FIXTURE, '山高水长，一期一会\\\\nestj♌', desc)).profile().bio;
+
+  // A bio that starts with "$" is escaped as "$$" in the record.
+  assert.equal(withDesc('$$100 起拍'), '$100 起拍');
+  // Any other "$…" is a reference to another chunk, so the header row is read.
+  assert.equal(withDesc('$L1f'), '山高水长，一期一会 estj♌');
+  assert.equal(withDesc('$undefined'), '');
 });
 
 test('a profile without a bio returns an empty bio, never the meta description', () => {
