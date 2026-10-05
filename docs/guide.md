@@ -453,6 +453,12 @@ Desktop and TUI agents call core tools directly and continue to receive the
 unchanged `ToolResult`. The CLI daemon remains warm for 24 hours after the
 last site command so browser-backed clients can reuse it across a full day.
 
+A site command whose result carries `ok: false` still prints that JSON on
+stdout, partial results included. It also writes one
+`socai <site> <command>: ok=false (<reason>)` line to stderr and exits with
+status 1, so a script can branch on the exit status and read `reason` for the
+cause.
+
 The task registration shown in [Command line](#command-line) also accepts
 `--context-file <json-path>` or `--context-file -`. Subsequent site commands use
 the daemon's current task until the next successful begin or daemon restart.

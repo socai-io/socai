@@ -5,6 +5,8 @@ mod task;
 mod tui;
 mod version;
 
+use std::process::ExitCode;
+
 use anyhow::Result;
 use clap::{Arg, ArgAction, ArgMatches};
 use serde_json::{json, Map, Value};
@@ -242,7 +244,7 @@ async fn run_site_command(
     site: &'static NativeSiteAdapter,
     command: &'static SiteCommand,
     matches: &ArgMatches,
-) -> Result<()> {
+) -> Result<ExitCode> {
     let args = collect_args(command, matches)?;
     let timeout = if command.slow.applies(&args) {
         daemon::LONG_COMMAND_TIMEOUT
@@ -267,7 +269,22 @@ async fn run_site_command(
     };
     renderer.finish();
     let result = result?;
-    print_command_result(&result, matches.get_flag("pretty"))
+    print_command_result(&result, matches.get_flag("pretty"))?;
+    // stdout stays the full report, partial results included. The exit status
+    // repeats its `ok: false` for callers that only check the status.
+    let data = result.get("data").unwrap_or(&result);
+    if data.get("ok").and_then(Value::as_bool) != Some(false) {
+        return Ok(ExitCode::SUCCESS);
+    }
+    let reason = data
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.is_empty());
+    match reason {
+        Some(reason) => eprintln!("socai {} {}: ok=false ({reason})", site.id, command.name),
+        None => eprintln!("socai {} {}: ok=false", site.id, command.name),
+    }
+    Ok(ExitCode::FAILURE)
 }
 
 fn should_warn_for_update(subcommand: &str) -> bool {
@@ -286,7 +303,7 @@ fn should_warn_for_update(subcommand: &str) -> bool {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<ExitCode> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -299,7 +316,7 @@ async fn main() -> Result<()> {
     let matches = build_cli().get_matches();
     let Some((name, sub_matches)) = matches.subcommand() else {
         tui::run().await?;
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     };
     if should_warn_for_update(name) {
         version::maybe_warn_if_outdated().await;
@@ -356,11 +373,11 @@ async fn main() -> Result<()> {
             let command = site
                 .command(command_name)
                 .ok_or_else(|| anyhow::anyhow!("unknown {name} command: {command_name}"))?;
-            run_site_command(site, command, command_matches).await?;
+            return run_site_command(site, command, command_matches).await;
         }
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn print_capabilities(site_filter: Option<&str>, pretty: bool) -> Result<()> {
