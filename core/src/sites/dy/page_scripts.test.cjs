@@ -100,7 +100,7 @@ class FakeElement {
 const el = (tag, attrs, ...children) => new FakeElement(tag, attrs, children);
 
 // Trimmed from a logged-out www.douyin.com/video/<id> snapshot (2026-10-05).
-function detailPage({ publishTime, videoId = VIDEO_ID, frameId = videoId }) {
+function detailPage({ publishTime, videoId = VIDEO_ID, frameId = videoId, videoVisible = true }) {
   const url = `https://www.douyin.com/video/${videoId}`;
   const breadcrumb = JSON.stringify({
     '@type': 'BreadcrumbList',
@@ -117,7 +117,7 @@ function detailPage({ publishTime, videoId = VIDEO_ID, frameId = videoId }) {
     el('script', { type: 'application/ld+json' }, breadcrumb));
   const player = el('div', { 'data-e2e': 'player-container', class: `wgoQOERl video_${videoId} video-detail-container` },
     el('xg-video-container', { class: 'xg-video-container' },
-      el('video', { src: 'blob:https://www.douyin.com/18ca7cc4' }),
+      el('video', { src: 'blob:https://www.douyin.com/18ca7cc4', hidden: !videoVisible }),
       el('div', { class: 'xgplayer-autoplay-tips', hidden: true },
         el('img', { src: NEXT_COVER_URL }))),
     el('div', { class: 'rDq18SJg faZvEPAT', hidden: true },
@@ -219,6 +219,17 @@ test('video detail resolves a repeated fall-back hour with the work id', () => {
   assert.equal(read('2026-11-01T09:29:30Z'), '2026-11-01T17:30:00+08:00');
   // An id later than both instants is not a creation time; claim no instant.
   assert.equal(read('2026-11-01T12:00:00Z'), '2026-11-01 01:30');
+});
+
+test('video detail leaves counts empty when no player is tied to the work', () => {
+  const detail = loadScripts(detailPage({
+    publishTime: '2026-09-29 21:23',
+    videoVisible: false,
+  })).videoDetail();
+
+  assert.equal(detail.video_id, VIDEO_ID);
+  assert.equal(detail.likes, '');
+  assert.equal(detail.comments_count, '');
 });
 
 test('video detail leaves the cover empty when the share card names another work', () => {

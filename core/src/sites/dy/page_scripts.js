@@ -303,11 +303,11 @@
   }
 
   // The action bar that carries the count hooks is display:none outside the
-  // immersive player, so it is read without a visibility filter. A zero count
-  // is drawn as the bare label (收藏, 分享); only a number is a value.
-  function statCount(root, selector) {
-    const scope = root && root.querySelector ? root : document;
-    const value = text(scope.querySelector(selector));
+  // immersive player, so it is read without a visibility filter, and only
+  // inside the work's own player: a page-wide lookup can read another work.
+  // A zero count is drawn as the bare label (收藏, 分享); only a number is a value.
+  function statCount(player, selector) {
+    const value = text(player && player.querySelector(selector));
     return /^\d[\d.,]*(?:万|亿|[wWkKmMbB])?\+?$/.test(value) ? value : '';
   }
 
