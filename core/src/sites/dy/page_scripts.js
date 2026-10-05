@@ -72,9 +72,11 @@
 
   function pageState() {
     const bodyText = text(document.body);
-    const signedIn = !!document.querySelector(
-      'a[href*="/user/self"] img, [data-e2e="live-avatar"] img'
-    );
+    // The header links the signed-in account's avatar to /user/self. The other
+    // /user/self links (side nav, account menu) are in every session and hold
+    // icons, not images. [data-e2e="live-avatar"] is on every avatar, the
+    // viewed author's included, so it says nothing about the session.
+    const signedIn = !!document.querySelector('a[href*="/user/self"] img');
     const inputs = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"], [role="searchbox"]'))
       .filter(visible)
       .slice(0, 8)

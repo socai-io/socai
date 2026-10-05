@@ -223,6 +223,7 @@ function loadPage(html) {
     scripts,
     profile: (arg) => plain(scripts.authorProfile(arg || { limit: 6 })),
     state: () => plain(scripts.authorState()),
+    pageState: () => plain(scripts.pageState()),
   };
 }
 
@@ -239,6 +240,10 @@ const MALE_ICON = '<svg width="12" height="12" fill="none" xmlns="http://www.w3.
 const NAME_ROW = '<div class="REOLM3RC"><h1 class="m5re_8jG"><span><span class="m53pwJvW"><span><span><span><span>示例作者</span></span></span></span></span></span></h1></div>';
 const VERIFIED_NAME_ROW = '<div class="REOLM3RC"><h1 class="m5re_8jG"><span><span class="m53pwJvW"><span><span><span><span>示例作者</span></span></span></span></span></span></h1><div><div>认证徽章</div><span data-e2e="badge-role-name">示例传媒集团官方抖音号</span></div></div>';
 const EMPTY_LIST = '<ul class="cPDrcaOY QhXy7t32" data-e2e="scroll-list"></ul><div class="Zj5Fgmnv" style="width: 100%;"><div class="_98IcTwY">服务异常，重新<span class="wRwYD7Ar">刷新</span>拉取数据</div></div>';
+const LOGIN_BUTTON = '<button class="semi-button semi-button-primary WGl8bZmp" type="button" aria-disabled="false"><span class="semi-button-content" x-semi-prop="children"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" class="" viewBox="0 0 20 20" id="svg_icon_avatar"></svg><p class="VQdYTqcZ">登录</p></span></button>';
+// A signed-in session captured on the same day has this in place of the 登录
+// button. The avatar URL is invented.
+const ACCOUNT_AVATAR = '<a href="//www.douyin.com/user/self" class="RZuwF26I zzGiSA_5 ALink-a" target="_self" rel="noopener noreferrer"><span data-e2e="live-avatar" class="semi-avatar semi-avatar-circle semi-avatar-medium semi-avatar-grey vUkgYA_Z kBTet_pJ avatar-component-avatar-container P0M_EAuo" role="listitem" style="background-color: transparent;"><img src="https://p3-pc.douyinpic.com/aweme/100x100/aweme-avatar/fixture-account.jpeg?from=1" alt="" class="i9qGg9iS"></span></a>';
 // A stand-in card: the logged-out capture never received a loaded works list.
 const LOADED_LIST = '<ul class="cPDrcaOY QhXy7t32" data-e2e="scroll-list"><li><a href="/video/7000000000000000001"><img src="https://p3-pc-sign.douyinpic.com/fixture-cover.jpeg" alt="第一条示例作品的标题"></a></li></ul>';
 
@@ -348,4 +353,18 @@ test('a loaded works list has no error and yields its cards', async () => {
   assert.equal(profile.video_cards[0].title, '第一条示例作品的标题');
   assert.equal(profile.video_cards[0].author, '示例作者');
   assert.equal((await page.scripts.refreshAuthorPosts()).ok, false);
+});
+
+test('a logged-out author page is not signed in, whatever avatars it shows', () => {
+  const page = loadPage(FIXTURE);
+
+  assert.ok(page.document.querySelector('[data-e2e="user-detail"] [data-e2e="live-avatar"] img'));
+  assert.ok(page.document.querySelector('a[href*="/user/self"]'));
+  assert.equal(page.pageState().signed_in, false);
+});
+
+test('the account avatar in the header marks a signed-in session', () => {
+  const page = loadPage(replaceOnce(FIXTURE, LOGIN_BUTTON, ACCOUNT_AVATAR));
+
+  assert.equal(page.pageState().signed_in, true);
 });
