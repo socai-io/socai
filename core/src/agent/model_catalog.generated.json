@@ -3,6 +3,40 @@
   "providers": {
     "anthropic": [
       {
+        "id": "claude-opus-5-5",
+        "display_name": "Claude Opus 5.5",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 4,
+              "output_per_million": 20,
+              "cache_read_per_million": 0.2,
+              "cache_write_per_million": 5
+            }
+          ]
+        }
+      },
+      {
+        "id": "claude-sonnet-5-5",
+        "display_name": "Claude Sonnet 5.5",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 2,
+              "output_per_million": 10,
+              "cache_read_per_million": 0.2,
+              "cache_write_per_million": 2.5
+            }
+          ]
+        }
+      },
+      {
         "id": "claude-fable-5-1",
         "display_name": "Claude Fable 5.1",
         "source": "pi-ai",
@@ -243,6 +277,57 @@
       }
     ],
     "openai": [
+      {
+        "id": "gpt-6.1-sol",
+        "display_name": "GPT-6.1 Sol",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 2,
+              "output_per_million": 10,
+              "cache_read_per_million": 0.1,
+              "cache_write_per_million": 2.5
+            }
+          ]
+        }
+      },
+      {
+        "id": "gpt-6-sol",
+        "display_name": "GPT-6 Sol",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 2,
+              "output_per_million": 10,
+              "cache_read_per_million": 0.2,
+              "cache_write_per_million": 2.5
+            }
+          ]
+        }
+      },
+      {
+        "id": "gpt-6-luna",
+        "display_name": "GPT-6 Luna",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 0.1,
+              "output_per_million": 0.5,
+              "cache_read_per_million": 0.01,
+              "cache_write_per_million": 0.125
+            }
+          ]
+        }
+      },
       {
         "id": "gpt-6-astra",
         "display_name": "GPT-6 Astra",
@@ -889,6 +974,40 @@
             }
           ]
         }
+      },
+      {
+        "id": "gpt-daybreak-red-latest",
+        "display_name": "Daybreak Red",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 12.5,
+              "output_per_million": 75,
+              "cache_read_per_million": 1.25,
+              "cache_write_per_million": 15.625
+            }
+          ]
+        }
+      },
+      {
+        "id": "gpt-daybreak-blue-latest",
+        "display_name": "Daybreak Blue",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "USD",
+          "source": "pi-ai",
+          "tiers": [
+            {
+              "input_per_million": 4,
+              "output_per_million": 20,
+              "cache_read_per_million": 0.4,
+              "cache_write_per_million": 5
+            }
+          ]
+        }
       }
     ],
     "kimi": [
@@ -964,104 +1083,12 @@
       {
         "id": "kimi-k2.5",
         "display_name": "Kimi K2.5",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.6,
-              "output_per_million": 3,
-              "cache_read_per_million": 0.1,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "kimi-k2-0905-preview",
-        "display_name": "Kimi K2 0905",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.6,
-              "output_per_million": 2.5,
-              "cache_read_per_million": 0.15,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "kimi-k2-0711-preview",
-        "display_name": "Kimi K2 0711",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.6,
-              "output_per_million": 2.5,
-              "cache_read_per_million": 0.15,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "kimi-k2-turbo-preview",
-        "display_name": "Kimi K2 Turbo",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 2.4,
-              "output_per_million": 10,
-              "cache_read_per_million": 0.6,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "kimi-k2-thinking-turbo",
-        "display_name": "Kimi K2 Thinking Turbo",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 1.15,
-              "output_per_million": 8,
-              "cache_read_per_million": 0.15,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
+        "source": "fallback"
       },
       {
         "id": "kimi-k2-thinking",
         "display_name": "Kimi K2 Thinking",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.6,
-              "output_per_million": 2.5,
-              "cache_read_per_million": 0.15,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
+        "source": "fallback"
       }
     ],
     "qwen": [
@@ -1352,9 +1379,9 @@
           "source": "pi-ai",
           "tiers": [
             {
-              "input_per_million": 0.435,
-              "output_per_million": 0.87,
-              "cache_read_per_million": 0.003625,
+              "input_per_million": 1.32,
+              "output_per_million": 3.96,
+              "cache_read_per_million": 0.044,
               "cache_write_per_million": 0
             }
           ]
@@ -1362,34 +1389,22 @@
         "recommended": true
       },
       {
-        "id": "deepseek-v4-flash-vision-exp",
-        "display_name": "DeepSeek V4 Flash Vision Exp",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 0.14,
-              "output_per_million": 0.28,
-              "cache_read_per_million": 0.0028,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
         "id": "deepseek-v4-flash",
         "display_name": "DeepSeek V4 Flash",
+        "source": "fallback"
+      },
+      {
+        "id": "deepseek-flash",
+        "display_name": "DeepSeek V4.1 Flash",
         "source": "pi-ai",
         "pricing": {
           "currency": "USD",
           "source": "pi-ai",
           "tiers": [
             {
-              "input_per_million": 0.14,
-              "output_per_million": 0.28,
-              "cache_read_per_million": 0.0028,
+              "input_per_million": 0.3,
+              "output_per_million": 1.2,
+              "cache_read_per_million": 0.006,
               "cache_write_per_million": 0
             }
           ]
