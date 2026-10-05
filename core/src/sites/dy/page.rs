@@ -400,21 +400,13 @@ impl<'a> DouyinPageRuntime<'a> {
             } else {
                 stalls = 0;
             }
-            let settled_without_cards =
-                profile_count_known && !profile_reports_posts && stalls >= 4;
-            let pagination_stalled = !cards.is_empty() && stalls >= 4;
-            if Instant::now() >= content_deadline || settled_without_cards || pagination_stalled {
-                break;
-            }
-            // The profile header and work count hydrate before the post list.
-            // Scrolling while the list is still empty can land on the footer
-            // and leave the virtualized grid unmounted, so wait in place for
-            // the first real card before starting pagination.
             if cards.is_empty() {
                 // Douyin can answer the list request with an in-place error
                 // instead of cards. Its own 刷新 control gets one try; a
                 // second error means this session is being refused, so stop
-                // here rather than wait out the deadline.
+                // here rather than wait out the deadline. This is read ahead
+                // of the deadline check: a refresh pressed near the deadline
+                // still has its outcome reported.
                 let grid = self.expect_object("authorState", None).await?;
                 let grid_failed = grid
                     .get("posts_error")
@@ -430,6 +422,18 @@ impl<'a> DouyinPageRuntime<'a> {
                     sleep_ms(2000).await;
                     continue;
                 }
+            }
+            let settled_without_cards =
+                profile_count_known && !profile_reports_posts && stalls >= 4;
+            let pagination_stalled = !cards.is_empty() && stalls >= 4;
+            if Instant::now() >= content_deadline || settled_without_cards || pagination_stalled {
+                break;
+            }
+            // The profile header and work count hydrate before the post list.
+            // Scrolling while the list is still empty can land on the footer
+            // and leave the virtualized grid unmounted, so wait in place for
+            // the first real card before starting pagination.
+            if cards.is_empty() {
                 sleep_ms(1000).await;
                 continue;
             }
