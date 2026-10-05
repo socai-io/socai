@@ -364,6 +364,8 @@ impl<'a> DouyinPageRuntime<'a> {
         let mut raw_profile = Value::Null;
         let content_deadline = Instant::now() + bounded_duration(wait_seconds, 5.0, 30.0);
         let mut profile_reports_posts = false;
+        let mut refreshed = false;
+        let mut refused = None;
         while cards.len() < target_count {
             raw_profile = self
                 .expect_object(
@@ -409,6 +411,25 @@ impl<'a> DouyinPageRuntime<'a> {
             // and leave the virtualized grid unmounted, so wait in place for
             // the first real card before starting pagination.
             if cards.is_empty() {
+                // Douyin can answer the list request with an in-place error
+                // instead of cards. Its own 刷新 control gets one try; a
+                // second error means this session is being refused, so stop
+                // here rather than wait out the deadline.
+                let grid = self.expect_object("authorState", None).await?;
+                let grid_failed = grid
+                    .get("posts_error")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| !message.is_empty());
+                if grid_failed && refreshed {
+                    refused = Some(grid);
+                    break;
+                }
+                if grid_failed {
+                    refreshed = true;
+                    self.expect_object("refreshAuthorPosts", None).await?;
+                    sleep_ms(2000).await;
+                    continue;
+                }
                 sleep_ms(1000).await;
                 continue;
             }
@@ -433,6 +454,15 @@ impl<'a> DouyinPageRuntime<'a> {
             cards.truncate(target_count.clamp(1, MAX_COLLECTED_ITEMS));
         }
         profile.video_cards = cards;
+        if let Some(grid) = refused {
+            // The header is complete even though the works list is not.
+            return Ok(json!({
+                "ok": false,
+                "reason": "author_videos_refused",
+                "profile": profile,
+                "state": grid,
+            }));
+        }
         if profile_reports_posts && profile.video_cards.is_empty() {
             return Ok(json!({
                 "ok": false,

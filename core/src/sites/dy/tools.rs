@@ -471,9 +471,12 @@ impl Tool for AuthorScanTool {
 
     fn description(&self) -> &str {
         "Open a Douyin creator profile by sec_uid or URL. On success, `profile` contains \
-         `display_name`, `handle` (抖音号), `author_id` (sec_uid), `bio`, `verified`, `followers`, \
-         `following`, `likes` (获赞), `video_count` (作品数), and `video_cards`. Pass a card's \
-         `video_id` or `url` string to get_videos for full work details."
+         `display_name`, `handle` (抖音号), `author_id` (sec_uid), `avatar_url`, `bio`, \
+         `ip_location`, `gender`, `age`, `verified`, `followers`, `following`, `likes` (获赞), \
+         `video_count` (作品数), and `video_cards`. Pass a card's `video_id` or `url` string to \
+         get_videos for full work details. `reason: author_videos_refused` means Douyin refused \
+         the works list for this session (`state.logged_out` says whether it is signed out); \
+         the other `profile` fields are still valid."
     }
 
     fn input_schema(&self) -> Value {

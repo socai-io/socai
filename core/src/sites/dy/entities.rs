@@ -66,7 +66,16 @@ pub struct DouyinAuthorProfile {
     pub display_name: String,
     pub handle: String,
     pub url: String,
+    /// Left off the wire when the header rendered no avatar: an empty string
+    /// would read as a real (missing) image to consumers that show it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub avatar_url: String,
     pub bio: String,
+    pub ip_location: String,
+    /// "male" / "female"; empty when the profile shows neither.
+    pub gender: String,
+    /// Age in years from the header tag; empty when the profile hides it.
+    pub age: String,
     pub verified: bool,
     pub followers: String,
     pub following: String,

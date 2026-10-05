@@ -100,7 +100,7 @@
       "returns": { "type": "object", "description": "Comment scroll state." }
     },
     "authorState": {
-      "description": "Read hydration and challenge state for the current Douyin author page.",
+      "description": "Read hydration, challenge, login, and works-list error state for the current Douyin author page.",
       "path": "page_scripts.js",
       "binding": "window.SocaiDouyinPageScripts",
       "callable": "authorState",
@@ -117,6 +117,15 @@
         "viewport_only": { "type": "boolean", "required": false, "description": "Only include author videos in the viewport." }
       },
       "returns": { "type": "object", "description": "Douyin author profile." }
+    },
+    "refreshAuthorPosts": {
+      "action": true,
+      "description": "Press 刷新 on the author works list after authorState reports posts_error.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiDouyinPageScripts",
+      "callable": "refreshAuthorPosts",
+      "args": {},
+      "returns": { "type": "object", "description": "Whether the refresh control was pressed." }
     }
   }
 }

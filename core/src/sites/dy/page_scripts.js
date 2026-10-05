@@ -783,6 +783,34 @@
     return { ok: true, before, after, clicked, grew: after > before, y, at_end: clicked === 0 && atEnd };
   }
 
+  // The works tab shows an in-place message with a 刷新 control ("服务异常，
+  // 重新刷新拉取数据") in place of cards when the list request comes back as
+  // HTTP 200 with no body, which is how Douyin turns a session away.
+  function authorPostsFailure() {
+    const grid = document.querySelector('[data-e2e="user-post-list"]');
+    if (!grid || cardNodes(grid).length) return null;
+    const control = Array.from(grid.querySelectorAll('span'))
+      .find((node) => node.children.length === 0 && text(node) === '刷新');
+    return control ? { control, message: text(control.parentElement) } : null;
+  }
+
+  async function refreshAuthorPosts() {
+    const failure = authorPostsFailure();
+    if (!failure) return { ok: false, error: 'refresh_control_not_found' };
+    // The login panel covers the grid in a logged-out session, so a pointer
+    // click at the control's coordinates would land on the panel instead.
+    await browserAction(() => failure.control.click());
+    return { ok: true };
+  }
+
+  // A logged-out session mounts the login panel and keeps a 登录 button in the
+  // page header; both are gone once an account is signed in.
+  function loggedOut() {
+    if (document.querySelector('#login-panel-new')) return true;
+    return Array.from(document.querySelectorAll('header button'))
+      .some((button) => /^(登录|Log ?in)$/i.test(text(button)));
+  }
+
   function authorState() {
     const authorId = authorIdFromUrl(location.href);
     const bodyText = text(document.body);
@@ -798,6 +826,7 @@
       '[data-e2e="user-bio"], [data-e2e="user-post-list"], [data-e2e="user-info"], [data-e2e="user-detail"], [class*="user-info"], [class*="userInfo"]'
     );
     const hasProfile = displayName.length > 0 && hasProfileEvidence;
+    const postsFailure = authorPostsFailure();
     return {
       ok: !!authorId && hasProfile,
       site: 'dy',
@@ -808,6 +837,97 @@
       login_required: loginBlocked(hasProfile),
       challenge_required: challengeRequired(),
       unavailable: /用户不存在|账号已注销|页面不存在/.test(bodyText),
+      logged_out: loggedOut(),
+      posts_error: postsFailure ? postsFailure.message : '',
+    };
+  }
+
+  // Douyin draws emoji as <img alt="♌"> nodes, which innerText leaves out.
+  function textWithEmoji(node, skip) {
+    const walk = (current) => Array.from(current.childNodes).map((child) => {
+      if (child === skip) return '';
+      if (child.nodeType === 3) return child.nodeValue || '';
+      if (child.nodeType !== 1) return '';
+      return child.tagName === 'IMG' ? (child.getAttribute('alt') || '') : walk(child);
+    }).join('');
+    return node ? walk(node).replace(/\s+/g, ' ').trim() : '';
+  }
+
+  // The profile route is server-rendered from a `self.__pace_f.push([1,
+  // "<id>:<json>"])` chunk that holds the author record. It is the one place
+  // on the page with the whole bio: the header joins the lines, cuts the text
+  // at 30 characters, and only shows the rest on hover.
+  function embeddedAuthorBio(authorId) {
+    const find = (value, depth) => {
+      if (!value || typeof value !== 'object' || depth > 8) return null;
+      if (value.secUid === authorId) return value;
+      for (const child of Object.values(value)) {
+        const found = find(child, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    };
+    for (const script of document.querySelectorAll('script')) {
+      const source = script.textContent || '';
+      if (!authorId || !source.startsWith('self.__pace_f.push(') || !source.includes(authorId)) continue;
+      try {
+        const chunk = JSON.parse(source.slice(source.indexOf('(') + 1, source.lastIndexOf(')')))[1];
+        const record = find(JSON.parse(chunk.slice(chunk.indexOf(':') + 1)), 0);
+        if (record) {
+          const desc = typeof record.desc === 'string' && record.desc !== '$undefined' ? record.desc : '';
+          return desc.replace(/\s+/g, ' ').trim();
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  // Rows of [data-e2e="user-info"] in page order: name (plus the 认证 badge),
+  // counters, the 抖音号 / IP属地 / gender-age line, an optional
+  // 最新作品发布时间 line, the bio when the author wrote one, then entry cards.
+  // Their class names are hashed, so each row is recognized by what it holds.
+  function authorHeader(authorId) {
+    const root = firstVisible(['[data-e2e="user-detail"]']) || document;
+    const info = root.querySelector('[data-e2e="user-info"]');
+    const rows = info ? Array.from(info.children) : [];
+    const metaIndex = rows.findIndex((row) => /^抖音号[:：]/.test(text(row)));
+    const metaLeaves = metaIndex < 0 ? [] : Array.from(rows[metaIndex].querySelectorAll('span'))
+      .filter((node) => node.children.length === 0);
+    const metaValue = (pattern) => {
+      const leaf = metaLeaves.find((node) => pattern.test(text(node)));
+      return leaf ? text(leaf).match(pattern)[1].trim() : '';
+    };
+    // The tag reads "36岁", or 男 / 女 when the age is hidden. A set gender
+    // adds an icon, and only the female glyph is drawn through a mask
+    // (id "woman_svg__a").
+    const tagLeaf = metaLeaves.find((node) => /^(\d{1,3}岁|男|女)$/.test(text(node)));
+    const tag = text(tagLeaf);
+    const icon = tagLeaf ? tagLeaf.parentElement.querySelector('svg') : null;
+    const female = tag === '女' || !!(icon && icon.querySelector('[id^="woman_svg"]'));
+
+    let bio = embeddedAuthorBio(authorId);
+    if (bio === null) {
+      // Without the record, read the row the header shows. Entry cards take
+      // the same slot when there is no bio, and they carry icons.
+      const next = metaIndex < 0 ? [] : rows.slice(metaIndex + 1).filter((row) => row.tagName !== 'P');
+      const bioRow = next.length && !next[0].querySelector('svg') ? next[0] : null;
+      const more = bioRow && Array.from(bioRow.querySelectorAll('span'))
+        .find((node) => node.children.length === 0 && /^(更多|登录后查看更多)$/.test(text(node)));
+      // A cut bio ends in "..." and is followed by a 更多 control.
+      const shown = textWithEmoji(bioRow, more && more.parentElement);
+      bio = /(\.\.\.|…)$/.test(shown) ? shown : textWithEmoji(bioRow);
+    }
+
+    const avatar = info && Array.from(info.parentElement.querySelectorAll('img'))
+      .find((img) => !info.contains(img) && /头像$/.test(img.getAttribute('alt') || ''));
+    return {
+      handle: metaValue(/^抖音号[:：]\s*(\S+)/),
+      ip_location: metaValue(/^IP属地[:：]\s*(.+)$/),
+      gender: female ? 'female' : (tag === '男' || icon) ? 'male' : '',
+      age: (tag.match(/^(\d{1,3})岁$/) || [])[1] || '',
+      bio,
+      avatar_url: httpsCover(avatar),
+      verified: !!(info && info.querySelector('[data-e2e="badge-role-name"]')),
     };
   }
 
@@ -835,13 +955,7 @@
       '[class*="nickname"]',
     ]);
     const displayName = text(nameNode) || metaContent('og:title').replace(/的抖音| - 抖音$/, '').trim();
-    const profileRoot = firstVisible(['[data-e2e="user-detail"]']) || document;
-    const bioNode = firstVisible(['[data-e2e="user-bio"]', '[class*="signature"]', '[class*="user-desc"]']) ||
-      Array.from(profileRoot.querySelectorAll('span')).filter(visible).find((node) => {
-        const value = text(node);
-        return node.children.length === 0 && value.length >= 12 && value !== displayName &&
-          !/^(关注|粉丝|获赞|作品|喜欢|抖音号：|IP属地：)/.test(value);
-      });
+    const header = authorHeader(state.author_id);
     const postGrid = firstVisible([
       '[data-e2e="user-post-list"]',
       '[class*="user-post-list"]',
@@ -857,16 +971,19 @@
     for (const card of cards) {
       if (!card.author) card.author = displayName;
     }
-    const handleMatch = text(profileRoot).match(/抖音号：\s*([^\s]+)/);
     return {
       entity_type: 'author',
       platform: 'douyin',
       author_id: state.author_id,
       display_name: displayName,
-      handle: handleMatch ? handleMatch[1] : '',
+      handle: header.handle,
       url: location.href,
-      bio: text(bioNode) || metaContent('description'),
-      verified: !!document.querySelector('[class*="verified"], [class*="verify"], [aria-label*="认证"]'),
+      avatar_url: header.avatar_url,
+      bio: header.bio,
+      ip_location: header.ip_location,
+      gender: header.gender,
+      age: header.age,
+      verified: header.verified,
       followers: profileStat('粉丝', '[data-e2e="user-info-fans"]'),
       following: profileStat('关注', '[data-e2e="user-info-follow"]'),
       likes: profileStat('获赞', '[data-e2e="user-info-like"]'),
@@ -925,5 +1042,6 @@
     scrollComments,
     authorState,
     authorProfile,
+    refreshAuthorPosts,
   };
 })();
