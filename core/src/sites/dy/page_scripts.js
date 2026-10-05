@@ -314,15 +314,26 @@
   // The detail page prints 发布时间 in the browser's own time zone, so the same
   // work shows a different calendar day on a remote browser. Report the instant
   // in Beijing time, the zone Douyin dates are quoted in.
-  function publishTime() {
+  function publishTime(videoId) {
     const raw = text(firstVisible(['[data-e2e="detail-video-publish-time"]']))
       .replace(/^发布时间\s*[:：]\s*/, '');
     const parts = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})$/);
     if (!parts) return raw;
     const [year, month, day, hour, minute] = parts.slice(1).map(Number);
     const local = new Date(year, month - 1, day, hour, minute);
-    if (Number.isNaN(local.getTime())) return raw;
-    return `${new Date(local.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 19)}+08:00`;
+    let instant = local.getTime();
+    if (Number.isNaN(instant)) return raw;
+    // In the hour a clock falls back, a wall time names two instants and Date
+    // takes the first. A work is created before it is published, so the
+    // creation second in its id rules the first one out when it is too early.
+    const fallBack = (new Date(instant + 3 * 3600 * 1000).getTimezoneOffset() - local.getTimezoneOffset()) * 60 * 1000;
+    const second = new Date(instant + fallBack);
+    if (fallBack > 0 && second.getHours() === hour && second.getMinutes() === minute) {
+      const created = /^\d+$/.test(videoId) ? Number(BigInt(videoId) >> 32n) * 1000 : NaN;
+      if (!(created < instant + fallBack + 60 * 1000)) return raw;
+      if (created >= instant + 60 * 1000) instant += fallBack;
+    }
+    return `${new Date(instant + 8 * 3600 * 1000).toISOString().slice(0, 19)}+08:00`;
   }
 
   // The share-card meta is the only node that names this work's cover. Player
@@ -627,7 +638,7 @@
       title,
       description,
       hashtags: Array.from(hashtagSet).slice(0, 30),
-      created_at: publishTime(),
+      created_at: publishTime(state.video_id),
       author: text(authorLink) || text(authorTextLink) || (authorAvatar && authorAvatar.alt || '') || structuredAuthor.name ||
         text(firstVisible(['[data-e2e="video-author-name"]', '[class*="author-name"]'])),
       author_id: authorIdFromUrl(authorUrl),

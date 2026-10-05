@@ -100,21 +100,22 @@ class FakeElement {
 const el = (tag, attrs, ...children) => new FakeElement(tag, attrs, children);
 
 // Trimmed from a logged-out www.douyin.com/video/<id> snapshot (2026-10-05).
-function detailPage({ publishTime, frameId = VIDEO_ID }) {
+function detailPage({ publishTime, videoId = VIDEO_ID, frameId = videoId }) {
+  const url = `https://www.douyin.com/video/${videoId}`;
   const breadcrumb = JSON.stringify({
     '@type': 'BreadcrumbList',
     itemListElement: [
       { '@type': 'ListItem', position: 1, name: '抖音', item: 'https://www.douyin.com' },
       { '@type': 'ListItem', position: 2, name: '一粒小尘', item: AUTHOR_URL },
-      { '@type': 'ListItem', position: 3, name: '视频作品', item: PAGE_URL },
+      { '@type': 'ListItem', position: 3, name: '视频作品', item: url },
     ],
   });
   const head = el('head', {},
     el('meta', { name: 'lark:url:video_cover_image_url', content: COVER_URL }),
     el('meta', { name: 'lark:url:video_iframe_url', content: `https://www.douyin.com/light/${frameId}` }),
-    el('link', { rel: 'canonical', href: PAGE_URL }),
+    el('link', { rel: 'canonical', href: url }),
     el('script', { type: 'application/ld+json' }, breadcrumb));
-  const player = el('div', { 'data-e2e': 'player-container', class: `wgoQOERl video_${VIDEO_ID} video-detail-container` },
+  const player = el('div', { 'data-e2e': 'player-container', class: `wgoQOERl video_${videoId} video-detail-container` },
     el('xg-video-container', { class: 'xg-video-container' },
       el('video', { src: 'blob:https://www.douyin.com/18ca7cc4' }),
       el('div', { class: 'xgplayer-autoplay-tips', hidden: true },
@@ -145,7 +146,7 @@ function detailPage({ publishTime, frameId = VIDEO_ID }) {
     el('div', { 'data-e2e': 'video-detail', class: 'xmrXqloh playerControlHeight' },
       el('div', { class: 'leftContainer' }, player, info),
       sidebar));
-  return { html: el('html', {}, head, body), body };
+  return { html: el('html', {}, head, body), body, url };
 }
 
 function loadScripts(page) {
@@ -157,7 +158,7 @@ function loadScripts(page) {
   const context = {
     URL,
     window,
-    location: { href: PAGE_URL },
+    location: { href: page.url },
     performance: { getEntriesByType: () => [] },
     document: {
       body: page.body,
@@ -205,6 +206,19 @@ test('video detail reports one publish instant for every browser time zone', () 
     loadScripts(detailPage({ publishTime: '2026-09-30 12:23' })).videoDetail());
 
   assert.equal(detail.created_at, '2026-09-30T12:23:00+08:00');
+});
+
+test('video detail resolves a repeated fall-back hour with the work id', () => {
+  // 01:30 comes twice in Los Angeles on 2026-11-01: 08:30Z, then 09:30Z.
+  const read = (createdAt) => inTimeZone('America/Los_Angeles', () => {
+    const videoId = String(BigInt(Date.parse(createdAt) / 1000) << 32n);
+    return loadScripts(detailPage({ publishTime: '2026-11-01 01:30', videoId })).videoDetail().created_at;
+  });
+
+  assert.equal(read('2026-11-01T08:29:30Z'), '2026-11-01T16:30:00+08:00');
+  assert.equal(read('2026-11-01T09:29:30Z'), '2026-11-01T17:30:00+08:00');
+  // An id later than both instants is not a creation time; claim no instant.
+  assert.equal(read('2026-11-01T12:00:00Z'), '2026-11-01 01:30');
 });
 
 test('video detail leaves the cover empty when the share card names another work', () => {
