@@ -3,6 +3,12 @@ name = "socai-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Shared browser automation and social research runtime for socai"
+repository.workspace = true
+homepage = "https://socai.io"
+readme = "README.md"
+keywords = ["browser", "automation", "social-media", "agent"]
+categories = ["web-programming", "command-line-utilities"]
 
 [dependencies]
 serde.workspace = true
