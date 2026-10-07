@@ -1,5 +1,6 @@
 ---
 import { message } from "../lib/i18n";
+import { LANGUAGE_OPTIONS } from "../lib/languages";
 
 interface Props {
     messages: Record<string, Record<string, unknown>>;
@@ -10,6 +11,9 @@ const { messages, language } = Astro.props;
 
 const githubUrl = "/github";
 const contactPath = "/contact";
+const languageOptions = LANGUAGE_OPTIONS.filter(({ value }) =>
+    Object.hasOwn(messages, value),
+);
 
 const t = (path: string) => message(messages, path, language);
 ---
@@ -76,25 +80,33 @@ const t = (path: string) => message(messages, path, language);
             </svg>
             <span data-i18n="nav.github">{t("nav.github")}</span>
         </a>
-        <div
-            class="language-toggle"
-            role="group"
-            aria-label={t("nav.languageAria")}
-            data-i18n-aria-label="nav.languageAria"
-        >
-            <button
-                class="language-toggle__button"
-                type="button"
-                data-lang-option="zh"
-                aria-pressed={language === "zh" ? "true" : "false"}>中文</button
+        <div class="language-toggle">
+            <select
+                class="language-toggle__select"
+                aria-label={t("nav.languageAria")}
+                data-i18n-aria-label="nav.languageAria"
+                data-language-select
             >
-            <span class="language-toggle__divider" aria-hidden="true"></span>
-            <button
-                class="language-toggle__button"
-                type="button"
-                data-lang-option="en"
-                aria-pressed={language === "en" ? "true" : "false"}>en</button
+                {
+                    languageOptions.map(({ value, label }) => (
+                        <option value={value} selected={language === value}>
+                            {label}
+                        </option>
+                    ))
+                }
+            </select>
+            <svg
+                class="language-toggle__chevron"
+                viewBox="0 0 12 12"
+                width="12"
+                height="12"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                aria-hidden="true"
             >
+                <path d="m3 4.5 3 3 3-3"></path>
+            </svg>
         </div>
     </nav>
 </header>

@@ -8,7 +8,6 @@ import XShowcase from "../components/XShowcase.astro";
 import XhsShowcase from "../components/XhsShowcase.astro";
 import { message as messageFor } from "../lib/i18n";
 
-const githubUrl = "/github";
 const downloadPath = "/download";
 const downloadWindowsPath = "/download/windows";
 const webDemoUrl = "https://agent.socai.io";
@@ -51,18 +50,18 @@ const messages = {
             platformLinkedin: "LinkedIn",
             platformX: "X",
             actionsAria: "web demo and sales",
-            resourcesAria: "desktop downloads and source",
+            resourcesAria: "desktop downloads",
             demo: "try now",
             bookDemo: "book a demo",
             agentInstall: "Or, paste installation guide to your agent",
             copy: "copy",
             download: "download for macOS",
             downloadWindows: "download for Windows",
-            github: "view on github",
         },
         preview: { sectionAria: "socai app preview" },
         project: {
             sectionAria: "Jev Social open-source project",
+            builtWith: "Built with Socai",
             eyebrow: "JEV × SOCAI",
             title: "Typed decisions. Real social evidence.",
             description:
@@ -108,18 +107,18 @@ const messages = {
             platformLinkedin: "LinkedIn",
             platformX: "X",
             actionsAria: "Web Demo 和预约演示",
-            resourcesAria: "桌面端下载和源码",
+            resourcesAria: "桌面端下载",
             demo: "立即体验",
             bookDemo: "预约演示",
             agentInstall: "或者，把安装说明贴给你的 Agent",
             copy: "复制",
             download: "下载 macOS 版",
             downloadWindows: "下载 Windows 版",
-            github: "在 github 查看",
         },
         preview: { sectionAria: "socai app 预览" },
         project: {
             sectionAria: "Jev Social 开源项目",
+            builtWith: "基于 Socai 构建",
             eyebrow: "JEV × SOCAI",
             title: "类型化决策，真实社媒证据。",
             description:
@@ -134,6 +133,354 @@ const messages = {
             blog: "博客",
             connect: "连接教程",
             contact: "联系",
+        },
+    },
+    ja: {
+        meta: {
+            title: "socai · ソーシャルメディア調査 Agent",
+            description:
+                "ログイン済みの Chrome で Xiaohongshu、Douyin、TikTok、Instagram、LinkedIn を調査し、元の投稿にたどれる証拠を返します。",
+            socialImageAlt: "socai ソーシャルメディア調査 Agent のプレビュー",
+        },
+        nav: {
+            primaryAria: "メインナビゲーション",
+            homeAria: "socai ホーム",
+            linksAria: "サイトリンク",
+            github: "github",
+            connect: "Chrome に接続",
+            contact: "お問い合わせ",
+            languageAria: "言語",
+            releaseLabel: "リリース {version}",
+        },
+        hero: {
+            title: "あなたの Agent がソーシャルプラットフォームを本当に理解する。",
+            subtitleLead:
+                "ソーシャルプラットフォームは Agent からアクセスしにくく、スクレイピングはアカウント停止につながります。",
+            subtitleRest:
+                "Socai は主要プラットフォームの構造を再現し、Agent がブラウザ上で直接操作できるようにします。",
+            platformsAria: "対応プラットフォーム",
+            platformXiaohongshu: "Xiaohongshu",
+            platformTiktok: "TikTok / Douyin",
+            platformInstagram: "Instagram",
+            platformLinkedin: "LinkedIn",
+            platformX: "X",
+            actionsAria: "Web 版とデモ予約",
+            resourcesAria: "デスクトップ版のダウンロード",
+            demo: "今すぐ試す",
+            bookDemo: "デモを予約",
+            agentInstall: "または、インストール手順を Agent に貼り付ける",
+            copy: "コピー",
+            download: "macOS 版をダウンロード",
+            downloadWindows: "Windows 版をダウンロード",
+        },
+        preview: { sectionAria: "socai アプリのプレビュー" },
+        project: {
+            sectionAria: "Jev Social オープンソースプロジェクト",
+            builtWith: "Socai で構築",
+            eyebrow: "JEV × SOCAI",
+            title: "型のある判断。実在するソーシャル証拠。",
+            description:
+                "Jev が調査操作を選び、ローカルの socai CLI がログイン済み Chrome で実行します。取得したカードを確認しながら、出典付きレポートを生成できます。",
+            try: "Jev Social を試す",
+            replay: "記録済みの実行を見る",
+            source: "ソースを見る",
+            quickstart: "クイックスタート",
+        },
+        footer: {
+            linksAria: "フッターリンク",
+            blog: "ブログ",
+            connect: "接続ガイド",
+            contact: "お問い合わせ",
+        },
+    },
+    ko: {
+        meta: {
+            title: "socai · 소셜 미디어 리서치 Agent",
+            description:
+                "로그인된 Chrome에서 Xiaohongshu, Douyin, TikTok, Instagram, LinkedIn을 조사하고 원본 게시물로 연결되는 근거를 제공합니다.",
+            socialImageAlt: "socai 소셜 미디어 리서치 Agent 미리보기",
+        },
+        nav: {
+            primaryAria: "기본 탐색",
+            homeAria: "socai 홈",
+            linksAria: "사이트 링크",
+            github: "github",
+            connect: "Chrome 연결",
+            contact: "문의",
+            languageAria: "언어",
+            releaseLabel: "릴리스 {version}",
+        },
+        hero: {
+            title: "Agent가 소셜 플랫폼을 제대로 이해하게 하세요.",
+            subtitleLead:
+                "소셜 플랫폼은 Agent가 접근하기 어렵고, 스크래핑은 계정 차단으로 이어질 수 있습니다.",
+            subtitleRest:
+                "Socai는 주요 소셜 플랫폼의 구조를 재구성하여 Agent가 브라우저에서 직접 작업할 수 있게 합니다.",
+            platformsAria: "지원 플랫폼",
+            platformXiaohongshu: "Xiaohongshu",
+            platformTiktok: "TikTok / Douyin",
+            platformInstagram: "Instagram",
+            platformLinkedin: "LinkedIn",
+            platformX: "X",
+            actionsAria: "웹 체험 및 데모 예약",
+            resourcesAria: "데스크톱 다운로드",
+            demo: "지금 체험",
+            bookDemo: "데모 예약",
+            agentInstall: "또는 설치 안내를 Agent에게 붙여넣으세요",
+            copy: "복사",
+            download: "macOS용 다운로드",
+            downloadWindows: "Windows용 다운로드",
+        },
+        preview: { sectionAria: "socai 앱 미리보기" },
+        project: {
+            sectionAria: "Jev Social 오픈 소스 프로젝트",
+            builtWith: "Socai로 제작",
+            eyebrow: "JEV × SOCAI",
+            title: "구조화된 판단. 실제 소셜 근거.",
+            description:
+                "Jev가 제한된 조사 작업을 선택하고 로컬 socai CLI가 로그인된 Chrome에서 실행합니다. 수집된 카드를 확인하면서 출처가 연결된 보고서를 받을 수 있습니다.",
+            try: "Jev Social 체험",
+            replay: "기록된 실행 보기",
+            source: "소스 보기",
+            quickstart: "빠른 시작",
+        },
+        footer: {
+            linksAria: "바닥글 링크",
+            blog: "블로그",
+            connect: "연결 가이드",
+            contact: "문의",
+        },
+    },
+    es: {
+        meta: {
+            title: "socai · Agent de investigación de redes sociales",
+            description:
+                "Investiga Xiaohongshu, Douyin, TikTok, Instagram y LinkedIn desde tu Chrome autenticado y conserva evidencia enlazada a las publicaciones originales.",
+            socialImageAlt: "Vista previa del Agent de investigación social de socai",
+        },
+        nav: {
+            primaryAria: "navegación principal",
+            homeAria: "inicio de socai",
+            linksAria: "enlaces del sitio",
+            github: "github",
+            connect: "conectar Chrome",
+            contact: "contacto",
+            languageAria: "idioma",
+            releaseLabel: "versión {version}",
+        },
+        hero: {
+            title: "Haz que tu Agent entienda de verdad las plataformas sociales.",
+            subtitleLead:
+                "A los Agent les cuesta acceder a las redes sociales. El scraping puede bloquear tu cuenta.",
+            subtitleRest:
+                "Socai reconstruye la estructura de las principales plataformas para que tu Agent pueda operar directamente en tu navegador.",
+            platformsAria: "plataformas compatibles",
+            platformXiaohongshu: "Xiaohongshu",
+            platformTiktok: "TikTok / Douyin",
+            platformInstagram: "Instagram",
+            platformLinkedin: "LinkedIn",
+            platformX: "X",
+            actionsAria: "prueba web y reserva de demo",
+            resourcesAria: "descargas de escritorio",
+            demo: "probar ahora",
+            bookDemo: "reservar una demo",
+            agentInstall: "O pega la guía de instalación en tu Agent",
+            copy: "copiar",
+            download: "descargar para macOS",
+            downloadWindows: "descargar para Windows",
+        },
+        preview: { sectionAria: "vista previa de la aplicación socai" },
+        project: {
+            sectionAria: "proyecto de código abierto Jev Social",
+            builtWith: "Creado con Socai",
+            eyebrow: "JEV × SOCAI",
+            title: "Decisiones tipadas. Evidencia social real.",
+            description:
+                "Jev elige cada operación de investigación y el CLI local de socai la ejecuta en tu Chrome autenticado. Las tarjetas capturadas siguen visibles mientras se genera un informe con fuentes.",
+            try: "probar Jev Social",
+            replay: "ver la ejecución grabada",
+            source: "ver el código",
+            quickstart: "INICIO RÁPIDO",
+        },
+        footer: {
+            linksAria: "enlaces del pie",
+            blog: "blog",
+            connect: "guía de conexión",
+            contact: "contacto",
+        },
+    },
+    fr: {
+        meta: {
+            title: "socai · Agent de recherche sur les réseaux sociaux",
+            description:
+                "Étudiez Xiaohongshu, Douyin, TikTok, Instagram et LinkedIn dans votre Chrome connecté, avec des preuves reliées aux publications d’origine.",
+            socialImageAlt: "Aperçu de l’Agent de recherche sociale socai",
+        },
+        nav: {
+            primaryAria: "navigation principale",
+            homeAria: "accueil socai",
+            linksAria: "liens du site",
+            github: "github",
+            connect: "connecter Chrome",
+            contact: "contact",
+            languageAria: "langue",
+            releaseLabel: "version {version}",
+        },
+        hero: {
+            title: "Donnez à votre Agent une vraie compréhension des plateformes sociales.",
+            subtitleLead:
+                "Les plateformes sociales sont difficiles d’accès pour les Agent. Le scraping peut faire bloquer votre compte.",
+            subtitleRest:
+                "Socai reconstruit la structure des principales plateformes afin que votre Agent puisse les utiliser directement dans votre navigateur.",
+            platformsAria: "plateformes prises en charge",
+            platformXiaohongshu: "Xiaohongshu",
+            platformTiktok: "TikTok / Douyin",
+            platformInstagram: "Instagram",
+            platformLinkedin: "LinkedIn",
+            platformX: "X",
+            actionsAria: "essai web et réservation de démo",
+            resourcesAria: "téléchargements pour ordinateur",
+            demo: "essayer maintenant",
+            bookDemo: "réserver une démo",
+            agentInstall: "Ou collez le guide d’installation dans votre Agent",
+            copy: "copier",
+            download: "télécharger pour macOS",
+            downloadWindows: "télécharger pour Windows",
+        },
+        preview: { sectionAria: "aperçu de l’application socai" },
+        project: {
+            sectionAria: "projet open source Jev Social",
+            builtWith: "Créé avec Socai",
+            eyebrow: "JEV × SOCAI",
+            title: "Des décisions typées. De vraies preuves sociales.",
+            description:
+                "Jev choisit chaque opération de recherche et le CLI local socai l’exécute dans votre Chrome connecté. Les cartes collectées restent visibles pendant la génération d’un rapport sourcé.",
+            try: "essayer Jev Social",
+            replay: "voir l’exécution enregistrée",
+            source: "voir le code source",
+            quickstart: "DÉMARRAGE RAPIDE",
+        },
+        footer: {
+            linksAria: "liens de pied de page",
+            blog: "blog",
+            connect: "guide de connexion",
+            contact: "contact",
+        },
+    },
+    de: {
+        meta: {
+            title: "socai · Agent für Social-Media-Recherche",
+            description:
+                "Recherchiere Xiaohongshu, Douyin, TikTok, Instagram und LinkedIn in deinem angemeldeten Chrome und erhalte Belege mit Links zu den Originalbeiträgen.",
+            socialImageAlt: "Vorschau des socai Agent für Social-Media-Recherche",
+        },
+        nav: {
+            primaryAria: "Hauptnavigation",
+            homeAria: "socai Startseite",
+            linksAria: "Seitenlinks",
+            github: "github",
+            connect: "Chrome verbinden",
+            contact: "Kontakt",
+            languageAria: "Sprache",
+            releaseLabel: "Version {version}",
+        },
+        hero: {
+            title: "Damit dein Agent soziale Plattformen wirklich versteht.",
+            subtitleLead:
+                "Soziale Plattformen sind für Agent schwer zugänglich. Scraping kann zur Sperrung führen.",
+            subtitleRest:
+                "Socai rekonstruiert die Strukturen wichtiger Plattformen, damit dein Agent sie direkt im Browser bedienen kann.",
+            platformsAria: "unterstützte Plattformen",
+            platformXiaohongshu: "Xiaohongshu",
+            platformTiktok: "TikTok / Douyin",
+            platformInstagram: "Instagram",
+            platformLinkedin: "LinkedIn",
+            platformX: "X",
+            actionsAria: "Web-Test und Demo-Termin",
+            resourcesAria: "Desktop-Downloads",
+            demo: "jetzt testen",
+            bookDemo: "Demo buchen",
+            agentInstall: "Oder füge die Installationsanleitung in deinen Agent ein",
+            copy: "kopieren",
+            download: "für macOS herunterladen",
+            downloadWindows: "für Windows herunterladen",
+        },
+        preview: { sectionAria: "Vorschau der socai App" },
+        project: {
+            sectionAria: "Open-Source-Projekt Jev Social",
+            builtWith: "Mit Socai erstellt",
+            eyebrow: "JEV × SOCAI",
+            title: "Typisierte Entscheidungen. Echte Social-Media-Belege.",
+            description:
+                "Jev wählt jeden begrenzten Recherchevorgang aus und die lokale socai CLI führt ihn im angemeldeten Chrome aus. Erfasste Karten bleiben sichtbar, während ein Bericht mit Quellen entsteht.",
+            try: "Jev Social testen",
+            replay: "aufgezeichneten Lauf ansehen",
+            source: "Quellcode ansehen",
+            quickstart: "SCHNELLSTART",
+        },
+        footer: {
+            linksAria: "Fußzeilenlinks",
+            blog: "Blog",
+            connect: "Verbindungsanleitung",
+            contact: "Kontakt",
+        },
+    },
+    pt: {
+        meta: {
+            title: "socai · Agent de pesquisa em redes sociais",
+            description:
+                "Pesquise Xiaohongshu, Douyin, TikTok, Instagram e LinkedIn no seu Chrome autenticado e mantenha evidências ligadas às publicações originais.",
+            socialImageAlt: "Prévia do Agent de pesquisa social do socai",
+        },
+        nav: {
+            primaryAria: "navegação principal",
+            homeAria: "início do socai",
+            linksAria: "links do site",
+            github: "github",
+            connect: "conectar Chrome",
+            contact: "contato",
+            languageAria: "idioma",
+            releaseLabel: "versão {version}",
+        },
+        hero: {
+            title: "Faça seu Agent realmente entender as plataformas sociais.",
+            subtitleLead:
+                "Plataformas sociais são difíceis de acessar por Agent. Scraping pode bloquear sua conta.",
+            subtitleRest:
+                "O Socai reconstrói a estrutura das principais plataformas para que seu Agent possa operá-las diretamente no navegador.",
+            platformsAria: "plataformas compatíveis",
+            platformXiaohongshu: "Xiaohongshu",
+            platformTiktok: "TikTok / Douyin",
+            platformInstagram: "Instagram",
+            platformLinkedin: "LinkedIn",
+            platformX: "X",
+            actionsAria: "teste web e agendamento de demonstração",
+            resourcesAria: "downloads para desktop",
+            demo: "testar agora",
+            bookDemo: "agendar demonstração",
+            agentInstall: "Ou cole o guia de instalação no seu Agent",
+            copy: "copiar",
+            download: "baixar para macOS",
+            downloadWindows: "baixar para Windows",
+        },
+        preview: { sectionAria: "prévia do aplicativo socai" },
+        project: {
+            sectionAria: "projeto open source Jev Social",
+            builtWith: "Criado com Socai",
+            eyebrow: "JEV × SOCAI",
+            title: "Decisões tipadas. Evidências sociais reais.",
+            description:
+                "O Jev escolhe cada operação de pesquisa e o CLI local do socai a executa no seu Chrome autenticado. Os cartões capturados permanecem visíveis enquanto um relatório com fontes é gerado.",
+            try: "testar Jev Social",
+            replay: "ver execução gravada",
+            source: "ver código-fonte",
+            quickstart: "INÍCIO RÁPIDO",
+        },
+        footer: {
+            linksAria: "links do rodapé",
+            blog: "blog",
+            connect: "guia de conexão",
+            contact: "contato",
         },
     },
 };
@@ -308,6 +655,7 @@ const socialImageAlt = message("meta.socialImageAlt");
                         <a
                             class="button button--primary"
                             href={webDemoUrl}
+                            data-language-link
                         >
                             <span data-i18n="hero.demo"
                                 >{message("hero.demo")}</span
@@ -319,6 +667,7 @@ const socialImageAlt = message("meta.socialImageAlt");
                         <a
                             class="button button--secondary"
                             href={bookDemoUrl}
+                            data-language-link
                         >
                             <span data-i18n="hero.bookDemo"
                                 >{message("hero.bookDemo")}</span
@@ -332,47 +681,44 @@ const socialImageAlt = message("meta.socialImageAlt");
                         data-i18n-aria-label="hero.resourcesAria"
                     >
                         <a
-                            class="button button--secondary"
+                            class="hero__download"
                             href={downloadPath}
                             data-download-platform="macos"
+                            aria-label={message("hero.download")}
+                            data-i18n-aria-label="hero.download"
+                            title={message("hero.download")}
+                            data-i18n-title="hero.download"
                         >
-                            <span data-i18n="hero.download"
-                                >{message("hero.download")}</span
-                            >
-                            <span class="button__glyph" aria-hidden="true"
-                                >↓</span
-                            >
-                        </a>
-                        <a
-                            class="button button--secondary"
-                            href={downloadWindowsPath}
-                            data-download-platform="windows"
-                        >
-                            <span data-i18n="hero.downloadWindows"
-                                >{message("hero.downloadWindows")}</span
-                            >
-                            <span class="button__glyph" aria-hidden="true"
-                                >↓</span
-                            >
-                        </a>
-                        <a class="button button--secondary" href={githubUrl}>
                             <svg
-                                viewBox="0 0 16 16"
-                                width="16"
-                                height="16"
+                                data-platform-icon="macos"
+                                viewBox="0 0 24 24"
+                                width="22"
+                                height="22"
                                 fill="currentColor"
                                 aria-hidden="true"
                             >
-                                <path
-                                    d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"
-                                ></path>
+                                <path d="M17.05 12.54c-.02-2.18 1.78-3.24 1.86-3.29-1.02-1.5-2.61-1.7-3.17-1.72-1.33-.14-2.62.8-3.3.8-.69 0-1.73-.78-2.85-.76-1.44.02-2.79.86-3.53 2.18-1.53 2.65-.39 6.54 1.08 8.68.74 1.06 1.6 2.24 2.72 2.2 1.1-.05 1.51-.71 2.84-.71 1.32 0 1.7.71 2.85.68 1.18-.02 1.93-1.05 2.64-2.12.86-1.21 1.2-2.41 1.22-2.47-.03-.01-2.33-.9-2.36-3.47ZM14.87 6.12c.6-.75 1.02-1.77.9-2.8-.87.04-1.97.61-2.6 1.34-.56.64-1.06 1.7-.92 2.69.99.07 2-.5 2.62-1.23Z" />
                             </svg>
-                            <span data-i18n="hero.github"
-                                >{message("hero.github")}</span
+                        </a>
+                        <a
+                            class="hero__download"
+                            href={downloadWindowsPath}
+                            data-download-platform="windows"
+                            aria-label={message("hero.downloadWindows")}
+                            data-i18n-aria-label="hero.downloadWindows"
+                            title={message("hero.downloadWindows")}
+                            data-i18n-title="hero.downloadWindows"
+                        >
+                            <svg
+                                data-platform-icon="windows"
+                                viewBox="0 0 24 24"
+                                width="21"
+                                height="21"
+                                fill="currentColor"
+                                aria-hidden="true"
                             >
-                            <span class="button__external" aria-hidden="true"
-                                >↗</span
-                            >
+                                <path d="M3 5.35 10.44 4.3v7.14H3V5.35Zm8.27-1.17L21 2.8v8.64h-9.73V4.18ZM3 12.27h7.44v7.14L3 18.36v-6.09Zm8.27 0H21v8.65l-9.73-1.38v-7.27Z" />
+                            </svg>
                         </a>
                     </div>
                     <div class="hero__install">
@@ -440,7 +786,9 @@ const socialImageAlt = message("meta.socialImageAlt");
                     aria-label={message("project.sectionAria")}
                     data-i18n-aria-label="project.sectionAria"
                 >
-                    <h2 class="built-with-heading">Built with Socai</h2>
+                    <h2 class="built-with-heading" data-i18n="project.builtWith">
+                        {message("project.builtWith")}
+                    </h2>
                     <div class="project-feature__panel">
                         <div class="project-feature__copy">
                             <span

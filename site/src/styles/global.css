@@ -120,42 +120,36 @@ button:focus-visible {
 }
 
 .language-toggle {
+  position: relative;
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  gap: 8px;
 }
 
-.language-toggle__button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  padding: 0 2px;
-  border-radius: 4px;
+.language-toggle__select {
+  height: 30px;
+  max-width: 112px;
+  padding: 0 28px 0 10px;
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
   background: transparent;
-  color: var(--ink-4);
+  color: var(--ink-2);
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.04em;
   line-height: 1;
-  transition: color 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  white-space: nowrap;
 }
 
-.language-toggle__button:hover {
-  color: var(--fg-muted);
+.language-toggle__select:hover,
+.language-toggle__select:focus-visible {
+  border-color: var(--line-strong);
 }
 
-.language-toggle__button[aria-pressed="true"] {
-  color: var(--ink-0);
-}
-
-.language-toggle__divider {
-  width: 1px;
-  height: 11px;
-  background: var(--line-strong);
+.language-toggle__chevron {
+  position: absolute;
+  right: 9px;
+  pointer-events: none;
 }
 
 .nav-link {
@@ -301,8 +295,12 @@ html[data-language="zh"] .hero h1 {
 }
 
 .hero__actions .button,
-.hero__resources .button {
+.hero__resources .hero__download {
   height: 44px;
+}
+
+.hero__actions .button {
+  min-width: 180px;
 }
 
 .hero__actions .button--primary {
@@ -331,22 +329,25 @@ html[data-language="zh"] .hero h1 {
   margin-top: 12px;
 }
 
-.hero__resources .button--secondary {
-  gap: 8px;
-  padding: 0 14px;
+.hero__download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  min-width: 48px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
   background: transparent;
   color: var(--fg-muted);
   font-size: 13px;
+  font-weight: 500;
 }
 
-.hero__resources .button--secondary:hover {
+.hero__download:hover {
+  border-color: var(--line-strong);
   background: var(--surface);
   color: var(--ink-0);
-}
-
-.hero__resources .button__glyph,
-.hero__resources .button__external {
-  font-size: 12px;
 }
 
 .hero__install {
@@ -990,8 +991,8 @@ html[data-language="zh"] .hero h1 {
     padding-inline: 10px;
   }
 
-  .language-toggle__button {
-    padding-inline: 9px;
+  .language-toggle__select {
+    max-width: 104px;
   }
 
   .mode-switch,
