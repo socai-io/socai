@@ -11,6 +11,8 @@ import { message as messageFor } from "../lib/i18n";
 const githubUrl = "/github";
 const downloadPath = "/download";
 const downloadWindowsPath = "/download/windows";
+const webDemoUrl = "https://agent.socai.io";
+const bookDemoUrl = "https://agent.socai.io/book-demo";
 const currentYear = new Date().getFullYear();
 const siteUrl = "https://socai.io";
 const canonicalUrl = `${siteUrl}/`;
@@ -48,7 +50,10 @@ const messages = {
             platformInstagram: "Instagram",
             platformLinkedin: "LinkedIn",
             platformX: "X",
-            actionsAria: "download and source",
+            actionsAria: "web demo and sales",
+            resourcesAria: "desktop downloads and source",
+            demo: "try now",
+            bookDemo: "book a demo",
             agentInstall: "Or, paste installation guide to your agent",
             copy: "copy",
             download: "download for macOS",
@@ -102,7 +107,10 @@ const messages = {
             platformInstagram: "Instagram",
             platformLinkedin: "LinkedIn",
             platformX: "X",
-            actionsAria: "下载和源码",
+            actionsAria: "Web Demo 和预约演示",
+            resourcesAria: "桌面端下载和源码",
+            demo: "立即体验",
+            bookDemo: "预约演示",
             agentInstall: "或者，把安装说明贴给你的 Agent",
             copy: "复制",
             download: "下载 macOS 版",
@@ -299,6 +307,32 @@ const socialImageAlt = message("meta.socialImageAlt");
                     >
                         <a
                             class="button button--primary"
+                            href={webDemoUrl}
+                        >
+                            <span data-i18n="hero.demo"
+                                >{message("hero.demo")}</span
+                            >
+                            <span class="button__external" aria-hidden="true"
+                                >→</span
+                            >
+                        </a>
+                        <a
+                            class="button button--secondary"
+                            href={bookDemoUrl}
+                        >
+                            <span data-i18n="hero.bookDemo"
+                                >{message("hero.bookDemo")}</span
+                            >
+                        </a>
+                    </div>
+                    <div
+                        class="hero__resources"
+                        role="group"
+                        aria-label={message("hero.resourcesAria")}
+                        data-i18n-aria-label="hero.resourcesAria"
+                    >
+                        <a
+                            class="button button--secondary"
                             href={downloadPath}
                             data-download-platform="macos"
                         >
@@ -310,7 +344,7 @@ const socialImageAlt = message("meta.socialImageAlt");
                             >
                         </a>
                         <a
-                            class="button button--primary"
+                            class="button button--secondary"
                             href={downloadWindowsPath}
                             data-download-platform="windows"
                         >

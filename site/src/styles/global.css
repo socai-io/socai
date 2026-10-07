@@ -300,7 +300,8 @@ html[data-language="zh"] .hero h1 {
   gap: 10px;
 }
 
-.hero__actions .button {
+.hero__actions .button,
+.hero__resources .button {
   height: 44px;
 }
 
@@ -318,6 +319,33 @@ html[data-language="zh"] .hero h1 {
 
 .hero__actions .button__glyph,
 .hero__actions .button__external {
+  font-size: 12px;
+}
+
+.hero__resources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.hero__resources .button--secondary {
+  gap: 8px;
+  padding: 0 14px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.hero__resources .button--secondary:hover {
+  background: var(--surface);
+  color: var(--ink-0);
+}
+
+.hero__resources .button__glyph,
+.hero__resources .button__external {
   font-size: 12px;
 }
 
@@ -857,6 +885,12 @@ html[data-language="zh"] .hero h1 {
   .hero__actions {
     width: min(100%, 360px);
     flex-direction: column;
+  }
+
+  .hero__resources {
+    width: min(100%, 360px);
+    margin-right: auto;
+    margin-left: auto;
   }
 
   .button {
