@@ -570,6 +570,8 @@
       cover_url: cover,
       video: collectVideoInfo(video, stateVideo, cover),
       top_comments: [],
+      anchors: Array.isArray(stateVideo.anchors) ? stateVideo.anchors : [],
+      is_ec_video: Number(stateVideo.isECVideo || 0),
     };
   }
 
