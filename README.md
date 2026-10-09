@@ -129,6 +129,8 @@ Browser protocol compatibility and security boundaries are documented in the [br
 
 [Jev Social](https://github.com/socai-io/jev-social) is a local-first demo that lets Jev choose bounded socai CLI operations for Instagram, TikTok, and LinkedIn. Captured post cards stay visible while a source-linked research report streams into the browser.
 
+Version 0.1.13 supports Node 22 and 24, OpenRouter Jev, and user-started local System One endpoints.
+
 [![Jev Social demo](https://raw.githubusercontent.com/socai-io/jev-social/main/docs/jev-social.gif)](https://github.com/socai-io/jev-social)
 
 [Install the Agent Skill](https://github.com/socai-io/jev-social/tree/v0.1.13/skills/jev-social)

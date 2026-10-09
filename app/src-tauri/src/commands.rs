@@ -967,6 +967,16 @@ struct DesktopBrowserRecovery {
     last_page_url: tokio::sync::RwLock<String>,
 }
 
+fn tool_allows_automatic_browser_replay(tool_name: &str) -> bool {
+    // Keep this fail-closed. XHS tools are wrapped by LocalOverrideTool and
+    // run_site_browser_tool/browser_script can execute opaque browser actions,
+    // so their names cannot prove that a retry is free of remote writes.
+    matches!(
+        tool_name,
+        "navigate_site" | "read_site_skills" | "wait_for_instagram_login"
+    )
+}
+
 impl std::fmt::Debug for DesktopBrowserRecovery {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1068,6 +1078,19 @@ impl ToolFailureRecovery for DesktopBrowserRecovery {
             self.emit_recovery_event(
                 "degraded",
                 "browser was disconnected; summarizing the collected results".into(),
+            )
+            .await;
+            self.clear_task_target().await;
+            self.capture_recovery("degraded", Some(&disconnect_reason), 0);
+            return ToolRecoveryOutcome::Degraded { reason };
+        }
+        if !tool_allows_automatic_browser_replay(tool_name) {
+            let reason = format!(
+                "browser disconnected while running {tool_name}; automatic replay is disabled because the operation may already have changed remote state"
+            );
+            self.emit_recovery_event(
+                "degraded",
+                "browser connection lost during an operation that cannot be replayed safely; preserving its original result".into(),
             )
             .await;
             self.clear_task_target().await;

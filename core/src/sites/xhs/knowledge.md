@@ -33,6 +33,12 @@ The default interactive XHS tools are intentionally high level:
 - `album` — notes from one of those albums, chosen by the name `albums` returns.
 - `get_notes` — revisit specific notes by previously collected note id + xsec token.
 - `comment` — write one explicit comment to one user-selected complete note URL.
+- `follow` — follow the verified author of one user-selected complete note URL.
+
+`comment` and `follow` are external writes. Use them only when the user
+explicitly requests the exact target and action in the current task. Never infer
+a follow from research intent, never use `follow` to unfollow, and never retry a
+`commit_unknown` result.
 
 Stateful micro tools such as opening/closing a current note, scrolling a note,
 extracting the current modal, or reading current page state are not part of the
@@ -60,7 +66,8 @@ wait-then-one-retry cycle until success or cancellation.
 
 ## Login Detection
 
-`search`, `author_scan`, `albums`, and `album` run a pre-flight login gate: if logged out they return
+`search`, `author_scan`, `albums`, `album`, `get_notes`, `comment`, and `follow`
+run a pre-flight login gate: if logged out they return
 `{ok:false, reason:"login_required"}` immediately (login is read from the
 persistent sidebar, so a dismissed QR modal is never mistaken for a session).
 

@@ -41,9 +41,9 @@ const SocaiXhsPageScripts = (() => {
     return String(value || '').replace(/\r\n/g, '\n').slice(0, limit);
   }
 
-  function ownedClickPoint(el) {
+  function ownedClickPoint(el, preferredPoint = null) {
     if (!inViewport(el)) return null;
-    const point = elementCenter(el);
+    const point = preferredPoint || elementCenter(el);
     const hit = document.elementFromPoint(point.x, point.y);
     if (!hit || (hit !== el && !el.contains(hit))) return null;
     return point;
@@ -1578,6 +1578,106 @@ const SocaiXhsPageScripts = (() => {
     return actors.size === 1 ? Array.from(actors.values())[0] : null;
   }
 
+  function followState(arg) {
+    const expectedNoteId = String((arg && arg.note_id) || '');
+    const expectedAuthorId = String((arg && arg.author_id) || '');
+    const root = commentRoot({ note_id: expectedNoteId });
+    if (!root) return { ok: false, status: 'wrong_note', following: false, hit_owned: false };
+
+    const authorSelector = [
+      '.author-container a[href*="/user/profile/"]',
+      '.author-wrapper a[href*="/user/profile/"]',
+      '.author a[href*="/user/profile/"]',
+    ].join(', ');
+    const authors = new Map();
+    for (const link of $$(authorSelector, root).filter((node) => isVisible(node) && !inCommentArea(node))) {
+      const url = absUrl(link.href || link.getAttribute('href'));
+      const match = url.match(/\/user\/profile\/([^/?#]+)/);
+      if (!match) continue;
+      const id = decodeURIComponent(match[1]);
+      authors.set(id, {
+        id,
+        display_name: norm(text(link) || id),
+        url,
+        scope: link.closest?.('.author-container, .author-wrapper, .author') || link.parentElement,
+      });
+    }
+    if (authors.size !== 1) {
+      return { ok: false, status: authors.size ? 'ambiguous_author' : 'author_not_found', following: false, hit_owned: false };
+    }
+    const author = Array.from(authors.values())[0];
+    if (!expectedAuthorId || author.id !== expectedAuthorId) {
+      return {
+        ok: false,
+        status: 'wrong_author',
+        note_id: expectedNoteId,
+        author: { id: author.id, display_name: author.display_name, url: author.url },
+        following: false,
+        hit_owned: false,
+      };
+    }
+
+    const actor = currentCommentActor();
+    if (!actor) {
+      return { ok: false, status: 'current_user_unknown', note_id: expectedNoteId, following: false, hit_owned: false };
+    }
+    if (actor.id === author.id) {
+      return { ok: false, status: 'self_follow_not_allowed', note_id: expectedNoteId, actor, following: false, hit_owned: false };
+    }
+
+    const controls = Array.from(new Set(
+      $$('.follow-button, button, [role="button"]', author.scope || root)
+        .filter((node) => isVisible(node) && !node.closest?.(COMMENT_ROOT_SELECTOR))
+        .filter((node) => /^(关注|已关注|互相关注|follow|following|requested)$/i.test(norm(text(node)))),
+    ));
+    if (controls.length !== 1) {
+      return {
+        ok: false,
+        status: controls.length ? 'ambiguous_follow_control' : 'follow_control_not_found',
+        note_id: expectedNoteId,
+        author: { id: author.id, display_name: author.display_name, url: author.url },
+        actor,
+        following: false,
+        hit_owned: false,
+      };
+    }
+    const control = controls[0];
+    const label = norm(text(control));
+    const following = /^(已关注|互相关注|following|requested)$/i.test(label);
+    const disabled = !!control.disabled || control.getAttribute('aria-disabled') === 'true'
+      || /disabled/.test(String(control.className || ''));
+    const base = {
+      note_id: expectedNoteId,
+      author: { id: author.id, display_name: author.display_name, url: author.url },
+      actor,
+      label,
+      following,
+    };
+    if (following) {
+      return { ok: true, status: 'already_following', ...base, hit_owned: false };
+    }
+    if (disabled) {
+      return { ok: false, status: 'follow_control_disabled', ...base, disabled: true, hit_owned: false };
+    }
+    const pointer = arg
+      && Number.isFinite(arg.pointer_x)
+      && Number.isFinite(arg.pointer_y)
+      ? { x: arg.pointer_x, y: arg.pointer_y }
+      : null;
+    const point = ownedClickPoint(control, pointer);
+    if (!point) {
+      return { ok: false, status: 'follow_control_obscured', ...base, disabled: false, hit_owned: false };
+    }
+    return {
+      ok: true,
+      status: 'follow_ready',
+      ...base,
+      disabled: false,
+      hit_owned: true,
+      ...point,
+    };
+  }
+
   function editableCommentEditor(root) {
     const active = document.activeElement;
     if (active && root.contains(active) && (
@@ -1950,6 +2050,7 @@ const SocaiXhsPageScripts = (() => {
     commentDraftState,
     commentSubmitTarget,
     renderedCommentState,
+    followState,
     expandCommentReplies,
     scrollFeed,
     scrollInNote,
