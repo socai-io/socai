@@ -15,11 +15,15 @@ pub const DEFAULT_COMPACT_AFTER_MESSAGES: usize = 20;
 pub const DEFAULT_KEEP_RECENT_MESSAGES: usize = 10;
 const TURN_MARKDOWN_MAX_CHARS: usize = 2_000;
 const USER_REQUEST_MAX_CHARS: usize = 500;
-const WEB_SOURCE_EXCERPT_MAX_CHARS: usize = 1_200;
+const WEB_SOURCE_EXCERPT_MIN_CHARS: usize = 1_200;
+const WEB_SOURCE_EXCERPT_MAX_CHARS: usize = 2_000;
 const WEB_SOURCE_TITLE_MAX_CHARS: usize = 240;
 const MAX_WEB_SOURCES: usize = 24;
+const WEB_SOURCE_TOTAL_EXCERPT_MAX_CHARS: usize = WEB_SOURCE_EXCERPT_MIN_CHARS * MAX_WEB_SOURCES;
 const COMPACT_CONTEXT_HEADING: &str = "# Earlier compacted context";
 const LEGACY_EVIDENCE_HEADING: &str = "# Earlier tool evidence";
+const WEB_SOURCE_SECTION_HEADING: &str = "## Earlier web source evidence";
+const WEB_SOURCE_SECTION_MARKER: &str = "\n\n## Earlier web source evidence\n";
 
 /// Rewrite the transcript only when it has grown beyond `compact_after` full
 /// messages. The message at `anchor_user_index` — the current run's user task,
@@ -143,7 +147,11 @@ fn compact_older_messages(messages: &[Message]) -> String {
                 if text.starts_with(COMPACT_CONTEXT_HEADING)
                     || text.starts_with(LEGACY_EVIDENCE_HEADING)
                 {
-                    inherited.push(text.trim().to_string());
+                    let inherited_without_web_sources =
+                        collect_inherited_web_source_evidence(text, &mut web_sources);
+                    if !inherited_without_web_sources.is_empty() {
+                        inherited.push(inherited_without_web_sources);
+                    }
                 } else {
                     pending_user = Some(text.trim().to_string());
                 }
@@ -227,7 +235,9 @@ fn compact_older_messages(messages: &[Message]) -> String {
         }
     }
     if !web_sources.is_empty() {
-        rendered.push_str("\n\n## Earlier web source evidence\n");
+        let source_count = web_sources.len().min(MAX_WEB_SOURCES);
+        let excerpt_max_chars = web_source_excerpt_max_chars(source_count);
+        rendered.push_str(&format!("\n\n{WEB_SOURCE_SECTION_HEADING}\n"));
         rendered.push_str(
             "These pages were opened and read directly. Preserve their URLs and excerpts when producing the final report.\n",
         );
@@ -237,11 +247,77 @@ fn compact_older_messages(messages: &[Message]) -> String {
                 rendered.push_str(&format!("  Title: {title}\n"));
             }
             if !excerpt.is_empty() {
-                rendered.push_str(&format!("  Evidence excerpt: {excerpt}\n"));
+                rendered.push_str(&format!(
+                    "  Evidence excerpt: {}\n",
+                    truncate_plain(&excerpt, excerpt_max_chars)
+                ));
             }
         }
     }
     rendered
+}
+
+fn collect_inherited_web_source_evidence(
+    text: &str,
+    sources: &mut BTreeMap<String, (String, String)>,
+) -> String {
+    let mut remaining = text;
+    let mut preserved = String::new();
+    while let Some(section_start) = remaining.find(WEB_SOURCE_SECTION_MARKER) {
+        preserved.push_str(&remaining[..section_start]);
+        let section_tail = &remaining[section_start + WEB_SOURCE_SECTION_MARKER.len()..];
+        let section_end = section_tail.find("\n\n## ").unwrap_or(section_tail.len());
+        let section = &section_tail[..section_end];
+        let mut current_url = String::new();
+        let mut current_title = String::new();
+        let mut current_excerpt = String::new();
+
+        let flush = |url: &mut String,
+                     title: &mut String,
+                     excerpt: &mut String,
+                     sources: &mut BTreeMap<String, (String, String)>| {
+            if !url.is_empty() {
+                insert_web_source_evidence(
+                    sources,
+                    std::mem::take(url),
+                    std::mem::take(title),
+                    std::mem::take(excerpt),
+                );
+            }
+        };
+        for line in section.lines() {
+            if let Some(url) = line.strip_prefix("- URL: ") {
+                flush(
+                    &mut current_url,
+                    &mut current_title,
+                    &mut current_excerpt,
+                    sources,
+                );
+                current_url = url.trim().to_string();
+            } else if let Some(title) = line.strip_prefix("  Title: ") {
+                current_title = title.trim().to_string();
+            } else if let Some(excerpt) = line.strip_prefix("  Evidence excerpt: ") {
+                current_excerpt = excerpt.trim().to_string();
+            }
+        }
+        flush(
+            &mut current_url,
+            &mut current_title,
+            &mut current_excerpt,
+            sources,
+        );
+        remaining = &section_tail[section_end..];
+    }
+    preserved.push_str(remaining);
+    preserved.trim().to_string()
+}
+
+fn web_source_excerpt_max_chars(source_count: usize) -> usize {
+    if source_count == 0 {
+        return 0;
+    }
+    (WEB_SOURCE_TOTAL_EXCERPT_MAX_CHARS / source_count.min(MAX_WEB_SOURCES))
+        .clamp(WEB_SOURCE_EXCERPT_MIN_CHARS, WEB_SOURCE_EXCERPT_MAX_CHARS)
 }
 
 fn collect_web_source_evidence(value: &Value, sources: &mut BTreeMap<String, (String, String)>) {
@@ -269,11 +345,20 @@ fn collect_web_source_evidence(value: &Value, sources: &mut BTreeMap<String, (St
         return;
     }
 
+    insert_web_source_evidence(sources, url.to_string(), title, excerpt);
+}
+
+fn insert_web_source_evidence(
+    sources: &mut BTreeMap<String, (String, String)>,
+    url: String,
+    title: String,
+    excerpt: String,
+) {
     let candidate = (title, excerpt);
-    match sources.get(url) {
+    match sources.get(&url) {
         Some(existing) if evidence_size(existing) >= evidence_size(&candidate) => {}
         _ => {
-            sources.insert(url.to_string(), candidate);
+            sources.insert(url, candidate);
         }
     }
 }
@@ -490,6 +575,37 @@ mod tests {
         assert!(compacted.contains("https://arxiv.org/abs/2604.08516"));
         assert!(compacted.contains("MolmoWeb: Open Visual Web Agent"));
         assert!(compacted.contains("Pass@4 is 94.7%."));
+    }
+
+    #[test]
+    fn compacted_context_preserves_late_web_results_for_small_source_sets() {
+        let messages = tool_exchange(
+            "read-1",
+            "web_read",
+            json!({
+                "url": "https://arxiv.org/abs/2511.12997",
+                "title": "WebCoach",
+                "text": format!(
+                    "{}Evaluations on WebVoyager increase task success from 47% to 61%.",
+                    "method and architecture context ".repeat(50)
+                )
+            }),
+        );
+
+        let compacted = compact_older_messages(&messages);
+
+        assert!(compacted.contains("Evaluations on WebVoyager"));
+        assert!(compacted.contains("47% to 61%"));
+    }
+
+    #[test]
+    fn web_source_excerpt_budget_stays_bounded_as_source_count_grows() {
+        assert_eq!(web_source_excerpt_max_chars(0), 0);
+        assert_eq!(web_source_excerpt_max_chars(1), 2_000);
+        assert_eq!(web_source_excerpt_max_chars(3), 2_000);
+        assert_eq!(web_source_excerpt_max_chars(15), 1_920);
+        assert_eq!(web_source_excerpt_max_chars(24), 1_200);
+        assert_eq!(web_source_excerpt_max_chars(100), 1_200);
     }
 
     #[test]

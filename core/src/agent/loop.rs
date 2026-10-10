@@ -262,6 +262,7 @@ pub async fn run_agent_with_events(
     let mut final_text = String::new();
     let mut usage = TokenUsage::default();
     let mut tool_call_history: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    let mut last_tool_result: Option<(String, String, u32)> = None;
     let mut completed = false;
     let mut terminal_error: Option<String> = None;
     let mut degraded_reason: Option<String> = None;
@@ -451,7 +452,7 @@ pub async fn run_agent_with_events(
             ctx.active_tool_name = name.clone();
 
             let sig = tool_call_signature(name, input);
-            let history = tool_call_history.entry(sig).or_default();
+            let history = tool_call_history.entry(sig.clone()).or_default();
             history.push(step);
             let repeat_count = history.len() as u32;
 
@@ -595,16 +596,25 @@ pub async fn run_agent_with_events(
             );
             run_state.note_tool_result(step, name, &effective_input, &summary, duration_s);
             let mut history_content = bound_content_for_history(&result_content);
-            // Break tight loops: when the model fires the *same* call with the
-            // same args repeatedly, the bare result won't change its mind. Tell
-            // it explicitly to stop and work with what it already has.
-            if repeat_count >= 3 {
+            // Break tight loops only when both the call and its model-visible
+            // result repeat. Browser tools can use identical arguments against
+            // different pages, so argument count alone cannot prove that the
+            // result is unchanged. Image results are excluded because the
+            // bounded history intentionally omits their bytes.
+            let repeated_result_count = if result.has_image() {
+                last_tool_result = None;
+                0
+            } else {
+                let bounded_result = content_for_log(&history_content);
+                repeated_tool_result_count(&mut last_tool_result, &sig, &bounded_result)
+            };
+            if repeated_result_count >= 3 {
                 history_content.insert(
                     0,
                     ToolResultContent::Text {
                         text: format!(
                             "[Note: you have called {name} with these exact arguments \
-                             {repeat_count} times and the result is not changing. Stop \
+                             {repeated_result_count} times and received the same result. Stop \
                              repeating this call. Proceed with the information you already \
                              have — if something cannot be found, say so and complete the \
                              task with what is available.]"
@@ -921,6 +931,54 @@ pub async fn run_agent_with_events(
 }
 
 // ---------- small private helpers (not core logic, kept here for locality) ----------
+
+fn repeated_tool_result_count(
+    last_result: &mut Option<(String, String, u32)>,
+    call_signature: &str,
+    result: &Value,
+) -> u32 {
+    let stable_result = stable_tool_result_value(result);
+    let result_signature = tool_call_signature("tool_result", &stable_result);
+    if let Some((previous_call, previous_result, count)) = last_result {
+        if previous_call == call_signature && previous_result == &result_signature {
+            *count = count.saturating_add(1);
+            return *count;
+        }
+    }
+    *last_result = Some((call_signature.to_string(), result_signature, 1));
+    1
+}
+
+fn stable_tool_result_value(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(stable_tool_result_value).collect()),
+        Value::Object(values) => {
+            let mut stable = serde_json::Map::new();
+            for (key, value) in values {
+                if key == "artifact_path" {
+                    continue;
+                }
+                if key == "text" {
+                    if let Some(text) = value.as_str() {
+                        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                            stable.insert(key.clone(), stable_tool_result_value(&parsed));
+                            continue;
+                        }
+                    }
+                }
+                let mut normalized = stable_tool_result_value(value);
+                if key == "artifact" {
+                    if let Some(artifact) = normalized.as_object_mut() {
+                        artifact.remove("path");
+                    }
+                }
+                stable.insert(key.clone(), normalized);
+            }
+            Value::Object(stable)
+        }
+        _ => value.clone(),
+    }
+}
 
 /// Backoff schedule for transient chat failures. Two retries keeps the worst
 /// case bounded: a fully dead network adds at most two extra request
@@ -1858,6 +1916,39 @@ mod tests {
         assert!(contains_pseudo_tool_call(
             "<function_calls><invoke name=\"publish_artifact\">"
         ));
+    }
+
+    #[test]
+    fn repeated_tool_result_count_requires_the_result_to_match() {
+        let call_signature = tool_call_signature(
+            "web_collect_links",
+            &json!({"url_contains": "/abs/", "max_links": 40}),
+        );
+        let mut history = None;
+        let first_page = json!([{"url": "https://arxiv.org/abs/2501.00001"}]);
+        let second_page = json!([{"url": "https://arxiv.org/abs/2502.00002"}]);
+        let third_page = json!([{"url": "https://arxiv.org/abs/2503.00003"}]);
+
+        assert_eq!(
+            repeated_tool_result_count(&mut history, &call_signature, &first_page),
+            1
+        );
+        assert_eq!(
+            repeated_tool_result_count(&mut history, &call_signature, &second_page),
+            1
+        );
+        assert_eq!(
+            repeated_tool_result_count(&mut history, &call_signature, &third_page),
+            1
+        );
+        assert_eq!(
+            repeated_tool_result_count(&mut history, &call_signature, &third_page),
+            2
+        );
+        assert_eq!(
+            repeated_tool_result_count(&mut history, &call_signature, &third_page),
+            3
+        );
     }
 
     #[tokio::test]

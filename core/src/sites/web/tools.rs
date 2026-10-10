@@ -186,7 +186,7 @@ impl Tool for CollectLinksTool {
     }
 
     fn description(&self) -> &str {
-        "Collect exact public link URLs from the current search or list page with nearby visible context. Use url_contains to narrow results (for example /abs/ on arXiv), select relevant records by title/context, then navigate only to returned URLs."
+        "Collect exact public link URLs from the current search or list page with nearby visible context. Use url_contains to narrow results (for example /abs/ on arXiv), select relevant records by title/context, then navigate only to returned URLs. When has_more is true, continue with offset=next_offset; never repeat unchanged arguments on the same page."
     }
 
     fn input_schema(&self) -> Value {
