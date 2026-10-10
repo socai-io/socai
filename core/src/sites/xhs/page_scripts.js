@@ -728,39 +728,49 @@ const SocaiXhsPageScripts = (() => {
   // Parse a cleaned `.date` core into what it actually pins down. XHS renders
   // the publish date several ways: absolute ("2024-03-28", "03-28"), or
   // relative for recent posts ("刚刚", "5分钟前", "11小时前", "今天 13:31",
-  // "昨天 13:31", "前天", "5天前"). Returns:
+  // "昨天 13:31", "前天", "5天前"). Every calendar day and wall-clock time in
+  // the label is in the *browser's* local timezone (that is how XHS formats
+  // it), so each form is first resolved to an epoch instant in local time and
+  // only then expressed as a Beijing date. Returns:
   //   precision — 'minute' | 'hour' | 'day' | 'unknown': how much of the
   //               instant the label determines;
   //   instant_ms — the resolved instant for minute/hour precision (null for
   //               day precision: a date label names no time of day);
-  //   ymd        — the Beijing calendar date ('YYYY-MM-DD') when known;
-  //   legacy     — the legacy `date` field value: an absolute token is passed
-  //               through unchanged, a relative one is resolved to the
-  //               Beijing date, anything unrecognized stays as cleaned text.
+  //   ymd        — the Beijing calendar date ('YYYY-MM-DD') when known. For a
+  //               day-only label outside UTC+8 the local day straddles two
+  //               Beijing dates; the one containing local noon is reported,
+  //               which is the likelier of the two;
+  //   legacy     — the legacy `date` field value: the Beijing date in XHS's
+  //               own "MM-DD" / "YYYY-MM-DD" style, or the cleaned text when
+  //               the label is unrecognized.
   function parseXhsDateLabel(value, nowMs = Date.now()) {
     const t = dateLabelCore(value);
     const unknown = { precision: 'unknown', instant_ms: null, ymd: '', legacy: t };
     if (!t) return { ...unknown, legacy: '' };
-    const today = shanghaiParts(nowMs);
+    const now = new Date(nowMs);
+    // Browser-local calendar day → the instant of its local noon.
+    const localNoon = (year, month, day) => new Date(year, month - 1, day, 12, 0, 0).getTime();
+    const dayRecord = (instant) => ({ precision: 'day', instant_ms: null, ymd: shanghaiYmd(instant), legacy: shanghaiDateLabel(instant, nowMs) });
+    const instantRecord = (instant, precision) => ({ precision, instant_ms: instant, ymd: shanghaiYmd(instant), legacy: shanghaiDateLabel(instant, nowMs) });
     // Absolute token wins (scoped to the short `.date` text, so this can't grab
-    // a "13-15" fragment from the note body). Pass it through unchanged.
+    // a "13-15" fragment from the note body).
     const abs = t.match(/(?:(\d{4})-)?(\d{1,2})-(\d{1,2})/);
     if (abs) {
       const month = Number(abs[2]);
       const day = Number(abs[3]);
-      let year = abs[1] ? Number(abs[1]) : today.year;
+      let year = abs[1] ? Number(abs[1]) : now.getFullYear();
       if (month < 1 || month > 12 || day < 1 || day > 31) return unknown;
-      let start = shanghaiEpoch(year, month, day);
+      let noon = localNoon(year, month, day);
       // A yearless label can never be in the future: "12-31" read in early
       // January belongs to the year that just ended.
-      if (!abs[1] && start > nowMs + DAY_MS) {
+      if (!abs[1] && noon > nowMs + DAY_MS) {
         year -= 1;
-        start = shanghaiEpoch(year, month, day);
+        noon = localNoon(year, month, day);
       }
       // Reject impossible month/day pairs ("6-0", "2-30") via the round trip.
-      const parts = shanghaiParts(start);
-      if (parts.month !== month || parts.day !== day) return unknown;
-      return { precision: 'day', instant_ms: null, ymd: shanghaiYmd(start), legacy: abs[0] };
+      const check = new Date(noon);
+      if (Number.isNaN(noon) || check.getMonth() + 1 !== month || check.getDate() !== day) return unknown;
+      return dayRecord(noon);
     }
     const daysAgo = t.match(/^(\d+)\s*天前/);
     const dayOffset = /刚刚|今天|^\d+\s*(?:秒|分钟|小时)前/.test(t) ? 0
@@ -769,12 +779,13 @@ const SocaiXhsPageScripts = (() => {
       : daysAgo ? parseInt(daysAgo[1], 10)
       : null;
     if (dayOffset === null) return unknown;
-    // "今天 13:31" / "昨天 13:31": a wall-clock time on a Beijing calendar day.
+    // "今天 13:31" / "昨天 13:31": a wall-clock time on a browser-local
+    // calendar day — the same post reads "今天 13:31" in Los Angeles and
+    // "今天 04:31" in Shanghai, so resolve it in local time.
     const clock = t.match(/(\d{1,2}):(\d{2})/);
     if (clock && /今天|昨天|前天/.test(t)) {
-      const base = shanghaiParts(nowMs - dayOffset * DAY_MS);
-      const instant = shanghaiEpoch(base.year, base.month, base.day, Number(clock[1]), Number(clock[2]));
-      return { precision: 'minute', instant_ms: instant, ymd: shanghaiYmd(instant), legacy: shanghaiDateLabel(instant, nowMs) };
+      const instant = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOffset, Number(clock[1]), Number(clock[2])).getTime();
+      return Number.isNaN(instant) ? unknown : instantRecord(instant, 'minute');
     }
     const rel = t.match(/^(\d+)\s*(秒|分钟|小时)前/);
     if (rel) {
@@ -782,15 +793,10 @@ const SocaiXhsPageScripts = (() => {
       const unitMs = rel[2] === '秒' ? 1000 : rel[2] === '分钟' ? 60 * 1000 : 3600 * 1000;
       // XHS floors the relative label, so the true instant lies within one
       // unit before the resolved one — hence hour precision for "N小时前".
-      const instant = nowMs - n * unitMs;
-      const precision = rel[2] === '小时' ? 'hour' : 'minute';
-      return { precision, instant_ms: instant, ymd: shanghaiYmd(instant), legacy: shanghaiDateLabel(instant, nowMs) };
+      return instantRecord(nowMs - n * unitMs, rel[2] === '小时' ? 'hour' : 'minute');
     }
-    if (/刚刚/.test(t)) {
-      return { precision: 'minute', instant_ms: nowMs, ymd: shanghaiYmd(nowMs), legacy: shanghaiDateLabel(nowMs, nowMs) };
-    }
-    const dayInstant = nowMs - dayOffset * DAY_MS;
-    return { precision: 'day', instant_ms: null, ymd: shanghaiYmd(dayInstant), legacy: shanghaiDateLabel(dayInstant, nowMs) };
+    if (/刚刚/.test(t)) return instantRecord(nowMs, 'minute');
+    return dayRecord(localNoon(now.getFullYear(), now.getMonth() + 1, now.getDate() - dayOffset));
   }
 
   // Normalize a Xiaohongshu `.date` label into the legacy `date` field: an

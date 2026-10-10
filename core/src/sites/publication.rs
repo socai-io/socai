@@ -55,23 +55,23 @@ pub struct PublicationTime {
 }
 
 impl PublicationTime {
-    /// Validate a page-script record: `at` must be RFC 3339 with an offset
-    /// and is dropped (precision downgraded to `day`) otherwise; `date` must
-    /// be a real `YYYY-MM-DD` and is reconstructed from `at` when missing.
-    /// Returns `None` when the value is not a record at all.
+    /// Validate a page-script record: an instant-level precision (`second`,
+    /// `minute`, `hour`) requires an RFC 3339 `at` with an offset — a missing
+    /// or unparseable `at` downgrades the record to `day`; `at` is dropped at
+    /// `day`/`unknown` precision; `date` must be a real `YYYY-MM-DD` and is
+    /// reconstructed from `at` when missing, and a `day` record without any
+    /// date becomes `unknown`. Returns `None` when the value is not a record
+    /// at all.
     pub fn from_value(value: &Value) -> Option<Self> {
         let mut record: Self = serde_json::from_value(value.clone()).ok()?;
         let parsed_at = record
             .at
             .as_deref()
             .and_then(|at| DateTime::parse_from_rfc3339(at.trim()).ok());
-        if record.at.is_some() && parsed_at.is_none() {
-            record.at = None;
-            if record.precision.has_instant() {
-                record.precision = Precision::Day;
-            }
+        if parsed_at.is_none() && record.precision.has_instant() {
+            record.precision = Precision::Day;
         }
-        if !record.precision.has_instant() {
+        if parsed_at.is_none() || !record.precision.has_instant() {
             record.at = None;
         }
         let date_ok = record
