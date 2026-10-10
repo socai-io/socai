@@ -7,6 +7,7 @@ use crate::media::MediaProcessor;
 use anyhow::Result;
 use serde_json::{json, Map, Value};
 
+use crate::sites::publication::PublicationTime;
 use crate::sites::xhs::entities::{normalize_url, XhsNote, XhsNoteCard};
 
 pub const XHS_HOME_URL: &str = "https://www.xiaohongshu.com/explore";
@@ -2505,6 +2506,8 @@ fn parse_note(body: &Value) -> XhsNote {
             .get("date_edited")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        published: body.get("published").and_then(PublicationTime::from_value),
+        edited: body.get("edited").and_then(PublicationTime::from_value),
         location: s("location"),
         ip_location: s("ip_location"),
         likes: s("likes"),

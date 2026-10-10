@@ -2,6 +2,8 @@ use chrono::{Datelike, FixedOffset, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::sites::publication::PublicationTime;
+
 /// XHS note — wire-ready. Field order, names, and types match the public JSON
 /// shape used by run artifacts and app timelines.
 ///
@@ -26,6 +28,18 @@ pub struct XhsNote {
     /// the wire shape when false so older artifacts stay byte-identical.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub date_edited: bool,
+    /// Original publication time under the cross-platform contract
+    /// ([`PublicationTime`]): RFC 3339 `at` with the `+08:00` offset when the
+    /// page state (or the note id) carries the publish instant, otherwise
+    /// only the Beijing calendar `date` with its `precision` / `source`.
+    /// Unlike [`Self::date`], this never reflects an edit date. Omitted from
+    /// the wire shape when the extractor produced nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published: Option<PublicationTime>,
+    /// Last-edited time, present only for edited notes. Kept apart from
+    /// [`Self::published`] so consumers never mistake one for the other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited: Option<PublicationTime>,
     /// Note POI / geo-tag label (the place the author tagged on the note).
     /// Distinct from [`Self::ip_location`], the author's IP territory.
     pub location: String,
@@ -182,10 +196,13 @@ pub fn parse_stat_count(raw: &str) -> Option<i64> {
 /// ("6-0"): real calendar validation via `NaiveDate` rejects impossible
 /// month/day pairs.
 ///
-/// The instant is pinned at 20:00 Beijing = 12:00 UTC — noon-UTC anchoring
-/// makes viewer-local date formatting reproduce the Beijing calendar date for
-/// every timezone in UTC-12…UTC+11 (an 08:00 anchor would be midnight UTC and
-/// render one day early across the Americas).
+/// **Display-only anchor, not a publication timestamp.** The instant is
+/// pinned at 20:00 Beijing = 12:00 UTC — noon-UTC anchoring makes
+/// viewer-local date formatting reproduce the Beijing calendar date for every
+/// timezone in UTC-12…UTC+11 (an 08:00 anchor would be midnight UTC and
+/// render one day early across the Americas). It exists so the desktop
+/// timeline can sort and label date-only notes; the real publish instant,
+/// when known, lives in [`XhsNote::published`] — see [`note_posted_at_ms`].
 pub fn parse_posted_at_ms(raw: &str) -> Option<i64> {
     let beijing = FixedOffset::east_opt(8 * 3600)?;
     let stamp = |year: i32, month: u32, day: u32| -> Option<i64> {
@@ -215,6 +232,22 @@ pub fn parse_posted_at_ms(raw: &str) -> Option<i64> {
         }
         _ => None,
     }
+}
+
+/// Epoch-millisecond `posted_at` for a note entity (wire JSON): the precise
+/// `published.at` instant when the extractor captured one, else the
+/// display-only 20:00-Beijing anchor of the `date` field. Returns the value
+/// and whether it is precise, so callers can label the anchor as such.
+pub fn note_posted_at_ms(entity: &Value) -> Option<(i64, bool)> {
+    let precise = entity
+        .get("published")
+        .and_then(PublicationTime::from_value)
+        .and_then(|published| published.instant_ms());
+    if let Some(ms) = precise {
+        return Some((ms, true));
+    }
+    let date = entity.get("date").and_then(Value::as_str).unwrap_or("");
+    parse_posted_at_ms(date).map(|ms| (ms, false))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -247,6 +280,8 @@ impl Default for XhsNote {
             hashtags: Vec::new(),
             date: String::new(),
             date_edited: false,
+            published: None,
+            edited: None,
             location: String::new(),
             ip_location: String::new(),
             likes: String::new(),

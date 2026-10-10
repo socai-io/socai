@@ -39,7 +39,7 @@ use crate::sites::runner::{
 };
 use crate::sites::skill_cli::{failure_payload, gate_reason, navigate_https};
 use crate::sites::with_browser_script;
-use crate::sites::xhs::entities::{parse_posted_at_ms, parse_stat_count};
+use crate::sites::xhs::entities::{note_posted_at_ms, parse_stat_count};
 use crate::sites::xhs::media_manifest::{
     ensure_entity_note_id, fill_entity_from_card, search_media_manifest, write_media_manifest_file,
 };
@@ -2073,8 +2073,22 @@ pub fn note_data_record(
         }
         record.insert("author".into(), Value::Object(author));
     }
-    if let Some(posted_at) = parse_posted_at_ms(&text("date")) {
+    // `posted_at` keeps the app's epoch-ms shape. It is the real publish
+    // instant when the extractor captured one (`published.at`); otherwise it
+    // is the display-only 20:00-Beijing anchor of the date label, flagged by
+    // `posted_at_precise: false` so nobody reads the anchor as a timestamp.
+    // The full `published` / `edited` records travel alongside so the
+    // archive keeps the offset, precision, and raw label.
+    if let Some((posted_at, precise)) = note_posted_at_ms(entity) {
         record.insert("posted_at".into(), Value::from(posted_at));
+        if !precise {
+            record.insert("posted_at_precise".into(), Value::Bool(false));
+        }
+    }
+    for key in ["published", "edited"] {
+        if let Some(value) = entity.get(key).filter(|v| v.is_object()) {
+            record.insert(key.into(), value.clone());
+        }
     }
     let ip_location = text("ip_location");
     if !ip_location.is_empty() {
@@ -2665,6 +2679,11 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     // Only present (true) when `date` is the note's last-edited date rather
     // than its publish date, so unedited notes pay nothing for it.
     "date_edited",
+    // Publication-time contract: RFC 3339 `at` (+08:00) when the publish
+    // instant is known, Beijing calendar `date`, `precision`, `source`, and
+    // the raw label. `edited` is the separate last-edit record.
+    "published",
+    "edited",
     "likes",
     "favorites",
     "comments_count",

@@ -664,21 +664,56 @@ const SocaiXhsPageScripts = (() => {
     return cleaned;
   }
 
-  // Normalize a Xiaohongshu `.date` label into a stable form. XHS renders the
-  // publish date several ways: absolute ("2024-03-28", "03-28", often prefixed
-  // "编辑于" and/or suffixed with a location like "北京"), or relative for recent
-  // posts ("刚刚", "5分钟前", "11小时前", "今天 13:31", "昨天 13:31", "前天",
-  // "5天前"). The previous extractor only matched the absolute forms, so any
-  // relative date came back empty. Resolve relative dates against now so the
-  // field is comparable downstream; fall back to the cleaned text (edit
-  // prefix / territory tail stripped) rather than emptying the field on
-  // anything unrecognized.
-  function normalizeXhsDate(value) {
+  // Xiaohongshu is a China-calendar product, but its web client formats the
+  // `.date` bar from the publish epoch in the *browser's* local timezone: a
+  // note published 2026-09-09 12:14 Beijing renders "09-09" in Shanghai and
+  // "09-08" in a US-hosted browser. The label is therefore only a fallback;
+  // the publish instant in page state (`note.time`, epoch ms) is the truth,
+  // and every calendar date socai reports is derived from an instant in
+  // Beijing time (Asia/Shanghai, fixed UTC+8, no DST) via the UTC getters on
+  // a shifted Date, so nothing below depends on the browser's timezone — a
+  // label such as "5分钟前" read from Los Angeles at 03:57Z on 10-10 must
+  // resolve to 10-10 (China), not 10-09 (local).
+  const SHANGHAI_TZ = 'Asia/Shanghai';
+  const SHANGHAI_OFFSET_MS = 8 * 3600 * 1000;
+  const DAY_MS = 24 * 3600 * 1000;
+
+  function shanghaiParts(ms) {
+    const d = new Date(ms + SHANGHAI_OFFSET_MS);
+    return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+  }
+
+  // Epoch ms of `hh:mm:ss` on the given Beijing calendar date.
+  function shanghaiEpoch(year, month, day, hour = 0, minute = 0, second = 0) {
+    return Date.UTC(year, month - 1, day, hour, minute, second) - SHANGHAI_OFFSET_MS;
+  }
+
+  // RFC 3339 with the explicit +08:00 offset, second precision.
+  function shanghaiRfc3339(ms) {
+    return `${new Date(ms + SHANGHAI_OFFSET_MS).toISOString().slice(0, 19)}+08:00`;
+  }
+
+  function shanghaiYmd(ms) {
+    const { year, month, day } = shanghaiParts(ms);
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  // Legacy `date` field convention, mirroring XHS's own rendering: "MM-DD"
+  // within the current (Beijing) year, "YYYY-MM-DD" otherwise.
+  function shanghaiDateLabel(ms, nowMs) {
+    const { year, month, day } = shanghaiParts(ms);
+    const md = `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    return year === shanghaiParts(nowMs).year ? md : `${year}-${md}`;
+  }
+
+  // Strip the "编辑于" prefix and the trailing IP-territory token from a
+  // `.date` label, leaving only the date/time core ("03-28", "今天 13:31").
+  function dateLabelCore(value) {
     let t = norm(value);
     if (!t) return '';
     // Edited notes show "编辑于 3天前 北京" — the prefix defeats the
-    // start-anchored relative patterns below, so strip it (callers that care
-    // read the edit marker separately via isEditedDate). Then drop a trailing
+    // start-anchored relative patterns, so strip it (callers that care read
+    // the edit marker separately via isEditedDate). Then drop a trailing
     // territory token, mirroring extractIpLocation's tail heuristic — that
     // function keeps reading the original text, not this cleaned core.
     t = t.replace(/^编辑于\s*/, '');
@@ -687,30 +722,181 @@ const SocaiXhsPageScripts = (() => {
     if (/^\D{1,10}$/.test(tail) && !/[前刚今昨于:]/.test(tail)) {
       t = tokens.slice(0, -1).join(' ');
     }
+    return t;
+  }
+
+  // Parse a cleaned `.date` core into what it actually pins down. XHS renders
+  // the publish date several ways: absolute ("2024-03-28", "03-28"), or
+  // relative for recent posts ("刚刚", "5分钟前", "11小时前", "今天 13:31",
+  // "昨天 13:31", "前天", "5天前"). Returns:
+  //   precision — 'minute' | 'hour' | 'day' | 'unknown': how much of the
+  //               instant the label determines;
+  //   instant_ms — the resolved instant for minute/hour precision (null for
+  //               day precision: a date label names no time of day);
+  //   ymd        — the Beijing calendar date ('YYYY-MM-DD') when known;
+  //   legacy     — the legacy `date` field value: an absolute token is passed
+  //               through unchanged, a relative one is resolved to the
+  //               Beijing date, anything unrecognized stays as cleaned text.
+  function parseXhsDateLabel(value, nowMs = Date.now()) {
+    const t = dateLabelCore(value);
+    const unknown = { precision: 'unknown', instant_ms: null, ymd: '', legacy: t };
+    if (!t) return { ...unknown, legacy: '' };
+    const today = shanghaiParts(nowMs);
     // Absolute token wins (scoped to the short `.date` text, so this can't grab
     // a "13-15" fragment from the note body). Pass it through unchanged.
-    const abs = t.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}/);
-    if (abs) return abs[0];
-    const now = new Date();
-    const fmt = (d) => {
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      // Mirror XHS's own convention: year only when it isn't the current year.
-      return d.getFullYear() === now.getFullYear()
-        ? `${mm}-${dd}`
-        : `${d.getFullYear()}-${mm}-${dd}`;
-    };
-    const daysAgo = (n) => {
-      const d = new Date(now);
-      d.setDate(d.getDate() - n);
-      return d;
-    };
-    if (/刚刚|今天|^\d+\s*(?:秒|分钟|小时)前/.test(t)) return fmt(now);
-    if (/昨天/.test(t)) return fmt(daysAgo(1));
-    if (/前天/.test(t)) return fmt(daysAgo(2));
-    const dm = t.match(/^(\d+)\s*天前/);
-    if (dm) return fmt(daysAgo(parseInt(dm[1], 10)));
-    return t;
+    const abs = t.match(/(?:(\d{4})-)?(\d{1,2})-(\d{1,2})/);
+    if (abs) {
+      const month = Number(abs[2]);
+      const day = Number(abs[3]);
+      let year = abs[1] ? Number(abs[1]) : today.year;
+      if (month < 1 || month > 12 || day < 1 || day > 31) return unknown;
+      let start = shanghaiEpoch(year, month, day);
+      // A yearless label can never be in the future: "12-31" read in early
+      // January belongs to the year that just ended.
+      if (!abs[1] && start > nowMs + DAY_MS) {
+        year -= 1;
+        start = shanghaiEpoch(year, month, day);
+      }
+      // Reject impossible month/day pairs ("6-0", "2-30") via the round trip.
+      const parts = shanghaiParts(start);
+      if (parts.month !== month || parts.day !== day) return unknown;
+      return { precision: 'day', instant_ms: null, ymd: shanghaiYmd(start), legacy: abs[0] };
+    }
+    const daysAgo = t.match(/^(\d+)\s*天前/);
+    const dayOffset = /刚刚|今天|^\d+\s*(?:秒|分钟|小时)前/.test(t) ? 0
+      : /昨天/.test(t) ? 1
+      : /前天/.test(t) ? 2
+      : daysAgo ? parseInt(daysAgo[1], 10)
+      : null;
+    if (dayOffset === null) return unknown;
+    // "今天 13:31" / "昨天 13:31": a wall-clock time on a Beijing calendar day.
+    const clock = t.match(/(\d{1,2}):(\d{2})/);
+    if (clock && /今天|昨天|前天/.test(t)) {
+      const base = shanghaiParts(nowMs - dayOffset * DAY_MS);
+      const instant = shanghaiEpoch(base.year, base.month, base.day, Number(clock[1]), Number(clock[2]));
+      return { precision: 'minute', instant_ms: instant, ymd: shanghaiYmd(instant), legacy: shanghaiDateLabel(instant, nowMs) };
+    }
+    const rel = t.match(/^(\d+)\s*(秒|分钟|小时)前/);
+    if (rel) {
+      const n = parseInt(rel[1], 10);
+      const unitMs = rel[2] === '秒' ? 1000 : rel[2] === '分钟' ? 60 * 1000 : 3600 * 1000;
+      // XHS floors the relative label, so the true instant lies within one
+      // unit before the resolved one — hence hour precision for "N小时前".
+      const instant = nowMs - n * unitMs;
+      const precision = rel[2] === '小时' ? 'hour' : 'minute';
+      return { precision, instant_ms: instant, ymd: shanghaiYmd(instant), legacy: shanghaiDateLabel(instant, nowMs) };
+    }
+    if (/刚刚/.test(t)) {
+      return { precision: 'minute', instant_ms: nowMs, ymd: shanghaiYmd(nowMs), legacy: shanghaiDateLabel(nowMs, nowMs) };
+    }
+    const dayInstant = nowMs - dayOffset * DAY_MS;
+    return { precision: 'day', instant_ms: null, ymd: shanghaiYmd(dayInstant), legacy: shanghaiDateLabel(dayInstant, nowMs) };
+  }
+
+  // Normalize a Xiaohongshu `.date` label into the legacy `date` field: an
+  // absolute token passed through unchanged, a relative label resolved to the
+  // Beijing calendar date, otherwise the cleaned text (edit prefix / territory
+  // tail stripped) rather than an empty field. See parseXhsDateLabel.
+  function normalizeXhsDate(value) {
+    return parseXhsDateLabel(value).legacy;
+  }
+
+  // Accept the page-state epoch fields (`note.time`, `note.lastUpdateTime`),
+  // which XHS serves in milliseconds; tolerate seconds defensively.
+  function stateEpochMs(value) {
+    const n = Number(unwrapStateValue(value));
+    if (!Number.isFinite(n) || n <= 0) return null;
+    if (n > 1e11) return Math.round(n);
+    if (n > 1e9) return Math.round(n * 1000);
+    return null;
+  }
+
+  // XHS note ids are 24-hex ObjectId-style values whose leading 32 bits are
+  // the creation second (verified against page state: id 6aa0dd37… ↔
+  // time 1788927288000). Used only as a fallback when page state is missing.
+  function noteIdEpochMs(noteId, nowMs) {
+    if (!/^[0-9a-f]{24}$/i.test(String(noteId || ''))) return null;
+    const ms = parseInt(String(noteId).slice(0, 8), 16) * 1000;
+    // Sanity window: after XHS's launch, not in the future.
+    if (ms < Date.UTC(2013, 0, 1) || ms > nowMs + DAY_MS) return null;
+    return ms;
+  }
+
+  // One publication-time record. `at` is RFC 3339 with the explicit +08:00
+  // offset and only present when the instant is known to at least hour
+  // precision; `date` is the Beijing calendar date; `precision` and `source`
+  // say how much to trust them; `label` keeps the raw page text verbatim.
+  function publicationRecord({ instantMs, ymd, precision, source, label }) {
+    const out = {};
+    if (instantMs !== null && instantMs !== undefined && precision !== 'day' && precision !== 'unknown') {
+      out.at = shanghaiRfc3339(instantMs);
+    }
+    const date = ymd || (instantMs !== null && instantMs !== undefined ? shanghaiYmd(instantMs) : '');
+    if (date) out.date = date;
+    out.timezone = SHANGHAI_TZ;
+    out.precision = precision;
+    out.source = source;
+    out.label = norm(label);
+    return out;
+  }
+
+  // Build the `published` / `edited` contract for a note. Preference order
+  // for the publish instant: page state `note.time` (the original publish
+  // timestamp, second precision) → the creation second embedded in the note
+  // id, accepted only when it agrees with the date bar → the date bar itself,
+  // at whatever precision its label carries. A "编辑于 …" bar describes the
+  // last edit, never the original publish time, so without page state the
+  // publish record is reported as unknown rather than guessed.
+  function notePublication(noteId, dateText, stateNote, nowMs = Date.now()) {
+    const label = parseXhsDateLabel(dateText, nowMs);
+    const edited = isEditedDate(dateText);
+    const stateTime = stateEpochMs(stateNote?.time);
+    const stateEdit = stateEpochMs(stateNote?.lastUpdateTime);
+
+    let published;
+    if (stateTime !== null) {
+      published = publicationRecord({ instantMs: stateTime, precision: 'second', source: 'page_state', label: dateText });
+    } else {
+      const idTime = noteIdEpochMs(noteId, nowMs);
+      const idYmd = idTime === null ? '' : shanghaiYmd(idTime);
+      const agrees = idTime !== null && (edited || !label.ymd
+        || Math.abs(shanghaiEpoch(...label.ymd.split('-').map(Number)) - shanghaiEpoch(...idYmd.split('-').map(Number))) <= DAY_MS);
+      if (agrees) {
+        published = publicationRecord({ instantMs: idTime, precision: 'second', source: 'note_id', label: dateText });
+      } else if (!edited && label.precision !== 'unknown') {
+        published = publicationRecord({ instantMs: label.instant_ms, ymd: label.ymd, precision: label.precision, source: 'date_bar', label: dateText });
+      } else {
+        published = publicationRecord({ instantMs: null, precision: 'unknown', source: 'none', label: dateText });
+      }
+    }
+
+    // The bar's "编辑于" marker is the page's own edit signal. Page state's
+    // lastUpdateTime routinely trails `time` by a second or two on unedited
+    // notes, so it only stands in for the marker when no bar was read at all,
+    // and then only for a gap no re-encode would explain.
+    const stateSaysEdited = stateTime !== null && stateEdit !== null && stateEdit - stateTime > 60 * 1000;
+    const isEdited = edited || (!norm(dateText) && stateSaysEdited);
+    let editedRecord = null;
+    if (stateEdit !== null && isEdited) {
+      editedRecord = publicationRecord({ instantMs: stateEdit, precision: 'second', source: 'page_state', label: dateText });
+    } else if (isEdited && label.precision !== 'unknown') {
+      editedRecord = publicationRecord({ instantMs: label.instant_ms, ymd: label.ymd, precision: label.precision, source: 'date_bar', label: dateText });
+    } else if (isEdited) {
+      editedRecord = publicationRecord({ instantMs: null, precision: 'unknown', source: 'none', label: dateText });
+    }
+    return { published, edited: editedRecord, date: legacyDateField(published, editedRecord, label, nowMs) };
+  }
+
+  // The legacy `date` field mirrors what the date bar shows (the edit date for
+  // edited notes), but as the Beijing calendar date: when the bar's record is
+  // backed by a real instant, format that instant in Beijing time — the bar's
+  // own absolute label is browser-local and can be a day off — otherwise fall
+  // back to the label resolved by parseXhsDateLabel.
+  function legacyDateField(published, edited, label, nowMs) {
+    const shown = edited || published;
+    const precise = shown && shown.at && (shown.source === 'page_state' || shown.source === 'note_id');
+    if (precise) return shanghaiDateLabel(Date.parse(shown.at), nowMs);
+    return label.legacy;
   }
 
   // "编辑于 …" in the `.date` bar means the note shows its last-edited date,
@@ -1029,12 +1215,14 @@ const SocaiXhsPageScripts = (() => {
       root,
       { excludeComments: true },
     );
-    const date = normalizeXhsDate(dateText);
     const locationText = cleanLocationText(
       firstVisibleText(['.location, .poi, [class*="location"], [class*="poi"]'], root, { excludeComments: true })
     );
     const noteId = extractNoteIdFromUrl();
-    const ipLocation = extractIpLocation(dateText, noteFromInitialState(noteId));
+    const stateNote = noteFromInitialState(noteId);
+    const ipLocation = extractIpLocation(dateText, stateNote);
+    const publication = notePublication(noteId, dateText, stateNote);
+    const date = publication.date;
     const stateVideo = videoInfoFromInitialState(noteId);
     const type = detectNoteType(root, stateVideo);
     const imageUrls = type === 'video' ? [] : mergeUrls(imageUrlsFromInitialState(noteId), collectImageUrls(root));
@@ -1051,6 +1239,10 @@ const SocaiXhsPageScripts = (() => {
       content_source: contentSource,
       date,
       date_edited: isEditedDate(dateText),
+      published: publication.published,
+      // Only edited notes carry an `edited` record; unedited ones omit the key
+      // so the wire shape stays additive.
+      ...(publication.edited ? { edited: publication.edited } : {}),
       location: locationText,
       ip_location: ipLocation,
       likes: likes === '赞' ? '' : likes,

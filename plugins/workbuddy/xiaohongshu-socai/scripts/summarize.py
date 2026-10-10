@@ -103,8 +103,11 @@ def collect(data):
 def line(row, index):
     title = (row.get("title") or "").replace("\n", " ").strip()
     title = title[:46] + "…" if len(title) > 46 else title
-    date = row.get("date", "")
-    if row.get("date_edited"):
+    published = row.get("published") or {}
+    # Prefer the publication-time contract: an exact `+08:00` instant when the
+    # extractor captured one, else its Beijing calendar date.
+    date = published.get("at") or published.get("date") or row.get("date", "")
+    if row.get("edited") or row.get("date_edited"):
         date += "(编辑)"
     comments = row.get("top_comments") or []
     return (

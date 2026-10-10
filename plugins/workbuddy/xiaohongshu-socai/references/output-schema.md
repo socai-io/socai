@@ -82,7 +82,9 @@ top_comments 的完整对象（text, author, likes, time, sub_comments[]）
 
 | 字段 | 说明 |
 |---|---|
-| `date` | 归一化日期，形如 `2026-9-27` 或 `9-27`（当年）。`date_edited: true` 表示这是最后编辑日期而非首发日期 |
+| `published` | 发布时间契约（跨平台统一）。`at` 为带 `+08:00` 偏移的 RFC 3339 时间（仅在精度达到小时及以上时出现），`date` 为北京时区（`Asia/Shanghai`）日历日期 `YYYY-MM-DD`，`precision` ∈ `second`/`minute`/`hour`/`day`/`unknown`，`source` 说明来源（`page_state` 页面状态原始时间戳、`note_id`、`date_bar` 页面日期栏、`none`），`label` 是页面原文。做时间换算一律用 `published.at`；`precision` 为 `day`/`unknown` 时只有日期，不要臆造时刻 |
+| `edited` | 最后编辑时间，结构同 `published`，仅编辑过的笔记出现。与 `published` 严格分开 |
+| `date` | 兼容字段：北京日历日期，形如 `2026-09-27` 或 `09-27`（当年），有精确时间戳时由它推导（小红书页面日期栏按浏览器本地时区渲染，可能差一天）。`date_edited: true` 表示这是最后编辑日期而非首发日期。优先读 `published` |
 | `likes` / `favorites` / `comments_count` | **字符串**，页面原文，可能是 `1.2万`、`999+`。做数值比较前先换算（万=×10000，k=×1000） |
 | `top_comments[]` | stdout 里是精简版；`replies` / `sub_comments` 计入 `--num-comments` 的额度 |
 | `ocr_text` | 数组，按图片顺序，封面在前 |

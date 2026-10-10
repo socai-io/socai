@@ -113,7 +113,10 @@ own official account (the gym/brand/venue/organizer itself), semi-official
 voices (its staff or coaches), aggregator/curator accounts, or ordinary users.
 Search ranking is relevance-based, not recency-based — one results page
 routinely mixes fresh notes with ones from months or years ago, so compare
-each note's `date` before treating any of them as current.
+each note's publication time before treating any of them as current. Read
+`published.at` (RFC 3339, `+08:00`) when present; otherwise `published.date`
+is the Beijing calendar date and `published.precision` says that no exact
+time is known — never invent one. `edited` is the separate last-edit time.
 
 When the question concerns something its subject announces or decides itself —
 schedules, prices, opening hours, events, rules, openings/closures — and an

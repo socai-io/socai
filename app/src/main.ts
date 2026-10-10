@@ -129,6 +129,16 @@ export interface NoteComment {
   replies?: NoteComment[];
 }
 
+/** Cross-platform publication-time contract (see core/src/sites/publication.rs). */
+export interface PublicationTime {
+  at?: string; // RFC 3339 with explicit offset; only when precision is hour or finer
+  date?: string; // platform calendar date, YYYY-MM-DD, in `timezone`
+  timezone: string; // IANA name, e.g. "Asia/Shanghai"
+  precision: "second" | "minute" | "hour" | "day" | "unknown";
+  source: string; // "page_state" | "note_id" | "date_bar" | "none" | …
+  label?: string; // raw page text
+}
+
 /** A note the agent saw/cited — one canonical object per note (the registry unit). */
 export interface NoteData {
   note_id: string;
@@ -139,7 +149,10 @@ export interface NoteData {
   content?: string; // full note body (excerpt is its first ~90 chars)
   excerpt?: string;
   author?: { name?: string; handle?: string; avatar?: string; url?: string };
-  posted_at?: number; // epoch ms
+  posted_at?: number; // epoch ms — the real publish instant when `posted_at_precise` is not false
+  posted_at_precise?: boolean; // false: posted_at is a display-only 20:00-Beijing anchor of a date label
+  published?: PublicationTime; // publication-time contract (RFC 3339 + offset, precision, source)
+  edited?: PublicationTime; // last-edited time, kept separate from `published`
   ip_location?: string; // author IP territory shown on the note ("广东")
   stats?: { likes?: number; collects?: number; comments?: number; shares?: number };
   comments?: NoteComment[]; // top comments captured with the read
