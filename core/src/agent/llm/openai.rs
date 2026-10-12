@@ -184,7 +184,7 @@ impl OpenAICompatBackend {
                 messages,
                 self.preserve_reasoning_content(),
                 self.provider == Provider::DeepSeek,
-                self.provider == Provider::DeepSeek,
+                matches!(self.provider, Provider::DeepSeek | Provider::Socai),
             ),
             max_tokens,
             tools: chat_tools,
@@ -416,21 +416,27 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output
                 text: "prior answer".into(),
             },
         ])];
-        let payload = serde_json::to_value(deepseek.build_chat_request(
-            "system",
-            &text_only_reasoning,
-            &[ToolSchema {
-                name: "lookup".into(),
-                description: "lookup a value".into(),
-                input_schema: json!({"type": "object"}),
-            }],
-            1024,
-        ))
-        .expect("request should serialize");
-        assert_eq!(
-            payload["messages"][1]["reasoning_content"],
-            "final answer reasoning"
-        );
+        for provider in [Provider::DeepSeek, Provider::Socai] {
+            let backend = OpenAICompatBackend {
+                provider,
+                ..deepseek.clone()
+            };
+            let payload = serde_json::to_value(backend.build_chat_request(
+                "system",
+                &text_only_reasoning,
+                &[ToolSchema {
+                    name: "lookup".into(),
+                    description: "lookup a value".into(),
+                    input_schema: json!({"type": "object"}),
+                }],
+                1024,
+            ))
+            .expect("request should serialize");
+            assert_eq!(
+                payload["messages"][1]["reasoning_content"],
+                "final answer reasoning"
+            );
+        }
 
         let invalid = [Message {
             role: MessageRole::User,

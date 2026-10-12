@@ -24,7 +24,7 @@ const LEGACY_EVIDENCE_HEADING: &str = "# Earlier tool evidence";
 /// Rewrite the transcript only when it has grown beyond `compact_after` full
 /// messages. The message at `anchor_user_index` — the current run's user task,
 /// index `0` for a fresh run and `seed_messages.len()` for a follow-up — stays
-/// verbatim at the front; the last `keep_recent` messages remain verbatim
+/// verbatim at the front; up to `keep_recent` messages after that task remain verbatim
 /// (widened backward when the window would open on a tool_result message, so
 /// tool_use/tool_result pairs never split); older tool outputs become artifact
 /// locators. Follow-up runs (`is_follow_up`) also get a short task
@@ -50,7 +50,13 @@ pub fn compact_messages_for_context(
         return false;
     }
 
-    let mut recent_start = messages.len() - keep_recent;
+    let anchor_idx = (*anchor_user_index).min(messages.len().saturating_sub(1));
+    // Never move an earlier conversation turn after the current user task.
+    // Follow-up seeds contain text-only assistant reports, without provider
+    // reasoning. Replaying those inside the current tool-call turn makes
+    // DeepSeek reject the request. Keep them in the older-context summary.
+    let current_start = anchor_idx + 1;
+    let mut recent_start = (messages.len() - keep_recent).max(current_start);
     // Tool results live in a user message appended immediately after the
     // assistant message carrying the matching tool_use blocks, and providers
     // reject a request that keeps one side of that pair without the other
@@ -59,10 +65,9 @@ pub fn compact_messages_for_context(
     // an extra lone user message (max-tokens discard note, forced-summary
     // prompt) shifts the window onto the tool_result — so widen the window
     // until it no longer starts mid-pair.
-    while recent_start > 1 && contains_tool_result(&messages[recent_start]) {
+    while recent_start > current_start && contains_tool_result(&messages[recent_start]) {
         recent_start -= 1;
     }
-    let anchor_idx = (*anchor_user_index).min(messages.len().saturating_sub(1));
     let anchor = messages[anchor_idx].clone();
     let older: Vec<Message> = (0..recent_start)
         .filter(|&index| index != anchor_idx)
