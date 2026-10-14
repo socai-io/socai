@@ -30,6 +30,7 @@ site/node_modules/
 site/dist/
 site/.astro/
 site/.vercel/
+/.vercel/
 
 # Local scratch (client research folders, one-off notes)
 local/

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "node scripts/assert-vercel-project.mjs && astro build",
     "preview": "astro preview",
     "test": "node --test test/*.test.mjs",
     "check": "pnpm test"
