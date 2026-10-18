@@ -109,6 +109,11 @@ export interface TimelineEntity {
 export interface NoteMedia {
   kind: "image" | "video";
   ratio?: string; // "3:4" | "1:1" | "9:16" | "16:9"
+  source_url?: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+  download_state?: "loading" | "ready" | "failed" | "cancelled";
   src?: string; // downloaded file — absolute path, or media_dir-relative
   poster?: string; // video only — first-frame still (path)
   dur?: string; // video only — "0:48"
@@ -146,6 +151,7 @@ export interface NoteData {
   native_id?: string;
   url?: string;
   title?: string;
+  article_blocks?: Array<{ type: "text"; text: string } | { type: "image"; image_index: number }>;
   content?: string; // full note body (excerpt is its first ~90 chars)
   excerpt?: string;
   author?: { name?: string; handle?: string; avatar?: string; url?: string };

@@ -2878,3 +2878,21 @@ code {
 .agent-own-key-toggle { display: flex; align-items: center; gap: var(--sp-2); cursor: pointer; }
 .agent-own-key-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--fg); flex-shrink: 0; }
 .agent-own-key-fields { display: flex; flex-direction: column; gap: var(--sp-3); }
+
+/* WeChat uses a document reader, not a media carousel. */
+.note-viewer-panel--article { width: min(760px, 96vw); box-shadow: none; }
+.note-article-scroll { min-height: 0; overflow: auto; padding: 24px clamp(20px, 5vw, 48px) 40px; }
+.note-article-scroll h1 { margin: 0 0 12px; }
+.note-article-content { line-height: 1.85; overflow-wrap: anywhere; }
+.note-article-content p { margin: 1em 0; white-space: pre-wrap; }
+.note-article-image { margin: 20px 0; }
+.note-article-image img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.note-article-image img[hidden] { display: none; }
+.note-article-image figcaption { font-size: 12px; color: var(--fg-soft); padding: 8px 0; }
+.note-author__avatar { position: relative; overflow: hidden; flex-shrink: 0; }
+.note-author__avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.note-cite__avatar { width: 15px; height: 15px; font-size: 9px; }
+.note-article-card { padding: 16px; border: var(--hairline); border-radius: var(--r-3); cursor: pointer; background: var(--surface); }
+.note-article-card__author { display: flex; align-items: center; gap: 8px; color: var(--fg-soft); font-size: 12px; }
+.note-article-card h3 { margin: 12px 0 8px; }
+.note-article-card p { margin: 0; color: var(--fg-muted); }

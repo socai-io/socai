@@ -71,7 +71,7 @@
       "path": "page-tools.js",
       "binding": "window.SocaiWeixinPageTools",
       "callable": "articleDetail",
-      "description": "Read the current WeChat article title, publisher, displayed publication time, URL and complete rendered text from #js_content. Call after articleState is ready. Never use HTTP to fetch the article; images and video are not transcribed.",
+      "description": "Read the current WeChat article title, publisher/avatar URL, publication time, source URL, full text, ordered text/image blocks and image URLs from the rendered page. Call after articleState is ready. Article HTML must be read in Chrome; images and video are not transcribed.",
       "args": {},
       "returns": {
         "type": "object",

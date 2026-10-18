@@ -68,7 +68,10 @@ pub fn persist_site_tool_result(
     }
 
     for (note_id, record) in records_for_site_tool(site_id, tool_name, result) {
-        upsert_record(ctx, &note_id, record);
+        upsert_record(ctx, &note_id, record.clone());
+        if site_id == "weixin" {
+            super::weixin::media::schedule(ctx, &note_id, &record);
+        }
     }
 
     if tool_name == "comments" {
@@ -776,6 +779,34 @@ pub fn merge_post_record(existing: &mut Value, incoming: &Value) {
         let Some(target) = existing.as_object_mut() else {
             return;
         };
+        if source.get("site").and_then(Value::as_str) == Some("weixin") {
+            if key == "article_blocks" {
+                target.insert(key.clone(), value.clone());
+                continue;
+            }
+            if key == "media" {
+                // Ordered article blocks reference this observation's image array.
+                let mut ordered = value.clone();
+                for image in ordered.as_array_mut().into_iter().flatten() {
+                    if image["src"].as_str().is_none() {
+                        if let Some(old) = target
+                            .get("media")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .find(|old| {
+                                old["source_url"] == image["source_url"] && old["src"].is_string()
+                            })
+                        {
+                            image["src"] = old["src"].clone();
+                            image["download_state"] = json!("ready");
+                        }
+                    }
+                }
+                target.insert(key.clone(), ordered);
+                continue;
+            }
+        }
         if let Some(current) = target.get_mut(key) {
             merge_record_field(key, current, value);
         } else {
@@ -894,6 +925,9 @@ pub fn deduplicate_post_media(record: &mut Value) {
 }
 
 fn media_key(value: &Value) -> String {
+    if let Some(source) = value["source_url"].as_str() {
+        return format!("source|{source}");
+    }
     let kind = text_at(value, &["kind", "type"]);
     let source = text_at(value, &["src", "url"]);
     if kind == "image" {
@@ -994,6 +1028,22 @@ fn weixin_record(item: &Value) -> Option<(String, Value)> {
     let native_id = format!("{:x}", Sha256::digest(identity.as_bytes()));
     let mut record = base_record("weixin", &native_id, &url, title, &content);
     insert_author(&mut record, &author, "", "");
+    if let Some(avatar) = item["author_avatar"].as_str().filter(|v| !v.is_empty()) {
+        record.entry("author").or_insert_with(|| json!({}))["avatar_source"] = json!(avatar);
+    }
+    if let Some(blocks) = item["blocks"].as_array() {
+        record.insert("article_blocks".into(), json!(blocks));
+    }
+    let images: Vec<Value> = item["images"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|image| {
+            json!({"kind":"image", "source_url":image["url"], "alt":image["alt"],
+            "width":image["width"], "height":image["height"], "download_state":"loading"})
+        })
+        .collect();
+    record.insert("media".into(), json!(images));
     insert_posted_at(&mut record, &text_at(item, &["published_at"]));
     record.insert("level".into(), json!("deep"));
     Some((post_note_id("weixin", &native_id), Value::Object(record)))

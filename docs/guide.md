@@ -284,7 +284,16 @@ be necessary. Retry limits apply per search page or article, within the current 
 
 Successful reads return title, publisher, displayed publication time, observed
 article URL, and full rendered text. Search snippets are never represented as
-article bodies. Text extraction does not transcribe images or video. Sogou and
+article bodies. WeChat reads also capture the publisher avatar, image URLs and
+ordered text/image blocks. Images download asynchronously from WeChat's image
+CDNs into the local archive, using the shared background-media queue and
+cancellation lifecycle. The article remains readable while downloads run; each
+completed image appears at its original paragraph position, including in an
+already-open viewer. Failed/cancelled images show a compact status instead of an
+empty gallery. The WeChat viewer is a single-column article reader, and citation
+pills use the downloaded publisher avatar (or author initial as fallback).
+Previously archived text-only articles remain readable; reread them to capture
+images and avatars. Images and video are not transcribed. Sogou and
 WeChat links can expire or require verification; failures carry `ok: false` and
 `reason`, preserving successful articles when only some reads fail. Verified
 article reads enter the shared note archive and JSON artifacts; unvisited search

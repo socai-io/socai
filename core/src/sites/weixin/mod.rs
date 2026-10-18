@@ -1,3 +1,4 @@
+pub(crate) mod media;
 mod retry;
 mod search;
 use std::sync::Arc;

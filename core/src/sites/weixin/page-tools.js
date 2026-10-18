@@ -50,11 +50,57 @@
     if (!text('#js_content') || !text('#activity-name')) return failure('article_not_ready');
     return { ok: true };
   }
+  function imageUrl(value) {
+    try {
+      const url = new URL(value || '', location.href);
+      if (!['http:', 'https:'].includes(url.protocol) || !/(^|\.)(qpic\.cn|qlogo\.cn)$/.test(url.hostname)) return '';
+      url.protocol = 'https:';
+      url.hash = '';
+      return url.href;
+    } catch { return ''; }
+  }
+  function articleBlocks() {
+    const blocks = [], images = [], indexes = new Map();
+    let pending = '';
+    const flush = () => {
+      const value = pending.replace(/[ \t\r\n]+/g, ' ').trim();
+      if (value) blocks.push({ type: 'text', text: value });
+      pending = '';
+    };
+    const walk = node => {
+      if (node.nodeType === Node.TEXT_NODE) { pending += node.textContent; return; }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(node.tagName) || node.hidden || node.style.display === 'none') return;
+      if (node.tagName === 'IMG') {
+        const url = imageUrl(node.getAttribute('data-src') || node.currentSrc || node.getAttribute('src'));
+        if (!url) return;
+        flush();
+        if (!indexes.has(url)) {
+          indexes.set(url, images.length);
+          images.push({ url, alt: node.alt || '', width: Number(node.getAttribute('data-w')) || node.naturalWidth || 0,
+            height: (Number(node.getAttribute('data-w')) * Number(node.getAttribute('data-ratio'))) || node.naturalHeight || 0 });
+        }
+        blocks.push({ type: 'image', image_index: indexes.get(url) });
+        return;
+      }
+      const boundary = /^(P|DIV|SECTION|H[1-6]|LI|BLOCKQUOTE|TR|BR)$/.test(node.tagName);
+      if (boundary) flush();
+      for (const child of node.childNodes) walk(child);
+      if (node.tagName === 'TD' || node.tagName === 'TH') pending += ' ';
+      if (boundary) flush();
+    };
+    const root = document.querySelector('#js_content');
+    if (root) walk(root);
+    flush();
+    return { blocks, images };
+  }
   function articleDetail() {
     const state = articleState();
     if (!state.ok) return state;
     const url = new URL(location.href);
     const textContent = text('#js_content');
+    const rich = articleBlocks();
+    const avatar = imageUrl(window.cgiDataNew?.round_head_img);
     // Prefer the publisher's stable article identity when the page exposes it.
     const biz = typeof window.biz === 'string' ? window.biz : url.searchParams.get('__biz');
     const mid = window.mid || url.searchParams.get('mid');
@@ -63,7 +109,7 @@
     // never manufacture a public article link from an incomplete parameter set.
     return { ...(biz && mid && idx ? { article_id: `${biz}:${mid}:${idx}` } : {}),
       url: url.href, title: text('#activity-name'),
-      author: text('#js_name'), published_at: text('#publish_time'), text: textContent,
+      author: text('#js_name'), author_avatar: avatar, blocks: rich.blocks, images: rich.images, published_at: text('#publish_time'), text: textContent,
       text_chars: [...textContent].length };
   }
   window.SocaiWeixinPageTools = { searchState, searchResults, articleState, articleDetail };
