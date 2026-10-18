@@ -293,6 +293,12 @@ cards remain in search JSON because their redirect URLs are temporary.
 `weixin-article-*/snapshots/` in the tool output directory. HTTP-only searches
 record their normal JSON artifacts without browser snapshots.
 
+Desktop answers cite the actual source URL. When it matches an article in the
+current conversation's local archive, the UI displays the archived title with
+its preview/viewer; otherwise it keeps the clickable original URL. This first
+stage does not fetch link previews or resolve unknown redirects. Internal archive
+IDs remain implementation details, and existing `note:` citations still work.
+
 The shared core exposes `search_weixin_articles` and `read_weixin_article` to
 CLI/TUI, desktop and remote worker hosts. Select **微信公众号 / WeChat Articles**
 in the desktop source picker, or enable site ID `weixin` in worker requests.

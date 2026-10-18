@@ -1,9 +1,9 @@
 //! Embedded rich social-post UI (SocaiV2 design, ported from the Claude Design handoff).
 //!
-//! A note is a Xiaohongshu post the agent saw/cited. Notes live in a per-run
-//! registry (note_id -> NoteData); the conversation embeds a rich card per
-//! note each search surfaced, the answer cites notes with `note:<id>` links
-//! upgraded into pills, and any reference opens one lightbox viewer. Media is served from disk via
+//! Archived social posts live in a per-run registry (note_id -> NoteData).
+//! Answers cite source URLs, which become title pills when a local record matches.
+//! Legacy `note:<id>` citations remain supported. References open the shared viewer.
+//! Media is served from disk via
 //! the Tauri asset protocol (convertFileSrc) — images/video play locally.
 
 import { platformLabel } from "../lib/platforms";
@@ -487,6 +487,17 @@ function pillHTML(id: string, label: string, note: NoteData): string {
   );
 }
 
+/** Ignore only fragments; signed query parameters remain part of the match. */
+function citationUrlKey(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    url.hash = "";
+    return url.href;
+  } catch { return null; }
+}
+
 /** Render the markdown answer, upgrading `note:<id>` links into citation pills.
  *  The `note:` scheme is rewritten to a `#note:` fragment before markdown so it
  *  survives DOMPurify untouched (a raw custom scheme gets sanitized away). */
@@ -506,23 +517,33 @@ export function renderNoteAnswer(src: string): string {
     holder.innerHTML = note ? pillHTML(id, label, note) : esc(label);
     a.replaceWith(...Array.from(holder.childNodes));
   });
-  // Older and imperfect agent answers sometimes cite an archived Instagram
-  // post by URL. Resolve that shortcode to its local card so those links open
-  // the same in-app viewer as an explicit note: citation.
+  // URLs are the public citation contract. Enrichment is local and optional:
+  // never fetch a destination merely to render a reference.
+  const byUrl = new Map<string, NoteData>();
+  for (const note of Object.values(REGISTRY)) {
+    const key = citationUrlKey(note.url);
+    if (key) byUrl.set(key, note);
+  }
   root.querySelectorAll('a[href^="https://"], a[href^="http://"]').forEach((a) => {
     const href = a.getAttribute("href");
     if (!href) return;
-    let url: URL;
-    try { url = new URL(href); } catch { return; }
-    if (url.hostname !== "instagram.com" && url.hostname !== "www.instagram.com") return;
-    const parts = url.pathname.split("/").filter(Boolean);
-    const kind = parts.findIndex((part) => part === "p" || part === "reel" || part === "tv");
-    if (kind < 0 || !parts[kind + 1]) return;
-    const id = `instagram:${parts[kind + 1]}`;
-    const note = resolveNote(id);
-    if (!note || note.site !== "instagram") return;
+    const key = citationUrlKey(href);
+    let note = key ? byUrl.get(key) : undefined;
+    // Retain Instagram's existing shortcode fallback for different share URLs.
+    if (!key) { a.textContent = href; return; }
+    const url = new URL(href);
+    if (!note && (url.hostname === "instagram.com" || url.hostname === "www.instagram.com")) {
+      const parts = url.pathname.split("/").filter(Boolean);
+      const kind = parts.findIndex((part) => part === "p" || part === "reel" || part === "tv");
+      const candidate = kind >= 0 && parts[kind + 1] ? resolveNote(`instagram:${parts[kind + 1]}`) : null;
+      if (candidate?.site === "instagram") note = candidate;
+    }
+    if (!note?.title?.trim()) {
+      a.textContent = href;
+      return;
+    }
     const holder = doc.createElement("span");
-    holder.innerHTML = pillHTML(id, a.textContent || note.title || id, note);
+    holder.innerHTML = pillHTML(note.note_id, note.title, note);
     a.replaceWith(...Array.from(holder.childNodes));
   });
   return root.innerHTML;

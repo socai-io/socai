@@ -46,23 +46,19 @@ const TAURI_AGENT_PREAMBLE: &str =
      directory). Only access files relevant to the user's request. Maintain continuity \
      with earlier turns in this chat.";
 
-// Appended AFTER the site playbook so it sits at the tail of the system
-// prompt — the position models weight most (prepended into the preamble,
-// qwen3.7-max ignored it). Desktop-only, not shared site knowledge: only the
-// app renders `note:` links (as rich note pills); in the TUI's plain-markdown
-// answer they would be dead links.
-const TAURI_CITATION_RULES: &str = "\n\n## Citing notes in the final answer (required)\n\
-    The app renders social-post citations as rich cards. In your final answer, \
-    every time you mention a specific post you read (including cached posts \
-    returned by scans), cite it inline as a markdown link — \
-    [<post title>](note:<note_id>) — using the exact archived note_id.\n\
-    Example: 推荐 [湾区遛娃|坐小火车喂羊驼](note:65f0a1b2000000000c030d1e) 的路线。\n\
-    For Instagram, preserve the site prefix, for example \
-    [novos lugares](note:instagram:Dau5EgOkUnd); do not replace an archived \
-    note citation with its public post URL.\n\
-    - Link text is the post's title; drop any square brackets inside it.\n\
-    - For results that are not archived post cards, link their canonical URL instead.\n\
-    - Cite each post where it is discussed, not in a separate list at the end.";
+// Keep source references portable; the desktop enriches known URLs locally.
+const TAURI_CITATION_RULES: &str = "\n\n## Citing sources in the final answer (required)\n\
+    Cite sources using their actual HTTP(S) URLs returned by tools, across all platforms. \
+    Use <URL> or [URL](URL). Do not construct note: links or use article IDs or note IDs \
+    as citation targets. The desktop resolves known URLs to article titles and previews; \
+    unknown URLs remain clickable URLs.\n\
+    - Attach citations to the specific facts, numbers, article discussions and trend \
+    judgments they support, rather than collecting them only at the end.\n\
+    - Distinguish an author's claims from your synthesis. Do not imply independent \
+    verification merely because an article reports a claim.\n\
+    - Preserve the exact working URL, including required query parameters. Prefer a \
+    successfully read article's final URL over its search redirect. Never invent a URL.\n\
+    - If only a search snippet was available, say so; do not present it as a full article read.";
 
 const TAURI_SITE_ROUTING_RULES: &str = "\n\n## Browser routing\n\
     A new conversation starts on a blank tab. Do not navigate to Xiaohongshu or \
@@ -71,7 +67,7 @@ const TAURI_SITE_ROUTING_RULES: &str = "\n\n## Browser routing\n\
     and follow that platform's tools and workflow. The Xiaohongshu playbook applies \
     only when the requested page is Xiaohongshu. Browser-tool JSON is internal \
     evidence: never paste raw JSON into the final answer. Present concise findings \
-    with note citations; the desktop renders archived posts as grouped cards. JSON \
+    with source URL citations; the desktop enriches matching archived posts. JSON \
     stays internal unless the user explicitly requests an evidence export.";
 
 const TAURI_ARTIFACT_RULES: &str = "\n\n## Deliverable files\n\
