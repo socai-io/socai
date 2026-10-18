@@ -5,8 +5,8 @@
 //!   · the user's prompt as a right-aligned bubble (one turn per run)
 //!   · the agent's work as a quiet, collapsible activity log that auto-expands
 //!     while the run streams and folds once the answer lands
-//!   · social materials grouped once per conversation by platform and media
-//!     type, with collapsible groups independent from individual turns
+//!   · social materials grouped once per conversation by platform,
+//!     with collapsible groups independent from individual turns
 //!   · the answer inline as rich markdown with note citations — no separate
 //!     panel, no "jump to answer" bridge
 //! The same chat composer serves both faces: pinned under the thread in
@@ -677,17 +677,9 @@ export function renderSocialMaterials(task: AgentTaskView): string {
   for (const ref of refs) {
     const note = noteDataForRef(ref);
     const site = note?.site || (ref.includes(":") ? ref.split(":", 1)[0] : "xhs");
-    const platform = platformLabel(site);
-    const media = note?.media ?? [];
-    const type = media.some((item) => item.kind === "video")
-      ? t("task.materialVideo")
-      : media.length > 0
-        ? t("task.materialImage")
-        : t("task.materialText");
-    const key = `${site}:${type}`;
-    const group = groups.get(key) ?? { label: `${platform} · ${type}`, refs: [] };
+    const group = groups.get(site) ?? { label: platformLabel(site), refs: [] };
     group.refs.push(ref);
-    groups.set(key, group);
+    groups.set(site, group);
   }
   const sections = [...groups.values()].map((group) => `
     <details class="social-materials__group">
