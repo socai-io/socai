@@ -68,6 +68,7 @@ pub fn dy_agent_instructions(extra: &str) -> String {
 }
 
 pub static DY_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
+    browserless_tools: None,
     runtime_command: None,
     id: "dy",
     about: "Douyin (douyin.com)",

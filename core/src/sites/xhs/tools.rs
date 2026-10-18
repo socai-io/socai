@@ -216,6 +216,7 @@ pub fn xhs_agent_instructions(extra: &str) -> String {
 /// Registry entry for Xiaohongshu — the only wiring a site needs beyond its
 /// module declaration in `sites/mod.rs`.
 pub static XHS_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
+    browserless_tools: None,
     runtime_command: None,
     id: "xhs",
     about: "Xiaohongshu (xiaohongshu.com)",

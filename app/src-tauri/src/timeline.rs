@@ -548,6 +548,7 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
 /// Human-readable label for a current tool name.
 pub(crate) fn user_label(name: &str) -> String {
     match name {
+        "github_request" => "read GitHub",
         "search" => "searched xiaohongshu",
         "get_notes" => "read xiaohongshu notes",
         "extract_search_cards" => "read search cards",
@@ -1176,6 +1177,12 @@ fn normalize_entities(tool: &str, input: &Value, value: &Value) -> Vec<TimelineE
             } else {
                 Vec::new()
             }
+        }
+        "github_request" => {
+            let notes = socai_core::sites::github::preview::records(value)
+                .into_iter().map(|(_,record)|record).collect::<Vec<_>>();
+            if notes.is_empty() { Vec::new() }
+            else { vec![entity("social_post_grid", json!({"notes":notes}))] }
         }
         "search_podcast_episodes" | "list_podcast_episodes" | "read_podcast_episode" => {
             let notes =

@@ -2917,3 +2917,22 @@ code {
 .note-article-card--podcast { flex: 0 0 280px; width: 280px; align-self: flex-start; }
 .note-article-card--podcast h3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .note-article-card--podcast .note-article-card__author span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* GitHub repository previews use local README media and the shared article viewer. */
+.github-card { flex: 0 0 320px; width: 320px; max-width: 100%; align-self: flex-start; }
+.github-card h3 { overflow-wrap: anywhere; }
+.github-card > p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+.github-card .note-article-card__author { justify-content: space-between; }
+.github-card__image { width: 100%; max-height: 180px; object-fit: contain; margin: 14px 0; border: 1px solid var(--line); border-radius: var(--r-2); }
+.github-metadata { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--fg-muted); margin: 10px 0 14px; }
+.github-metadata span { white-space: nowrap; }
+.github-readme { line-height: 1.7; overflow-wrap: anywhere; }
+.github-readme p { white-space: normal; }
+.github-readme img { max-width: 100%; height: auto; vertical-align: middle; }
+.github-readme h1, .github-readme h2 { border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-top: 28px; }
+.github-readme pre { overflow-x: auto; padding: 16px; background: var(--canvas); border: 1px solid var(--line); border-radius: var(--r-2); }
+.github-readme code { font-family: var(--font-mono); font-size: .9em; }
+.github-readme table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.github-readme td, .github-readme th { padding: 8px 12px; border: 1px solid var(--line); }
+.github-readme blockquote { margin-inline: 0; padding-left: 18px; border-left: 2px solid var(--line); color: var(--fg-muted); }
+.github-readme summary { cursor: pointer; }

@@ -19,6 +19,8 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + Send>>;
 
 /// Async factory: build the site's agent tools against a shared page.
 pub type AgentToolsFn = fn(Arc<PageSession>, Arc<dyn LlmProvider>) -> BoxFuture<Vec<Arc<dyn Tool>>>;
+/// Factory for sites whose agent tools never require a browser session.
+pub type BrowserlessToolsFn = fn(&str, Option<&str>) -> Vec<Arc<dyn Tool>>;
 pub type AgentInstructionsFn = fn(&str) -> String;
 
 /// One-shot CLI/daemon command: `(page, JSON args, debug_snapshot, progress)` → JSON.
@@ -34,6 +36,7 @@ pub type RuntimeCommandRunFn = fn(
 ) -> BoxFuture<Value>;
 
 pub struct NativeSiteAdapter {
+    pub browserless_tools: Option<BrowserlessToolsFn>,
     /// Optional lazy-browser command dispatch; HTTP-only work need not open Chrome.
     pub runtime_command: Option<RuntimeCommandRunFn>,
     /// Short site id — doubles as the CLI subcommand (`socai <id> <tool>`),
@@ -127,6 +130,7 @@ static NATIVE_SITE_ADAPTERS: &[&NativeSiteAdapter] = &[
     &crate::sites::x::X_NATIVE_ADAPTER,
     &crate::sites::weixin::WEIXIN_NATIVE_ADAPTER,
     &crate::sites::podcast::PODCAST_NATIVE_ADAPTER,
+    &crate::sites::github::GITHUB_NATIVE_ADAPTER,
     &crate::sites::web::WEB_SITE,
 ];
 
@@ -154,4 +158,12 @@ pub fn required_string(args: &Value, key: &str) -> anyhow::Result<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| anyhow::anyhow!("missing required argument: {key}"))
+}
+
+/// Unknown/automatic sources still need the browser; explicitly HTTP-only sets do not.
+pub fn sites_need_browser(sites: &[String]) -> bool {
+    sites.is_empty()
+        || sites.iter().any(|id| {
+            find_native_site_adapter(id).is_none_or(|site| site.browserless_tools.is_none())
+        })
 }

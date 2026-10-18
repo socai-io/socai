@@ -317,6 +317,47 @@ explicit browser diagnostics, but normal searches use the HTTP tool. The web/hos
 entrypoint must use a worker built with this capability; deploying that worker
 is separate from the local implementation.
 
+### GitHub
+
+Select **GitHub** in the desktop source picker or enable site ID `github` in a
+worker request. GitHub-only tasks run without Chrome. The read-only
+`github_request` tool supports REST, GraphQL and public HTML, including Trending
+and Topics; prefer REST/GraphQL for structured repository and discussion details.
+
+Desktop previews show README text/images, owner, stars, language and dates.
+Issue, discussion and file links preview their repository and keep the original
+link destination. Profiles and discovery pages show their own information.
+Snapshots, README files and images are stored in `$SOCAI_HOME/cache/github/v1/`
+(default `~/.socai/cache/github/v1/`) for offline reading; metadata reflects the
+saved snapshot. Images download in the background and appear without redrawing
+existing content. Pending images stay blank; failures are summarized once.
+
+Inside a registered CLI task:
+
+```bash
+socai github request /search/repositories --param 'q=personal agent in:name,description,readme fork:false' --param sort=updated --param per_page=10 --pretty
+socai github request 'https://github.com/trending?since=weekly' --pretty
+socai github request https://github.com/topics/personal-assistant --pretty
+socai github request /repos/HKUDS/nanobot/readme --select /content --max-chars 6000 --pretty
+```
+
+Public REST/HTML allow unauthenticated reads within GitHub's limits; GraphQL
+requires authentication. Credential priority on the execution host is
+`SOCAI_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, then `gh auth token --hostname github.com`.
+Desktop apps need the inherited environment or `gh` on PATH; workers need their
+own credentials. Restart after environment changes. Tokens only go to
+`api.github.com`; GitHub Enterprise is not supported.
+
+Use `--query` with `--variables` for GraphQL, `--field` for result fields, and
+`--select` for a JSON Pointer into the full response. `--limit` bounds local arrays;
+`--max-chars` bounds text. For clipped data, follow `next_offset` before server
+pagination: REST `pagination.links.next`, HTML `data.next_url`, or GraphQL
+`pagination.connections`. Pages and comment/reply connections are read separately.
+
+Results retain fetch time, actual URL, rate limits and full local response paths.
+HTTP/GraphQL failures are explicit; partial HTML coverage and truncated fields
+carry notices. Response files stay local rather than being published automatically.
+
 ### Podcasts (Chinese and international)
 
 Select **播客 / Podcasts** in the desktop source picker, or use site ID
@@ -615,6 +656,15 @@ content opt-out, and correlation fields are documented in
 [CLI external-agent task context](telemetry-schema.md#cli-external-agent-task-context).
 The general external-agent skill is `skills/socai-cli/SKILL.md`. Rebuild the
 WorkBuddy packages with `plugins/workbuddy/build.sh` after changing their skill.
+
+### HTTP-only site adapters
+
+Native adapters expose `browserless_tools(task, language)` to skip page acquisition
+in desktop, worker and TUI; CLI uses `runtime_command`. Keep frontend
+`sourcesNeedBrowser` aligned with the registry. GitHub's client, extractors and
+manifest live in `core/src/sites/github/`; discovery guidance lives in `knowledge.md`.
+Check core/CLI/worker and desktop builds, then verify live API/HTML reads,
+pagination, explicit failures and a GitHub-only run without Chrome.
 
 ### Browser action implementation
 

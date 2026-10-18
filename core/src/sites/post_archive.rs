@@ -729,6 +729,7 @@ pub fn records_for_site_tool(
     result: &Value,
 ) -> Vec<(String, Value)> {
     match site_id {
+        "github" => super::github::preview::records(result),
         "podcast" => podcast_records(tool_name, result),
         "weixin" => weixin_records(tool_name, result),
         "linkedin" => linkedin_records(tool_name, result),

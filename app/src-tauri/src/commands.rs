@@ -61,7 +61,7 @@ const TAURI_CITATION_RULES: &str = "\n\n## Citing sources in the final answer (r
     - If only a search snippet was available, say so; do not present it as a full article read.";
 
 const TAURI_SITE_ROUTING_RULES: &str = "\n\n## Browser routing\n\
-    Browser-enabled conversations start on a blank tab; podcast-only tasks have no browser. Do not navigate to Xiaohongshu or \
+    Browser-enabled conversations start on a blank tab; GitHub/podcast-only tasks have no browser. Do not navigate to Xiaohongshu or \
     any other site until the user's request requires that platform. For LinkedIn, \
     Instagram, Douyin, or TikTok, use navigate_site, read the returned site skill, \
     and follow that platform's tools and workflow. The Xiaohongshu playbook applies \
@@ -2785,11 +2785,11 @@ async fn run_agent_task_background(
         return;
     };
 
-    // HTTP-only podcast tasks require a run permit, but no browser lease/page.
+    // HTTP-only source sets require a run permit, but no browser lease/page.
     let http_only = registry
         .get(&task_id)
         .await
-        .is_some_and(|snapshot| snapshot.sites == ["podcast"]);
+        .is_some_and(|snapshot| !socai_core::sites::registry::sites_need_browser(&snapshot.sites));
     let mut connect_attempts = 0u32;
     let (_permit, browser, _activity) = loop {
         let Some(permit) = registry.acquire_run_permit().await else {
@@ -3332,9 +3332,10 @@ async fn run_agent_task_on_session_page(
         } else {
             None
         };
-        if available_sites.iter().any(|id| id == "podcast") {
-            let language = socai_core::sites::podcast::preferred_language(task, language);
-            tools.extend(socai_core::sites::podcast::podcast_tools_for_language(Some(&language)));
+        for site in available_sites.iter().filter_map(|id| find_native_site_adapter(id)) {
+            if let Some(factory) = site.browserless_tools {
+                tools.extend(factory(task, language));
+            }
         }
         tools.extend(desktop_agent_tools());
         tools.push(Arc::new(PublishArtifactTool::new(
@@ -3362,7 +3363,7 @@ async fn run_agent_task_on_session_page(
                  Available platforms: {}. Choose based on the actual question; use one or several \
                  only when the research needs them. Begin on the blank tab, navigate to the chosen \
                  site's home URL with navigate_site, read the returned skill and use its tools. \
-                 For podcasts, call search_podcast_shows or search_podcast_episodes directly without navigation. For WeChat, call search_weixin_articles directly; only article reads need Chrome. Do not visit every site by default. Explain any access failure or coverage gap. \
+                 For GitHub, call github_request directly without navigation. For podcasts, call search_podcast_shows or search_podcast_episodes directly without navigation. For WeChat, call search_weixin_articles directly; only article reads need Chrome. Do not visit every site by default. Explain any access failure or coverage gap. \
                  Cite evidence from the sites actually used; do not claim coverage of unused sites.",
                 available_sites.iter().filter_map(|id| find_native_site_adapter(id))
                     .map(|site| format!("{} ({})", site.id, site.home_url))
@@ -3371,7 +3372,7 @@ async fn run_agent_task_on_session_page(
         } else {
             format!(
             "\n\n## Selected sources\nThe user selected these platforms: {}. Only collect new evidence from these platforms. \
-             For podcasts use the podcast HTTP tools directly, without navigation or login. For WeChat use search_weixin_articles (HTTP) and read_weixin_article (Chrome). Use navigate_site and its returned skill for other non-Xiaohongshu, non-podcast platforms, including X. \
+             For GitHub use github_request directly without browser navigation. For podcasts use the podcast HTTP tools directly, without navigation or login. For WeChat use search_weixin_articles (HTTP) and read_weixin_article (Chrome). Use navigate_site and its returned skill for other browser-based non-Xiaohongshu platforms, including X. \
              Do not use shell or other tools to bypass this selection. If the request needs an unselected \
              platform, explain that the user can change the source selection. Existing conversation evidence \
              may still be discussed; do not claim it was fetched again. For research across multiple selected \
@@ -3381,11 +3382,11 @@ async fn run_agent_task_on_session_page(
                 .collect::<Vec<_>>().join(", ")
             )
         };
-        let podcast_instructions = if available_sites.iter().any(|id| id == "podcast") {
-            socai_core::sites::podcast::INSTRUCTIONS
-        } else {
-            ""
-        };
+        let http_instructions = available_sites.iter()
+            .filter_map(|id| find_native_site_adapter(id))
+            .filter(|site| site.browserless_tools.is_some())
+            .map(|site| site.default_agent_instructions.unwrap_or(site.agent_instructions)(""))
+            .collect::<Vec<_>>().join("\n\n");
         let config = AgentRunConfig {
             extra_instructions: format!(
                 "{}{}{}{}{}{}\n\n{}",
@@ -3395,7 +3396,7 @@ async fn run_agent_task_on_session_page(
                 TAURI_ARTIFACT_RULES,
                 source_instructions,
                 instagram_login_note,
-                podcast_instructions
+                http_instructions
             ),
             enabled_sites: available_sites,
             seed_messages,
@@ -4033,6 +4034,13 @@ mod tests {
         );
         assert!(validate_preflight_balance(-1).is_err());
     }
+}
+
+/// Persistent README/media previews stay outside the agent context.
+#[tauri::command]
+pub async fn github_preview(url: String, refresh: Option<bool>) -> Result<Value, String> {
+    socai_core::sites::github::preview::read(&url, refresh.unwrap_or(false))
+        .await.map_err(|e|format!("{e:#}"))
 }
 
 /// User-expanded podcast sections stay outside the agent context.

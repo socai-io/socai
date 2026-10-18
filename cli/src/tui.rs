@@ -635,22 +635,27 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
 
     // Browser/network setup can fail (e.g. DNS ERR_NAME_NOT_RESOLVED). Record
     // the run even then, so a follow-up still knows what the user asked.
-    println!("[socai] connecting browser...");
-    let page = match runtime.ensure_site_page(site.id, site.home_url).await {
-        Ok(page) => page,
-        Err(err) => {
-            state.conversation.record_run(
-                task,
-                &format!("[run did not start — browser/network error: {err:#}]"),
-                &run_dir,
-                "failed",
-            );
-            return Err(err);
-        }
+    let mut tools = if let Some(factory) = site.browserless_tools {
+        factory(task, None)
+    } else {
+        println!("[socai] connecting browser...");
+        let page = match runtime.ensure_site_page(site.id, site.home_url).await {
+            Ok(page) => page,
+            Err(err) => {
+                state.conversation.record_run(
+                    task,
+                    &format!("[run did not start — browser/network error: {err:#}]"),
+                    &run_dir,
+                    "failed",
+                );
+                return Err(err);
+            }
+        };
+        let factory = site.default_agent_tools.unwrap_or(site.agent_tools);
+        let mut tools = factory(page.clone(), llm_provider.clone()).await?;
+        tools.extend(site_learning_tools(page));
+        tools
     };
-    let agent_tools = site.default_agent_tools.unwrap_or(site.agent_tools);
-    let mut tools = agent_tools(page.clone(), llm_provider.clone()).await?;
-    tools.extend(site_learning_tools(page));
     tools.extend(local_agent_tools());
 
     // Track run_id + latest assistant text live off the event stream so we can

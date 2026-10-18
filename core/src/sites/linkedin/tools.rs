@@ -57,6 +57,7 @@ pub fn linkedin_wait_for_login_tool(page: Arc<PageSession>) -> Arc<dyn Tool> {
 }
 
 pub static LINKEDIN_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
+    browserless_tools: None,
     runtime_command: None,
     id: SITE_ID,
     about: "LinkedIn (linkedin.com)",

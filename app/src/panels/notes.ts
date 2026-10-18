@@ -6,6 +6,7 @@
 //! Media is served from disk via
 //! the Tauri asset protocol (convertFileSrc) — images/video play locally.
 
+import { githubNote, githubCard, githubBody, updateGithubPreview, onGithubPreviewUpdate } from "./github-preview";
 import { platformLabel } from "../lib/platforms";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { esc } from "../lib/html";
@@ -449,6 +450,7 @@ function coverInner(note: NoteData, idx: number): string {
   return mediaFrame(note, media[i], "cover") + nav;
 }
 function renderCard(note: NoteData, density: "rich" | "compact" = "rich"): string {
+  if (note.site === "github") return githubCard(note);
   if (note.site === "weixin" || note.site === "podcast") return `<div class="note-article-card${note.site === 'podcast' ? ' note-article-card--podcast' : ''}" data-note-open="${esc(note.note_id)}" role="button" tabindex="0">
     <div class="note-article-card__author">${avatar(note)}<span>${esc(note.author?.name || platformName(note))}</span></div>
     <h3 class="t-body">${esc(note.title || '')}</h3>${note.site === 'podcast' ? '' : `<p class="t-small">${esc(note.excerpt || '')}</p>`}</div>`;
@@ -491,7 +493,7 @@ export function renderNoteCards(refs: string[], density: "rich" | "compact" = "r
 // ── answer citations (pills + hover preview) ────────────────────────
 function pillHTML(id: string, label: string, note: NoteData): string {
   const cover = coverOf(note);
-  const icon = note.site === "weixin" || note.site === "podcast" ? avatar(note, "note-cite__avatar") : mediaFrame(note, cover, "dot");
+  const icon = note.site === "weixin" || note.site === "podcast" || note.site === "github" ? avatar(note, "note-cite__avatar") : mediaFrame(note, cover, "dot");
   return (
     `<span class="note-cite-wrap" data-note-cite="${esc(id)}">` +
     `<span class="note-cite" data-note-open="${esc(id)}" role="button" tabindex="0">` +
@@ -531,7 +533,7 @@ export function renderNoteAnswer(src: string): string {
     a.replaceWith(...Array.from(holder.childNodes));
   });
   // URLs are the public citation contract. Enrichment is local and optional:
-  // never fetch a destination merely to render a reference.
+  // GitHub links additionally hydrate the user-requested persistent README preview.
   const byUrl = new Map<string, NoteData>();
   for (const note of Object.values(REGISTRY)) {
     const key = citationUrlKey(note.url);
@@ -545,6 +547,11 @@ export function renderNoteAnswer(src: string): string {
     // Retain Instagram's existing shortcode fallback for different share URLs.
     if (!key) { a.textContent = href; return; }
     const url = new URL(href);
+    const github = githubNote(href, note);
+    if (github) {
+      note = github;
+      REGISTRY[github.note_id] = github;
+    }
     if (!note && (url.hostname === "instagram.com" || url.hostname === "www.instagram.com")) {
       const parts = url.pathname.split("/").filter(Boolean);
       const kind = parts.findIndex((part) => part === "p" || part === "reel" || part === "tv");
@@ -556,7 +563,7 @@ export function renderNoteAnswer(src: string): string {
       return;
     }
     const holder = doc.createElement("span");
-    holder.innerHTML = pillHTML(note.note_id, note.title, note);
+    holder.innerHTML = pillHTML(note.note_id, note.site === "github" ? (a.textContent || note.title) : note.title, note);
     a.replaceWith(...Array.from(holder.childNodes));
   });
   return root.innerHTML;
@@ -713,7 +720,11 @@ function syncOpenArticle(): void {
     if (figure.dataset.imageSrc !== src || !src) figure.outerHTML = articleImage(note, index);
   });
   const author = panel.querySelector('.note-view__author .note-author__avatar');
-  if (author) author.outerHTML = avatar(note, 'note-view__avatar');
+  if (author) {
+    const html = avatar(note, 'note-view__avatar');
+    if (note.site === 'github') updateGithubPreview(author as HTMLElement, html);
+    else author.outerHTML = html;
+  }
 }
 
 function viewPanel(note: NoteData): string {
@@ -764,10 +775,16 @@ function viewPanel(note: NoteData): string {
 // social-post modal. The top-right corner instead opens the original post —
 // only a note with no archived url keeps a close glyph so the corner isn't dead.
 function viewerHTML(note: NoteData): string {
-  const externalLabel = note.site === "podcast" ? t("podcast.openBidclub") : t("note.openExternal");
+  const externalLabel = note.site === "github" ? (getLanguage() === "zh" ? "在 GitHub 打开" : "Open on GitHub") : note.site === "podcast" ? t("podcast.openBidclub") : t("note.openExternal");
   const corner = note.url
     ? `<button type="button" class="note-viewer-corner" data-note-external="${esc(note.url)}" title="${esc(externalLabel)}" aria-label="${esc(externalLabel)}">${IC.external()}</button>`
     : `<button type="button" class="note-viewer-corner" data-note-close aria-label="close">${IC.close()}</button>`;
+  if (note.site === "github") return `<div class="note-viewer-backdrop" data-note-close>
+    <div class="note-viewer-panel note-viewer-panel--article" role="dialog" aria-label="${esc(note.title || 'GitHub')}" data-note-stop data-note-article="${esc(note.note_id)}">
+      ${corner}<div class="note-view__author">${avatar(note, 'note-view__avatar')}<span class="note-view__author-name">${esc(note.author?.name || 'GitHub')}</span></div>
+      <article class="note-article-scroll"><h1 class="t-h2">${esc(note.title || 'GitHub')}</h1>
+        <div class="note-article-content t-body" data-github-view="${esc(note.note_id)}">${githubBody(note)}</div>
+      </article></div></div>`;
   if (note.site === "weixin" || note.site === "podcast") return `<div class="note-viewer-backdrop" data-note-close>
     <div class="note-viewer-panel note-viewer-panel--article" role="dialog" aria-label="${esc(note.title || 'article')}" data-note-stop data-note-article="${esc(note.note_id)}">
       ${corner}<div class="note-view__author">${avatar(note, 'note-view__avatar')}<span class="note-view__author-name">${esc(note.author?.name || '')}</span></div>
@@ -1098,3 +1115,34 @@ document.addEventListener('error', event => {
     if (caption) { caption.hidden = false; caption.textContent = t('note.articleImageUnavailable'); }
   }
 }, true);
+
+// Preview hydration is a desktop concern, independent of the model's tool loop.
+// Patch only the changed repository, preserving loaded images and reader state.
+onGithubPreviewUpdate(key => {
+  const affected = new Set<string>();
+  for (const [id, note] of Object.entries(REGISTRY)) {
+    if (note.site !== "github" || !note.url) continue;
+    const updated = githubNote(note.url, note);
+    if (updated?.source_url !== key) continue;
+    REGISTRY[id] = updated;
+    affected.add(id);
+  }
+  document.querySelectorAll<HTMLElement>("[data-github-card]").forEach(card => {
+    if (!affected.has(card.dataset.githubCard || "")) return;
+    const note = resolveNote(card.dataset.githubCard || "");
+    if (note) updateGithubPreview(card, githubCard(note));
+  });
+  document.querySelectorAll<HTMLElement>("[data-github-view]").forEach(body => {
+    if (!affected.has(body.dataset.githubView || "")) return;
+    const note = resolveNote(body.dataset.githubView || "");
+    if (!note) return;
+    const scroller = body.closest<HTMLElement>(".note-article-scroll");
+    const top = scroller?.scrollTop || 0;
+    updateGithubPreview(body, githubBody(note), true);
+    const heading = scroller?.querySelector("h1");
+    if (heading && heading.textContent !== (note.title || "GitHub")) heading.textContent = note.title || "GitHub";
+    if (scroller) scroller.scrollTop = top;
+  });
+  const panel = document.querySelector<HTMLElement>("[data-note-article]");
+  if (affected.has(panel?.dataset.noteArticle || "")) syncOpenArticle();
+});

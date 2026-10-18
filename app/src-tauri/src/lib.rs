@@ -136,6 +136,9 @@ pub fn run() {
             // SOCAI_RUNS_DIR / `runs.dir` resolves to is granted here at
             // startup. allow_directory tolerates a not-yet-created dir.
             let runs_root = socai_core::agent::run_logging::default_runs_root();
+            if let Ok(cache) = socai_core::sites::github::preview::cache_root() {
+                app.asset_protocol_scope().allow_directory(&cache, true)?;
+            }
             if let Err(err) = app.asset_protocol_scope().allow_directory(&runs_root, true) {
                 eprintln!(
                     "failed to allow runs dir {} in asset scope: {err:#}",
@@ -344,6 +347,7 @@ pub fn run() {
             commands::app_relaunch,
             commands::open_external,
             commands::podcast_preview,
+            commands::github_preview,
             commands::open_chrome_remote_debugging,
             commands::open_chrome_data_access_settings,
             commands::agent_list_models,

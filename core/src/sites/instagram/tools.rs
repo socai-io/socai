@@ -177,6 +177,7 @@ fn instagram_login_form_url(url: &str) -> bool {
 }
 
 pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
+    browserless_tools: None,
     runtime_command: None,
     id: SITE_ID,
     about: "Instagram (instagram.com)",

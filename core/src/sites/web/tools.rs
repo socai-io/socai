@@ -165,6 +165,7 @@ pub fn web_agent_instructions(extra: &str) -> String {
 }
 
 pub static WEB_SITE: SiteSpec = SiteSpec {
+    browserless_tools: None,
     runtime_command: None,
     id: "web",
     about: "Public Web browser research",

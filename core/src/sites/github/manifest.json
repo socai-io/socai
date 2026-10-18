@@ -1,0 +1,7 @@
+{
+  "id": "github",
+  "name": "GitHub",
+  "domains": ["github.com", "api.github.com", "raw.githubusercontent.com"],
+  "notes": ["knowledge.md"],
+  "browserTools": {}
+}

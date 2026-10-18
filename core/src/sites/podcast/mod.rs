@@ -261,6 +261,7 @@ static COMMANDS: &[SiteCommand] = &[
     SiteCommand { name:"read", tool_name:"read_podcast_episode", about:"Read one podcast: metadata + TL;DR by default. Request section=digest, transcript or full only for deeper reading. Follow next_offset for complete text; missing content has available=false. No browser/login.", args:READ_ARGS, slow:SlowWhen::Always, run:|_,a,_,p| Box::pin(run("read",a,p)) },
 ];
 pub static PODCAST_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
+    browserless_tools: Some(|task, language| podcast_tools_for_language(Some(&preferred_language(task, language)))),
     id:"podcast", about:"Search Chinese and international podcasts and read summaries/transcripts via BidClub (no browser)", home_url:"https://bidclub.ai",
     runtime_command:Some(|_,command,args,_,progress| Box::pin(run(command,args,progress))),
     agent_tools:|_,_| Box::pin(async { Ok(podcast_tools()) }), default_agent_tools:None,

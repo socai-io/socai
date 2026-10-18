@@ -45,6 +45,7 @@ async fn agent_tools(
 }
 
 pub static WEIXIN_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
+    browserless_tools: None,
     runtime_command: Some(run_runtime_command),
     id: SITE,
     about: "WeChat Official Account articles via Sogou (微信公众号)",
