@@ -729,6 +729,7 @@ pub fn records_for_site_tool(
     result: &Value,
 ) -> Vec<(String, Value)> {
     match site_id {
+        "podcast" => podcast_records(tool_name, result),
         "weixin" => weixin_records(tool_name, result),
         "linkedin" => linkedin_records(tool_name, result),
         "instagram" => instagram_records(tool_name, result),
@@ -779,6 +780,18 @@ pub fn merge_post_record(existing: &mut Value, incoming: &Value) {
         let Some(target) = existing.as_object_mut() else {
             return;
         };
+        if source.get("site").and_then(Value::as_str) == Some("podcast")
+            && source.get("content_language").is_some_and(Value::is_string)
+            && matches!(
+                key.as_str(),
+                "title" | "content" | "excerpt" | "content_language"
+            )
+            && !value_is_empty(value)
+        {
+            // A selected translation is authoritative even when shorter.
+            target.insert(key.clone(), value.clone());
+            continue;
+        }
         if source.get("site").and_then(Value::as_str) == Some("weixin") {
             if key == "article_blocks" {
                 target.insert(key.clone(), value.clone());
@@ -990,6 +1003,57 @@ fn comment_key(comment: &Value) -> String {
 
 // Sogou cards have expiring redirect URLs, not stable article identities.
 // Archive only verified article reads; preserve search cards in the JSON artifact.
+fn podcast_records(tool_name: &str, result: &Value) -> Vec<(String, Value)> {
+    let rows: Vec<&Value> = match tool_name {
+        "read_podcast_episode" => vec![result],
+        "search_podcast_episodes" | "list_podcast_episodes" => result["episodes"]
+            .as_array()
+            .map(|rows| rows.iter().collect())
+            .unwrap_or_default(),
+        _ => return Vec::new(),
+    };
+    rows.into_iter()
+        .filter_map(|item| {
+            let slug = item["slug"].as_str()?;
+            let url = item["url"].as_str()?;
+            let title = text_at(item, &["display_title", "title"]);
+            // Cards retain short summaries, never an unlabeled transcript fragment.
+            let content = if item["section"] == "tldr" && item["offset"] == 0 {
+                let body = item["content"].as_str().unwrap_or_default();
+                let suffix = if item["next_offset"].is_number() {
+                    " (continued)"
+                } else {
+                    ""
+                };
+                format!("TL;DR{suffix}\n{body}")
+            } else {
+                text_at(item, &["dek"])
+            };
+            let mut record = base_record("podcast", slug, url, title, &content);
+            insert_author(&mut record, &text_at(&item["shows"], &["name"]), "", "");
+            insert_posted_at(&mut record, &text_at(item, &["published_at", "date"]));
+            record.insert("source_url".into(), item["source_url"].clone());
+            record.insert("source_label".into(), item["source_label"].clone());
+            record.insert("podcast_hosts".into(), item["shows"]["hosts"].clone());
+            record.insert(
+                "podcast_language".into(),
+                item["requested_language"].clone(),
+            );
+            record.insert(
+                "podcast_tldr_next_offset".into(),
+                item["next_offset"].clone(),
+            );
+            if item["section"] == "tldr" && item["offset"] == 0 {
+                record.insert("content_language".into(), item["content_language"].clone());
+            }
+            if let Some(avatar) = item["show_avatar_url"].as_str() {
+                record.entry("author").or_insert_with(|| json!({}))["avatar"] = json!(avatar);
+            }
+            Some((post_note_id("podcast", slug), Value::Object(record)))
+        })
+        .collect()
+}
+
 fn weixin_records(tool_name: &str, result: &Value) -> Vec<(String, Value)> {
     match tool_name {
         "articleDetail" | "read_weixin_article" => weixin_record(result).into_iter().collect(),
@@ -1660,6 +1724,7 @@ fn post_note_id(site_id: &str, native_id: &str) -> String {
 
 fn site_name(site_id: &str) -> &'static str {
     match site_id {
+        "podcast" => "Podcasts",
         "weixin" => "WeChat",
         "linkedin" => "LinkedIn",
         "instagram" => "Instagram",

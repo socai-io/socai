@@ -126,6 +126,7 @@ static NATIVE_SITE_ADAPTERS: &[&NativeSiteAdapter] = &[
     &crate::sites::linkedin::LINKEDIN_NATIVE_ADAPTER,
     &crate::sites::x::X_NATIVE_ADAPTER,
     &crate::sites::weixin::WEIXIN_NATIVE_ADAPTER,
+    &crate::sites::podcast::PODCAST_NATIVE_ADAPTER,
     &crate::sites::web::WEB_SITE,
 ];
 

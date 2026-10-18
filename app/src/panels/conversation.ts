@@ -17,6 +17,7 @@
 //! Rendering only; state and bindings live in tasks.ts.
 
 import type { AgentArtifact, AgentTaskEventPayload, AgentTaskSnapshot, NoteData, Status } from "../main";
+import { sourcesNeedBrowser } from "../lib/platforms";
 import { esc } from "../lib/html";
 import { platformIcon, platformLabel, RESEARCH_PLATFORMS } from "../lib/platforms";
 import {
@@ -131,7 +132,7 @@ export function renderConversation(props: ConversationProps): string {
 // A centered hero + the same chat composer. When chrome isn't connected the
 // form is masked behind the connect overlay.
 export function renderComposePane(composer: ComposerProps): string {
-  const gated = !composer.remoteProfile && !composer.managedProfile && composer.status.state !== "connected";
+  const gated = sourcesNeedBrowser(composer.sites) && !composer.remoteProfile && !composer.managedProfile && composer.status.state !== "connected";
   return `
     <div class="compose-pane">
       <div class="new-task-compose">
@@ -139,9 +140,10 @@ export function renderComposePane(composer: ComposerProps): string {
           <h2 class="t-h2">${esc(t("task.hero"))}</h2>
           <p class="t-small subtle">${esc(t("task.lede"))}</p>
         </div>
+        ${gated ? renderSourcePicker(composer, false) : ""}
         <div class="compose-form-stack ${gated ? "is-masked" : ""}">
           <div class="compose-form-inner" aria-hidden="${gated ? "true" : "false"}">
-            ${renderComposer(composer)}
+            ${renderComposer(composer, gated)}
           </div>
           ${gated ? renderConnectOverlay(composer) : ""}
         </div>
@@ -710,13 +712,13 @@ function renderConvMeta(bits: string[]): string {
 }
 
 // ── composer (pinned) — starts a new task OR continues the thread ────
-function renderComposer(c: ComposerProps): string {
+function renderComposer(c: ComposerProps, hideSources = false): string {
   const connected = c.status.state === "connected";
   const connecting = c.status.state === "connecting";
   const disabled = c.submitting || c.running;
   // A remote profile submits while disconnected: the run reconnects (minting
   // a fresh hosted session) on demand.
-  const needsConnection = !connected && !c.remoteProfile && !c.managedProfile;
+  const needsConnection = sourcesNeedBrowser(c.sites) && !connected && !c.remoteProfile && !c.managedProfile;
   const sendDisabled = disabled
     || !c.value.trim()
     || needsConnection
@@ -766,7 +768,7 @@ function renderComposer(c: ComposerProps): string {
     : c.voice.phase === "requesting" || c.voice.phase === "transcribing"
       ? `<span class="composer__send-dot" aria-hidden="true"></span>`
       : `<svg class="composer__voice-glyph" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0"></path><path d="M12 17v4"></path><path d="M9 21h6"></path></svg>`;
-  const connectHint = connected
+  const connectHint = connected || !sourcesNeedBrowser(c.sites)
     ? ""
     : c.remoteProfile
       ? `<p class="composer__hint">${esc(t("chrome.remoteAutoReconnect"))}</p>`
@@ -780,7 +782,7 @@ function renderComposer(c: ComposerProps): string {
         </button>
       </p>`;
   const keyHint =
-    connected && !c.modelReady ? `<p class="composer__hint">${esc(t("task.addKeyHint"))}</p>` : "";
+    (connected || !sourcesNeedBrowser(c.sites)) && !c.modelReady ? `<p class="composer__hint">${esc(t("task.addKeyHint"))}</p>` : "";
   return `
     <div class="composer">
       <form id="composer-form" class="composer__form">
@@ -804,26 +806,7 @@ function renderComposer(c: ComposerProps): string {
           </span>
           ${action}
         </div>
-        <div class="composer__sources">
-          <button id="composer-sources-toggle" type="button" class="composer__sources-toggle t-small"
-            aria-expanded="${c.sourcesExpanded}" aria-controls="composer-source-options"
-            aria-label="${esc(t("platform.select"))}: ${esc(c.sites.map(platformLabel).join(", "))}"
-            title="${esc(c.sites.map(platformLabel).join(", "))}">
-            <span class="composer__selected-icons">${c.sites.map(platformIcon).join("")}</span>
-            <svg class="composer__sources-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
-          </button>
-          <fieldset id="composer-source-options" class="composer__source-options" ${c.sourcesExpanded ? "" : "hidden"}>
-            <legend class="t-small subtle">${esc(t("platform.select"))}</legend>
-            ${RESEARCH_PLATFORMS.map((site) => {
-              const selected = c.sites.includes(site);
-              return `<label class="composer__source t-small">
-                <input type="checkbox" data-composer-site="${site}" ${selected ? "checked" : ""}
-                  ${disabled || (selected && c.sites.length === 1) ? "disabled" : ""} />
-                ${platformIcon(site)}<span>${esc(platformLabel(site))}</span>
-              </label>`;
-            }).join("")}
-          </fieldset>
-        </div>
+        ${hideSources ? "" : renderSourcePicker(c, disabled)}
       </form>
       ${connectHint}
       ${keyHint}
@@ -1007,4 +990,27 @@ function eventGlyph(kind: AgentTaskEventPayload["kind"]): string {
     case "cancelled": return "−";
     case "interrupted": return "!";
   }
+}
+
+function renderSourcePicker(c: ComposerProps, disabled: boolean): string {
+  return `        <div class="composer__sources">
+          <button id="composer-sources-toggle" type="button" class="composer__sources-toggle t-small"
+            aria-expanded="${c.sourcesExpanded}" aria-controls="composer-source-options"
+            aria-label="${esc(t("platform.select"))}: ${esc(c.sites.map(platformLabel).join(", "))}"
+            title="${esc(c.sites.map(platformLabel).join(", "))}">
+            <span class="composer__selected-icons">${c.sites.map(platformIcon).join("")}</span>
+            <svg class="composer__sources-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+          </button>
+          <fieldset id="composer-source-options" class="composer__source-options" ${c.sourcesExpanded ? "" : "hidden"}>
+            <legend class="t-small subtle">${esc(t("platform.select"))}</legend>
+            ${RESEARCH_PLATFORMS.map((site) => {
+              const selected = c.sites.includes(site);
+              return `<label class="composer__source t-small">
+                <input type="checkbox" data-composer-site="${site}" ${selected ? "checked" : ""}
+                  ${disabled || (selected && c.sites.length === 1) ? "disabled" : ""} />
+                ${platformIcon(site)}<span>${esc(platformLabel(site))}</span>
+              </label>`;
+            }).join("")}
+          </fieldset>
+        </div>`;
 }

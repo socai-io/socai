@@ -343,6 +343,7 @@ pub fn run() {
             commands::cdp_refresh,
             commands::app_relaunch,
             commands::open_external,
+            commands::podcast_preview,
             commands::open_chrome_remote_debugging,
             commands::open_chrome_data_access_settings,
             commands::agent_list_models,

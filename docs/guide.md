@@ -317,6 +317,70 @@ explicit browser diagnostics, but normal searches use the HTTP tool. The web/hos
 entrypoint must use a worker built with this capability; deploying that worker
 is separate from the local implementation.
 
+### Podcasts (Chinese and international)
+
+Select **播客 / Podcasts** in the desktop source picker, or use site ID
+`podcast`. BidClub's public REST API requires no API key, login, or Chrome.
+Podcast-only desktop tasks also work with Chrome disconnected; mixed-source
+and automatic-source tasks may still use a browser for their other sources.
+
+Inside a registered CLI task:
+
+```bash
+socai podcast shows "十字路口" --pretty
+socai podcast shows "Lex" --pretty
+socai podcast episodes --show shizilukou --limit 5 --pretty
+socai podcast search "support ticket" --show shizilukou --limit 3 --pretty
+socai podcast read shizilukou-2025-03-02-ai-google --pretty
+socai podcast read shizilukou-2025-03-02-ai-google --section digest --pretty
+socai podcast read shizilukou-2025-03-02-ai-google --section transcript --max-chars 12000 --pretty
+```
+
+The shared agent tools are `search_podcast_shows`, `list_podcast_episodes`,
+`search_podcast_episodes`, and `read_podcast_episode`. Show search matches names,
+hosts and IDs; episode search matches titles, summaries or transcripts.
+Omit `--lang` to search across languages, or use `EN` / `ZH` to filter the
+original language. This filter is separate from `--language ZH|EN`, which
+selects BidClub’s bilingual titles and summaries without excluding foreign
+episodes. Desktop tools default to the question’s language, falling back to the
+app language for short/ambiguous prompts. Explicit tool `language` overrides
+that default. Missing translations report `language_fallback`; transcripts
+remain in the original language, and `full` reports `section_languages`.
+Keep the same `--language` when continuing a paginated section.
+
+Podcast cards use article previews with RSS channel artwork when available and
+a separate original-podcast listening link. Material cards show only the show and
+episode title. Previews have TL;DR expanded, with in-depth summary and full
+transcript collapsed. Expanding either loads the complete section, outside the
+agent context, and caches it under `$SOCAI_HOME/cache/podcast/v1/` (normally
+`~/.socai/cache/podcast/v1/`), keyed by episode, language and section. Errors can
+be retried; missing content is not persisted. Participants are taken from
+BidClub's explicit episode participant list, not its general person tags, and
+are cached separately. Known hosts remain visible if participants are missing. Cite the returned BidClub URL once;
+there is no need to append the publisher URL again in the answer.
+
+Episode searches and lists return metadata + TL;DR, default 5 results (maximum
+20), with at most 4,000 characters per summary. `read` defaults to `tldr`;
+`--section metadata|tldr|digest|transcript|full` selects the required depth.
+`full` combines TL;DR, digest and transcript, reporting any missing sections.
+Reads return `content`, `offset`, `total_chars`, `next_offset`, and `available`.
+Pass `--offset <next_offset>` until it is null to read all text; offsets and
+`--max-chars` count Unicode characters, with a 20,000-character page maximum.
+A default summary with a non-null `next_offset` can be continued with `read`.
+
+BidClub covers its indexed library, not every podcast. Search returns at most
+20 provider hits without pagination, and `count` is the number returned, not
+all matches. Preserve `partial` and `searched_recent`: the provider may search
+only a recent subset, so zero hits do not prove absence. Narrowing with `--show`
+can find older content missed by global search. `omitted_by_limit` identifies
+hits left out by the requested result limit. Episode lists use
+`pagination.next_offset`. `details_incomplete` and per-episode `detail_error`
+identify failed summary reads without hiding the available metadata. Summaries
+and transcripts are processed text and may lack reliable timestamps or verbatim
+accuracy. Missing text returns `available: false`; it is never silently replaced
+with another section. HTTP reads have a timeout and one bounded retry for
+transient network/server errors.
+
 ### Douyin and TikTok
 
 ```bash

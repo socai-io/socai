@@ -619,9 +619,15 @@ async fn execute_run_inner(
     for site_id in &spec.enabled_sites {
         let site = find_site(site_id)
             .ok_or_else(|| anyhow::anyhow!("unknown enabled site {site_id:?}"))?;
-        let page = runtime.ensure_site_page(site.id, site.home_url).await?;
-        let factory = site.default_agent_tools.unwrap_or(site.agent_tools);
-        let site_tools = factory(page, llm_provider.clone()).await?;
+        let site_tools = if site.id == "podcast" {
+            socai_core::sites::podcast::podcast_tools_for_language(Some(
+                &socai_core::sites::podcast::preferred_language(&spec.prompt, None),
+            ))
+        } else {
+            let page = runtime.ensure_site_page(site.id, site.home_url).await?;
+            let factory = site.default_agent_tools.unwrap_or(site.agent_tools);
+            factory(page, llm_provider.clone()).await?
+        };
         if multi_site {
             let mappings = site_tools
                 .iter()

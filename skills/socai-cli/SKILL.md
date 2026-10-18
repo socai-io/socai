@@ -1,6 +1,6 @@
 ---
 name: socai-cli
-description: Use the installed socai CLI for research on Xiaohongshu, Douyin, TikTok, Instagram, and LinkedIn. Use when an external agent needs real posts, comments, creator profiles, or source-linked social research through the user's signed-in browser.
+description: Use the installed socai CLI for research on Xiaohongshu, Douyin, TikTok, Instagram, LinkedIn, and podcasts. Use when an external agent needs real posts, comments, creator profiles, or source-linked social research through the user's signed-in browser, or podcast summaries and transcripts without a browser.
 ---
 
 # socai CLI research
@@ -54,7 +54,7 @@ registration leaves the previous daemon task unchanged.
 
 ## Gather and deliver evidence
 
-Choose among `xhs`, `dy`, `tiktok`, `instagram`, and `linkedin` according to the
+Choose among `xhs`, `dy`, `tiktok`, `instagram`, `linkedin`, and `podcast` according to the
 user's scope. Inspect command help before using platform-specific options.
 Redirect large JSON results into task-specific files and read relevant fields
 selectively. Keep source URLs and distinguish collected evidence from inference.

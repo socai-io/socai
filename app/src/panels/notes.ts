@@ -9,7 +9,7 @@
 import { platformLabel } from "../lib/platforms";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { esc } from "../lib/html";
-import { getLocale, t } from "../lib/i18n";
+import { getLanguage, getLocale, t } from "../lib/i18n";
 import { renderMarkdown } from "../lib/markdown";
 import type { NoteComment, NoteData, NoteMedia } from "../main";
 
@@ -100,13 +100,14 @@ function mergeNoteData(current: NoteData | undefined, incoming: NoteData): NoteD
     return score + 1 + local + (item.poster ? 1 : 0);
   }, 0);
   const levelRank = (value: unknown): number => value === "deep" ? 3 : value === "detail" ? 2 : value === "card" || value === "preview" ? 1 : 0;
+  const localizedPodcast = incoming.site === "podcast" && typeof incoming.content_language === "string";
   const merged: NoteData = {
     ...current,
     ...incoming,
     note_id: current.note_id,
-    title: richerText(current.title, incoming.title),
-    content: richerText(current.content, incoming.content),
-    excerpt: richerText(current.excerpt, incoming.excerpt),
+    title: localizedPodcast && incoming.title ? incoming.title : richerText(current.title, incoming.title),
+    content: localizedPodcast && incoming.content ? incoming.content : richerText(current.content, incoming.content),
+    excerpt: localizedPodcast && incoming.excerpt ? incoming.excerpt : richerText(current.excerpt, incoming.excerpt),
     transcript: richerText(current.transcript, incoming.transcript),
     author,
     stats,
@@ -448,9 +449,9 @@ function coverInner(note: NoteData, idx: number): string {
   return mediaFrame(note, media[i], "cover") + nav;
 }
 function renderCard(note: NoteData, density: "rich" | "compact" = "rich"): string {
-  if (note.site === "weixin") return `<div class="note-article-card" data-note-open="${esc(note.note_id)}" role="button" tabindex="0">
+  if (note.site === "weixin" || note.site === "podcast") return `<div class="note-article-card${note.site === 'podcast' ? ' note-article-card--podcast' : ''}" data-note-open="${esc(note.note_id)}" role="button" tabindex="0">
     <div class="note-article-card__author">${avatar(note)}<span>${esc(note.author?.name || platformName(note))}</span></div>
-    <h3 class="t-body">${esc(note.title || '')}</h3><p class="t-small">${esc(note.excerpt || '')}</p></div>`;
+    <h3 class="t-body">${esc(note.title || '')}</h3>${note.site === 'podcast' ? '' : `<p class="t-small">${esc(note.excerpt || '')}</p>`}</div>`;
   const title = esc(note.title || "");
   const name = esc((note.author && note.author.name) || "");
   const platform = platformName(note);
@@ -490,7 +491,7 @@ export function renderNoteCards(refs: string[], density: "rich" | "compact" = "r
 // ── answer citations (pills + hover preview) ────────────────────────
 function pillHTML(id: string, label: string, note: NoteData): string {
   const cover = coverOf(note);
-  const icon = note.site === "weixin" ? avatar(note, "note-cite__avatar") : mediaFrame(note, cover, "dot");
+  const icon = note.site === "weixin" || note.site === "podcast" ? avatar(note, "note-cite__avatar") : mediaFrame(note, cover, "dot");
   return (
     `<span class="note-cite-wrap" data-note-cite="${esc(id)}">` +
     `<span class="note-cite" data-note-open="${esc(id)}" role="button" tabindex="0">` +
@@ -625,7 +626,78 @@ function articleImage(note: NoteData, index: number): string {
     ${src ? `<img src="${esc(src)}" alt="${esc(image?.alt || '')}" loading="lazy" />` : ''}
     <figcaption${src ? ' hidden' : ''}>${esc(label)}</figcaption></figure>`;
 }
+function podcastSourceLink(note: NoteData): string {
+  if (note.site !== "podcast" || !note.source_url) return "";
+  let url: URL;
+  try { url = new URL(note.source_url); } catch { return ""; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+  const label = note.source_label || url.hostname.replace(/^www\./, "");
+  return `<a class="note-podcast-source t-small" href="${esc(url.href)}" data-note-external="${esc(url.href)}"><span>${esc(t("note.listenOriginal"))} · ${esc(label)}</span></a>`;
+}
+
+type PodcastSection = { content?: string; available?: boolean; language_fallback?: boolean; content_language?: string; participants?: string[] };
+const podcastRequests = new Map<string, Promise<PodcastSection>>();
+function podcastLanguage(note: NoteData): string {
+  const value = note.podcast_language || note.content_language || getLanguage();
+  return String(value).toUpperCase() === "ZH" ? "ZH" : "EN";
+}
+function podcastRequest(note: NoteData, section: string): Promise<PodcastSection> {
+  const slug = note.native_id || note.note_id.replace(/^podcast:/, "");
+  const language = podcastLanguage(note);
+  const key = `${slug}:${language}:${section}`;
+  const existing = podcastRequests.get(key);
+  if (existing) return existing;
+  const request = invoke<PodcastSection>("podcast_preview", { slug, section, language });
+  podcastRequests.set(key, request);
+  request.then(value => {
+    if (value.available === false || (section === "metadata" && !value.participants?.length)) podcastRequests.delete(key);
+  }, () => podcastRequests.delete(key));
+  return request;
+}
+function podcastPeople(note: NoteData, people?: string[]): string {
+  if (people?.length) return `${esc(t("podcast.participants"))} · ${esc(people.join(" · "))}`;
+  const hosts = typeof note.podcast_hosts === "string" ? note.podcast_hosts : "";
+  return hosts ? `${esc(t("podcast.hosts"))} · ${esc(hosts)}` : esc(t("podcast.peopleLoading"));
+}
+function podcastSections(note: NoteData): string {
+  const tldr = (note.content || "").replace(/^TL;DR[^\n]*\n/, "");
+  return ["tldr", "digest", "transcript"].map(section => {
+    const ready = section === "tldr" && !!tldr && !note.podcast_tldr_next_offset;
+    return `<details class="podcast-section" data-podcast-section="${section}" data-loaded="${ready}" ${section === 'tldr' ? 'open' : ''}>
+      <summary class="t-body">${esc(t(section === 'tldr' ? 'podcast.tldr' : section === 'digest' ? 'podcast.digest' : 'podcast.transcript'))}</summary>
+      <div class="podcast-section__body" aria-live="polite">${section === 'tldr' ? renderMarkdown(tldr) : ''}</div>
+    </details>`;
+  }).join("");
+}
+async function loadPodcastSection(details: HTMLDetailsElement): Promise<void> {
+  if (!details.open || details.dataset.loaded === "true" || details.dataset.loading === "true") return;
+  const panel = details.closest<HTMLElement>("[data-note-article]");
+  const note = panel && resolveNote(panel.dataset.noteArticle || "");
+  const body = details.querySelector<HTMLElement>(".podcast-section__body");
+  if (!note || note.site !== "podcast" || !body) return;
+  details.dataset.loading = "true";
+  body.textContent = t("podcast.loading");
+  try {
+    const result = await podcastRequest(note, details.dataset.podcastSection!);
+    if (!details.isConnected) return;
+    const fallback = result.language_fallback ? `<p class="t-small subtle">${esc(t("podcast.originalLanguage"))}</p>` : "";
+    body.innerHTML = result.available === false ? `<p class="t-small subtle">${esc(t("podcast.unavailable"))}</p>` : fallback + renderMarkdown(result.content || "");
+    details.dataset.loaded = "true";
+  } catch {
+    if (details.isConnected) body.innerHTML = `<p class="t-small">${esc(t("podcast.loadFailed"))}</p><button type="button" class="btn-ghost t-small" data-podcast-retry>${esc(t("podcast.retry"))}</button>`;
+  } finally { details.dataset.loading = "false"; }
+}
+function hydratePodcastPreview(host: HTMLElement, note: NoteData): void {
+  if (note.site !== "podcast") return;
+  for (const details of host.querySelectorAll<HTMLDetailsElement>("details[data-podcast-section][open]")) void loadPodcastSection(details);
+  const people = host.querySelector<HTMLElement>("[data-podcast-people]");
+  if (people) void podcastRequest(note, "metadata").then(result => {
+    if (people.isConnected) people.innerHTML = result.participants?.length ? podcastPeople(note, result.participants) : (note.podcast_hosts ? podcastPeople(note) : esc(t("podcast.peopleUnavailable")));
+  }, () => { if (people.isConnected) people.innerHTML = note.podcast_hosts ? podcastPeople(note) : esc(t("podcast.peopleUnavailable")); });
+}
+
 function articleBody(note: NoteData): string {
+  if (note.site === "podcast") return podcastSections(note);
   if (!note.article_blocks?.length) return `<p>${esc(note.content || note.excerpt || '')}</p>`;
   return note.article_blocks.map(block => block.type === 'text'
     ? `<p>${esc(block.text)}</p>` : articleImage(note, block.image_index)).join('');
@@ -692,14 +764,17 @@ function viewPanel(note: NoteData): string {
 // social-post modal. The top-right corner instead opens the original post —
 // only a note with no archived url keeps a close glyph so the corner isn't dead.
 function viewerHTML(note: NoteData): string {
+  const externalLabel = note.site === "podcast" ? t("podcast.openBidclub") : t("note.openExternal");
   const corner = note.url
-    ? `<button type="button" class="note-viewer-corner" data-note-external="${esc(note.url)}" title="${esc(t("note.openExternal"))}" aria-label="${esc(t("note.openExternal"))}">${IC.external()}</button>`
+    ? `<button type="button" class="note-viewer-corner" data-note-external="${esc(note.url)}" title="${esc(externalLabel)}" aria-label="${esc(externalLabel)}">${IC.external()}</button>`
     : `<button type="button" class="note-viewer-corner" data-note-close aria-label="close">${IC.close()}</button>`;
-  if (note.site === "weixin") return `<div class="note-viewer-backdrop" data-note-close>
+  if (note.site === "weixin" || note.site === "podcast") return `<div class="note-viewer-backdrop" data-note-close>
     <div class="note-viewer-panel note-viewer-panel--article" role="dialog" aria-label="${esc(note.title || 'article')}" data-note-stop data-note-article="${esc(note.note_id)}">
       ${corner}<div class="note-view__author">${avatar(note, 'note-view__avatar')}<span class="note-view__author-name">${esc(note.author?.name || '')}</span></div>
       <article class="note-article-scroll"><h1 class="t-h2">${esc(note.title || '')}</h1>
         <p class="t-small note-view__date">${esc(fmtDate(note.posted_at))}</p>
+        ${podcastSourceLink(note)}
+        ${note.site === 'podcast' ? `<p class="t-small note-podcast-people" data-podcast-people>${podcastPeople(note)}</p>` : ''}
         <div class="note-article-content t-body">${articleBody(note)}</div></article>
     </div></div>`;
   return `
@@ -750,6 +825,7 @@ function openViewer(id: string): void {
   host.className = "note-viewer note-viewer--lightbox";
   host.innerHTML = viewerHTML(note);
   document.body.appendChild(host);
+  hydratePodcastPreview(host, note);
   playVisibleGalleryVideo(host);
 }
 
@@ -830,6 +906,10 @@ let bound = false;
 export function bindNoteInteractions(): void {
   if (bound) return;
   bound = true;
+  document.addEventListener("toggle", event => {
+    const details = event.target;
+    if (details instanceof HTMLDetailsElement && details.matches("[data-podcast-section]")) void loadPodcastSection(details);
+  }, true);
 
   // Expired remote URLs and unavailable local files should show an explicit
   // fallback instead of an empty image frame. Image errors do not bubble.
@@ -871,6 +951,13 @@ export function bindNoteInteractions(): void {
         else vid.pause();
         return;
       }
+    }
+    const retry = target.closest<HTMLElement>("[data-podcast-retry]");
+    if (retry) {
+      e.preventDefault();
+      const details = retry.closest<HTMLDetailsElement>("details");
+      if (details) void loadPodcastSection(details);
+      return;
     }
     // external link (Tauri webview won't honour target=_blank)
     const ext = target.closest<HTMLElement>("[data-note-external]");
@@ -937,7 +1024,7 @@ export function bindNoteInteractions(): void {
     // synthesize a click so the delegated click handler above does the rest.
     if (e.key !== "Enter" && e.key !== " ") return;
     const target = e.target as HTMLElement;
-    if (target.closest("input, textarea, select, [contenteditable], video")) return;
+    if (target.closest("input, textarea, select, [contenteditable], video, summary, [data-podcast-retry]")) return;
     const actionable = target.closest<HTMLElement>(
       "[data-note-open], [data-note-external], [data-note-nav], [data-note-play], [data-gallery-nav], [data-gallery-thumb], [data-note-close], .note-viewer-corner",
     );

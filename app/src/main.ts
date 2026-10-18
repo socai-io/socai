@@ -150,6 +150,8 @@ export interface NoteData {
   site?: "xhs" | "linkedin" | "instagram" | "dy" | "tiktok" | string;
   native_id?: string;
   url?: string;
+  source_url?: string;
+  source_label?: string;
   title?: string;
   article_blocks?: Array<{ type: "text"; text: string } | { type: "image"; image_index: number }>;
   content?: string; // full note body (excerpt is its first ~90 chars)

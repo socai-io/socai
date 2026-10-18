@@ -61,7 +61,7 @@ const TAURI_CITATION_RULES: &str = "\n\n## Citing sources in the final answer (r
     - If only a search snippet was available, say so; do not present it as a full article read.";
 
 const TAURI_SITE_ROUTING_RULES: &str = "\n\n## Browser routing\n\
-    A new conversation starts on a blank tab. Do not navigate to Xiaohongshu or \
+    Browser-enabled conversations start on a blank tab; podcast-only tasks have no browser. Do not navigate to Xiaohongshu or \
     any other site until the user's request requires that platform. For LinkedIn, \
     Instagram, Douyin, or TikTok, use navigate_site, read the returned site skill, \
     and follow that platform's tools and workflow. The Xiaohongshu playbook applies \
@@ -671,6 +671,7 @@ pub async fn agent_task_start(
     provider: Option<String>,
     model: Option<String>,
     sites: Option<Vec<String>>,
+    language: Option<String>,
 ) -> Result<AgentTaskSnapshot, String> {
     let sites = validate_task_sites(sites.unwrap_or_else(crate::tasks::default_task_sites))?;
     let task_text = task.trim().to_string();
@@ -745,6 +746,7 @@ pub async fn agent_task_start(
             run_dir,
             background_media_generation,
             telemetry,
+            language,
         )
         .await;
         if let Some(trial) = guest_trial {
@@ -788,6 +790,7 @@ pub async fn agent_task_reply(
     task_id: String,
     message: String,
     sites: Option<Vec<String>>,
+    language: Option<String>,
 ) -> Result<AgentTaskSnapshot, String> {
     let message_text = message.trim().to_string();
     if message_text.is_empty() {
@@ -887,6 +890,7 @@ pub async fn agent_task_reply(
             run_dir,
             background_media_generation,
             telemetry,
+            language,
         )
         .await;
         if let Some(trial) = guest_trial {
@@ -2765,6 +2769,7 @@ async fn run_agent_task_background(
     run_dir: PathBuf,
     background_media_generation: u64,
     telemetry: DesktopTelemetry,
+    language: Option<String>,
 ) {
     let Some(session_id) = task_session_id(&registry, &task_id).await else {
         fail_task_before_run(
@@ -2780,10 +2785,13 @@ async fn run_agent_task_background(
         return;
     };
 
-    // Admission is local to this app process: each run holds one task permit
-    // and one browser lease for its entire lifetime.
+    // HTTP-only podcast tasks require a run permit, but no browser lease/page.
+    let http_only = registry
+        .get(&task_id)
+        .await
+        .is_some_and(|snapshot| snapshot.sites == ["podcast"]);
     let mut connect_attempts = 0u32;
-    let (_permit, lease, _activity, page, browser_options) = loop {
+    let (_permit, browser, _activity) = loop {
         let Some(permit) = registry.acquire_run_permit().await else {
             let error = "task runner queue closed".to_string();
             fail_task_before_run(
@@ -2798,6 +2806,9 @@ async fn run_agent_task_background(
             .await;
             return;
         };
+        if http_only {
+            break (permit, None, runtime.begin_activity().await);
+        }
         let lease = match runtime.try_acquire_browser_lease() {
             Ok(lease) => lease,
             Err(busy) => {
@@ -2872,7 +2883,11 @@ async fn run_agent_task_background(
             return;
         }
         page_guard.disarm();
-        break (permit, Arc::new(lease), activity, page, browser_options);
+        break (
+            permit,
+            Some((Arc::new(lease), browser_options, page)),
+            activity,
+        );
     };
 
     if let Some(snapshot) = registry
@@ -2908,9 +2923,7 @@ async fn run_agent_task_background(
         app.clone(),
         task_id.clone(),
         runtime.clone(),
-        lease,
-        browser_options,
-        page,
+        browser,
         &task,
         provider.as_deref(),
         model.as_deref(),
@@ -2918,6 +2931,7 @@ async fn run_agent_task_background(
         Some(background_media_generation),
         Some(registry.clone()),
         telemetry.clone(),
+        language.as_deref(),
     )
     .await;
 
@@ -3162,9 +3176,11 @@ async fn run_agent_task_on_session_page(
     app: AppHandle,
     task_id: String,
     runtime: SocaiRuntime,
-    lease: Arc<BrowserLease>,
-    browser_options: ChromeConnectOptions,
-    page: Arc<RuntimePageSession>,
+    browser: Option<(
+        Arc<BrowserLease>,
+        ChromeConnectOptions,
+        Arc<RuntimePageSession>,
+    )>,
     task: &str,
     provider: Option<&str>,
     model: Option<&str>,
@@ -3172,6 +3188,7 @@ async fn run_agent_task_on_session_page(
     background_media_generation: Option<u64>,
     registry: Option<AgentTaskRegistry>,
     telemetry: DesktopTelemetry,
+    language: Option<&str>,
 ) -> Result<AgentRunOutcome> {
     let task = task.trim();
     if task.is_empty() {
@@ -3230,87 +3247,95 @@ async fn run_agent_task_on_session_page(
         session_id.ok_or_else(|| anyhow::anyhow!("task has no conversation session"))?;
     let outcome = async {
         let mut tools = Vec::new();
-        if available_sites.iter().any(|id| id == "xhs") {
-            let xhs = app_site()?;
-            let agent_tools = xhs.default_agent_tools.unwrap_or(xhs.agent_tools);
-            tools.extend(agent_tools(page.clone(), llm_provider.clone()).await?);
-        }
         let mut instagram_login_note = String::new();
-        if available_sites.iter().any(|id| id == "instagram") {
-            tools.push(socai_core::sites::instagram::instagram_wait_for_login_tool(
-                page.clone(),
-            ));
-            if !auto_sources {
-                let login = match socai_core::sites::instagram::probe_instagram_login(&page).await {
-                    Ok(login) => login,
-                    Err(error) => {
-                        eprintln!("instagram login probe failed: {error:#}");
-                        "unknown".to_string()
-                    }
-                };
-                if login == "out" {
-                    if let Some(registry) = &registry {
-                        emit_task_event(
-                            &app,
-                            registry,
-                            &task_id,
-                            "assistant",
-                            "instagram_login_required".into(),
-                            None,
-                        )
-                        .await;
-                    }
-                }
-                instagram_login_note =
-                    socai_core::sites::instagram::instagram_login_agent_note(&login);
+        let tool_failure_recovery = if let Some((lease, browser_options, page)) = &browser {
+            if available_sites.iter().any(|id| id == "xhs") {
+                let xhs = app_site()?;
+                let agent_tools = xhs.default_agent_tools.unwrap_or(xhs.agent_tools);
+                tools.extend(agent_tools(page.clone(), llm_provider.clone()).await?);
             }
+            if available_sites.iter().any(|id| id == "instagram") {
+                tools.push(socai_core::sites::instagram::instagram_wait_for_login_tool(
+                    page.clone(),
+                ));
+                if !auto_sources {
+                    let login = match socai_core::sites::instagram::probe_instagram_login(&page).await {
+                        Ok(login) => login,
+                        Err(error) => {
+                            eprintln!("instagram login probe failed: {error:#}");
+                            "unknown".to_string()
+                        }
+                    };
+                    if login == "out" {
+                        if let Some(registry) = &registry {
+                            emit_task_event(
+                                &app,
+                                registry,
+                                &task_id,
+                                "assistant",
+                                "instagram_login_required".into(),
+                                None,
+                            )
+                            .await;
+                        }
+                    }
+                    instagram_login_note =
+                        socai_core::sites::instagram::instagram_login_agent_note(&login);
+                }
+            }
+            if available_sites.iter().any(|id| id == "tiktok") {
+                tools.push(socai_core::sites::tiktok::tiktok_wait_for_login_tool(
+                    page.clone(),
+                ));
+            }
+            if available_sites.iter().any(|id| id == "dy") {
+                tools.push(socai_core::sites::dy::douyin_wait_for_login_tool(
+                    page.clone(),
+                ));
+            }
+            if available_sites.iter().any(|id| id == "linkedin") {
+                tools.push(
+                    socai_core::sites::linkedin::linkedin_wait_for_login_tool(page.clone()),
+                );
+            }
+            if available_sites.iter().any(|id| id == "x") {
+                tools.push(socai_core::sites::x::x_wait_for_login_tool(page.clone()));
+            }
+            if available_sites.iter().any(|id| id == "weixin") {
+                tools.extend(socai_core::sites::weixin::weixin_tools(page.clone()));
+            }
+            tools.extend(scoped_site_learning_tools(page.clone(), &available_sites));
+            let browser_tools = tools.iter().map(|tool| tool.name().to_string()).collect();
+            let last_page_url = page
+                .page_info()
+                .await
+                .ok()
+                .and_then(|info| info.get("url").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            registry.clone().map(|registry| {
+                Arc::new(DesktopBrowserRecovery {
+                    app: app.clone(),
+                    registry,
+                    telemetry: telemetry.clone(),
+                    runtime: runtime.clone(),
+                    lease: lease.clone(),
+                    page: page.clone(),
+                    task_id: task_id.clone(),
+                    session_id: session_id.clone(),
+                    site_id: APP_SITE_ID,
+                    home_url: recovery_home_url,
+                    browser_options: browser_options.clone(),
+                    browser_tools,
+                    last_page_url: tokio::sync::RwLock::new(last_page_url),
+                }) as SharedToolFailureRecovery
+            })
+        } else {
+            None
+        };
+        if available_sites.iter().any(|id| id == "podcast") {
+            let language = socai_core::sites::podcast::preferred_language(task, language);
+            tools.extend(socai_core::sites::podcast::podcast_tools_for_language(Some(&language)));
         }
-        if available_sites.iter().any(|id| id == "tiktok") {
-            tools.push(socai_core::sites::tiktok::tiktok_wait_for_login_tool(
-                page.clone(),
-            ));
-        }
-        if available_sites.iter().any(|id| id == "dy") {
-            tools.push(socai_core::sites::dy::douyin_wait_for_login_tool(
-                page.clone(),
-            ));
-        }
-        if available_sites.iter().any(|id| id == "linkedin") {
-            tools.push(
-                socai_core::sites::linkedin::linkedin_wait_for_login_tool(page.clone()),
-            );
-        }
-        if available_sites.iter().any(|id| id == "x") {
-            tools.push(socai_core::sites::x::x_wait_for_login_tool(page.clone()));
-        }
-        if available_sites.iter().any(|id| id == "weixin") {
-            tools.extend(socai_core::sites::weixin::weixin_tools(page.clone()));
-        }
-        tools.extend(scoped_site_learning_tools(page.clone(), &available_sites));
-        let browser_tools = tools.iter().map(|tool| tool.name().to_string()).collect();
-        let last_page_url = page
-            .page_info()
-            .await
-            .ok()
-            .and_then(|info| info.get("url").and_then(Value::as_str).map(str::to_string))
-            .unwrap_or_default();
-        let tool_failure_recovery = registry.clone().map(|registry| {
-            Arc::new(DesktopBrowserRecovery {
-                app: app.clone(),
-                registry,
-                telemetry: telemetry.clone(),
-                runtime: runtime.clone(),
-                lease: lease.clone(),
-                page: page.clone(),
-                task_id: task_id.clone(),
-                session_id: session_id.clone(),
-                site_id: APP_SITE_ID,
-                home_url: recovery_home_url,
-                browser_options: browser_options.clone(),
-                browser_tools,
-                last_page_url: tokio::sync::RwLock::new(last_page_url),
-            }) as SharedToolFailureRecovery
-        });
         tools.extend(desktop_agent_tools());
         tools.push(Arc::new(PublishArtifactTool::new(
             session_dir.as_deref().map(PathBuf::from),
@@ -3337,7 +3362,7 @@ async fn run_agent_task_on_session_page(
                  Available platforms: {}. Choose based on the actual question; use one or several \
                  only when the research needs them. Begin on the blank tab, navigate to the chosen \
                  site's home URL with navigate_site, read the returned skill and use its tools. \
-                 For WeChat, call search_weixin_articles directly; only article reads need Chrome. Do not visit every site by default. Explain any access failure or coverage gap. \
+                 For podcasts, call search_podcast_shows or search_podcast_episodes directly without navigation. For WeChat, call search_weixin_articles directly; only article reads need Chrome. Do not visit every site by default. Explain any access failure or coverage gap. \
                  Cite evidence from the sites actually used; do not claim coverage of unused sites.",
                 available_sites.iter().filter_map(|id| find_native_site_adapter(id))
                     .map(|site| format!("{} ({})", site.id, site.home_url))
@@ -3346,7 +3371,7 @@ async fn run_agent_task_on_session_page(
         } else {
             format!(
             "\n\n## Selected sources\nThe user selected these platforms: {}. Only collect new evidence from these platforms. \
-             For WeChat use search_weixin_articles (HTTP) and read_weixin_article (Chrome). Use navigate_site and its returned skill for other non-Xiaohongshu platforms, including X. \
+             For podcasts use the podcast HTTP tools directly, without navigation or login. For WeChat use search_weixin_articles (HTTP) and read_weixin_article (Chrome). Use navigate_site and its returned skill for other non-Xiaohongshu, non-podcast platforms, including X. \
              Do not use shell or other tools to bypass this selection. If the request needs an unselected \
              platform, explain that the user can change the source selection. Existing conversation evidence \
              may still be discussed; do not claim it was fetched again. For research across multiple selected \
@@ -3356,15 +3381,21 @@ async fn run_agent_task_on_session_page(
                 .collect::<Vec<_>>().join(", ")
             )
         };
+        let podcast_instructions = if available_sites.iter().any(|id| id == "podcast") {
+            socai_core::sites::podcast::INSTRUCTIONS
+        } else {
+            ""
+        };
         let config = AgentRunConfig {
             extra_instructions: format!(
-                "{}{}{}{}{}{}",
+                "{}{}{}{}{}{}\n\n{}",
                 instructions,
                 TAURI_SITE_ROUTING_RULES,
                 TAURI_CITATION_RULES,
                 TAURI_ARTIFACT_RULES,
                 source_instructions,
-                instagram_login_note
+                instagram_login_note,
+                podcast_instructions
             ),
             enabled_sites: available_sites,
             seed_messages,
@@ -4002,4 +4033,16 @@ mod tests {
         );
         assert!(validate_preflight_balance(-1).is_err());
     }
+}
+
+/// User-expanded podcast sections stay outside the agent context.
+#[tauri::command]
+pub async fn podcast_preview(
+    slug: String,
+    section: String,
+    language: String,
+) -> Result<Value, String> {
+    socai_core::sites::podcast::read_preview(&slug, &section, &language)
+        .await
+        .map_err(|e| format!("{e:#}"))
 }

@@ -5,11 +5,12 @@ import instagramIcon from "../../../site/public/platforms/instagram.png";
 import linkedinIcon from "../../../site/public/platforms/linkedin.svg";
 import xIcon from "../../../site/public/platforms/x.png";
 
+import podcastIcon from "../../../site/public/platforms/podcast.png";
 import weixinIcon from "../../../site/public/platforms/weixin.png";
 
 const SOURCE_STORAGE_KEY = "socai-research-sources";
 const icons: Record<string, string> = {
-  weixin: weixinIcon, xhs: xhsIcon, dy: videoIcon, tiktok: videoIcon,
+  podcast: podcastIcon, weixin: weixinIcon, xhs: xhsIcon, dy: videoIcon, tiktok: videoIcon,
   instagram: instagramIcon, linkedin: linkedinIcon, x: xIcon,
 };
 
@@ -36,7 +37,7 @@ export function saveSources(sites: string[]): void {
   try { localStorage.setItem(SOURCE_STORAGE_KEY, JSON.stringify(sites)); } catch { /* Session state still works. */ }
 }
 
-export const RESEARCH_PLATFORMS = ["auto", "xhs", "dy", "tiktok", "instagram", "linkedin", "x", "weixin"] as const;
+export const RESEARCH_PLATFORMS = ["auto", "xhs", "dy", "tiktok", "instagram", "linkedin", "x", "weixin", "podcast"] as const;
 
 export function platformLabel(site: string): string {
   switch (site) {
@@ -47,7 +48,13 @@ export function platformLabel(site: string): string {
     case "instagram": return "Instagram";
     case "linkedin": return "LinkedIn";
     case "x": return "X";
+    case "podcast": return t("platform.podcast");
     case "weixin": return t("platform.weixin");
     default: return site;
   }
+}
+
+/** Public podcast HTTP calls do not require a Chrome session. */
+export function sourcesNeedBrowser(sites: readonly string[]): boolean {
+  return sites.length === 0 || sites.some((site) => site !== "podcast");
 }

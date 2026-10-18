@@ -2896,3 +2896,24 @@ code {
 .note-article-card__author { display: flex; align-items: center; gap: 8px; color: var(--fg-soft); font-size: 12px; }
 .note-article-card h3 { margin: 12px 0 8px; }
 .note-article-card p { margin: 0; color: var(--fg-muted); }
+
+/* Podcast sources are text articles; the publisher link lives in the preview. */
+.note-podcast-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.note-podcast-source svg { width: 14px; height: 14px; flex: none; }
+
+.podcast-section { border-top: 1px solid var(--line); padding: 14px 0; }
+.podcast-section summary { cursor: pointer; font-weight: 600; }
+.podcast-section__body { margin-top: 14px; overflow-wrap: anywhere; }
+.note-podcast-people { color: var(--fg-muted); margin: 8px 0 20px; }
+
+.note-article-card--podcast { flex: 0 0 280px; width: 280px; align-self: flex-start; }
+.note-article-card--podcast h3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.note-article-card--podcast .note-article-card__author span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

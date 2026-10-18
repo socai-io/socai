@@ -1,7 +1,9 @@
+import { getLanguage } from "../lib/i18n";
 //! Task workspace coordinator: shared state, agent configuration popover,
 //! task event intake, and bindings. The sidebar (history list) + delete dialog
 //! live in `task_history.ts`; the conversation view lives in `conversation.ts`.
 
+import { sourcesNeedBrowser } from "../lib/platforms";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentArtifact,
@@ -1449,6 +1451,7 @@ export namespace agentPanel {
     const running = !!task && (task.status === "running" || task.status === "queued");
     // Remote profiles submit while disconnected; the run reconnects on demand.
     const needsConnection =
+      sourcesNeedBrowser(task ? taskSites(task.task_id) : draftSites) &&
       shell.status.state !== "connected" && !settingsMenu.isRemoteProfile() && !settingsMenu.isManagedProfile();
     const selected = selectedModel();
     const modelReady = task ? true : !!selected && selected.has_key;
@@ -1482,6 +1485,7 @@ export namespace agentPanel {
     try {
       const selected = selectedModel();
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_start", {
+        language: getLanguage(),
         task: value,
         sites: draftSites,
         provider: selected?.provider || modelProvider || null,
@@ -1519,6 +1523,7 @@ export namespace agentPanel {
     shell.rerender();
     try {
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_reply", {
+        language: getLanguage(),
         taskId,
         message: value,
         sites: taskSites(taskId),

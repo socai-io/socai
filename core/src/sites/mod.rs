@@ -5,6 +5,7 @@ pub mod instagram;
 pub mod learning;
 pub mod linkedin;
 pub mod login_wait;
+pub mod podcast;
 pub mod post_archive;
 pub mod publication;
 pub mod registry;
