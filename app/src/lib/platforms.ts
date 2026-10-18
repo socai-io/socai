@@ -5,9 +5,11 @@ import instagramIcon from "../../../site/public/platforms/instagram.png";
 import linkedinIcon from "../../../site/public/platforms/linkedin.svg";
 import xIcon from "../../../site/public/platforms/x.png";
 
+import weixinIcon from "../../../site/public/platforms/weixin.png";
+
 const SOURCE_STORAGE_KEY = "socai-research-sources";
 const icons: Record<string, string> = {
-  xhs: xhsIcon, dy: videoIcon, tiktok: videoIcon,
+  weixin: weixinIcon, xhs: xhsIcon, dy: videoIcon, tiktok: videoIcon,
   instagram: instagramIcon, linkedin: linkedinIcon, x: xIcon,
 };
 
@@ -34,7 +36,7 @@ export function saveSources(sites: string[]): void {
   try { localStorage.setItem(SOURCE_STORAGE_KEY, JSON.stringify(sites)); } catch { /* Session state still works. */ }
 }
 
-export const RESEARCH_PLATFORMS = ["auto", "xhs", "dy", "tiktok", "instagram", "linkedin", "x"] as const;
+export const RESEARCH_PLATFORMS = ["auto", "xhs", "dy", "tiktok", "instagram", "linkedin", "x", "weixin"] as const;
 
 export function platformLabel(site: string): string {
   switch (site) {
@@ -45,6 +47,7 @@ export function platformLabel(site: string): string {
     case "instagram": return "Instagram";
     case "linkedin": return "LinkedIn";
     case "x": return "X";
+    case "weixin": return t("platform.weixin");
     default: return site;
   }
 }

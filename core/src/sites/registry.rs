@@ -25,7 +25,17 @@ pub type AgentInstructionsFn = fn(&str) -> String;
 pub type CommandRunFn =
     fn(Arc<PageSession>, Value, bool, Option<ToolProgressSender>) -> BoxFuture<Value>;
 
+pub type RuntimeCommandRunFn = fn(
+    crate::runtime::SocaiRuntime,
+    &'static str,
+    Value,
+    bool,
+    Option<ToolProgressSender>,
+) -> BoxFuture<Value>;
+
 pub struct NativeSiteAdapter {
+    /// Optional lazy-browser command dispatch; HTTP-only work need not open Chrome.
+    pub runtime_command: Option<RuntimeCommandRunFn>,
     /// Short site id — doubles as the CLI subcommand (`socai <id> <tool>`),
     /// the daemon `site` field, and the `enabled_sites` gate value.
     pub id: &'static str,
@@ -115,6 +125,7 @@ static NATIVE_SITE_ADAPTERS: &[&NativeSiteAdapter] = &[
     &crate::sites::instagram::INSTAGRAM_NATIVE_ADAPTER,
     &crate::sites::linkedin::LINKEDIN_NATIVE_ADAPTER,
     &crate::sites::x::X_NATIVE_ADAPTER,
+    &crate::sites::weixin::WEIXIN_NATIVE_ADAPTER,
     &crate::sites::web::WEB_SITE,
 ];
 

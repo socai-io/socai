@@ -250,6 +250,58 @@ socai xhs search "Shanghai weekend activities" \
   --filter sort=最新
 ```
 
+### WeChat Official Account articles
+
+```bash
+# Search result titles, publishers, snippets and article links.
+socai weixin search "personal agent" --num 10
+# Search and read the full rendered text of each result in Chrome.
+socai weixin search "personal agent" --num 3 --read --pretty
+# Read one Sogou result link or WeChat article URL (quote the entire URL).
+socai weixin read 'https://mp.weixin.qq.com/s/ARTICLE_ID' --pretty
+```
+
+Search requests Sogou's WeChat article endpoint (`type=2`) over HTTP and parses
+the returned HTML. Search-only CLI commands do not connect to or start Chrome;
+there is no automatic browser fallback if Sogou returns a verification page.
+Only `read` or `search --read` connects Chrome to read articles. Anonymous Sogou
+search cookies are kept only in process memory, reused for up to one hour, and passed to Chrome
+when reading a returned link, preserving its search session without opening a
+search tab. Read links in the same daemon/session; restarting it loses this cache.
+Each article opens in a fresh owned tab,
+waits for a stable nonempty `#js_content`, and closes afterward. Article HTML is
+never fetched by an HTTP client. `--num` accepts 1–30 (default 10), `--page` selects
+the starting result page, and each call reads at most three search-result pages.
+The result includes `last_page` and `has_more` for continuing pagination.
+`--wait-seconds` controls the content wait per attempt (default 30, maximum 120).
+Verification pages, HTTP 429 and Retry-After responses are retried at most three
+times, waiting 1, 2, then 3 minutes. A longer server Retry-After (seconds or HTTP
+date) takes precedence. Other failures are not retried. When access remains blocked,
+`retry_exhausted: true` is returned; batch reading stops and remaining articles
+are marked `not_attempted_after_access_block`. Successful earlier articles remain
+in the result. These waits do not solve a CAPTCHA; manual verification may still
+be necessary. Retry limits apply per search page or article, within the current call.
+
+Successful reads return title, publisher, displayed publication time, observed
+article URL, and full rendered text. Search snippets are never represented as
+article bodies. Text extraction does not transcribe images or video. Sogou and
+WeChat links can expire or require verification; failures carry `ok: false` and
+`reason`, preserving successful articles when only some reads fail. Verified
+article reads enter the shared note archive and JSON artifacts; unvisited search
+cards remain in search JSON because their redirect URLs are temporary.
+`--debug-snapshot` captures article DOM, accessibility and screenshots under
+`weixin-article-*/snapshots/` in the tool output directory. HTTP-only searches
+record their normal JSON artifacts without browser snapshots.
+
+The shared core exposes `search_weixin_articles` and `read_weixin_article` to
+CLI/TUI, desktop and remote worker hosts. Select **微信公众号 / WeChat Articles**
+in the desktop source picker, or enable site ID `weixin` in worker requests.
+The manifest also supports `navigate_site` → `run_site_browser_tool` with
+`articleState` and `articleDetail`; the search-page DOM tools remain available for
+explicit browser diagnostics, but normal searches use the HTTP tool. The web/hosted
+entrypoint must use a worker built with this capability; deploying that worker
+is separate from the local implementation.
+
 ### Douyin and TikTok
 
 ```bash
@@ -501,6 +553,38 @@ for each individual click/scroll, so a batch does not bypass the selected rate.
 The helper is scoped to that evaluation. Built-in scripts retain a direct-call
 fallback for standalone fixtures. Use the typed `PageSession` methods for trusted
 input: they group mouse press/release and whole text entry into single actions.
+
+### Sogou WeChat article experiment
+
+Run the standalone script with Node.js 22+ and installed Google Chrome; no npm
+packages or browser extension are needed:
+
+```bash
+node scripts/sogou-weixin-chrome.mjs "人工智能" --limit 3 --out /tmp/weixin-articles
+```
+
+It opens Sogou's `https://weixin.sogou.com/weixin?type=2&query=...` search
+endpoint in Chrome, collects article links, follows each redirect in a fresh
+Chrome tab, and reads the rendered WeChat `#js_content` body. Article content
+is never downloaded by a separate HTTP client. This is a standalone experiment,
+not a registered Socai site skill.
+
+The output directory contains `results.json`, the search HTML/text, and each
+article's `.html`, `.page.txt` (whole page), and `.txt` (article body). Stdout also
+contains the JSON results; progress goes to stderr. A nonempty body on a WeChat
+article URL is required for `status: "ok"`; this verifies text extraction, not
+image/OCR or video coverage. Failed pages retain diagnostics rather than being
+reported as article text. Exit codes: 0 for successful requested reads, 2 for
+missing results or any failed article, 1 for setup/runtime errors. Fewer search
+results than `--limit` may be returned; `requested` records the requested limit.
+
+By default the script starts visible Chrome with a temporary profile and closes
+it afterward. `--cdp http://127.0.0.1:9222` reuses an existing debugging-enabled
+Chrome, closing only tabs created by the script. Use `--chrome /path/to/chrome`
+(or `CHROME_PATH`) to override the executable, and `--timeout 60` to extend each
+page's content wait. Sogou/WeChat can return verification or unavailable pages;
+inspect the saved HTML/text when extraction fails. Use a separate output
+directory per run to keep the captures distinct.
 
 ### Desktop development
 

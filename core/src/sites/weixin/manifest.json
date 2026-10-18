@@ -1,0 +1,82 @@
+{
+  "id": "weixin",
+  "name": "WeChat Official Accounts (Sogou search)",
+  "domains": [
+    "weixin.sogou.com",
+    "mp.weixin.qq.com"
+  ],
+  "notes": [],
+  "browserTools": {
+    "searchState": {
+      "path": "page-tools.js",
+      "binding": "window.SocaiWeixinPageTools",
+      "callable": "searchState",
+      "description": "Check Sogou article search readiness and verification gates after navigating to https://weixin.sogou.com/weixin?type=2&query=<encoded-query>&page=<page>.",
+      "args": {
+        "query": {
+          "type": "string",
+          "required": false,
+          "description": "Expected search query."
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Expected result page (1-based)."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Extracted record, or ok:false and reason when unavailable."
+      }
+    },
+    "searchResults": {
+      "path": "page-tools.js",
+      "binding": "window.SocaiWeixinPageTools",
+      "callable": "searchResults",
+      "description": "Read current Sogou WeChat article result cards. Snippets are not article bodies. Use returned links promptly with navigate_site, then articleState and articleDetail; links may expire. For further pages navigate to the same search URL with page incremented.",
+      "args": {
+        "query": {
+          "type": "string",
+          "required": false,
+          "description": "Expected search query."
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Expected result page (1-based)."
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "description": "Maximum results on this page, 1–10."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Extracted record, or ok:false and reason when unavailable."
+      }
+    },
+    "articleState": {
+      "path": "page-tools.js",
+      "binding": "window.SocaiWeixinPageTools",
+      "callable": "articleState",
+      "description": "After opening a Sogou /link or mp.weixin.qq.com/s article in Chrome, wait for redirect completion and a nonempty title and #js_content body. Report challenges and unavailable articles explicitly.",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "Extracted record, or ok:false and reason when unavailable."
+      }
+    },
+    "articleDetail": {
+      "path": "page-tools.js",
+      "binding": "window.SocaiWeixinPageTools",
+      "callable": "articleDetail",
+      "description": "Read the current WeChat article title, publisher, displayed publication time, URL and complete rendered text from #js_content. Call after articleState is ready. Never use HTTP to fetch the article; images and video are not transcribed.",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "Extracted record, or ok:false and reason when unavailable."
+      }
+    }
+  }
+}

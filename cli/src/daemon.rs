@@ -806,6 +806,16 @@ impl DaemonState {
             // the right page (search via ensure_search_ready). Passing
             // home_url here would force an extra `/explore` load before the
             // command then navigates again — wasted time for no benefit.
+            if let Some(run) = site.runtime_command {
+                return run(
+                    runtime.clone(),
+                    spec.name,
+                    args.clone(),
+                    debug_snapshot,
+                    progress,
+                )
+                .await;
+            }
             let page = runtime.ensure_site_page(site.id, "").await?;
             (spec.run)(page, args.clone(), debug_snapshot, progress).await
         };

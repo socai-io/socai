@@ -194,6 +194,28 @@ impl PageSession {
         self.connection.read().await.target_id.clone()
     }
 
+    /// Observe response status for this owned tab without fetching article HTML.
+    pub(crate) async fn document_responses(
+        &self,
+    ) -> anyhow::Result<(
+        Option<String>,
+        tokio::sync::broadcast::Receiver<(Option<String>, Value)>,
+        String,
+    )> {
+        let connection = self.connection.read().await;
+        let receiver = connection.client.document_responses();
+        let session = connection.session_id.clone();
+        drop(connection);
+        self.execute("Network.enable", json!({})).await?;
+        let tree = self.execute("Page.getFrameTree", json!({})).await?;
+        let frame = tree
+            .pointer("/frameTree/frame/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("missing main frame"))?
+            .to_string();
+        Ok((session, receiver, frame))
+    }
+
     /// True when this page was created in a remote hosted browser (socai pro
     /// `chrome.profile remote`) rather than any local chrome.
     pub fn is_remote_browser(&self) -> bool {
@@ -247,7 +269,7 @@ impl PageSession {
         }
     }
 
-    fn recorder(&self) -> Option<Arc<SnapshotRecorder>> {
+    pub(crate) fn recorder(&self) -> Option<Arc<SnapshotRecorder>> {
         self.recorder.lock().ok().and_then(|guard| guard.clone())
     }
 
@@ -319,11 +341,27 @@ impl PageSession {
         url: &str,
         timeout_seconds: f64,
     ) -> anyhow::Result<()> {
+        self.navigate_with_referrer(url, None, timeout_seconds)
+            .await
+    }
+
+    /// Carry a normal navigation referrer when a workflow transfers a link
+    /// from an HTTP search response into a browser tab.
+    pub async fn navigate_with_referrer(
+        &self,
+        url: &str,
+        referrer: Option<&str>,
+        timeout_seconds: f64,
+    ) -> anyhow::Result<()> {
         let action = BrowserAction::begin(url).await?;
         self.snapshot_before().await;
         let timeout = seconds(timeout_seconds);
+        let mut params = json!({ "url": url });
+        if let Some(referrer) = referrer {
+            params["referrer"] = json!(referrer);
+        }
         let resp = self
-            .execute_with_timeout("Page.navigate", json!({ "url": url }), timeout)
+            .execute_with_timeout("Page.navigate", params, timeout)
             .await?;
         // `Page.navigate` reports navigation failures (DNS, net::ERR_*, blocked)
         // in an `errorText` field rather than as a CDP error — chromiumoxide's
@@ -338,6 +376,14 @@ impl PageSession {
             anyhow::bail!("navigation to {url} did not become DOM-ready after {timeout_seconds}s");
         }
         action.finish().await;
+        Ok(())
+    }
+
+    /// Restore HTTP session cookies into the same browser context before a
+    /// browser-only detail read. Cookie values must not be logged as artifacts.
+    pub(crate) async fn set_cookies(&self, cookies: &[Value]) -> anyhow::Result<()> {
+        self.execute("Network.setCookies", json!({ "cookies": cookies }))
+            .await?;
         Ok(())
     }
 

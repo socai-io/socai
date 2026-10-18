@@ -3287,6 +3287,9 @@ async fn run_agent_task_on_session_page(
         if available_sites.iter().any(|id| id == "x") {
             tools.push(socai_core::sites::x::x_wait_for_login_tool(page.clone()));
         }
+        if available_sites.iter().any(|id| id == "weixin") {
+            tools.extend(socai_core::sites::weixin::weixin_tools(page.clone()));
+        }
         tools.extend(scoped_site_learning_tools(page.clone(), &available_sites));
         let browser_tools = tools.iter().map(|tool| tool.name().to_string()).collect();
         let last_page_url = page
@@ -3338,7 +3341,7 @@ async fn run_agent_task_on_session_page(
                  Available platforms: {}. Choose based on the actual question; use one or several \
                  only when the research needs them. Begin on the blank tab, navigate to the chosen \
                  site's home URL with navigate_site, read the returned skill and use its tools. \
-                 Do not visit every site by default. Explain any access failure or coverage gap. \
+                 For WeChat, call search_weixin_articles directly; only article reads need Chrome. Do not visit every site by default. Explain any access failure or coverage gap. \
                  Cite evidence from the sites actually used; do not claim coverage of unused sites.",
                 available_sites.iter().filter_map(|id| find_native_site_adapter(id))
                     .map(|site| format!("{} ({})", site.id, site.home_url))
@@ -3347,7 +3350,7 @@ async fn run_agent_task_on_session_page(
         } else {
             format!(
             "\n\n## Selected sources\nThe user selected these platforms: {}. Only collect new evidence from these platforms. \
-             Use navigate_site and its returned skill for non-Xiaohongshu platforms, including X. \
+             For WeChat use search_weixin_articles (HTTP) and read_weixin_article (Chrome). Use navigate_site and its returned skill for other non-Xiaohongshu platforms, including X. \
              Do not use shell or other tools to bypass this selection. If the request needs an unselected \
              platform, explain that the user can change the source selection. Existing conversation evidence \
              may still be discussed; do not claim it was fetched again. For research across multiple selected \

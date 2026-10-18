@@ -10,7 +10,7 @@ use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 const COMMAND_CHANNEL_CAPACITY: usize = 64;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -18,7 +18,7 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 /// Minimal CDP websocket client.
 ///
 /// This intentionally avoids `chromiumoxide::Handler`: we send only explicit
-/// commands socai needs. Events are ignored, and no browser-wide target
+/// commands socai needs. Only opt-in document response metadata is forwarded; no browser-wide target
 /// discovery/auto-attach/domain enabling is performed. The runtime uses a
 /// browser websocket for target inventory/lifecycle and routes page commands
 /// with an explicit `sessionId` attached to one socai-owned target.
@@ -26,6 +26,7 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct RawCdpClient {
     tx: mpsc::Sender<CommandRequest>,
     unhealthy: Arc<AtomicBool>,
+    document_responses: broadcast::Sender<(Option<String>, Value)>,
 }
 
 struct CommandRequest {
@@ -66,11 +67,17 @@ impl RawCdpClient {
             .await
             .with_context(|| format!("failed to connect CDP websocket: {ws_url}"))?;
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-        tokio::spawn(run_connection(ws, rx));
+        let (document_responses, _) = broadcast::channel(64);
+        tokio::spawn(run_connection(ws, rx, document_responses.clone()));
         Ok(Self {
             tx,
+            document_responses,
             unhealthy: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    pub(crate) fn document_responses(&self) -> broadcast::Receiver<(Option<String>, Value)> {
+        self.document_responses.subscribe()
     }
 
     pub async fn execute(&self, method: impl Into<String>, params: Value) -> Result<Value> {
@@ -135,6 +142,7 @@ impl RawCdpClient {
 async fn run_connection<S>(
     ws: async_tungstenite::WebSocketStream<S>,
     mut rx: mpsc::Receiver<CommandRequest>,
+    document_responses: broadcast::Sender<(Option<String>, Value)>,
 ) where
     S: futures::AsyncRead + futures::AsyncWrite + Unpin,
 {
@@ -187,10 +195,10 @@ async fn run_connection<S>(
             }
             message = read.next() => {
                 match message {
-                    Some(Ok(WsMessage::Text(text))) => handle_text_message(&mut pending, &text),
+                    Some(Ok(WsMessage::Text(text))) => handle_text_message(&mut pending, &text, &document_responses),
                     Some(Ok(WsMessage::Binary(bytes))) => {
                         if let Ok(text) = std::str::from_utf8(&bytes) {
-                            handle_text_message(&mut pending, text);
+                            handle_text_message(&mut pending, text, &document_responses);
                         }
                     }
                     Some(Ok(WsMessage::Close(frame))) => {
@@ -225,15 +233,29 @@ async fn run_connection<S>(
 fn handle_text_message(
     pending: &mut HashMap<u64, oneshot::Sender<std::result::Result<Value, String>>>,
     text: &str,
+    document_responses: &broadcast::Sender<(Option<String>, Value)>,
 ) {
     let Ok(message) = serde_json::from_str::<IncomingMessage>(text) else {
         tracing::debug!(target: "socai::cdp::raw", msg = text, "failed to parse CDP message");
         return;
     };
     let Some(id) = message.id else {
-        // Target-scoped events are intentionally ignored. We do not enable noisy
-        // domains, but Chrome may still emit a few lifecycle/runtime messages in
-        // response to commands.
+        if document_responses.receiver_count() > 0
+            && message.method.as_deref() == Some("Network.responseReceived")
+        {
+            if let Some(params) = message.params.filter(|p| p["type"] == "Document") {
+                // Forward only status/Retry-After, never response cookies or bodies.
+                let response = &params["response"];
+                let retry_after = response["headers"].as_object().and_then(|h| {
+                    h.iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
+                        .map(|(_, v)| v.clone())
+                });
+                let _ = document_responses.send((message.session_id, serde_json::json!({
+                    "frame_id": params["frameId"], "status": response["status"], "retry_after": retry_after
+                })));
+            }
+        }
         return;
     };
     let Some(resp) = pending.remove(&id) else {

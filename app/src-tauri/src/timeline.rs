@@ -1177,6 +1177,18 @@ fn normalize_entities(tool: &str, input: &Value, value: &Value) -> Vec<TimelineE
                 Vec::new()
             }
         }
+        "search_weixin_articles" | "read_weixin_article" => {
+            let notes =
+                socai_core::sites::post_archive::records_for_site_tool("weixin", tool, value)
+                    .into_iter()
+                    .map(|(_, record)| record)
+                    .collect::<Vec<_>>();
+            if notes.is_empty() {
+                Vec::new()
+            } else {
+                vec![entity("social_post_grid", json!({ "notes": notes }))]
+            }
+        }
         "run_site_browser_tool" => {
             let site_id = input
                 .get("site_id")

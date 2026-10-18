@@ -43,6 +43,27 @@ pub async fn run_tool_command(
     debug_snapshot: bool,
     progress: Option<ToolProgressSender>,
 ) -> anyhow::Result<Value> {
+    run_tool_command_inner(cmd, Some(page), tools, input, debug_snapshot, progress).await
+}
+
+/// Shared recording/envelope support for commands that acquire Chrome lazily.
+pub async fn run_tool_command_without_browser(
+    cmd: ToolCommand<'_>,
+    tools: &[Arc<dyn Tool>],
+    input: Value,
+    progress: Option<ToolProgressSender>,
+) -> anyhow::Result<Value> {
+    run_tool_command_inner(cmd, None, tools, input, false, progress).await
+}
+
+async fn run_tool_command_inner(
+    cmd: ToolCommand<'_>,
+    page: Option<Arc<PageSession>>,
+    tools: &[Arc<dyn Tool>],
+    input: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> anyhow::Result<Value> {
     // Run-dir label: site + command, plus the command's identifying input when
     // it has one, so runs are tellable apart at a glance
     // (…_xhs_search_咖啡, …_xhs_author_<author_id>).
@@ -77,17 +98,29 @@ pub async fn run_tool_command(
     // recorder machinery lives in the generic CDP layer; this is the only hook
     // a site command runner needs.
     let started = Instant::now();
-    let result = with_snapshot_recording(&page, ctx.output_dir(), debug_snapshot, async {
+    let operation = async {
         if let Some(hook) = cmd.before {
-            hook(page.clone()).await?;
+            hook(
+                page.clone()
+                    .ok_or_else(|| anyhow::anyhow!("page hook requires a browser session"))?,
+            )
+            .await?;
         }
         let data = call_site_tool(tools, cmd.tool_name, effective_input, &ctx).await?;
         if let Some(hook) = cmd.after {
-            hook(page.clone()).await?;
+            hook(
+                page.clone()
+                    .ok_or_else(|| anyhow::anyhow!("page hook requires a browser session"))?,
+            )
+            .await?;
         }
         Ok::<Value, anyhow::Error>(data)
-    })
-    .await;
+    };
+    let result = if let Some(page) = &page {
+        with_snapshot_recording(page, ctx.output_dir(), debug_snapshot, operation).await
+    } else {
+        operation.await
+    };
     let duration_ms = started.elapsed().as_millis() as u64;
     let data = match result {
         Ok(data) => {

@@ -12,6 +12,7 @@ pub mod runner;
 pub(crate) mod skill_cli;
 pub mod tiktok;
 pub mod web;
+pub mod weixin;
 pub mod x;
 pub mod xhs;
 

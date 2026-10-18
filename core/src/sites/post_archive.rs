@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use chrono::DateTime;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::agent::ToolContext;
 use crate::cdp::PageSession;
@@ -725,6 +726,7 @@ pub fn records_for_site_tool(
     result: &Value,
 ) -> Vec<(String, Value)> {
     match site_id {
+        "weixin" => weixin_records(tool_name, result),
         "linkedin" => linkedin_records(tool_name, result),
         "instagram" => instagram_records(tool_name, result),
         "dy" | "tiktok" => video_platform_records(site_id, tool_name, result),
@@ -737,6 +739,7 @@ fn is_content_tool(tool_name: &str) -> bool {
         tool_name,
         "searchResults"
             | "profilePosts"
+            | "articleDetail"
             | "postDetail"
             | "comments"
             | "videoCards"
@@ -949,6 +952,51 @@ fn comment_key(comment: &Value) -> String {
         text_at(comment, &["author"]),
         text_at(comment, &["text"])
     )
+}
+
+// Sogou cards have expiring redirect URLs, not stable article identities.
+// Archive only verified article reads; preserve search cards in the JSON artifact.
+fn weixin_records(tool_name: &str, result: &Value) -> Vec<(String, Value)> {
+    match tool_name {
+        "articleDetail" | "read_weixin_article" => weixin_record(result).into_iter().collect(),
+        "searchResults" | "search_weixin_articles" => result["results"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|card| weixin_record(&card["article"]))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn weixin_record(item: &Value) -> Option<(String, Value)> {
+    if item["ok"] == false {
+        return None;
+    }
+    let content = text_at(item, &["text"]);
+    let title = text_at(item, &["title"]);
+    let author = text_at(item, &["author"]);
+    let url = text_at(item, &["url"]);
+    let parsed = reqwest::Url::parse(&url).ok()?;
+    if content.is_empty() || title.is_empty() || parsed.host_str() != Some("mp.weixin.qq.com") {
+        return None;
+    }
+    let article_id = text_at(item, &["article_id"]);
+    let identity = if !article_id.is_empty() {
+        article_id
+    } else if parsed.path().starts_with("/s/") {
+        parsed.path().to_string()
+    } else {
+        // Signed destinations change per search. If no publisher ID is exposed,
+        // use the observed document rather than an expiring redirect token.
+        format!("{author}\n{title}\n{content}")
+    };
+    let native_id = format!("{:x}", Sha256::digest(identity.as_bytes()));
+    let mut record = base_record("weixin", &native_id, &url, title, &content);
+    insert_author(&mut record, &author, "", "");
+    insert_posted_at(&mut record, &text_at(item, &["published_at"]));
+    record.insert("level".into(), json!("deep"));
+    Some((post_note_id("weixin", &native_id), Value::Object(record)))
 }
 
 fn linkedin_records(tool_name: &str, result: &Value) -> Vec<(String, Value)> {
@@ -1562,6 +1610,7 @@ fn post_note_id(site_id: &str, native_id: &str) -> String {
 
 fn site_name(site_id: &str) -> &'static str {
     match site_id {
+        "weixin" => "WeChat",
         "linkedin" => "LinkedIn",
         "instagram" => "Instagram",
         "dy" => "Douyin",

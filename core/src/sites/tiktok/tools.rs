@@ -75,6 +75,7 @@ pub fn tiktok_agent_instructions(extra: &str) -> String {
 }
 
 pub static TIKTOK_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
+    runtime_command: None,
     id: "tiktok",
     about: "TikTok (tiktok.com)",
     home_url: "",

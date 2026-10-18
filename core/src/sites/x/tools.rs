@@ -77,6 +77,7 @@ pub fn x_wait_for_login_tool(page: Arc<PageSession>) -> Arc<dyn Tool> {
 }
 
 pub static X_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
+    runtime_command: None,
     id: SITE_ID,
     about: "X (x.com)",
     home_url: "",

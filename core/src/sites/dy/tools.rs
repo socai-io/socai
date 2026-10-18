@@ -68,6 +68,7 @@ pub fn dy_agent_instructions(extra: &str) -> String {
 }
 
 pub static DY_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
+    runtime_command: None,
     id: "dy",
     about: "Douyin (douyin.com)",
     // Let Douyin tools own first navigation so they can use a much longer

@@ -809,6 +809,7 @@ const messages = {
   "platform.select": { en: "research platforms (select one or more)", zh: "研究平台（可多选，至少选择一个）" },
   "platform.auto": { en: "Auto", zh: "自动选择" },
   "platform.xhs": { en: "Xiaohongshu", zh: "小红书" },
+  "platform.weixin": { en: "WeChat Articles", zh: "微信公众号" },
   "platform.dy": { en: "Douyin", zh: "抖音" },
   "task.hero": {
     en: "what should socai research?",
