@@ -294,6 +294,7 @@ function render(): void {
           ${renderUpdateChip()}
         </div>
         <div class="topbar-controls" data-tauri-drag-region>
+          ${growthPanel.renderPromotionTrigger(authMenu.isLoggedIn())}
           ${authMenu.render(agentPanel.renderAccountConfig(), subscriptionMenu.render(authMenu.isGlobalUser()))}
           ${settingsMenu.render(state)}
         </div>
@@ -304,6 +305,7 @@ function render(): void {
         <div class="workspace-stack">
           <main class="workspace-main">${growthPanel.isOpen() ? growthPanel.renderWorkspace() : agentPanel.renderWorkspace(state)}</main>
           ${agentPanel.renderWorkspaceOverlays()}
+          ${growthPanel.renderOverlays()}
         </div>
       </div>
     </div>
@@ -339,13 +341,6 @@ function render(): void {
     state,
     () => {
       authMenu.closePopover();
-    },
-    async () => {
-      await Promise.all([
-        authMenu.refreshWallet(),
-        subscriptionMenu.refresh(authMenu.isLoggedIn()),
-        voiceInput.refresh(),
-      ]);
     },
   );
   agentPanel.bind(state);
