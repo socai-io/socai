@@ -6,13 +6,16 @@ The entrypoint sets the execution budget; loading a skill does not increase it.
   uncertain signals. Use verification focus only for explicit verification.
   Do not invent admission criteria or turn every unknown into a required check.
 - Collect only from the selected sources. In automatic source mode choose among
-  available platforms according to the task; do not visit every platform by
-  default. Follow cross-platform clues when allowed. Access failure is missing
+  available platforms according to the task and workflow defaults. Follow
+  cross-platform clues when allowed. Access failure is missing
   coverage, not evidence of absence or saturation.
 - Use short searches, adjacent concepts and relevant source histories. Follow
   valuable new branches instead of repeating synonyms or parked questions.
-  XHS explore, when exposed, supports up to three XHS-only branches; other
-  platforms use their own available tools. Never invent a cross-platform tool.
+  When explore_platforms is exposed, delegate independent platform research
+  together, synthesize findings, and send focused follow-up branches as useful.
+  Pass known findings and gaps; workers do not inherit the conversation.
+  XHS explore separately supports up to three XHS-only branches. Use only
+  exposed tools and stay within the selected platforms.
 - Keep research_update incremental and the exploration notebook short. Recover
   details with research_read or saved artifacts; read_saved_notes is an XHS
   helper when available. Preserve source URLs for relevant secondary leads.
@@ -23,7 +26,10 @@ The entrypoint sets the execution budget; loading a skill does not increase it.
   or ledger changes require an updated review.
 - Reconcile the ledger and saved branch notes before delivery. Preserve useful
   long-tail findings compactly; uncertainty should qualify a signal, not erase
-  it. Follow the user's requested format and the workflow's relevant outputs.
+  it. Useful incomplete findings belong in the results with uncertainty labels,
+  not hidden among coverage gaps. In deep mode,
+  publish a CSV or XLSX findings table with sources and unknowns.
+  Follow the user's requested format and the workflow's relevant outputs.
   Use actual HTTP(S) source URLs, never invented URLs or internal note: links.
   Distinguish previews, full reads, source claims and inference. Quote only
   measured reading counts, with their platform scope.

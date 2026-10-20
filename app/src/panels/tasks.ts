@@ -1,3 +1,5 @@
+import { bindWorkflows, openWorkflows, renderWorkflows, type WorkflowSkill } from "./workflows";
+import { refreshResearchBoard, bindResearchBoard } from "./research-board";
 import { getLanguage } from "../lib/i18n";
 //! Task workspace coordinator: shared state, agent configuration popover,
 //! task event intake, and bindings. The sidebar (history list) + delete dialog
@@ -53,6 +55,8 @@ export type AgentTaskView = AgentTaskSnapshot & {
   readingStats?: ReadingStats[];
 };
 export interface ReadingStats {
+  site?: string;
+  authors_kind?: string;
   turn_index: number;
   preview_notes: number;
   detail_notes: number;
@@ -84,8 +88,10 @@ export namespace agentPanel {
   let sourcesExpanded = false;
   const replySites = new Map<string, string[]>();
   let researchMode = false;
-  let workflow: "general" | "vc" = "general";
-  const replyWorkflows = new Map<string, "general" | "vc">();
+  let workflow = "general";
+  let customWorkflow: WorkflowSkill | undefined;
+  const replyCustomWorkflows = new Map<string, WorkflowSkill>();
+  const replyWorkflows = new Map<string, string>();
   const replyResearchModes = new Map<string, boolean>();
   let model = "";
   let modelProvider = "";
@@ -399,6 +405,8 @@ export namespace agentPanel {
   // for finished steps render their own embeds from tool_result entities, so
   // the strip only shows notes no result row has claimed yet.
   let notesPollTimer: number | null = null;
+  let statsPolling = false;
+  let lastStatsPoll = 0;
 
   function syncNotesPolling(shell: ShellState): void {
     const selected = selectedTask();
@@ -417,13 +425,27 @@ export namespace agentPanel {
       syncNotesPolling(shell);
       return;
     }
+    if (!statsPolling && Date.now() - lastStatsPoll > 6000) {
+      statsPolling = true;
+      lastStatsPoll = Date.now();
+      void invoke<ReadingStats[]>("agent_task_reading_stats", {taskId: task.task_id}).then(stats => {
+        task.readingStats = stats;
+        if (selectedTask()?.task_id === task.task_id) {
+          const board = document.querySelector<HTMLElement>("[data-research-board]");
+          if (board) refreshResearchBoard(board, task);
+        }
+      }).catch(console.error).finally(() => { statsPolling = false; });
+    }
     // Refresh the snapshot too: tokens/steps accumulate into run.json after
     // every LLM step, but no agent event carries them mid-run — this keeps the
     // state fresh so the running activity summary and eventual answer meta
     // show the current run's own figures without replacing earlier turns.
     try {
       upsertTask(await invoke<AgentTaskSnapshot>("agent_task_get", { taskId: task.task_id }));
+      if (selectedTask()?.task_id !== task.task_id) return;
       updateLiveTaskMetrics(task);
+      const board = document.querySelector<HTMLElement>("[data-research-board]");
+      if (board) refreshResearchBoard(board, task);
     } catch (e) {
       console.error("agent_task_get poll failed:", e);
     }
@@ -433,8 +455,11 @@ export namespace agentPanel {
       // the archive length, so compare content as well as count.
       if (JSON.stringify(notes) === JSON.stringify(task.notes ?? [])) return;
       task.notes = notes;
+      if (selectedTask()?.task_id !== task.task_id) return;
       setNoteRegistry(notes, task.run_dir);
       updateLiveStrip(task);
+      const board = document.querySelector<HTMLElement>("[data-research-board]");
+      if (board) refreshResearchBoard(board, task);
     } catch (e) {
       console.error("agent_task_notes poll failed:", e);
     }
@@ -463,7 +488,12 @@ export namespace agentPanel {
     if (!stream) return;
     const pinned = isPinnedToBottom(stream);
     const materials = stream.querySelector<HTMLElement>("[data-social-materials]");
-    if (materials) materials.outerHTML = renderSocialMaterials(task);
+    if (materials) {
+      const open = materials instanceof HTMLDetailsElement && materials.open;
+      materials.outerHTML = renderSocialMaterials(task, path => artifactDownloads.get(artifactDownloadKey(task.task_id, path)), artifactPreview?.taskId === task.task_id ? artifactPreview.path : null, index => intermediateOpen.get(`${task.task_id}#${index}`) ?? false);
+      const updated = stream.querySelector<HTMLDetailsElement>("details[data-social-materials]");
+      if (updated) updated.open = open;
+    }
     if (pinned) stream.scrollTop = stream.scrollHeight;
   }
 
@@ -770,7 +800,7 @@ export namespace agentPanel {
   export function renderWorkspaceOverlays(): string {
     const deleteRequest = tasks.find((task) => task.task_id === deleteRequestTaskId);
     const dialog = deleteRequest ? renderConfirmDeleteDialog(deleteRequest) : "";
-    return `<div class="workspace-overlay-root">${dialog}${renderFeishuConnector(tasks)}</div>`;
+    return `<div class="workspace-overlay-root">${dialog}${renderWorkflows(view === "compose" ? workflow : replyWorkflows.get(selectedTaskId || "") ?? selectedTask()?.custom_workflow?.id ?? selectedTask()?.workflow ?? "general")}${renderFeishuConnector(tasks)}</div>`;
   }
 
   function taskSites(taskId: string): string[] {
@@ -786,6 +816,7 @@ export namespace agentPanel {
       value: draft,
       researchMode,
       workflow,
+      customWorkflow,
       submitting: submittingTask,
       cancelling: false,
       error: submitError,
@@ -808,7 +839,8 @@ export namespace agentPanel {
       taskId,
       value: replyDraft,
       researchMode: replyResearchModes.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.research_mode ?? false,
-      workflow: replyWorkflows.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.workflow ?? "general",
+      workflow: replyWorkflows.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.custom_workflow?.id ?? tasks.find((task) => task.task_id === taskId)?.workflow ?? "general",
+      customWorkflow: replyCustomWorkflows.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.custom_workflow,
       submitting: submittingReply,
       cancelling: cancellingTaskIds.has(taskId),
       error: cancellationErrors.get(taskId) ?? replyError,
@@ -1311,25 +1343,35 @@ export namespace agentPanel {
   // starts a fresh task; a shown task takes a follow-up reply instead.
   function bindComposer(shell: ShellState): void {
     syncChromeSetupDetection(shell);
+    bindResearchBoard(selectedTask);
     const composerTask = view === "compose" ? undefined : selectedTask();
     const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     disposeComposerAutosize?.();
     disposeComposerAutosize = input ? bindTextareaAutosize(input) : undefined;
     updateComposerButton(shell);
-    document.getElementById("composer-workflow")?.addEventListener("change", (event) => {
-      const selected = (event.target as HTMLSelectElement).value === "vc" ? "vc" : "general";
-      if (composerTask) replyWorkflows.set(composerTask.task_id, selected);
-      else workflow = selected;
-    });
-    document.getElementById("composer-research")?.addEventListener("click", () => {
+    document.getElementById("composer-workflow")?.addEventListener("click", () => { openWorkflows(); shell.rerender(); });
+    bindWorkflows(() => shell.rerender(), (id, skill) => {
       if (composerTask) {
-        const current = replyResearchModes.get(composerTask.task_id) ?? composerTask.research_mode ?? false;
-        replyResearchModes.set(composerTask.task_id, !current);
-      } else {
-        researchMode = !researchMode;
-      }
-      shell.rerender();
-      document.getElementById("composer-research")?.focus();
+        replyWorkflows.set(composerTask.task_id, id);
+        if (skill) replyCustomWorkflows.set(composerTask.task_id, skill);
+        else replyCustomWorkflows.delete(composerTask.task_id);
+      } else { workflow = id; customWorkflow = skill; }
+    });
+    const depthSwitch = document.getElementById("composer-research");
+    const setDepth = (deep: boolean): void => {
+      if (composerTask) replyResearchModes.set(composerTask.task_id, deep);
+      else researchMode = deep;
+      depthSwitch?.setAttribute("aria-checked", String(deep));
+      depthSwitch?.setAttribute("title", t(deep ? "task.researchEnabledHint" : "task.researchAutoHint"));
+    };
+    depthSwitch?.addEventListener("click", (event) => {
+      const choice = (event.target as HTMLElement).closest<HTMLElement>("[data-research-depth]")?.dataset.researchDepth;
+      setDepth(choice ? choice === "deep" : depthSwitch.getAttribute("aria-checked") !== "true");
+    });
+    depthSwitch?.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      setDepth(event.key === "ArrowRight");
     });
     input?.addEventListener("input", () => {
       if (composerTask) replyDraft = input.value;
@@ -1540,7 +1582,8 @@ export namespace agentPanel {
         provider: selected?.provider || modelProvider || null,
         model: selected ? modelId(selected) : model || null,
         researchMode,
-        workflow,
+        workflow: workflow === "vc" || workflow === "general" ? workflow : "custom",
+        customWorkflow,
       });
       upsertTask(snapshot);
       selectedTaskId = snapshot.task_id;
@@ -1580,7 +1623,8 @@ export namespace agentPanel {
         message: value,
         sites: taskSites(taskId),
         researchMode: replyResearchModes.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.research_mode ?? false,
-        workflow: replyWorkflows.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.workflow ?? "general",
+        workflow: (() => { const id = replyWorkflows.get(taskId) ?? tasks.find(t => t.task_id === taskId)?.workflow ?? "general"; return id === "vc" || id === "general" ? id : "custom"; })(),
+        customWorkflow: replyCustomWorkflows.get(taskId) ?? tasks.find(t => t.task_id === taskId)?.custom_workflow,
       });
       replySites.delete(taskId);
       upsertTask(snapshot);

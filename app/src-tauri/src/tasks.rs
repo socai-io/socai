@@ -34,6 +34,15 @@ pub enum TaskWorkflow {
     #[default]
     General,
     Vc,
+    Custom,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct WorkflowSkill {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub instructions: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -49,6 +58,10 @@ pub struct AgentTaskSnapshot {
     pub(crate) research_mode: bool,
     #[serde(default)]
     pub(crate) workflow: TaskWorkflow,
+    #[serde(default)]
+    pub(crate) custom_workflow: Option<WorkflowSkill>,
+    #[serde(default)]
+    pub(crate) research_board: Option<Value>,
     pub(crate) status: String,
     pub(crate) created_at: u64,
     pub(crate) started_at: Option<u64>,
@@ -160,6 +173,7 @@ impl AgentTaskRegistry {
         sites: Vec<String>,
         research_mode: bool,
         workflow: TaskWorkflow,
+        custom_workflow: Option<WorkflowSkill>,
     ) -> AgentTaskSnapshot {
         let mut guard = self.inner.lock().await;
         guard.next_seq += 1;
@@ -173,6 +187,8 @@ impl AgentTaskRegistry {
             model,
             research_mode,
             workflow,
+            custom_workflow: if workflow == TaskWorkflow::Custom { custom_workflow } else { None },
+            research_board: None,
             status: "queued".into(),
             created_at: now_ms(),
             started_at: None,
@@ -555,6 +571,7 @@ pub(crate) fn now_ms() -> u64 {
 fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
     if let Some(run_dir) = snapshot.run_dir.as_deref() {
         snapshot.final_text = final_text_from_run_dir(run_dir);
+        snapshot.research_board = std::fs::read(PathBuf::from(run_dir).join("research-board.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
         if let Ok(text) = std::fs::read_to_string(PathBuf::from(run_dir).join("run.json")) {
             if let Ok(run) = serde_json::from_str::<Value>(&text) {
                 snapshot.run_id = run.get("id").and_then(Value::as_str).map(str::to_string);
@@ -656,6 +673,7 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
                 "sites": &task.sites,
                 "research_mode": task.research_mode,
                 "workflow": task.workflow,
+                "custom_workflow": &task.custom_workflow,
                 "provider": &task.provider,
                 "model": &task.model,
                 "status": &task.status,

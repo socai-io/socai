@@ -667,6 +667,15 @@ fn find_codex_binary() -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
+fn validate_custom_workflow(value: Option<crate::tasks::WorkflowSkill>) -> Result<Option<crate::tasks::WorkflowSkill>, String> {
+    if let Some(skill) = &value {
+        if skill.id.trim().is_empty() || skill.id.len() > 100 || skill.name.trim().is_empty() || skill.name.len() > 200 || skill.description.len() > 1000 || skill.instructions.trim().is_empty() || skill.instructions.len() > 40000 {
+            return Err("Custom workflow needs a name and instructions (up to 40 KB).".into());
+        }
+    }
+    Ok(value)
+}
+
 #[tauri::command]
 pub async fn agent_task_start(
     app: AppHandle,
@@ -680,7 +689,13 @@ pub async fn agent_task_start(
     language: Option<String>,
     research_mode: Option<bool>,
     workflow: Option<TaskWorkflow>,
+    custom_workflow: Option<crate::tasks::WorkflowSkill>,
 ) -> Result<AgentTaskSnapshot, String> {
+    let workflow = workflow.unwrap_or_default();
+    let custom_workflow = validate_custom_workflow(custom_workflow)?;
+    if workflow == TaskWorkflow::Custom && custom_workflow.is_none() {
+        return Err("Select or create a custom workflow first.".into());
+    }
     let sites = validate_task_sites(sites.unwrap_or_else(crate::tasks::default_task_sites))?;
     let task_text = task.trim().to_string();
     if task_text.is_empty() {
@@ -724,7 +739,8 @@ pub async fn agent_task_start(
             session_dir,
             sites,
             research_mode.unwrap_or(false),
-            workflow.unwrap_or_default(),
+            workflow,
+            custom_workflow,
         )
         .await;
     let task_id = snapshot.task_id.clone();
@@ -803,7 +819,9 @@ pub async fn agent_task_reply(
     language: Option<String>,
     research_mode: Option<bool>,
     workflow: Option<TaskWorkflow>,
+    custom_workflow: Option<crate::tasks::WorkflowSkill>,
 ) -> Result<AgentTaskSnapshot, String> {
+    let custom_workflow = validate_custom_workflow(custom_workflow)?;
     let message_text = message.trim().to_string();
     if message_text.is_empty() {
         return Err("message is empty".into());
@@ -815,6 +833,9 @@ pub async fn agent_task_reply(
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
     if matches!(existing.status.as_str(), "queued" | "running") {
         return Err("task is still running — wait for it to finish before replying".into());
+    }
+    if workflow.unwrap_or(existing.workflow) == TaskWorkflow::Custom && custom_workflow.is_none() && existing.custom_workflow.is_none() {
+        return Err("Select or create a custom workflow first.".into());
     }
     let sites = validate_task_sites(sites.unwrap_or_else(|| existing.sites.clone()))?;
     let Some(session_dir) = existing.session_dir.as_deref() else {
@@ -872,6 +893,8 @@ pub async fn agent_task_reply(
             snapshot.current_message = Some(message_text.clone());
             snapshot.research_mode = research_mode.unwrap_or(existing.research_mode);
             snapshot.workflow = workflow.unwrap_or(existing.workflow);
+            snapshot.custom_workflow = if snapshot.workflow == TaskWorkflow::Custom { custom_workflow.clone().or_else(|| existing.custom_workflow.clone()) } else { None };
+            snapshot.research_board = None;
         })
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
@@ -1510,12 +1533,28 @@ pub async fn agent_task_reading_stats(
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
     let dirs = crate::timeline::conversation_run_dirs(&snapshot);
     tauri::async_runtime::spawn_blocking(move || {
-        dirs.into_iter().enumerate().filter_map(|(index, (dir, _))| {
-            socai_core::sites::xhs::reading_stats::for_run(&dir).map(|stats| json!({
-                "turn_index": index, "preview_notes": stats.preview_notes,
-                "detail_notes": stats.detail_notes, "comments": stats.comments, "authors": stats.authors,
-            }))
-        }).collect()
+        let mut result = Vec::new();
+        for (index, (dir, _)) in dirs.into_iter().enumerate() {
+            if let Some(stats) = socai_core::sites::xhs::reading_stats::for_run(&dir) {
+                result.push(json!({"turn_index":index,"site":"xhs","authors_kind":"profiles","preview_notes":stats.preview_notes,"detail_notes":stats.detail_notes,"comments":stats.comments,"authors":stats.authors}));
+            }
+            let mut sites: std::collections::BTreeMap<String, (usize,usize,usize,std::collections::BTreeSet<String>)> = Default::default();
+            fn count_comments(value: &Value) -> usize {
+                value.as_array().map(|items| items.iter().map(|c| usize::from(c["text"].as_str().is_some_and(|s| !s.is_empty())) + count_comments(&c["replies"])).sum()).unwrap_or(0)
+            }
+            for note in socai_core::agent::note_store::load_notes(&dir) {
+                let site = note["site"].as_str().unwrap_or("xhs");
+                if site == "xhs" { continue; }
+                let row = sites.entry(site.to_string()).or_default();
+                if note["level"] == "deep" { row.1 += 1; } else { row.0 += 1; }
+                row.2 += count_comments(&note["comments"]);
+                if let Some(author) = note["author"]["url"].as_str().or_else(|| note["author"]["handle"].as_str()).or_else(|| note["author"]["name"].as_str()).filter(|s| !s.is_empty()) { row.3.insert(author.to_string()); }
+            }
+            for (site, (preview,detail,comments,authors)) in sites {
+                result.push(json!({"turn_index":index,"site":site,"authors_kind":"observed","preview_notes":preview,"detail_notes":detail,"comments":comments,"authors":authors.len()}));
+            }
+        }
+        result
     }).await.map_err(|e| e.to_string())
 }
 
@@ -3394,6 +3433,22 @@ async fn run_agent_task_on_session_page(
                 tools.extend(factory(task, language));
             }
         }
+        let workflow_instructions = if workflow == TaskWorkflow::Vc {
+            include_str!("../../../core/src/agent/skills/vc-research/SKILL.md").to_string()
+        } else if workflow == TaskWorkflow::Custom {
+            selection.as_ref().and_then(|s| s.custom_workflow.as_ref()).map(|s| s.instructions.clone()).unwrap_or_default()
+        } else { String::new() };
+        let board = Arc::new(socai_core::agent::research_board::ResearchBoardTool::default());
+        tools.push(board.clone());
+        tools.push(Arc::new(socai_core::sites::explore::ExplorePlatformsTool {
+            backend: llm_provider.clone(),
+            page: browser.as_ref().map(|(_, _, page)| page.clone()),
+            sites: available_sites.clone(),
+            language: language.map(str::to_string),
+            workflow: workflow_instructions.clone(),
+            board,
+            deep: research_mode,
+        }));
         tools.extend(desktop_agent_tools());
         tools.push(Arc::new(PublishArtifactTool::new(
             session_dir.as_deref().map(PathBuf::from),
@@ -3420,7 +3475,7 @@ async fn run_agent_task_on_session_page(
                  Available platforms: {}. Choose based on the actual question; use one or several \
                  only when the research needs them. Begin on the blank tab, navigate to the chosen \
                  site's home URL with navigate_site, read the returned skill and use its tools. \
-                 For GitHub, call github_request directly without navigation. For podcasts, call search_podcast_shows or search_podcast_episodes directly without navigation. For WeChat, call search_weixin_articles directly; only article reads need Chrome. Do not visit every site by default. Explain any access failure or coverage gap. \
+                 For GitHub, call github_request directly without navigation. For podcasts, call search_podcast_shows or search_podcast_episodes directly without navigation. For WeChat, call search_weixin_articles directly; only article reads need Chrome. For the VC workflow, unspecified or broad sourcing defaults to xhs, x, weixin, podcast and github; other workflows choose only useful sources. Use explore_platforms early for independent multi-platform work, synthesize findings, then delegate focused follow-up rounds as needed. Explain any access failure or coverage gap. \
                  Cite evidence from the sites actually used; do not claim coverage of unused sites.",
                 available_sites.iter().filter_map(|id| find_native_site_adapter(id))
                     .map(|site| format!("{} ({})", site.id, site.home_url))
@@ -3455,7 +3510,7 @@ async fn run_agent_task_on_session_page(
         let config = AgentRunConfig {
             max_steps: if research_mode { 120 } else { socai_core::agent::r#loop::DEFAULT_MAX_STEPS },
             extra_instructions: format!(
-                "{}{}{}{}{}{}\n\n{}\n\n{}",
+                "{}{}{}{}{}{}\n\n{}\n\n{}\n\n{}\n\nResearch workbench: use update_research_board early to state platform focus and a short plan; add useful leads incrementally as found, including incomplete signals, and update next_steps when direction changes. This surface shows concise findings and actions, never private reasoning. Update after each useful discovery batch, without waiting for final synthesis. Include every distinct useful team/product/direction as a node even when no relationship is known. After each platform round, reconcile duplicate entities across platforms and add concrete sourced founder, team, product, dependency or collaboration relations. Never invent an edge merely to fill the graph. Keep sourced relationships distinct from hypotheses. For deep research, also save and publish a CSV or XLSX findings table with names, platforms, signals, source URLs, uncertainties and next steps; produce it once at delivery, even if only a few useful leads are available. Never invent rows to fill it.\n\n{}",
                 instructions,
                 TAURI_SITE_ROUTING_RULES,
                 TAURI_CITATION_RULES,
@@ -3463,7 +3518,9 @@ async fn run_agent_task_on_session_page(
                 source_instructions,
                 instagram_login_note,
                 http_instructions,
-                depth_instructions
+                depth_instructions,
+                workflow_instructions,
+                socai_core::agent::research_board::RELATION_GUIDANCE
             ),
             enabled_sites: available_sites,
             initial_skills,
@@ -3478,6 +3535,9 @@ async fn run_agent_task_on_session_page(
         let outcome = run_agent_with_tools(task, llm_provider, tools, config, tx).await;
         let _ = pump.await;
         let outcome = outcome?;
+        if research_mode {
+            crate::artifact_tool::ensure_research_table(&outcome.run_dir)?;
+        }
         if let Some(error) = outcome.error {
             // The run ended on a terminal error (unretryable API failure,
             // repeated truncation, or a failed forced summary); run.json and

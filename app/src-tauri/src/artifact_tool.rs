@@ -857,3 +857,35 @@ fn open_read_only_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     }
     options.open(path)
 }
+
+/// Deep research always leaves a tabular handoff, including early signals.
+/// Prefer a table the agent already published; otherwise export the workbench.
+pub(crate) fn ensure_research_table(run_dir: &Path) -> anyhow::Result<()> {
+    let outputs = run_dir.join("outputs");
+    if outputs.is_symlink() { anyhow::bail!("outputs must not be a symlink"); }
+    if std::fs::read_dir(&outputs).ok().into_iter().flatten().filter_map(Result::ok).any(|e| {
+        e.path().extension().and_then(|s| s.to_str()).is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "csv" | "xlsx"))
+    }) { return Ok(()); }
+    let board: Value = std::fs::read(run_dir.join("research-board.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
+    let cell = |value: &str| {
+        let safe = if value.trim_start().starts_with(['=', '+', '-', '@']) { format!("'{value}") } else { value.to_string() };
+        format!("\"{}\"", safe.replace('"', "\"\""))
+    };
+    let mut csv = String::from("\u{feff}名称,平台,信号或内容,分类,未知与限制,来源链接,下一步\r\n");
+    let next = board["next_steps"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("；")).unwrap_or_default();
+    if let Some(leads) = board["leads"].as_array().filter(|a| !a.is_empty()) {
+        for row in leads {
+            let values = [row["name"].as_str().unwrap_or(""), row["platform"].as_str().unwrap_or(""), row["signal"].as_str().unwrap_or(""), row["stage"].as_str().unwrap_or(""), row["uncertainty"].as_str().unwrap_or(""), row["url"].as_str().unwrap_or(""), &next];
+            csv.push_str(&values.into_iter().map(cell).collect::<Vec<_>>().join(",")); csv.push_str("\r\n");
+        }
+    } else {
+        for row in socai_core::agent::note_store::load_notes(run_dir) {
+            let values = [row["title"].as_str().unwrap_or(""), row["site"].as_str().unwrap_or(""), row["excerpt"].as_str().unwrap_or(""), "来源记录", "尚未整理为候选线索；请结合研究报告阅读", row["url"].as_str().unwrap_or(""), ""];
+            csv.push_str(&values.into_iter().map(cell).collect::<Vec<_>>().join(",")); csv.push_str("\r\n");
+        }
+    }
+    std::fs::create_dir_all(&outputs)?;
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(outputs.join("research-findings.csv"))?;
+    file.write_all(csv.as_bytes())?;
+    Ok(())
+}

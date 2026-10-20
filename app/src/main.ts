@@ -64,7 +64,9 @@ export interface AgentTaskSnapshot {
   provider: string | null;
   model: string | null;
   research_mode?: boolean;
-  workflow?: "general" | "vc";
+  workflow?: "general" | "vc" | "custom";
+  custom_workflow?: import("./panels/workflows").WorkflowSkill | null;
+  research_board?: import("./panels/research-board").ResearchBoard | null;
   status: AgentTaskStatus;
   created_at: number;
   started_at: number | null;

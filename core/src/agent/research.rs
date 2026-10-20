@@ -426,6 +426,7 @@ impl AgentExtension for ResearchExtension {
                     | "author_scan"
                     | "get_notes"
                     | "explore"
+                    | "explore_platforms"
                     | "run_site_browser_tool"
                     | "github_request"
                     | "read_weixin_article"

@@ -15,9 +15,7 @@ pub struct ReadingStats {
 
 pub fn for_run(run_dir: &Path) -> Option<ReadingStats> {
     let run: Value = serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).ok()?).ok()?;
-    if matches!(run["status"].as_str(), Some("running" | "queued")) {
-        return None;
-    }
+    let running = matches!(run["status"].as_str(), Some("running" | "queued"));
     let stamp = |name: &str| {
         std::fs::metadata(run_dir.join(name))
             .ok()
@@ -30,7 +28,7 @@ pub fn for_run(run_dir: &Path) -> Option<ReadingStats> {
     let cache_path = run_dir.join("reading-stats.json");
     if let Ok(bytes) = std::fs::read(&cache_path) {
         if let Ok(cache) = serde_json::from_slice::<Value>(&bytes) {
-            if cache["signature"].as_str() == Some(&signature) {
+            if !running && cache["signature"].as_str() == Some(&signature) {
                 return serde_json::from_value(cache["stats"].clone()).ok();
             }
         }

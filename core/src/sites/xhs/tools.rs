@@ -223,7 +223,7 @@ fn add_research_readers(
     }
 }
 
-pub(super) fn exploration_tools(
+pub(crate) fn exploration_tools(
     page: Arc<PageSession>,
     backend: Arc<dyn LlmProvider>,
     history: Arc<XhsHistoryStore>,

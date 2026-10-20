@@ -21,14 +21,17 @@ use crate::sites::skill_cli::run_skill_command;
 const SITE: &str = "weixin";
 
 pub fn weixin_tools(page: Arc<PageSession>) -> Vec<Arc<dyn Tool>> {
+    let read_lock = Arc::new(tokio::sync::Mutex::new(()));
     vec![
         Arc::new(WeixinTool {
+            read_lock: read_lock.clone(),
             page: Some(page.clone()),
             runtime: None,
             debug_snapshot: false,
             read: false,
         }),
         Arc::new(WeixinTool {
+            read_lock,
             page: Some(page),
             runtime: None,
             debug_snapshot: false,
@@ -165,6 +168,7 @@ pub static WEIXIN_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
 };
 
 struct WeixinTool {
+    read_lock: Arc<tokio::sync::Mutex<()>>,
     page: Option<Arc<PageSession>>,
     runtime: Option<SocaiRuntime>,
     debug_snapshot: bool,
@@ -184,7 +188,7 @@ impl Tool for WeixinTool {
         if self.read {
             "Read a WeChat Official Account article in Chrome from an HTTPS Sogou search-result link or mp.weixin.qq.com/s URL. Returns full rendered article text, publisher and source URL; reports access failures. Never fetches article HTML over HTTP."
         } else {
-            "Search WeChat Official Account articles through Sogou over HTTP without opening a search tab. Returns titles, publishers, snippets and links. Set read=true to also read full article text in fresh Chrome tabs; otherwise use read_weixin_article on selected links. Result links can expire; read them promptly."
+            "Search WeChat Official Account articles through Sogou over HTTP without opening a search tab. Returns titles, publishers, snippets and links. Set read=true to also read full article text in the shared WeChat Chrome tab; otherwise use read_weixin_article on selected links. Result links can expire; read them promptly."
         }
     }
     fn input_schema(&self) -> Value {
@@ -364,6 +368,8 @@ async fn search(
 
 impl WeixinTool {
     async fn read_article(&self, url: &str, wait: u64, ctx: &ToolContext) -> anyhow::Result<Value> {
+        // Batched model calls must not navigate the same tab simultaneously.
+        let _guard = self.read_lock.lock().await;
         let page = if let Some(page) = &self.page {
             page.clone()
         } else {
@@ -396,6 +402,7 @@ fn run_runtime_command(
     Box::pin(async move {
         let read = command == "read";
         let tool: Arc<dyn Tool> = Arc::new(WeixinTool {
+            read_lock: Arc::new(tokio::sync::Mutex::new(())),
             page: None,
             runtime: Some(runtime),
             debug_snapshot: debug,
@@ -429,10 +436,8 @@ async fn read_article(
     ctx: &ToolContext,
 ) -> anyhow::Result<Value> {
     validate_article_url(url)?;
-    let page = parent.create_sibling("about:blank").await?;
-    if let Some(recorder) = parent.recorder() {
-        page.set_recorder(recorder);
-    }
+    // The caller owns a platform-scoped tab; reuse it across article reads.
+    let page = parent;
     let outcome = async {
         let (session_id, mut responses, frame_id) = page.document_responses().await?;
         let session = search::session_for(url);
@@ -485,6 +490,5 @@ async fn read_article(
         }
     }
     .await;
-    let _ = page.close().await;
     outcome
 }

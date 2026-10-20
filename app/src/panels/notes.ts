@@ -7,7 +7,7 @@
 //! the Tauri asset protocol (convertFileSrc) — images/video play locally.
 
 import { githubNote, githubCard, githubBody, updateGithubPreview, onGithubPreviewUpdate } from "./github-preview";
-import { platformLabel } from "../lib/platforms";
+import { platformIcon, platformLabel } from "../lib/platforms";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { esc } from "../lib/html";
 import { getLanguage, getLocale, t } from "../lib/i18n";
@@ -222,13 +222,6 @@ const IC = {
   chevR: () => svg(`<path d="M9.5 6 15 12l-5.5 6" />`, 1.9),
   close: () => svg(`<path d="M6 6l12 12M18 6 6 18" />`, 1.8),
 };
-function kindIcon(note: NoteData): string {
-  const cover = coverOf(note);
-  if (cover.kind === "video") return IC.play();
-  if ((note.media || []).length > 1) return IC.stack();
-  return "";
-}
-
 // ── media frame ─────────────────────────────────────────────────────
 // Cards/thumbs/dots: universal 3:4 frame — images fill (cover), a 9:16 video
 // is pillarboxed inside. `gallery` is full-bleed: the gallery frame adopts the
@@ -450,6 +443,7 @@ function coverInner(note: NoteData, idx: number): string {
   return mediaFrame(note, media[i], "cover") + nav;
 }
 function renderCard(note: NoteData, density: "rich" | "compact" = "rich"): string {
+  if (note.site === "x") return `<article class="x-feed-card" data-note-open="${esc(note.note_id)}" role="button" tabindex="0"><header class="x-post-author">${avatar(note, 'note-card__avatar')}<div><strong>${esc(note.author?.name || 'X')}</strong><span>${esc(note.author?.handle ? `@${note.author.handle.replace(/^@/, '')}` : '')}</span></div><span class="x-post-brand">𝕏</span></header><p class="x-feed-text">${esc(note.content || note.excerpt || note.title || '')}</p>${note.media?.length ? `<div class="x-feed-media">${mediaFrame(note, coverOf(note), "cover")}</div>` : ''}<div class="x-post-stats">${statsRow(note)}</div></article>`;
   if (note.site === "github") return githubCard(note);
   if (note.site === "weixin" || note.site === "podcast") return `<div class="note-article-card${note.site === 'podcast' ? ' note-article-card--podcast' : ''}" data-note-open="${esc(note.note_id)}" role="button" tabindex="0">
     <div class="note-article-card__author">${avatar(note)}<span>${esc(note.author?.name || platformName(note))}</span></div>
@@ -491,15 +485,35 @@ export function renderNoteCards(refs: string[], density: "rich" | "compact" = "r
 }
 
 // ── answer citations (pills + hover preview) ────────────────────────
+export function citationLabel(label: string): string {
+  const width = (char: string): number => /[^\u0000-\u00ff]/u.test(char) ? 2 : 1;
+  if (Array.from(label).reduce((n, c) => n + width(c), 0) <= 40) return label;
+  let result = "", used = 0;
+  for (const char of label) { if (used + width(char) > 38) break; result += char; used += width(char); }
+  return result + "…";
+}
 function pillHTML(id: string, label: string, note: NoteData): string {
   const cover = coverOf(note);
   const icon = note.site === "weixin" || note.site === "podcast" || note.site === "github" ? avatar(note, "note-cite__avatar") : mediaFrame(note, cover, "dot");
   return (
     `<span class="note-cite-wrap" data-note-cite="${esc(id)}">` +
     `<span class="note-cite" data-note-open="${esc(id)}" role="button" tabindex="0">` +
-    `<span class="note-cite__dot">${icon}</span>${esc(label)}` +
-    `<span class="note-cite__kind">${kindIcon(note)}</span></span></span>`
+    `<span class="note-cite__dot">${icon}</span>${esc(citationLabel(label))}` +
+    `<span class="note-cite__kind">${platformIcon(note.site || "xhs")}</span></span></span>`
   );
+}
+
+/** Use the same citation interactions for live findings, including unread sources. */
+export function renderLeadCitation(url: string, label: string, site: string): string {
+  let parsed: URL;
+  try { parsed = new URL(url); if (!['http:', 'https:'].includes(parsed.protocol)) return esc(label); } catch { return esc(label); }
+  let note = Object.values(REGISTRY).find(n => citationUrlKey(n.url) === citationUrlKey(url));
+  if (!note && site === 'x') { const id = parsed.pathname.match(/status\/(\d+)/)?.[1]; if (id) note = REGISTRY[`x:${id}`]; }
+  if (!note) {
+    note = githubNote(url) ?? {note_id: `lead:${url}`, site, url, title: label, content: getLanguage() === 'zh' ? '尚未保存原文内容。' : 'Source content has not been saved.'};
+    REGISTRY[note.note_id] = note;
+  }
+  return `<span class="note-cite-wrap research-lead-cite" data-note-cite="${esc(note.note_id)}"><button class="research-source" data-note-open="${esc(note.note_id)}">${platformIcon(site)}<strong>${esc(citationLabel(label))}</strong></button></span>`;
 }
 
 /** Ignore only fragments; signed query parameters remain part of the match. */
@@ -547,6 +561,18 @@ export function renderNoteAnswer(src: string): string {
     // Retain Instagram's existing shortcode fallback for different share URLs.
     if (!key) { a.textContent = href; return; }
     const url = new URL(href);
+    if (["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(url.hostname)) {
+      const match = url.pathname.match(/^\/(?:[A-Za-z0-9_]+|i\/web)\/status\/(\d+)(?:\/|$)/);
+      if (match) {
+        const id = `x:${match[1]}`;
+        note = resolveNote(id) ?? note;
+        if (!note) {
+          note = { note_id: id, site: "x", url: href, title: a.textContent || "X", media: [],
+            content: getLanguage() === "zh" ? "此链接尚未读取，暂无帖子内容预览。可打开原文查看。" : "This link has not been read. Open the source to view the post." };
+          REGISTRY[id] = note;
+        }
+      }
+    }
     const github = githubNote(href, note);
     if (github) {
       note = github;
@@ -775,10 +801,18 @@ function viewPanel(note: NoteData): string {
 // social-post modal. The top-right corner instead opens the original post —
 // only a note with no archived url keeps a close glyph so the corner isn't dead.
 function viewerHTML(note: NoteData): string {
-  const externalLabel = note.site === "github" ? (getLanguage() === "zh" ? "在 GitHub 打开" : "Open on GitHub") : note.site === "podcast" ? t("podcast.openBidclub") : t("note.openExternal");
+  const externalLabel = getLanguage() === "zh" ? `在 ${platformLabel(note.site || "xhs")} 打开` : `Open on ${platformLabel(note.site || "xhs")}`;
   const corner = note.url
-    ? `<button type="button" class="note-viewer-corner" data-note-external="${esc(note.url)}" title="${esc(externalLabel)}" aria-label="${esc(externalLabel)}">${IC.external()}</button>`
+    ? `<button type="button" class="note-viewer-corner" data-note-external="${esc(note.url)}" title="${esc(externalLabel)}" aria-label="${esc(externalLabel)}">${platformIcon(note.site || "xhs")}${IC.external()}</button>`
     : `<button type="button" class="note-viewer-corner" data-note-close aria-label="close">${IC.close()}</button>`;
+  if (note.site === "x") return `<div class="note-viewer-backdrop" data-note-close>
+    <article class="note-viewer-panel note-viewer-panel--x" role="dialog" aria-label="${esc(note.title || 'X')}" data-note-stop>
+      ${corner}<header class="x-post-author">${avatar(note, 'note-view__avatar')}<div><strong>${esc(note.author?.name || 'X')}</strong>${note.author?.handle ? `<span>@${esc(note.author.handle.replace(/^@/, ''))}</span>` : ''}</div><span class="x-post-brand">𝕏</span></header>
+      <div class="x-post-scroll"><p class="x-post-text">${esc(note.content || note.excerpt || note.title || '')}</p>
+      ${(note.media?.length ?? 0) > 0 ? `<div class="x-post-media note-gallery" data-gallery data-idx="0" data-note="${esc(note.note_id)}"><div class="note-gallery__stage">${galleryStage(note, 0)}</div>${galleryThumbs(note, 0)}</div>` : ''}
+      <p class="x-post-date t-small">${esc(fmtDate(note.posted_at))}</p><div class="x-post-stats">${statsRow(note)}</div>
+      ${note.comments?.length ? `<section class="x-post-replies">${note.comments.map(c => commentHTML(c)).join('')}</section>` : ''}</div>
+    </article></div>`;
   if (note.site === "github") return `<div class="note-viewer-backdrop" data-note-close>
     <div class="note-viewer-panel note-viewer-panel--article" role="dialog" aria-label="${esc(note.title || 'GitHub')}" data-note-stop data-note-article="${esc(note.note_id)}">
       ${corner}<div class="note-view__author">${avatar(note, 'note-view__avatar')}<span class="note-view__author-name">${esc(note.author?.name || 'GitHub')}</span></div>
@@ -886,8 +920,14 @@ function stopCoverPlayback(card: HTMLElement): void {
     video.remove();
   });
 }
+let activeCiteWrap: HTMLElement | null = null;
+function hideCitePreview(): void {
+  document.querySelectorAll('.note-cite-pop').forEach(pop => pop.remove());
+  activeCiteWrap = null;
+}
 function showCitePreview(wrap: HTMLElement): void {
-  if (wrap.querySelector(".note-cite-pop")) return;
+  if (activeCiteWrap === wrap && document.querySelector('.note-cite-pop')) return;
+  hideCitePreview();
   const note = resolveNote(wrap.getAttribute("data-note-cite") || "");
   if (!note) return;
   const r = wrap.getBoundingClientRect();
@@ -903,7 +943,8 @@ function showCitePreview(wrap: HTMLElement): void {
   pop.style.top = `${top}px`;
   pop.style.transform = above ? "translate(-50%, -100%)" : "translate(-50%, 0)";
   pop.innerHTML = renderCard(note, "rich");
-  wrap.appendChild(pop);
+  document.body.appendChild(pop);
+  activeCiteWrap = wrap;
   const card = pop.querySelector<HTMLElement>(".note-card");
   if (card) startCoverPlayback(card);
 }
@@ -1064,6 +1105,8 @@ export function bindNoteInteractions(): void {
     true,
   );
 
+  document.addEventListener("scroll", hideCitePreview, true);
+  window.addEventListener("resize", hideCitePreview);
   // citation hover preview — the same rich card the search strips render
   // (position:fixed popover so it escapes overflow). A downloaded video plays
   // as soon as the card is shown.
@@ -1086,7 +1129,7 @@ export function bindNoteInteractions(): void {
       // the popover itself) — only remove once the pointer truly leaves the wrap.
       const to = e.relatedTarget as Node | null;
       if (to && wrap.contains(to)) return;
-      wrap.querySelector(".note-cite-pop")?.remove();
+      if (activeCiteWrap === wrap) hideCitePreview();
     },
     true,
   );

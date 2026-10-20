@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod explore;
 pub mod browser_script;
 pub mod dy;
 pub mod github;

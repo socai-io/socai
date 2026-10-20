@@ -280,7 +280,8 @@ export function artifactFileIcon(name: string): string {
   const extensionIndex = name.lastIndexOf(".");
   const extension = extensionIndex > 0 ? name.slice(extensionIndex + 1).toLowerCase() : "";
   const label = artifactIconLabels[extension] ?? "FILE";
-  return `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.5h9l5 5v14H5z"></path><path d="M14 2.5v5h5"></path><text x="12" y="17.5" fill="currentColor" stroke="none" text-anchor="middle" font-family="ui-monospace, monospace" font-size="5.2" font-weight="700">${label}</text></svg>`;
+  const color = ({CSV:"#56816a", XLS:"#56816a", MD:"#93745d", DOC:"#607d9f", PDF:"#a46d6a", PPT:"#b08061", IMG:"#8b79a0", ZIP:"#9b8b5d"} as Record<string,string>)[label] ?? "#77848a";
+  return `<svg style="color:${color}" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.5h9l5 5v14H5z"></path><path d="M14 2.5v5h5"></path><text x="12" y="17.5" fill="currentColor" stroke="none" text-anchor="middle" font-family="ui-monospace, monospace" font-size="5.2" font-weight="700">${label}</text></svg>`;
 }
 
 function moreIcon(): string {

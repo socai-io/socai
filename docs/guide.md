@@ -134,7 +134,7 @@ not a security sandbox for the agent's local environment tools.
 
 ### Workflow and research depth
 
-The composer has independent **General / VC research**, **Light / Deep research**
+The composer has independent **General / VC research**, **Light / Deep research** sliding switch
 and source controls. New tasks start in light mode. VC research defaults to
 opportunity discovery: useful teams, projects, relationships and uncertain
 signals with source links. Meeting preparation, diligence and tracking suggestions
@@ -148,13 +148,59 @@ not quotas or guarantees of candidate count. Loading a skill does not raise the
 budget. Workflow, depth and selected sources persist with each conversation and
 can be changed before a follow-up. Existing tasks default to General and Light.
 
-VC works with Auto, one platform, or multiple selected platforms, including the
-existing WeChat articles, X, podcasts and GitHub sources. Auto chooses useful
-available platforms; it does not visit every platform. Explicit selections limit
-new collection to those platforms. The parallel `explore` tool remains specific
-to Xiaohongshu; other sources use their existing tools. An unavailable source must
-be disclosed, and uncertain leads are retained with labels rather than silently
-excluded. Choosing deep research does not require diligence on every candidate.
+VC works with Auto, one platform, or multiple selected platforms. For broad
+sourcing with Auto, it defaults to Xiaohongshu, X, WeChat public articles,
+podcasts and GitHub. Explicit selections take precedence. The VC workflow first
+calibrates how familiar the direction is to an experienced investor: popular
+projects are brief context/comparables, while recommendations emphasize
+substantive, less-discussed signals.
+
+`explore_platforms` runs up to five platform workers concurrently, one per
+platform, using separate browser tabs where needed and sharing saved evidence
+and usage accounting. The parent synthesizes their findings and can delegate
+another focused round with new leads and gaps. Workers cannot recursively spawn
+workers. Light/deep workers allow up to 8/18 tool rounds plus a final summary;
+these auxiliary calls add to model usage, independently of the parent's action
+ceiling. The existing `explore` tool remains available for XHS-only branches.
+Unavailable sources and incomplete workers are disclosed. Choosing deep research
+does not require diligence on every candidate.
+
+X post links open the shared preview using archived text, authors, timestamps,
+images and video covers. Twitter/X URL aliases and share parameters match by
+post ID. Unread links show an explicit unavailable-content notice and a link to
+the original; opening a preview does not fabricate or silently fetch evidence.
+
+The platform picker, workflow button and depth switch share one control row.
+The workflow button opens an icon-card library. **Custom workflow** lets you
+write instructions or import a Markdown skill (up to 40 KB), add a name and
+short description, then save and select it. Custom workflows are stored on the
+current device; each submitted task keeps a copy of its selected instructions.
+Editing a library entry does not rewrite a completed task. Workflow instructions
+are guidance for research, not an additional source permission or execution budget.
+
+The live **Research workbench** sits below execution progress, which is expanded
+while running. It combines per-platform reading counts, focus and observed operations, a
+filterable lead table, a sourced relationship graph (dashed for hypotheses),
+and next steps while running. The graph stays above the table and includes
+isolated leads; platform colors are muted. Lead titles open the shared hover
+preview and detail overlay. The table follows new rows until the user scrolls
+up. The model incrementally calls `update_research_board`; platform
+workers share the same board but only update their assigned platform and leads.
+Operation traces come from executed tools. Saved-source counts are archive
+counts, not a completeness score. XHS author counts measure profile reads; other
+platforms currently count distinct authors in saved sources, labelled separately.
+WeChat article reads reuse the platform tab sequentially rather than opening
+and closing a tab per article. Raw execution details remain expandable, with
+step/time/cost status underneath. Board data is persisted in `research-board.json`
+and survives reopening a task.
+
+Deep research normally publishes a CSV or XLSX findings table. If no table was
+published, the desktop exports the board to `outputs/research-findings.csv`;
+if no leads were structured, it exports saved sources explicitly labelled as
+source records. No candidate rows are fabricated. The VC workflow emphasizes
+new trends and early signals in the main findings and keeps popular background
+brief; unknown details are qualifications, not reasons to hide useful leads in
+coverage gaps.
 
 ### Feishu export
 

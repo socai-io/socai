@@ -730,6 +730,7 @@ pub fn records_for_site_tool(
 ) -> Vec<(String, Value)> {
     match site_id {
         "github" => super::github::preview::records(result),
+        "x" => x_records(tool_name, result),
         "podcast" => podcast_records(tool_name, result),
         "weixin" => weixin_records(tool_name, result),
         "linkedin" => linkedin_records(tool_name, result),
@@ -737,6 +738,43 @@ pub fn records_for_site_tool(
         "dy" | "tiktok" => video_platform_records(site_id, tool_name, result),
         _ => Vec::new(),
     }
+}
+
+// X uses the same source contract for visible search cards and post details.
+fn x_records(tool_name: &str, result: &Value) -> Vec<(String, Value)> {
+    if !matches!(tool_name, "searchResults" | "searchMedia" | "profilePosts" | "feedPosts" | "postDetail") {
+        return Vec::new();
+    }
+    let items: Vec<&Value> = if let Some(items) = result.as_array() {
+        items.iter().collect()
+    } else if let Some(items) = result.get("items").and_then(Value::as_array) {
+        items.iter().collect()
+    } else { vec![result] };
+    items.into_iter().filter_map(|item| {
+        let item = item.get("detail").filter(|v| v.is_object()).unwrap_or(item);
+        let id = text_at(item, &["id"]);
+        let url = text_at(item, &["url"]);
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) || item.get("ok").and_then(Value::as_bool) == Some(false) { return None; }
+        let content = text_at(item, &["text"]);
+        let author = &item["author"];
+        let name = text_at(author, &["display_name", "username"]);
+        let mut record = base_record("x", &id, &url, title_from(&content, &name), &content);
+        insert_author(&mut record, &name, &text_at(author, &["username"]), &text_at(author, &["url"]));
+        insert_posted_at(&mut record, &text_at(item, &["published_at"]));
+        let metrics = &item["metrics"];
+        insert_stats(&mut record, parse_metric(&text_at(metrics, &["likes"])), parse_metric(&text_at(metrics, &["bookmarks"])), parse_metric(&text_at(metrics, &["replies"])), parse_metric(&text_at(metrics, &["reposts"])));
+        let media: Vec<Value> = item["media"].as_array().into_iter().flatten().filter_map(|m| {
+            let src = text_at(m, &["url"]);
+            let poster = text_at(m, &["poster_url"]);
+            // Browser blob URLs are not portable to the desktop viewer.
+            if m["type"] == "image" && is_remote_url(&src) { Some(json!({"kind":"image","src":src,"source_url":src})) }
+            else if m["type"] == "video" && is_remote_url(&poster) { Some(json!({"kind":"image","src":poster,"source_url":poster})) }
+            else { None }
+        }).collect();
+        record.insert("media".into(), json!(media));
+        if tool_name == "postDetail" { record.insert("level".into(), json!("deep")); }
+        Some((post_note_id("x", &id), Value::Object(record)))
+    }).collect()
 }
 
 fn is_content_tool(tool_name: &str) -> bool {
@@ -1686,6 +1724,7 @@ fn note_identity_from_url(site_id: &str, raw_url: &str) -> Option<(String, Strin
     let parsed = reqwest::Url::parse(raw_url).ok()?;
     let path = parsed.path();
     let native_id = match site_id {
+        "x" => path.split("/status/").nth(1).and_then(|rest| rest.split('/').next()),
         "linkedin" => path
             .split("urn:li:activity:")
             .nth(1)
@@ -1725,6 +1764,7 @@ fn post_note_id(site_id: &str, native_id: &str) -> String {
 
 fn site_name(site_id: &str) -> &'static str {
     match site_id {
+        "x" => "X",
         "podcast" => "Podcasts",
         "weixin" => "WeChat",
         "linkedin" => "LinkedIn",

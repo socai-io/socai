@@ -16,6 +16,7 @@ pub mod note_store;
 pub mod provider;
 pub mod report;
 pub mod research;
+pub mod research_board;
 pub mod run_logging;
 pub mod run_state;
 pub mod signature;

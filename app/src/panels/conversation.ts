@@ -26,10 +26,10 @@ import {
   formatTaskCommandErrorPresentation,
   formatTaskInterruptionMessage,
   formatTaskTimestamp,
-  formatTokenUsage,
   isTaskApiError,
   t,
   taskStatusLabel,
+  getLanguage,
 } from "../lib/i18n";
 import { sendShortcutLabel } from "../lib/shortcuts";
 import type { ComposerVoiceState } from "../lib/voice-input";
@@ -38,6 +38,8 @@ import chromeRemoteDebuggingImage from "../assets/chrome-remote-debugging.png";
 import chromeAllowDialogImage from "../assets/chrome-allow-dialog.png";
 import { mergeNoteRegistry, noteDataForRef, renderNoteAnswer, renderNoteCards } from "./notes";
 import { artifactFileIcon, formatArtifactSize, renderArtifactActionMenu } from "./artifact_preview";
+import { workflowIcon, workflowLabel } from "./workflows";
+import { renderResearchBoard } from "./research-board";
 import type { AgentTaskView } from "./tasks";
 
 export type ChromeSetupState = "waiting" | "ready" | "permission_required";
@@ -50,7 +52,8 @@ export interface ComposerProps {
   taskId?: string;
   value: string;
   researchMode: boolean;
-  workflow: "general" | "vc";
+  workflow: string;
+  customWorkflow?: import("./workflows").WorkflowSkill | null;
   submitting: boolean;
   /** True while cancellation for this task is being committed. */
   cancelling: boolean;
@@ -287,10 +290,9 @@ function renderThread(
       isActivityOpen,
       artifactDownloadState,
       artifactPreviewPath,
-      isIntermediateOpen,
     ))
     .join("");
-  return `${turns}${renderSocialMaterials(task)}`;
+  return `${turns}${renderSocialMaterials(task, artifactDownloadState, artifactPreviewPath, isIntermediateOpen)}`;
 }
 
 // One turn is one run's events. Turn 0 has no "started" event (the task's
@@ -341,7 +343,6 @@ function renderTurn(
   isActivityOpen: ConversationProps["isActivityOpen"],
   artifactDownloadState: ConversationProps["artifactDownloadState"],
   artifactPreviewPath: ConversationProps["artifactPreviewPath"],
-  isIntermediateOpen: ConversationProps["isIntermediateOpen"],
 ): string {
   const { userText, userAt, body, answerText, answerAt } = buildTurn(events, index === 0, isLast, task);
   const showWorking = isLast && running;
@@ -371,16 +372,7 @@ function renderTurn(
       if (finishedAt) metaBits.push(finishedAt);
       if (!hosted && task.model) metaBits.push(task.model);
       if (metrics.durationMs !== null) metaBits.push(formatDurationMs(metrics.durationMs));
-      if (metrics.inputTokens !== null && metrics.outputTokens !== null) {
-        metaBits.push(formatTokenUsage(
-          metrics.inputTokens,
-          metrics.outputTokens,
-          metrics.cachedInputTokens,
-          metrics.cacheCreationInputTokens ?? 0,
-          hosted ? null : metrics.estimatedCost,
-          hosted ? null : metrics.costCurrency,
-        ));
-      }
+
       if (metrics.pointsUsed !== null && (hosted || metrics.pointsUsed > 0)) {
         metaBits.push(t("billing.pointsUsed", { points: metrics.pointsUsed }));
       }
@@ -400,16 +392,7 @@ function renderTurn(
     const started = events.find((ev) => ev.kind === "started");
     if (!hosted && started?.model) metaBits.push(started.model);
     if (metrics.durationMs !== null) metaBits.push(formatDurationMs(metrics.durationMs));
-    if (metrics.inputTokens !== null && metrics.outputTokens !== null) {
-      metaBits.push(formatTokenUsage(
-        metrics.inputTokens,
-        metrics.outputTokens,
-        metrics.cachedInputTokens,
-        metrics.cacheCreationInputTokens ?? 0,
-        hosted ? null : metrics.estimatedCost,
-        hosted ? null : metrics.costCurrency,
-      ));
-    }
+
     if (metrics.pointsUsed !== null && (hosted || metrics.pointsUsed > 0)) {
       metaBits.push(t("billing.pointsUsed", { points: metrics.pointsUsed }));
     }
@@ -421,7 +404,6 @@ function renderTurn(
     index,
     artifactDownloadState,
     artifactPreviewPath,
-    isIntermediateOpen(index),
   );
   const exportAction = exportText
     ? `<div class="conv-answer-actions">
@@ -443,7 +425,7 @@ function renderTurn(
     <div class="turn">
       ${user}
       ${renderActivity(task, body, index, showWorking, metrics, isActivityOpen)}
-      ${answer ? renderReadingStats(task, index) : ""}
+      ${isLast ? `<div data-research-board>${renderResearchBoard(task)}</div>` : ""}
       ${answer}
       ${artifactCards}
       ${exportAction}
@@ -452,30 +434,17 @@ function renderTurn(
   `;
 }
 
-function renderReadingStats(task: AgentTaskView, index: number): string {
-  const stats = task.readingStats?.find((s) => s.turn_index === index);
-  if (!stats || !(stats.preview_notes + stats.detail_notes + stats.comments + stats.authors)) return "";
-  return `<div class="conv-reading-stats t-small" title="${esc(t("task.readingStatsHint"))}">${esc(t("task.readingStats", {
-    preview: stats.preview_notes, detail: stats.detail_notes, comments: stats.comments, authors: stats.authors,
-  }))}</div>`;
-}
-
 function renderArtifactCards(
   taskId: string,
   artifacts: AgentArtifact[],
   turnIndex: number,
   downloadState: ConversationProps["artifactDownloadState"],
   previewPath: string | null,
-  intermediateOpen: boolean,
 ): string {
   const turnFiles = artifacts.filter((artifact) => artifact.turn_index === turnIndex);
   const intermediate = turnFiles.filter((artifact) => /^artifacts[\\/]/.test(artifact.relative_path));
   const outputs = turnFiles.filter((artifact) => !intermediate.includes(artifact));
-  return renderArtifactCardList(taskId, outputs, turnIndex, downloadState, previewPath)
-    + (intermediate.length ? `<details class="artifact-intermediates" data-intermediate-turn="${turnIndex}"${intermediateOpen ? " open" : ""}>
-      <summary class="t-small">${esc(t("artifact.intermediate", { count: intermediate.length }))}</summary>
-      ${renderArtifactCardList(taskId, intermediate, turnIndex, downloadState, previewPath)}
-    </details>` : "");
+  return renderArtifactCardList(taskId, outputs, turnIndex, downloadState, previewPath);
 }
 
 function renderArtifactCardList(
@@ -639,9 +608,9 @@ function renderActivity(
         <span class="activity-toggle__chev" aria-hidden="true">${open ? "▾" : "▸"}</span>
         ${dot}
         <span class="activity-toggle__label">${esc(showWorking ? t("task.working") : t("task.activityLabel"))}</span>
-        ${meta}
       </button>
       ${open ? `<div class="activity activity--transcript">${body.map(renderEventRow).join("")}${workingRow}</div>` : ""}
+      <div class="research-live-metrics">${meta}</div>
     </div>
   `;
 }
@@ -752,7 +721,9 @@ function ingestNotesFromEvents(events: AgentTaskEventPayload[]): void {
 }
 
 /** One conversation-level material library, independent from run/turn layout. */
-export function renderSocialMaterials(task: AgentTaskView): string {
+export function renderSocialMaterials(task: AgentTaskView, downloadState: ConversationProps["artifactDownloadState"] = () => undefined, previewPath: string | null = null, isIntermediateOpen: ConversationProps["isIntermediateOpen"] = () => false): string {
+  const intermediate = (task.artifacts ?? []).filter(a => /^artifacts[\\/]/.test(a.relative_path));
+  const files = intermediate.length ? `<details class="social-materials__group artifact-intermediates" data-intermediate-turn="-1"${isIntermediateOpen(-1) ? " open" : ""}><summary class="social-materials__summary"><span>${esc(t("artifact.intermediate", {count:intermediate.length}))}</span></summary>${[...new Set(intermediate.map(a=>a.turn_index))].map(index=>renderArtifactCardList(task.task_id,intermediate,index,downloadState,previewPath)).join('')}</details>` : "";
   ingestNotesFromEvents(task.events);
   const refs: string[] = [];
   const add = (ref: string | undefined): void => {
@@ -762,7 +733,7 @@ export function renderSocialMaterials(task: AgentTaskView): string {
   for (const event of task.events) {
     if (event.kind === "tool_result") noteRefsFromEvent(event).forEach(add);
   }
-  if (!refs.length) return `<section class="social-materials" data-social-materials hidden></section>`;
+  if (!refs.length && !intermediate.length) return `<section class="social-materials" data-social-materials hidden></section>`;
 
   const groups = new Map<string, { label: string; refs: string[] }>();
   for (const ref of refs) {
@@ -782,13 +753,14 @@ export function renderSocialMaterials(task: AgentTaskView): string {
     </details>
   `).join("");
   return `
-    <section class="social-materials" data-social-materials aria-label="${esc(t("task.materialsAria"))}">
-      <div class="social-materials__head">
+    <details class="social-materials" data-social-materials aria-label="${esc(t("task.materialsAria"))}">
+      <summary class="social-materials__head">
         <span>${esc(t("task.materialsLabel"))}</span>
-        <span>${refs.length}</span>
-      </div>
+        <span>${refs.length + intermediate.length}</span>
+      </summary>
       ${sections}
-    </section>
+      ${files}
+    </details>
   `;
 }
 
@@ -862,7 +834,7 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
     : c.remoteProfile
       ? `<p class="composer__hint">${esc(t("chrome.remoteAutoReconnect"))}</p>`
       : c.managedProfile
-        ? `<p class="composer__hint">${esc(t("chrome.managedAutoReconnect"))}</p>`
+        ? ""
       : `
       <p class="composer__hint">
         ${esc(t(c.mode === "new" ? "chrome.connectToStart" : "task.replyConnectHint"))}
@@ -895,22 +867,18 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
           </span>
           ${action}
         </div>
-        ${hideSources ? "" : renderSourcePicker(c, disabled)}
         <div class="composer__options">
-          <label class="composer__workflow t-small">
-            <span>${esc(t("task.workflow"))}</span>
-            <select id="composer-workflow" aria-label="${esc(t("task.workflow"))}" ${disabled ? "disabled" : ""}>
-              <option value="general" ${c.workflow === "general" ? "selected" : ""}>${esc(t("task.workflowGeneral"))}</option>
-              <option value="vc" ${c.workflow === "vc" ? "selected" : ""}>${esc(t("task.workflowVc"))}</option>
-            </select>
-          </label>
+          ${hideSources ? "" : renderSourcePicker(c, disabled)}
+          <button type="button" id="composer-workflow" class="composer__workflow t-small" aria-haspopup="dialog" ${disabled ? "disabled" : ""}>
+            ${workflowIcon(c.workflow)}<span class="composer__expert-label">${getLanguage() === "zh" ? "专家模式" : "Expert mode"}</span><span>${esc(workflowLabel(c.workflow, c.customWorkflow))}</span>
+          </button>
           <button id="composer-research" type="button"
             class="composer__research t-small"
-            aria-pressed="${c.researchMode}"
+            role="switch" aria-checked="${c.researchMode}" aria-label="${esc(t("task.researchMode"))}"
             title="${esc(t(c.researchMode ? "task.researchEnabledHint" : "task.researchAutoHint"))}"
             ${disabled ? "disabled" : ""}>
-            <span class="composer__research-dot" aria-hidden="true"></span>
-            ${esc(t(c.researchMode ? "task.researchMode" : "task.researchLight"))}
+            <span class="composer__research-thumb" aria-hidden="true"></span>
+            <span data-research-depth="light">${esc(t("task.depthLight"))}</span><span data-research-depth="deep">${esc(t("task.depthDeep"))}</span>
           </button>
         </div>
       </form>
@@ -1049,16 +1017,7 @@ function activityMetricBits(task: AgentTaskView, metrics: TurnMetrics, stepCount
   const bits: string[] = [];
   if (stepCount) bits.push(formatStepCount(stepCount));
   if (metrics.durationMs !== null) bits.push(formatDurationMs(metrics.durationMs));
-  if (metrics.inputTokens !== null && metrics.outputTokens !== null) {
-    bits.push(formatTokenUsage(
-      metrics.inputTokens,
-      metrics.outputTokens,
-      metrics.cachedInputTokens,
-      metrics.cacheCreationInputTokens ?? 0,
-      hosted ? null : metrics.estimatedCost,
-      hosted ? null : metrics.costCurrency,
-    ));
-  }
+
   if (metrics.pointsUsed !== null && (hosted || metrics.pointsUsed > 0)) {
     bits.push(t("billing.pointsUsed", { points: metrics.pointsUsed }));
   }

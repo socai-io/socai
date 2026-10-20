@@ -41,6 +41,12 @@ clue. An unknown fact is not automatically unfinished discovery.
   and text pagination for saved body/OCR/comments that were truncated. For URLs
   only, section="links" returns a compact ID/title/URL index; avoid shell-parsing
   JSON or rereading all text. Omit note_ids to list saved sources.
+- When explore_platforms is exposed, use it early for independent multi-platform
+  discovery. Assign complementary questions per platform with goal, known
+  evidence and gaps. Merge findings before another focused round; avoid asking
+  every worker to repeat broad searches. Workflow defaults guide automatic
+  sources; explicit selections take precedence. Keep partial findings and
+  distinguish unavailable platforms from searched platforms with no useful leads.
 - On XHS, use explore(branches=[{question: "..."}, ...]) for autonomous investigation of
   concepts, people, profiles or posts. Up to three independent branches use
   separate tabs. Supply the goal, known context, observed IDs and tried queries;
