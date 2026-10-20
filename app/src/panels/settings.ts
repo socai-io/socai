@@ -37,7 +37,6 @@ interface SettingsDraft {
   timezone: string;
   output_dir: string;
   chrome_source: string;
-  invite_code: string;
 }
 
 type SaveStatus = "" | "saving" | "saved" | "error";
@@ -69,7 +68,6 @@ export namespace settingsMenu {
   let loadError = false;
   let draft: SettingsDraft | null = null;
   let status: SaveStatus = "";
-  let inviteMessage = "";
   let statusTimer: number | null = null;
   let appVersion = "";
 
@@ -188,7 +186,6 @@ export namespace settingsMenu {
         ${renderChromeGroup(shell)}
         ${renderGeneralGroup(draft)}
         ${renderOutputGroup(config, draft)}
-        ${renderInviteGroup(draft)}
         ${renderStatus()}
         ${renderVersionFooter()}
       </div>
@@ -213,28 +210,6 @@ export namespace settingsMenu {
   function renderVersionFooter(): string {
     if (!appVersion) return "";
     return `<p class="settings-version" aria-label="${esc(t("settings.version"))}">${esc(appVersion)}</p>`;
-  }
-
-  function renderInviteGroup(d: SettingsDraft): string {
-    return `
-      <section class="settings-group">
-        <div class="settings-field">
-          <label class="t-small settings-field-label" for="settings-invite-code">${esc(t("settings.inviteCode"))}</label>
-          <div class="settings-path-row">
-            <input
-              id="settings-invite-code"
-              class="input-field settings-input-mono"
-              type="text"
-              spellcheck="false"
-              autocomplete="off"
-              value="${esc(d.invite_code)}"
-            />
-            <button type="button" class="btn-ghost btn-compact" data-settings-redeem-invite ${status === "saving" ? "disabled" : ""}>${esc(t("settings.enter"))}</button>
-          </div>
-          ${inviteMessage ? `<p id="settings-invite-message" class="t-small result-error settings-field-hint">${esc(inviteMessage)}</p>` : ""}
-        </div>
-      </section>
-    `;
   }
 
   function renderGeneralGroup(d: SettingsDraft): string {
@@ -304,14 +279,12 @@ export namespace settingsMenu {
   export function bind(
     shell: ShellState,
     onOpen: () => void = () => {},
-    onInviteRedeemed: () => Promise<void> = async () => {},
   ): void {
     document.getElementById("settings-toggle")?.addEventListener("click", (event) => {
       event.stopPropagation();
       if (!open) onOpen();
       open = !open;
       if (open) {
-        inviteMessage = "";
         // Reopening retries a failed initial load so the error state isn't a
         // dead-end (the in-menu controls that re-fetch don't render on failure).
         if (loadError || !config) {
@@ -363,16 +336,6 @@ export namespace settingsMenu {
     // Path fields commit on change (blur/enter), not per keystroke.
     bindPathField("settings-output-dir", shell);
 
-    const invite = document.getElementById("settings-invite-code") as HTMLInputElement | null;
-    invite?.addEventListener("input", () => {
-      if (draft) draft.invite_code = invite.value;
-      inviteMessage = "";
-      document.getElementById("settings-invite-message")?.remove();
-    });
-    document.querySelector<HTMLButtonElement>("[data-settings-redeem-invite]")?.addEventListener("click", () => {
-      void redeemInvite(shell, onInviteRedeemed);
-    });
-
     document.querySelectorAll<HTMLButtonElement>("[data-settings-browse]").forEach((button) => {
       // No native directory picker is wired (no dialog plugin); focus the field
       // so the path stays directly editable.
@@ -396,7 +359,6 @@ export namespace settingsMenu {
       timezone: getTimezone(),
       output_dir: config?.output_dir ?? "",
       chrome_source: config?.chrome_source || "existing",
-      invite_code: "",
     };
   }
 
@@ -450,41 +412,6 @@ export namespace settingsMenu {
       await loadConfig();
       seedDraft();
       setError(shell);
-    }
-  }
-
-  async function redeemInvite(
-    shell: ShellState,
-    onInviteRedeemed: () => Promise<void>,
-  ): Promise<void> {
-    if (!draft || status === "saving") return;
-    if (!authMenu.isLoggedIn()) {
-      inviteMessage = t("settings.loginForInvite");
-      shell.rerender();
-      return;
-    }
-    const inviteCode = draft.invite_code.trim();
-    if (!inviteCode) {
-      inviteMessage = t("settings.inviteRequired");
-      shell.rerender();
-      return;
-    }
-    inviteMessage = "";
-    status = "saving";
-    shell.rerender();
-    try {
-      await invoke("pro_activate", { inviteCode, label: "desktop" });
-      await loadConfig();
-      seedDraft();
-      await onInviteRedeemed();
-      flashSaved(shell);
-    } catch (err) {
-      console.error("pro_activate failed:", err);
-      await loadConfig();
-      seedDraft();
-      status = "";
-      inviteMessage = t("settings.inviteInvalid");
-      shell.rerender();
     }
   }
 

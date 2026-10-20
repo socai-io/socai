@@ -89,6 +89,21 @@ export interface ArtifactDownloadState {
   identity?: string;
 }
 
+export interface ConversationSharePayload {
+  conversation_id: string;
+  title: string;
+  turns: Array<{
+    prompt: string;
+    answer: string;
+    status: "completed" | "failed" | "cancelled" | "interrupted";
+    platform: string;
+    created_at: string;
+    sources: Array<{ url: string; title: string; summary: string; site: string; author: string }>;
+  }>;
+}
+
+const SHARE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4"/></svg>`;
+
 interface TurnMetrics {
   steps: number | null;
   durationMs: number | null;
@@ -218,7 +233,7 @@ function renderHead(task: AgentTaskView, running: boolean): string {
   const dotClass = running ? "badge-dot-ink badge-dot-pulse" : "badge-dot-hollow";
   const actions = running
     ? ""
-    : `${task.status === "interrupted" || task.status === "cancelled"
+    : `<button type="button" class="btn-ghost btn-compact conversation-share-action" data-share-task="${esc(task.task_id)}">${SHARE_ICON}<span>${esc(t("share.action"))}</span></button>${task.status === "interrupted" || task.status === "cancelled"
       ? `<button type="button" class="btn-ghost btn-compact" data-resume-task="${esc(task.task_id)}">${esc(t("task.resume"))}</button>`
       : ""}<button type="button" class="btn-ghost btn-compact" data-delete-task="${esc(task.task_id)}">${esc(t("task.delete"))}</button>`;
   return `
@@ -496,6 +511,57 @@ export function answerTextForTurn(task: AgentTaskView, turnIndex: number): strin
   const isLast = turnIndex === groups.length - 1;
   if (isLast) return task.final_text ?? null;
   return buildTurn(events, turnIndex === 0, false, task).answerText;
+}
+
+/** A bounded, media-free snapshot for the authenticated Web sharing service. */
+export function conversationSharePayload(task: AgentTaskView): ConversationSharePayload {
+  const groups = groupRunEvents(task, finalAnswerEventIndex(task));
+  if (!groups.length) groups.push([]);
+  const notes = new Map((task.notes ?? []).map((note) => [note.note_id, note]));
+  const allRefs = [...notes.keys()];
+  return {
+    conversation_id: task.task_id,
+    title: task.task.trim().replace(/\s+/g, " ").slice(0, 160) || t("share.untitled"),
+    turns: groups.map((events, index) => {
+      const isLast = index === groups.length - 1;
+      const turn = buildTurn(events, index === 0, isLast, task);
+      const refs = [...new Set(events.flatMap(noteRefsFromEvent))];
+      const selectedRefs = refs.length ? refs : isLast ? allRefs : [];
+      const sources = selectedRefs
+        .map((ref) => notes.get(ref))
+        .filter((note): note is NoteData => !!note)
+        .map(shareSource)
+        .filter((source): source is NonNullable<ReturnType<typeof shareSource>> => !!source)
+        .filter((source, sourceIndex, list) => list.findIndex((item) => item.url === source.url) === sourceIndex)
+        .slice(0, 100);
+      const status = isLast && ["failed", "cancelled", "interrupted"].includes(task.status)
+        ? task.status as "failed" | "cancelled" | "interrupted"
+        : "completed";
+      return {
+        prompt: turn.userText.trim() || task.task.trim(),
+        answer: (isLast ? task.final_text : turn.answerText) ?? "",
+        status,
+        platform: task.sites?.find((site) => site !== "auto") ?? "web",
+        created_at: new Date(turn.userAt ?? task.created_at).toISOString(),
+        sources,
+      };
+    }),
+  };
+}
+
+function shareSource(note: NoteData): ConversationSharePayload["turns"][number]["sources"][number] | null {
+  const url = String(note.source_url || note.url || "").trim();
+  if (!/^https?:\/\//i.test(url)) return null;
+  const author = typeof note.author === "object" && note.author
+    ? String(note.author.name || note.author.handle || "")
+    : "";
+  return {
+    url,
+    title: String(note.title || note.source_label || "").slice(0, 500),
+    summary: String(note.excerpt || note.content || "").slice(0, 2_000),
+    site: String(note.site || "web").slice(0, 32),
+    author: author.slice(0, 200),
+  };
 }
 
 function feishuIcon(): string {

@@ -24,12 +24,14 @@ import { settingsMenu } from "./settings";
 import { renderConfirmDeleteDialog, renderSidebar as renderSidebarMarkup } from "./task_history";
 import {
   answerTextForTurn,
+  conversationSharePayload,
   liveActivityMetricsText,
   renderComposePane,
   renderConversation,
   renderEventRow,
   renderSocialMaterials,
 } from "./conversation";
+import { growthPanel } from "./growth";
 import { savedSources, saveSources } from "../lib/platforms";
 import type { ArtifactDownloadState, ChromeSetupState, ComposerProps } from "./conversation";
 import { artifactPreviewMime, renderArtifactPreview } from "./artifact_preview";
@@ -835,6 +837,12 @@ export namespace agentPanel {
     bindTaskSelection(shell);
     bindArtifactPreview(shell);
     bindArtifactActions(shell);
+    document.querySelectorAll<HTMLButtonElement>("[data-share-task]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const task = tasks.find((item) => item.task_id === button.dataset.shareTask);
+        if (task) void growthPanel.openShare(conversationSharePayload(task), shell);
+      });
+    });
     // Note interactions (viewer, card carousel, citation hover, external links)
     // are wired once via delegation on document.
     bindNoteInteractions();
