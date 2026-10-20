@@ -33,6 +33,69 @@ pub struct ScheduledTaskInput {
     pub client_request_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromotionInvite {
+    pub code: String,
+    pub url: String,
+    pub status: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Promotion {
+    pub reward_credits: i64,
+    pub signup_credits: i64,
+    pub regular_signup_credits: i64,
+    pub daily_tasks: i64,
+    pub cutoff: String,
+    #[serde(default)]
+    pub invites: Vec<PromotionInvite>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationShareSource {
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default = "default_web_platform")]
+    pub site: String,
+    #[serde(default)]
+    pub author: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationShareTurn {
+    pub prompt: String,
+    #[serde(default)]
+    pub answer: String,
+    pub status: String,
+    #[serde(default = "default_web_platform")]
+    pub platform: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub sources: Vec<ConversationShareSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationShareInput {
+    pub conversation_id: String,
+    pub title: String,
+    pub turns: Vec<ConversationShareTurn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationShare {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+}
+
+fn default_web_platform() -> String {
+    "web".to_owned()
+}
+
 fn request(method: reqwest::Method, path: &str) -> Result<reqwest::RequestBuilder> {
     let base_url = configured_base_url()
         .ok_or_else(|| anyhow::anyhow!("socai service URL is not configured"))?;
@@ -120,6 +183,54 @@ pub async fn delete_scheduled_task(id: &str) -> Result<()> {
     .await
     .context("failed to delete scheduled task")?;
     require_success(response, "scheduled task").await?;
+    Ok(())
+}
+
+pub async fn promotion() -> Result<Promotion> {
+    let response = request(reqwest::Method::GET, "/promotion")?
+        .send()
+        .await
+        .context("failed to load invitation activity")?;
+    Ok(require_success(response, "invitation activity")
+        .await?
+        .json()
+        .await?)
+}
+
+pub async fn create_promotion_invites() -> Result<Promotion> {
+    let response = request(reqwest::Method::POST, "/promotion/invites")?
+        .send()
+        .await
+        .context("failed to create invitation links")?;
+    Ok(require_success(response, "invitation activity")
+        .await?
+        .json()
+        .await?)
+}
+
+pub async fn create_conversation_share(
+    input: &ConversationShareInput,
+) -> Result<ConversationShare> {
+    let response = request(reqwest::Method::POST, "/shares")?
+        .json(input)
+        .send()
+        .await
+        .context("failed to share conversation")?;
+    Ok(require_success(response, "conversation share")
+        .await?
+        .json()
+        .await?)
+}
+
+pub async fn revoke_conversation_share(id: &str) -> Result<()> {
+    let response = request(
+        reqwest::Method::DELETE,
+        &format!("/shares/{}", safe_id(id)?),
+    )?
+    .send()
+    .await
+    .context("failed to revoke conversation share")?;
+    require_success(response, "conversation share").await?;
     Ok(())
 }
 
