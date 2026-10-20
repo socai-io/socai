@@ -3918,6 +3918,36 @@ pub async fn growth_schedule_delete(schedule_id: String) -> Result<(), String> {
         .map_err(|error| format!("{error:#}"))
 }
 
+#[tauri::command]
+pub async fn growth_promotion() -> Result<socai_core::cloud::Promotion, String> {
+    socai_core::cloud::promotion()
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn growth_promotion_create() -> Result<socai_core::cloud::Promotion, String> {
+    socai_core::cloud::create_promotion_invites()
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn growth_share_create(
+    input: socai_core::cloud::ConversationShareInput,
+) -> Result<socai_core::cloud::ConversationShare, String> {
+    socai_core::cloud::create_conversation_share(&input)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn growth_share_revoke(share_id: String) -> Result<(), String> {
+    socai_core::cloud::revoke_conversation_share(&share_id)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
 fn capture_subscription_checkout(
     telemetry: &DesktopTelemetry,
     provider: &str,
