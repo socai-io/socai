@@ -7,7 +7,6 @@ export interface BoardLead { id: string; name: string; platform: string; signal:
 export interface BoardRelation { id: string; from: string; to: string; label: string; url: string; uncertain: boolean; dimension?: string; kind?: "fact" | "comparison" | "hypothesis"; basis?: string; sources?: Array<{lead_id: string; url: string; excerpt?: string}>; }
 export interface ResearchBoard { operations?: Array<{platform: string; tool: string; detail: string; failed: boolean; at: number}>; summary?: string; next_steps?: string[]; updated_at?: number; platforms?: Array<{ id: string; status: string; focus: string }>; leads?: BoardLead[]; relations?: BoardRelation[]; }
 const tr = (zh: string, en: string): string => getLanguage() === "zh" ? zh : en;
-const filters = new Map<string, string>();
 const dimensionLabels = (): Record<string,string> => ({identity:tr("同一实体","Identity"),people:tr("人物与组织","People"),problem:tr("问题与场景","Problem"),audience:tr("用户与市场","Audience"),technology:tr("技术路线","Technology"),ecosystem:tr("生态依赖","Ecosystem"),business:tr("商业模式","Business"),stage:tr("发展阶段","Stage")});
 const kindLabel = (edge: BoardRelation): string => edge.kind === "comparison" ? tr("分析关联","Comparison") : edge.uncertain || edge.kind === "hypothesis" ? tr("待核实假设","Hypothesis") : tr("来源所述关系","Source-stated connection");
 const scrollPositions = new Map<string, {top: number; follow: boolean}>();
@@ -88,16 +87,13 @@ export function renderResearchBoard(task: AgentTaskView): string {
     if (/skill/i.test(name)) return tr("加载平台能力", "Load platform tools");
     return tr("读取平台内容", "Read platform content");
   };
-  const filter = filters.get(task.task_id) ?? "all";
 
-  const shown = leads.filter(l => filter === "all" || l.platform === filter);
+  const shown = leads;
   return `<section class="research-board" data-board-task="${esc(task.task_id)}" aria-label="${tr("研究工作台", "Research workbench")}">
     <header class="research-board-head"><h3 class="t-h3">${tr("研究工作台", "Research workbench")}</h3></header>
     ${board.summary ? `<div class="research-hypothesis t-body">${esc(board.summary)}</div>` : ""}
     <div class="research-platforms">${sites.map(site => { const p = board.platforms?.find(p => p.id === site); return `<div class="research-platform ${p?.status === "blocked" ? "is-blocked" : ""}"><div>${platformIcon(site)}<strong class="t-small">${esc(platformLabel(site))}</strong><span class="t-small">${esc(p ? statusLabel[p.status] ?? p.status : counts.has(site) ? tr("已采集", "Collected") : dispatched.has(site) ? tr("已分派", "Assigned") : tr("待探索", "Pending"))}</span></div>${p?.focus ? `<p class="t-small">${esc(p.focus)}</p>` : ""}${platformStats(task, site, counts.get(site) ?? 0)}<ol class="research-operation-path">${operations.filter(o => o.platform === site).slice(-3).map(o => `<li title="${esc(o.detail)}"><span>${o.failed ? "!" : "↳"}</span>${esc(actionLabel(o.tool))}${o.failed ? ` · ${tr("受限", "limited")}` : ""}</li>`).join("")}</ol></div>`; }).join("") || `<p class="t-small research-empty">${tr("正在选择适合的平台", "Choosing relevant platforms")}</p>`}</div>
     ${graph(board, task.task_id)}
-    <div class="research-board-nav"><h4 class="t-small">${tr("线索收集", "Leads")} · ${leads.length}</h4></div>
-    <div class="research-filters"><button data-research-filter="all" aria-pressed="${filter === "all"}">${tr("全部", "All")}</button>${sites.map(s => `<button data-research-filter="${esc(s)}" aria-pressed="${filter === s}">${platformIcon(s)}${esc(platformLabel(s))}</button>`).join("")}</div>
     <div class="research-table-wrap">${shown.length ? `<table class="research-table"><thead><tr><th>${tr("团队 / 产品 / 方向", "Team / product / direction")}</th><th>${tr("发现的信号", "Signal")}</th></tr></thead><tbody>${shown.map(l => `<tr><td>${renderLeadCitation(l.url,l.name,l.platform)}</td><td>${esc(l.signal)}${l.uncertainty ? `<p>${esc(l.uncertainty)}</p>` : ""}</td></tr>`).join("")}</tbody></table>` : ""}</div>
     ${running && board.next_steps?.length ? `<footer class="research-next"><span class="t-eyebrow">${tr("接下来", "NEXT")}</span><ol>${board.next_steps.map(s => `<li>${esc(s)}</li>`).join("")}</ol></footer>` : ""}
   </section>`;
@@ -144,13 +140,34 @@ function showRelation(task: AgentTaskView, id: string): void {
 function bindNetworkGestures(): void {
   let edgeTip: HTMLElement | null = null;
   const hideTip = (): void => { edgeTip?.remove(); edgeTip = null; };
-  document.addEventListener('pointerover', e => {
-    const edge=(e.target as Element).closest<SVGGElement>('[data-edge-label]'); if(!edge)return;
-    hideTip();edgeTip=document.createElement('div');edgeTip.className='research-edge-tooltip';edgeTip.setAttribute('role','tooltip');edgeTip.textContent=edge.dataset.edgeLabel??'';document.body.append(edgeTip);
+  const showTip = (e: PointerEvent): void => {
+    const target = e.target as Element;
+    const map = target.closest<HTMLElement>('.research-map');
+    if (!map || map.classList.contains('is-dragging') || target.closest('button,[data-network-node] > circle')) { hideTip(); return; }
+    let edge = target.closest<SVGGElement>('[data-edge-label]');
+    // Hit-test in screen pixels: SVG strokes otherwise shrink with the viewBox,
+    // and WebKit can target an overlapping foreignObject instead of the path.
+    if (!edge) {
+      let nearest = 8;
+      for (const candidate of map.querySelectorAll<SVGGElement>('[data-edge-label]')) {
+        const path = candidate.querySelector<SVGPathElement>('.research-edge-hit')!;
+        const matrix = path.getScreenCTM(); if (!matrix) continue;
+        const a = path.getPointAtLength(0).matrixTransform(matrix), b = path.getPointAtLength(path.getTotalLength()).matrixTransform(matrix);
+        const dx = b.x-a.x, dy = b.y-a.y, length = dx*dx+dy*dy;
+        const t = length ? Math.max(0,Math.min(1,((e.clientX-a.x)*dx+(e.clientY-a.y)*dy)/length)) : 0;
+        const distance = Math.hypot(e.clientX-a.x-t*dx,e.clientY-a.y-t*dy);
+        if (distance < nearest) { nearest=distance; edge=candidate; }
+      }
+    }
+    if (!edge) { hideTip(); return; }
+    if (!edgeTip) { edgeTip=document.createElement('div');edgeTip.className='research-edge-tooltip';edgeTip.setAttribute('role','tooltip');document.body.append(edgeTip); }
+    edgeTip.textContent=edge.dataset.edgeLabel??'';
     edgeTip.style.left=`${Math.max(8,Math.min(e.clientX+10,window.innerWidth-edgeTip.offsetWidth-8))}px`;
     edgeTip.style.top=`${Math.max(8,Math.min(e.clientY+12,window.innerHeight-edgeTip.offsetHeight-8))}px`;
-  });
-  document.addEventListener('pointerout', e => {const edge=(e.target as Element).closest('[data-edge-label]');if(edge&&(!(e.relatedTarget instanceof Node)||!edge.contains(e.relatedTarget)))hideTip();});
+  };
+  document.addEventListener('pointerover',showTip);
+  document.addEventListener('pointermove',showTip);
+  document.addEventListener('pointerout',e=>{if (!(e.relatedTarget instanceof Element) || !e.relatedTarget.closest('.research-map')) hideTip();});
   document.addEventListener('scroll',hideTip,true);document.addEventListener('pointerdown',hideTip);
   let drag: {map:HTMLElement; svg:SVGSVGElement; node:SVGGElement|null; x:number; y:number; moved:boolean; pointer:number} | null=null;
   let suppressClick=false;
@@ -198,10 +215,6 @@ export function bindResearchBoard(current: () => AgentTaskView | undefined): voi
     if (circle) { circle.parentElement?.querySelector<HTMLButtonElement>('[data-note-open]')?.click(); return; }
     const edge = (e.target as Element).closest<HTMLElement>('[data-research-edge]');
     if (task && edge) { showRelation(task,edge.dataset.researchEdge!); return; }
-    const button = (e.target as Element).closest<HTMLElement>('[data-research-filter]');
-    if (!button || !task) return;
-    filters.set(task.task_id, button.dataset.researchFilter!);
-    const host = button.closest<HTMLElement>('[data-research-board]');
-    if (host) refreshResearchBoard(host, task);
+
   });
 }

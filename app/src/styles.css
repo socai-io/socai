@@ -3201,3 +3201,6 @@ code {
 .research-map [data-network-node]:hover circle { stroke: var(--fg-muted); }
 .research-map-node .research-source strong { font-size: 12px; }
 .research-edge-tooltip { position: fixed; z-index: 100; pointer-events: none; max-width: min(320px, calc(100vw - 16px)); padding: 7px 10px; border: var(--hairline); border-radius: 6px; background: var(--canvas); color: var(--fg); font-size: 12px; line-height: 1.5; box-shadow: var(--shadow-pop); }
+.research-map .research-edge-hit { pointer-events: stroke; vector-effect: non-scaling-stroke; }
+.research-map foreignObject { pointer-events: none; }
+.research-map-node .research-source { pointer-events: auto; }

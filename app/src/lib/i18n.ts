@@ -778,7 +778,7 @@ const messages = {
     zh: "也可以在账号菜单中切换到 socai 内置模型，使用账号点数、无需 API Key。",
   },
 
-  "artifact.intermediate": { en: "Intermediate files ({count})", zh: "中间文件（{count}）" },
+  "artifact.intermediate": { en: "Intermediate files", zh: "中间文件" },
   "artifact.listAria": { en: "generated files", zh: "生成的文件" },
   "artifact.more": { en: "More", zh: "更多" },
   "artifact.moreAria": { en: "More options for {name}", zh: "{name} 的更多操作" },

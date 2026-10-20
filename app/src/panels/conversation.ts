@@ -723,7 +723,7 @@ function ingestNotesFromEvents(events: AgentTaskEventPayload[]): void {
 /** One conversation-level material library, independent from run/turn layout. */
 export function renderSocialMaterials(task: AgentTaskView, downloadState: ConversationProps["artifactDownloadState"] = () => undefined, previewPath: string | null = null, isIntermediateOpen: ConversationProps["isIntermediateOpen"] = () => false): string {
   const intermediate = (task.artifacts ?? []).filter(a => /^artifacts[\\/]/.test(a.relative_path));
-  const files = intermediate.length ? `<details class="social-materials__group artifact-intermediates" data-intermediate-turn="-1"${isIntermediateOpen(-1) ? " open" : ""}><summary class="social-materials__summary"><span>${esc(t("artifact.intermediate", {count:intermediate.length}))}</span></summary>${[...new Set(intermediate.map(a=>a.turn_index))].map(index=>renderArtifactCardList(task.task_id,intermediate,index,downloadState,previewPath)).join('')}</details>` : "";
+  const files = intermediate.length ? `<details class="social-materials__group" data-intermediate-turn="-1"${isIntermediateOpen(-1) ? " open" : ""}><summary class="social-materials__summary"><span>${esc(t("artifact.intermediate"))}</span><span class="social-materials__count">${intermediate.length}</span></summary>${[...new Set(intermediate.map(a=>a.turn_index))].map(index=>renderArtifactCardList(task.task_id,intermediate,index,downloadState,previewPath)).join('')}</details>` : "";
   ingestNotesFromEvents(task.events);
   const refs: string[] = [];
   const add = (ref: string | undefined): void => {

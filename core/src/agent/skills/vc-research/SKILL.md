@@ -74,6 +74,33 @@ findings; context for familiar comparables. In deep mode, publish a findings
 table (CSV or XLSX) covering both priority and early leads, with source links,
 uncertainties and next steps. Do not make table delivery a reason to prune leads.
 
+## Research lenses
+
+Choose lenses that fit the user's question; these are optional angles, not a
+checklist or a fixed report structure. Let useful discoveries guide follow-ups.
+
+- **Overlooked teams:** connect founders, products and community feedback across
+  sources to find less-exposed teams with meaningful early traction. Explain
+  why a meeting could be worthwhile; distinguish usage from attention and
+  self-reported growth. Compare with the user's known projects when available.
+- **Founder portrait:** trace public work, interviews, posts and collaborations
+  over time. Look for technical preferences, changing views and contradictions,
+  beyond a résumé. Cite dated examples; label interpretations of views or
+  personality as inferences.
+- **Ecosystem influence:** follow consequential work, citations, discussions and
+  cross-project collaboration, not just follower counts. Surface less-visible
+  contributors and evidenced connection paths; a public connection is not a
+  confirmed willingness to introduce someone.
+- **Emerging demand:** look for recurring problems across independent users and
+  communities, when they appeared, and signs of increasing interest. Connect
+  them to product opportunities; distinguish event dates from publication dates
+  and observed changes from claims about the whole market.
+- **Continuing discovery:** use available research history, seen teams and user
+  preferences to highlight new opportunities or meaningful changes. Learn from
+  explicit feedback without treating preferences as permanent exclusions. When
+  ongoing discovery is requested, use supported scheduling/memory capabilities;
+  otherwise explain what is available rather than imply monitoring is active.
+
 ## Priority actions
 
 Close a substantive research report with 3–5 concise, high-priority actions,
