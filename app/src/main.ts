@@ -20,6 +20,7 @@ import { authMenu } from "./panels/auth";
 import { agentPanel } from "./panels/tasks";
 import { settingsMenu } from "./panels/settings";
 import { subscriptionMenu } from "./panels/subscription";
+import { growthPanel } from "./panels/growth";
 
 export type Status =
   | { state: "disconnected"; reason: string }
@@ -301,7 +302,7 @@ function render(): void {
       <div class="body">
         ${sidebarOpen ? agentPanel.renderSidebar() : ""}
         <div class="workspace-stack">
-          <main class="workspace-main">${agentPanel.renderWorkspace(state)}</main>
+          <main class="workspace-main">${growthPanel.isOpen() ? growthPanel.renderWorkspace() : agentPanel.renderWorkspace(state)}</main>
           ${agentPanel.renderWorkspaceOverlays()}
         </div>
       </div>
@@ -348,6 +349,7 @@ function render(): void {
     },
   );
   agentPanel.bind(state);
+  growthPanel.bind(state);
 }
 
 function renderRuntimeErrorNotice(): string {

@@ -20,6 +20,9 @@ export function renderSidebar(props: SidebarProps): string {
         <button id="sidebar-new" type="button" class="sidebar-new">
           <span class="sidebar-new-glyph" aria-hidden="true">+</span>${esc(t("task.new"))}
         </button>
+        <button type="button" class="sidebar-new sidebar-secondary ${document.body.dataset.socaiGrowthSurface === "cron" ? "is-active" : ""}" data-cron-nav>
+          <span class="sidebar-new-glyph" aria-hidden="true">◷</span>${esc(t("cron.title"))}
+        </button>
       </div>
       <div class="sidebar-list-head">
         <p class="t-eyebrow result-label">${esc(t("task.history"))}</p>

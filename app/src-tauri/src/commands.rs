@@ -3876,6 +3876,48 @@ pub async fn billing_mock_recharge(
     result
 }
 
+#[tauri::command]
+pub async fn growth_schedules() -> Result<Vec<socai_core::cloud::ScheduledTask>, String> {
+    socai_core::cloud::scheduled_tasks()
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn growth_schedule_create(
+    input: socai_core::cloud::ScheduledTaskInput,
+) -> Result<socai_core::cloud::ScheduledTask, String> {
+    socai_core::cloud::create_scheduled_task(&input)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn growth_schedule_update(
+    schedule_id: String,
+    input: socai_core::cloud::ScheduledTaskInput,
+) -> Result<socai_core::cloud::ScheduledTask, String> {
+    socai_core::cloud::update_scheduled_task(&schedule_id, &input)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn growth_schedule_cancel(
+    schedule_id: String,
+) -> Result<socai_core::cloud::ScheduledTask, String> {
+    socai_core::cloud::cancel_scheduled_task(&schedule_id)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn growth_schedule_delete(schedule_id: String) -> Result<(), String> {
+    socai_core::cloud::delete_scheduled_task(&schedule_id)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
 fn capture_subscription_checkout(
     telemetry: &DesktopTelemetry,
     provider: &str,

@@ -5,7 +5,12 @@ mod auth;
 mod billing;
 mod browser;
 mod google;
+mod growth;
 mod guest;
+pub use growth::{
+    cancel_scheduled_task, create_scheduled_task, delete_scheduled_task, scheduled_tasks,
+    update_scheduled_task, ScheduledTask, ScheduledTaskInput,
+};
 pub use guest::{
     is_guest_task, llm_gateway_config_for_task, prepare_account_task, prepare_guest_trial,
     GuestTrialGuard,
