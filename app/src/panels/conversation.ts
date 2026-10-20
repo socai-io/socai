@@ -517,14 +517,16 @@ export function answerTextForTurn(task: AgentTaskView, turnIndex: number): strin
 export function conversationSharePayload(task: AgentTaskView): ConversationSharePayload {
   const groups = groupRunEvents(task, finalAnswerEventIndex(task));
   if (!groups.length) groups.push([]);
+  const shareGroups = groups.slice(-100);
   const notes = new Map((task.notes ?? []).map((note) => [note.note_id, note]));
   const allRefs = [...notes.keys()];
   return {
     conversation_id: task.task_id,
     title: task.task.trim().replace(/\s+/g, " ").slice(0, 160) || t("share.untitled"),
-    turns: groups.map((events, index) => {
-      const isLast = index === groups.length - 1;
-      const turn = buildTurn(events, index === 0, isLast, task);
+    turns: shareGroups.map((events, index) => {
+      const isLast = index === shareGroups.length - 1;
+      const isFirstConversationTurn = groups.length === shareGroups.length && index === 0;
+      const turn = buildTurn(events, isFirstConversationTurn, isLast, task);
       const refs = [...new Set(events.flatMap(noteRefsFromEvent))];
       const selectedRefs = refs.length ? refs : isLast ? allRefs : [];
       const sources = selectedRefs
@@ -538,8 +540,8 @@ export function conversationSharePayload(task: AgentTaskView): ConversationShare
         ? task.status as "failed" | "cancelled" | "interrupted"
         : "completed";
       return {
-        prompt: turn.userText.trim() || task.task.trim(),
-        answer: (isLast ? task.final_text : turn.answerText) ?? "",
+        prompt: (turn.userText.trim() || task.task.trim()).slice(0, 10_000),
+        answer: ((isLast ? task.final_text : turn.answerText) ?? "").slice(0, 150_000),
         status,
         platform: task.sites?.find((site) => site !== "auto") ?? "web",
         created_at: new Date(turn.userAt ?? task.created_at).toISOString(),
