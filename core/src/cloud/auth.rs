@@ -10,8 +10,8 @@ use crate::config;
 
 const AUTH_KEY: &str = "socai_pro";
 const LEGACY_AUTH_KEY: &str = "socai_cloud";
-const LEGACY_PRO_BASE_URL: &str = "http://47.94.86.171";
-const PRODUCTION_BASE_URL: &str = "https://api.socai.work";
+const LEGACY_PRO_BASE_URLS: &[&str] = &["http://47.94.86.171", "https://api.socai.work"];
+const PRODUCTION_BASE_URL: &str = "https://agent-api.socai.io";
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
@@ -496,7 +496,7 @@ pub(super) fn configured_base_url() -> Option<String> {
 }
 
 fn migrate_legacy_base_url(value: String, persist: bool) -> String {
-    if value != LEGACY_PRO_BASE_URL {
+    if !LEGACY_PRO_BASE_URLS.contains(&value.as_str()) {
         return value;
     }
     if persist {
