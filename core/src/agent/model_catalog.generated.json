@@ -1110,6 +1110,72 @@
     ],
     "qwen": [
       {
+        "id": "qwen3.8-max",
+        "display_name": "Qwen 3.8 Max",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "CNY",
+          "source": "https://help.aliyun.com/zh/model-studio/model-pricing",
+          "tiers": [
+            {
+              "max_input_tokens": 1000000,
+              "input_per_million": 12,
+              "output_per_million": 36,
+              "cache_read_per_million": 2.4,
+              "cache_write_per_million": 0
+            }
+          ],
+          "overrides": {
+            "qwen-intl": {
+              "currency": "CNY",
+              "source": "https://help.aliyun.com/zh/model-studio/model-pricing",
+              "tiers": [
+                {
+                  "max_input_tokens": 1000000,
+                  "input_per_million": 14.988,
+                  "output_per_million": 44.965,
+                  "cache_read_per_million": 2.9976,
+                  "cache_write_per_million": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-flash",
+        "display_name": "Qwen 3.8 Flash",
+        "source": "pi-ai",
+        "pricing": {
+          "currency": "CNY",
+          "source": "https://help.aliyun.com/zh/model-studio/model-pricing",
+          "tiers": [
+            {
+              "max_input_tokens": 1000000,
+              "input_per_million": 0.8,
+              "output_per_million": 2.7,
+              "cache_read_per_million": 0.16,
+              "cache_write_per_million": 0
+            }
+          ],
+          "overrides": {
+            "qwen-intl": {
+              "currency": "CNY",
+              "source": "https://help.aliyun.com/zh/model-studio/model-pricing",
+              "tiers": [
+                {
+                  "max_input_tokens": 1000000,
+                  "input_per_million": 1.094,
+                  "output_per_million": 3.427,
+                  "cache_read_per_million": 0.2188,
+                  "cache_write_per_million": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
         "id": "qwen3.7-max",
         "display_name": "Qwen 3.7 Max",
         "source": "pi-ai",

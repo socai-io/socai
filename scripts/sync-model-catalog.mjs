@@ -67,9 +67,23 @@ const FALLBACK = {
     entry("kimi-k2-thinking", "Kimi K2 Thinking"),
   ],
   qwen: [
-    // qwen3.8-max-preview is intentionally absent: Alibaba currently limits it
-    // to Token Plan, whose dedicated API key and base URL are incompatible with
-    // socai's mainland and international pay-as-you-go Qwen providers.
+    // qwen3.8-max and qwen3.8-flash are pay-as-you-go ids on the mainland and
+    // international DashScope compatible-mode endpoints socai already calls.
+    // Dated snapshots, omni/realtime, and Token Plan-only ids stay out.
+    entry("qwen3.8-max", "Qwen 3.8 Max", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
+      qwenPriceTier(1000000, 12, 36),
+    ], {
+      "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
+        qwenPriceTier(1000000, 14.988, 44.965),
+      ]),
+    })),
+    entry("qwen3.8-flash", "Qwen 3.8 Flash", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
+      qwenPriceTier(1000000, 0.8, 2.7),
+    ], {
+      "qwen-intl": pricing("CNY", QWEN_PRICING_SOURCE, [
+        qwenPriceTier(1000000, 1.094, 3.427),
+      ]),
+    })),
     entry("qwen3.7-plus", "Qwen 3.7 Plus", "fallback", false, pricing("CNY", QWEN_PRICING_SOURCE, [
       qwenPriceTier(256000, 2, 8),
       qwenPriceTier(1000000, 6, 24),
@@ -365,6 +379,8 @@ function piQwenEntries(pi) {
 function normalizeQwenDashScopeId(id, name = "") {
   const haystack = `${id} ${name}`.toLowerCase();
   const candidates = [
+    ["qwen3.8-max", [/qwen3[.\- ]?8[.\- ]?max/]],
+    ["qwen3.8-flash", [/qwen3[.\- ]?8[.\- ]?flash/]],
     ["qwen3.7-plus", [/qwen3[.\- ]?7[.\- ]?plus/, /qwen3p7[.\- ]?plus/]],
     ["qwen3.7-max", [/qwen3[.\- ]?7[.\- ]?max/]],
     ["qwen3.6-plus", [/qwen3[.\- ]?6[.\- ]?plus/]],

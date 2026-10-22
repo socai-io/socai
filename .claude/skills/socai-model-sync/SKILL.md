@@ -43,8 +43,8 @@ Do not blindly expose every pi model. socai currently implements only:
 
 Qwen/DashScope deserves extra judgment: pi often lists Qwen through OpenRouter,
 Together, Fireworks, or opencode providers. Normalize only model IDs that are
-valid for DashScope-compatible calls, such as `qwen3.7-plus`, `qwen3.7-max`, and
-`qwen3.6-plus`. If uncertain, keep the known fallback and note the uncertainty.
+valid for DashScope-compatible calls, such as `qwen3.8-max`, `qwen3.8-flash`,
+`qwen3.7-plus`, and `qwen3.7-max`. If uncertain, keep the known fallback and note the uncertainty.
 
 ## Refresh commands
 
