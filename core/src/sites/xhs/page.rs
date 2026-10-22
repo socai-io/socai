@@ -1122,18 +1122,19 @@ impl<'a> XhsPageRuntime<'a> {
             self.attach_page_failure_diagnostic(&mut result).await;
             return Ok(result);
         }
-        let initial_filters = canonical_filter_state(&initial_raw);
+        let mut current_raw = initial_raw;
         let mut changed_filters = false;
         for (group_key, label) in target_filters {
-            let Some(option) = search_filter_option(&initial_filters, group_key, label) else {
-                self.close_search_filter_panel(Some(&initial_filters))
+            let current_filters = canonical_filter_state(&current_raw);
+            let Some(option) = search_filter_option(&current_filters, group_key, label) else {
+                self.close_search_filter_panel(Some(&current_filters))
                     .await?;
                 let mut result = json!({
                     "ok": false,
                     "error": "filter_option_not_found",
                     "group": group_key,
                     "label": label,
-                    "filters": initial_filters,
+                    "filters": current_filters,
                 });
                 self.attach_page_failure_diagnostic(&mut result).await;
                 return Ok(result);
@@ -1149,9 +1150,26 @@ impl<'a> XhsPageRuntime<'a> {
             let y = number(option, "y");
             self.page.click(x, y).await?;
             changed_filters = true;
+            // A selection can close and re-render the hover panel. Re-open it
+            // before resolving the next option instead of reusing stale click
+            // coordinates from the initial DOM snapshot.
+            sleep_ms(220).await;
+            current_raw = self.open_search_filter_panel(wait_seconds).await?;
+            if !script_ok(&current_raw) {
+                self.close_search_filter_panel(None).await?;
+                if wait_seconds > 0.0 {
+                    tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
+                }
+                let mut result = current_raw;
+                self.attach_page_failure_diagnostic(&mut result).await;
+                return Ok(result);
+            }
         }
 
-        let final_raw = self.expect_object("searchFilters", None).await?;
+        // Even the final click can close the popup. Reading searchFilters
+        // directly here reports filter_panel_not_found although the option
+        // was applied, and used to skip the feed-settle wait entirely.
+        let final_raw = self.open_search_filter_panel(wait_seconds).await?;
         if !script_ok(&final_raw) {
             self.close_search_filter_panel(None).await?;
             let mut result = final_raw;
@@ -1159,6 +1177,26 @@ impl<'a> XhsPageRuntime<'a> {
             return Ok(result);
         }
         let final_filters = canonical_filter_state(&final_raw);
+        if let Some((group, label)) = target_filters.iter().find(|(group, label)| {
+            !search_filter_option(&final_filters, group, label)
+                .and_then(|option| option.get("active"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        }) {
+            self.close_search_filter_panel(Some(&final_filters)).await?;
+            if changed_filters && wait_seconds > 0.0 {
+                tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
+            }
+            let mut result = json!({
+                "ok": false,
+                "error": "filter_not_applied",
+                "group": group,
+                "label": label,
+                "filters": final_filters,
+            });
+            self.attach_page_failure_diagnostic(&mut result).await;
+            return Ok(result);
+        }
         self.close_search_filter_panel(Some(&final_filters)).await?;
         if changed_filters && wait_seconds > 0.0 {
             tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
