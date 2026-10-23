@@ -2087,6 +2087,65 @@ body.has-paper > #app { position: relative; z-index: 1; }
 .artifact-preview__image-wrap { min-height: 100%; display: grid; place-items: center; padding: var(--sp-4); }
 .artifact-preview__image { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
 
+/* OpenUI Lang is rendered through this fixed Socai component library. Generated
+   artifacts can compose these primitives but cannot supply CSS, HTML or JS. */
+.generative-ui { min-height: 100%; padding: 28px; color: var(--fg); background: var(--surface); }
+.generative-ui__stack { display: flex; flex-direction: column; }
+.generative-ui__stack--compact { gap: 10px; }
+.generative-ui__stack--normal { gap: 18px; }
+.generative-ui__stack--relaxed { gap: 28px; }
+.generative-ui__columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.generative-ui__section { display: flex; flex-direction: column; gap: 16px; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--canvas); }
+.generative-ui__section > header { display: flex; flex-direction: column; gap: 4px; }
+.generative-ui__section > header h2 { margin: 0; font-size: 16px; line-height: 1.35; }
+.generative-ui__section > header p { margin: 0; color: var(--fg-muted); font-size: 12px; line-height: 1.5; }
+.generative-ui__heading { margin: 0; letter-spacing: -0.025em; }
+.generative-ui__heading--1 { font-size: 28px; line-height: 1.15; }
+.generative-ui__heading--2 { font-size: 20px; line-height: 1.25; }
+.generative-ui__heading--3 { font-size: 15px; line-height: 1.35; }
+.generative-ui__text { margin: 0; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+.generative-ui__text.is-muted { color: var(--fg-muted); }
+.generative-ui__metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.generative-ui__metric { display: flex; min-height: 112px; flex-direction: column; gap: 6px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.generative-ui__metric > span { color: var(--fg-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.generative-ui__metric > strong { font-size: 24px; line-height: 1.1; letter-spacing: -.035em; }
+.generative-ui__metric > small { color: var(--fg-muted); line-height: 1.4; }
+.generative-ui__metric[data-tone="positive"] { border-top: 3px solid #56816a; }
+.generative-ui__metric[data-tone="warning"] { border-top: 3px solid #a87335; }
+.generative-ui__metric[data-tone="critical"] { border-top: 3px solid #a46d6a; }
+.generative-ui__table { margin: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.generative-ui__table figcaption, .generative-ui__chart figcaption { padding: 13px 15px; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; }
+.generative-ui__table > div { max-width: 100%; overflow: auto; }
+.generative-ui__table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.generative-ui__table th, .generative-ui__table td { padding: 10px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.generative-ui__table th { position: sticky; top: 0; background: var(--ink-8); font-weight: 600; }
+.generative-ui__table th:last-child, .generative-ui__table td:last-child { border-right: 0; }
+.generative-ui__table tr:last-child td { border-bottom: 0; }
+.generative-ui__chart { margin: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.generative-ui__bar-row { display: grid; grid-template-columns: minmax(82px, 1fr) minmax(100px, 3fr) auto; align-items: center; gap: 10px; padding: 9px 14px; }
+.generative-ui__bar-row > span { overflow: hidden; color: var(--fg-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.generative-ui__bar-row > strong { min-width: 38px; font: 600 11px/1 var(--font-mono); text-align: right; }
+.generative-ui__bar-track { height: 8px; overflow: hidden; border-radius: 999px; background: var(--ink-8); }
+.generative-ui__bar-track i { display: block; height: 100%; border-radius: inherit; background: var(--ink-2); }
+.generative-ui__callout { padding: 15px 16px; border-left: 3px solid var(--ink-4); border-radius: 0 10px 10px 0; background: var(--ink-8); }
+.generative-ui__callout[data-tone="positive"] { border-left-color: #56816a; }
+.generative-ui__callout[data-tone="warning"] { border-left-color: #a87335; }
+.generative-ui__callout[data-tone="critical"] { border-left-color: #a46d6a; }
+.generative-ui__callout strong { display: block; margin-bottom: 5px; font-size: 13px; }
+.generative-ui__callout p { margin: 0; color: var(--fg-muted); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+.generative-ui__source { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 10px; color: inherit; text-decoration: none; }
+.generative-ui__source:hover { border-color: var(--ink-4); background: var(--ink-8); }
+.generative-ui__source > strong { font-size: 13px; }
+.generative-ui__source > span { grid-column: 1; color: var(--fg-muted); font-size: 11px; line-height: 1.45; }
+.generative-ui__source > i { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-style: normal; }
+.generative-ui__source.is-disabled { opacity: .62; }
+
+@media (max-width: 760px) {
+  .generative-ui { padding: 18px; }
+  .generative-ui__columns { grid-template-columns: 1fr; }
+  .generative-ui__bar-row { grid-template-columns: minmax(72px, 1fr) minmax(80px, 2fr) auto; }
+}
+
 @container conversation-workspace (max-width: 760px) {
   .artifact-preview {
     position: absolute;
