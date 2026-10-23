@@ -11,6 +11,7 @@ from pathlib import Path
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 VERSION_LINE_RE = re.compile(r'^(\s*version\s*=\s*")[^"]+(")')
 LOCKED_RUST_PACKAGES = (
+    "socai-asr",
     "socai-cli",
     "socai-core",
     "socai_app",

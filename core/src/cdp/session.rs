@@ -1209,6 +1209,26 @@ return (async () => {
         Ok(())
     }
 
+    /// Select all text in the focused input using the desktop's native chord.
+    pub async fn select_all(&self) -> anyhow::Result<()> {
+        let action = self.begin_action().await?;
+        self.snapshot_before().await;
+        let modifiers = if cfg!(target_os = "macos") { 4 } else { 2 };
+        for kind in ["keyDown", "keyUp"] {
+            self.execute(
+                "Input.dispatchKeyEvent",
+                json!({
+                    "type":kind,"key":"a","code":"KeyA","windowsVirtualKeyCode":65,
+                    "nativeVirtualKeyCode":65,"modifiers":modifiers,
+                    "commands":["selectAll"],
+                }),
+            )
+            .await?;
+        }
+        action.finish().await;
+        Ok(())
+    }
+
     pub async fn scroll(&self, delta_y: i64) -> anyhow::Result<()> {
         let action = self.begin_action().await?;
         let expr = format!(
@@ -1220,6 +1240,30 @@ return (async () => {
         Ok(())
     }
 
+    /// Scroll the rendered element under a viewport point, including nested
+    /// iframe and modal scroll containers, using the configured action pacing.
+    pub async fn scroll_at(&self, x: f64, y: f64, delta_y: i64) -> anyhow::Result<()> {
+        if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+            anyhow::bail!("scroll point must be a finite viewport coordinate");
+        }
+        let action = self.begin_action().await?;
+        self.snapshot_before().await;
+        self.execute(
+            "Input.dispatchMouseEvent",
+            json!({"type":"mouseWheel","x":x,"y":y,"deltaX":0,"deltaY":delta_y}),
+        )
+        .await?;
+        action.finish().await;
+        Ok(())
+    }
+
+    /// Reveal this page for manual login or verification without navigating,
+    /// changing its viewport, or reconnecting the browser.
+    pub async fn bring_to_front(&self) -> anyhow::Result<()> {
+        self.execute("Page.bringToFront", json!({})).await?;
+        Ok(())
+    }
+
     /// JPEG screenshot (quality 0-100). Web-page captures compress far
     /// better as JPEG than PNG at no practical loss for review purposes.
     pub async fn screenshot_jpeg(&self, full: bool, quality: u32) -> anyhow::Result<Vec<u8>> {
@@ -1228,6 +1272,38 @@ return (async () => {
 
     pub async fn screenshot_png(&self, full: bool) -> anyhow::Result<Vec<u8>> {
         self.capture_screenshot("png", full, None).await
+    }
+
+    /// Capture a visible viewport region, e.g. a rendered iframe or canvas.
+    pub async fn screenshot_region_jpeg(
+        &self,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> anyhow::Result<Vec<u8>> {
+        if ![x, y, width, height].iter().all(|v| v.is_finite())
+            || x < 0.0
+            || y < 0.0
+            || width <= 0.0
+            || height <= 0.0
+        {
+            anyhow::bail!("screenshot region must be finite and visible");
+        }
+        let response = self
+            .execute(
+                "Page.captureScreenshot",
+                json!({
+                    "format":"jpeg","quality":90,"fromSurface":true,"captureBeyondViewport":false,
+                    "clip":{"x":x,"y":y,"width":width,"height":height,"scale":1.0}
+                }),
+            )
+            .await?;
+        let data = response
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("screenshot region missing data"))?;
+        Ok(base64::engine::general_purpose::STANDARD.decode(data)?)
     }
 
     /// Raw `Page.captureScreenshot`. For full-page captures we clip to the

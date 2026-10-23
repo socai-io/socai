@@ -154,13 +154,18 @@ impl<'a> ConfigKey<'a> {
 }
 
 pub fn config_path() -> Result<PathBuf> {
+    // Embedding applications can keep configuration separate from the Socai
+    // desktop/CLI. Set once at process startup, before starting async work.
+    if let Some(path) = std::env::var_os("SOCAI_CONFIG_PATH").filter(|p| !p.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
     let home = dirs::home_dir().context("could not resolve $HOME for ~/.socai/config.json")?;
     Ok(home.join(".socai/config.json"))
 }
 
 pub fn load_config() -> Result<SocaiConfig> {
     let value = load_config_value()?;
-    serde_json::from_value(value).context("failed to parse ~/.socai/config.json")
+    serde_json::from_value(value).context("failed to parse socai configuration")
 }
 
 pub fn load_config_value() -> Result<Value> {

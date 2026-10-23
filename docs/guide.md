@@ -711,6 +711,21 @@ Commands below run from the repository root unless a section specifies otherwise
 
 ### CLI and core development
 
+Downstream desktop applications may depend directly on `socai-core` and own a
+`SocaiRuntime` in process. Set `SOCAI_CONFIG_PATH` once at process startup to use
+an application-specific configuration file; the default remains
+`~/.socai/config.json`. This does not relocate other storage: configure
+`SOCAI_HOME`, run paths and the managed Chrome profile separately. External site
+packages under `SOCAI_SITE_SKILLS_DIR` can add new site ids without a native
+adapter. `scoped_site_learning_tools` limits an agent to the host's chosen sites;
+`run_site_browser_tool` supports direct host calls. `PageSession::bring_to_front`
+reveals a page for manual login or verification without navigating or resizing.
+`scroll_at` scrolls a rendered iframe or modal at viewport coordinates,
+`select_all` sends the native text-selection chord, and
+`screenshot_region_jpeg` captures a visible region for OCR. Scroll and selection
+follow the configured action speed; keep site identity and completion checks in
+the downstream workflow.
+
 For source installation, see [Command line](#command-line). For day-to-day
 iteration, build and run from the repository root:
 
