@@ -1032,6 +1032,7 @@ export namespace agentPanel {
             || artifactPreview.path !== path) return;
           let blobUrl: string | undefined;
           let text: string | undefined;
+          let openUiHtml: string | undefined;
           const bytes = new Uint8Array(payload);
           if (artifact.preview_kind === "pdf" || artifact.preview_kind === "image") {
             blobUrl = URL.createObjectURL(new Blob([bytes], {
@@ -1039,11 +1040,19 @@ export namespace agentPanel {
             }));
           } else {
             text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+            if (artifact.preview_kind === "openui") {
+              const { renderGenerativeUi } = await import("../lib/generative-ui");
+              openUiHtml = renderGenerativeUi(text);
+              if (generation !== artifactPreviewGeneration
+                || artifactPreview?.taskId !== taskId
+                || artifactPreview.path !== path) return;
+            }
           }
           artifactPreview = {
             ...artifactPreview,
             status: "ready",
             text,
+            openUiHtml,
             blobUrl,
           };
         } catch (error) {

@@ -78,6 +78,9 @@ const TAURI_ARTIFACT_RULES: &str = "\n\n## Deliverable files\n\
     alone does not display a download card. Only tell the user the file is \
     downloadable after `publish_artifact` succeeds.";
 
+const TAURI_GENERATIVE_UI_RULES: &str = "\n\n## Generative UI deliverables\n\
+    When the user explicitly requests an interactive dashboard, visual brief, or generative UI, create a UTF-8 `.openui` file and publish it with `publish_artifact`. Use OpenUI Lang 1.0 with one assignment per line and put the root assignment first. Do not wrap it in a Markdown fence. Only these component signatures are supported: Stack(children, gap?), Columns(children), Section(title, subtitle?, children), Heading(text, level?), Text(text, tone?), Metric(label, value, detail?, tone?), MetricGrid(children), DataTable(columns, rows, caption?), BarChart(title, items), Callout(title, body, tone?), SourceLink(label, url, description?). Children are arrays of statement references. Gap is compact, normal, or relaxed. Tone is neutral, positive, warning, or critical; Text tone is default or muted. BarChart items are objects with label, non-negative value, and optional display. SourceLink URLs must be real HTTP(S) evidence URLs. Example: `root = Stack([title, metrics], \"normal\")` then `title = Heading(\"Market signals\", 1)`. Never include scripts, HTML, remote component names, actions, mutations, or fabricated sources.";
+
 /// Stable session-page key and legacy default; selected sources are stored per task.
 const APP_SITE_ID: &str = "xhs";
 const APP_INITIAL_URL: &str = "about:blank";
@@ -1972,6 +1975,7 @@ fn artifact_preview_kind(path: &std::path::Path, size_bytes: u64) -> Option<&'st
     let (kind, limit) = match extension.as_str() {
         "md" | "markdown" => ("markdown", ARTIFACT_TEXT_PREVIEW_MAX_BYTES),
         "csv" | "tsv" => ("csv", ARTIFACT_TEXT_PREVIEW_MAX_BYTES),
+        "openui" | "oui" => ("openui", ARTIFACT_TEXT_PREVIEW_MAX_BYTES),
         "txt" | "json" | "jsonl" | "yaml" | "yml" | "toml" | "xml" | "html" | "htm" | "css"
         | "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "rs" | "py" | "go" | "java" | "kt"
         | "swift" | "sh" | "zsh" | "fish" | "ps1" | "sql" | "log" => {
@@ -3479,9 +3483,10 @@ async fn run_agent_task_on_session_page(
         let config = AgentRunConfig {
             max_steps: research.max_steps(),
             extra_instructions: format!(
-                "{}{}{}{}{}{}\n\n{}\n\n{}",
+                "{}{}{}{}{}{}{}\n\n{}\n\n{}",
                 instructions, TAURI_SITE_ROUTING_RULES, TAURI_CITATION_RULES, TAURI_ARTIFACT_RULES,
-                source_instructions, instagram_login_note, http_instructions, research.instructions()
+                TAURI_GENERATIVE_UI_RULES, source_instructions, instagram_login_note,
+                http_instructions, research.instructions()
             ),
             enabled_sites: available_sites,
             initial_skills: research.initial_skills(),
