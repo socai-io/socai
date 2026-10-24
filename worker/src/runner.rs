@@ -29,6 +29,10 @@ const MAX_EVIDENCE_BYTES_PER_RESULT: usize = 384 * 1024;
 const MAX_EVIDENCE_RECORD_BYTES: usize = 128 * 1024;
 const MAX_EVENT_VALUE_BYTES: usize = 256 * 1024;
 const MAX_EVENT_TEXT_CHARS: usize = 60_000;
+const HOSTED_XHS_MAX_NOTES_PER_CALL: i64 = 5;
+const HOSTED_XHS_MAX_COMMENTS_PER_NOTE: i64 = 5;
+const HOSTED_X_MAX_POSTS_PER_CALL: usize = 3;
+const HOSTED_X_MAX_COMMENTS_PER_POST: i64 = 5;
 const WORKER_PREAMBLE: &str = "You are running inside the socai Session Worker. Reply in the user's language and answer ordinary questions directly. For research requests, use the enabled browser or site tools to inspect real pages and gather diverse source-linked evidence. Start the final response with a concise answer or executive summary, then organize supporting findings and actionable insights. Clearly distinguish captured observations from your inference, link material claims to the exact original sources, and never expose raw tool JSON. Track explicit minimum source counts and satisfy them before finalizing when the sources are publicly reachable. Treat a requested minimum as the target unless the user asks for exhaustive coverage: stop after enough diverse evidence is captured, and avoid synonymous searches that mostly duplicate existing evidence. When a site tool reports login_required or challenge_required, immediately call the matching platform login wait tool and keep the run active; the connected browser view lets the user complete either login or a verification challenge. Do not merely ask the user to act in a final answer. After the wait tool reports the page is ready, retry the original tool and continue. For LinkedIn post searches, use the supported content result type.";
 const HOSTED_REMOTE_RESEARCH_POLICY: &str = "Hosted runtime: OCR here uses a metered remote vision service, not the near-free local OCR described in desktop knowledge. XHS OCR is opt-in per call. First discover relevant sources with preview=true and ocr=false; then read selected notes in small batches, using OCR only where image text is necessary. Keep media capture for previews. Cover every requested content type and date interval before deep enrichment: for mixed image/video requests, sample both early rather than spending the entire tool budget on one large carousel batch. Verify publication dates; popularity sorting does not enforce a historical date range. Expand batches until explicit source minimums and the question's scope are met; never call a partial sample complete. For bounded repository comparisons, collect a representative shortlist with authoritative metadata and stop once the requested comparison is supported instead of exhaustively exploring unrelated repositories. If the user has not specified which website/account to connect, ask for that information immediately without enumerating unrelated platform tools. Never claim a login or external action succeeded without evidence.";
 const RECOVERABLE_BROWSER_ERROR_MARKERS: [&str; 7] = [
@@ -361,6 +365,186 @@ struct NamespacedTool {
     name: String,
     description: String,
     inner: SharedTool,
+}
+
+fn bounded_hosted_xhs_input(input: Value) -> Value {
+    let mut bounded = input;
+    if !bounded.is_object() {
+        return bounded;
+    }
+    let notes = bounded
+        .get("num_notes")
+        .and_then(Value::as_i64)
+        .unwrap_or(HOSTED_XHS_MAX_NOTES_PER_CALL)
+        .clamp(1, HOSTED_XHS_MAX_NOTES_PER_CALL);
+    let comments = bounded
+        .get("num_comments")
+        .and_then(Value::as_i64)
+        .unwrap_or(HOSTED_XHS_MAX_COMMENTS_PER_NOTE)
+        .clamp(0, HOSTED_XHS_MAX_COMMENTS_PER_NOTE);
+    bounded["num_notes"] = serde_json::json!(notes);
+    bounded["num_comments"] = serde_json::json!(comments);
+    bounded
+}
+
+fn bounded_hosted_xhs_schema(mut schema: Value) -> Value {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        if let Some(notes) = properties
+            .get_mut("num_notes")
+            .and_then(Value::as_object_mut)
+        {
+            notes.insert(
+                "default".into(),
+                serde_json::json!(HOSTED_XHS_MAX_NOTES_PER_CALL),
+            );
+            notes.insert(
+                "maximum".into(),
+                serde_json::json!(HOSTED_XHS_MAX_NOTES_PER_CALL),
+            );
+            notes.insert(
+                "description".into(),
+                Value::String(
+                    "Notes to inspect in this hosted call (maximum 5). Use another focused batch only when the first batch cannot satisfy the requested evidence count."
+                        .into(),
+                ),
+            );
+        }
+        if let Some(comments) = properties
+            .get_mut("num_comments")
+            .and_then(Value::as_object_mut)
+        {
+            comments.insert(
+                "maximum".into(),
+                serde_json::json!(HOSTED_XHS_MAX_COMMENTS_PER_NOTE),
+            );
+        }
+    }
+    schema
+}
+
+fn bounded_hosted_x_input(input: Value) -> Value {
+    let mut bounded = input;
+    if !bounded.is_object() {
+        return bounded;
+    }
+    if let Some(posts) = bounded.get_mut("posts").and_then(Value::as_array_mut) {
+        posts.truncate(HOSTED_X_MAX_POSTS_PER_CALL);
+    }
+    let comments = bounded
+        .get("num_comments")
+        .and_then(Value::as_i64)
+        .unwrap_or(HOSTED_X_MAX_COMMENTS_PER_POST)
+        .clamp(0, HOSTED_X_MAX_COMMENTS_PER_POST);
+    bounded["num_comments"] = serde_json::json!(comments);
+    bounded
+}
+
+fn bounded_hosted_x_schema(mut schema: Value) -> Value {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        if let Some(posts) = properties.get_mut("posts").and_then(Value::as_object_mut) {
+            posts.insert(
+                "maxItems".into(),
+                serde_json::json!(HOSTED_X_MAX_POSTS_PER_CALL),
+            );
+            posts.insert(
+                "description".into(),
+                Value::String(
+                    "X posts to inspect in this hosted call (maximum 3). Use another focused batch when more verified posts are required."
+                        .into(),
+                ),
+            );
+        }
+        if let Some(comments) = properties
+            .get_mut("num_comments")
+            .and_then(Value::as_object_mut)
+        {
+            comments.insert(
+                "default".into(),
+                serde_json::json!(HOSTED_X_MAX_COMMENTS_PER_POST),
+            );
+            comments.insert(
+                "maximum".into(),
+                serde_json::json!(HOSTED_X_MAX_COMMENTS_PER_POST),
+            );
+        }
+    }
+    schema
+}
+
+#[derive(Clone, Copy)]
+enum HostedBatchPolicy {
+    XhsSearch,
+    XGetPosts,
+}
+
+impl HostedBatchPolicy {
+    fn input(self, input: Value) -> Value {
+        match self {
+            Self::XhsSearch => bounded_hosted_xhs_input(input),
+            Self::XGetPosts => bounded_hosted_x_input(input),
+        }
+    }
+
+    fn schema(self, schema: Value) -> Value {
+        match self {
+            Self::XhsSearch => bounded_hosted_xhs_schema(schema),
+            Self::XGetPosts => bounded_hosted_x_schema(schema),
+        }
+    }
+}
+
+struct HostedBatchTool {
+    inner: SharedTool,
+    policy: HostedBatchPolicy,
+}
+
+impl HostedBatchTool {
+    fn wrap(inner: SharedTool, policy: HostedBatchPolicy) -> SharedTool {
+        Arc::new(Self { inner, policy })
+    }
+}
+
+#[async_trait]
+impl Tool for HostedBatchTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn input_schema(&self) -> Value {
+        self.policy.schema(self.inner.input_schema())
+    }
+
+    fn external_write(&self) -> bool {
+        self.inner.external_write()
+    }
+
+    fn parallel_scope(&self) -> Option<&str> {
+        self.inner.parallel_scope()
+    }
+
+    fn always_available(&self) -> bool {
+        self.inner.always_available()
+    }
+
+    fn defer_until_site(&self) -> &str {
+        self.inner.defer_until_site()
+    }
+
+    fn is_available(&self, ctx: &ToolContext) -> bool {
+        self.inner.is_available(ctx)
+    }
+
+    fn effective_input(&self, input: &Value) -> Value {
+        self.policy.input(self.inner.effective_input(input))
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        self.inner.call(self.policy.input(input), ctx).await
+    }
 }
 
 impl NamespacedTool {
@@ -795,6 +979,31 @@ async fn execute_run_inner(
             }
         };
         let site_tools = authorize_site_tools(site.id, site_tools, &spec.external_write_grants);
+        let site_tools = if site.id == "xhs" {
+            site_tools
+                .into_iter()
+                .map(|tool| {
+                    if tool.name() == "search" {
+                        HostedBatchTool::wrap(tool, HostedBatchPolicy::XhsSearch)
+                    } else {
+                        tool
+                    }
+                })
+                .collect()
+        } else if site.id == "x" {
+            site_tools
+                .into_iter()
+                .map(|tool| {
+                    if tool.name() == "get_posts" {
+                        HostedBatchTool::wrap(tool, HostedBatchPolicy::XGetPosts)
+                    } else {
+                        tool
+                    }
+                })
+                .collect()
+        } else {
+            site_tools
+        };
         if multi_site {
             let mappings = site_tools
                 .iter()
@@ -1212,6 +1421,76 @@ mod tests {
             name,
             external_write,
         })
+    }
+
+    #[test]
+    fn hosted_xhs_search_bounds_each_browser_batch() {
+        assert_eq!(
+            bounded_hosted_xhs_input(json!({
+                "query": "AI learning hardware",
+                "num_notes": 10,
+                "num_comments": 12,
+            })),
+            json!({
+                "query": "AI learning hardware",
+                "num_notes": 5,
+                "num_comments": 5,
+            })
+        );
+        assert_eq!(
+            bounded_hosted_xhs_input(json!({"query": "AI learning hardware"})),
+            json!({
+                "query": "AI learning hardware",
+                "num_notes": 5,
+                "num_comments": 5,
+            })
+        );
+    }
+
+    #[test]
+    fn hosted_xhs_search_schema_advertises_the_runtime_limits() {
+        let schema = bounded_hosted_xhs_schema(json!({
+            "type": "object",
+            "properties": {
+                "num_notes": {"type": "integer", "default": 10},
+                "num_comments": {"type": "integer", "default": 8}
+            }
+        }));
+        assert_eq!(schema["properties"]["num_notes"]["default"], json!(5));
+        assert_eq!(schema["properties"]["num_notes"]["maximum"], json!(5));
+        assert_eq!(schema["properties"]["num_comments"]["maximum"], json!(5));
+    }
+
+    #[test]
+    fn hosted_x_get_posts_bounds_each_browser_batch() {
+        assert_eq!(
+            bounded_hosted_x_input(json!({
+                "posts": ["one", "two", "three", "four", "five"],
+                "num_comments": 12,
+            })),
+            json!({
+                "posts": ["one", "two", "three"],
+                "num_comments": 5,
+            })
+        );
+        assert_eq!(
+            bounded_hosted_x_input(json!({"posts": ["one"]})),
+            json!({"posts": ["one"], "num_comments": 5})
+        );
+    }
+
+    #[test]
+    fn hosted_x_get_posts_schema_advertises_the_runtime_limits() {
+        let schema = bounded_hosted_x_schema(json!({
+            "type": "object",
+            "properties": {
+                "posts": {"type": "array", "items": {"type": "string"}},
+                "num_comments": {"type": "integer", "default": 8}
+            }
+        }));
+        assert_eq!(schema["properties"]["posts"]["maxItems"], json!(3));
+        assert_eq!(schema["properties"]["num_comments"]["default"], json!(5));
+        assert_eq!(schema["properties"]["num_comments"]["maximum"], json!(5));
     }
 
     fn tool_result(error: Option<&str>) -> AgentEvent {
