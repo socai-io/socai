@@ -249,6 +249,13 @@ pub enum WorkerCommand {
         binding: SessionBinding,
         run_id: String,
     },
+    #[serde(rename = "run.pause")]
+    RunPause {
+        protocol_version: u32,
+        request_id: String,
+        binding: SessionBinding,
+        run_id: String,
+    },
     #[serde(rename = "run.resume")]
     RunResume {
         protocol_version: u32,
@@ -373,6 +380,12 @@ impl WorkerCommand {
                 (*protocol_version, request_id)
             }
             Self::RunCancel {
+                protocol_version,
+                request_id,
+                binding,
+                run_id,
+            }
+            | Self::RunPause {
                 protocol_version,
                 request_id,
                 binding,
@@ -867,6 +880,13 @@ mod tests {
         WorkerCommand::RunResume {
             protocol_version: CONTROL_PROTOCOL_VERSION,
             request_id: "request-3".into(),
+            binding: binding(),
+            run_id: "run-1".into(),
+        }
+        .validate()?;
+        WorkerCommand::RunPause {
+            protocol_version: CONTROL_PROTOCOL_VERSION,
+            request_id: "request-pause".into(),
             binding: binding(),
             run_id: "run-1".into(),
         }

@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::io::BufRead as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,17 +12,24 @@ use socai_worker_protocol::{
     CONTROL_PROTOCOL_VERSION, MAX_FRAME_BYTES,
 };
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 use uuid::Uuid;
 
 struct ActiveRun {
     run_id: String,
-    prompt: String,
+    spec: RunSpec,
     prepared: PreparedRun,
     sequencer: Arc<Mutex<EventSequencer>>,
     task: JoinHandle<()>,
+    control: mpsc::UnboundedSender<RunControl>,
+    paused: bool,
+}
+
+enum RunControl {
+    Pause(oneshot::Sender<()>),
+    Resume(oneshot::Sender<()>),
 }
 
 fn event_sequencer(
@@ -192,27 +200,27 @@ pub async fn run_stdio_with_build_info(build: WorkerBuildInfo) -> Result<()> {
                             run_id.clone(),
                             sequence_offset,
                         )));
-                        let run_runtime = runtime.clone();
-                        let run_output = output_tx.clone();
-                        let run_sequencer = sequencer.clone();
-                        let finished = finished_tx.clone();
-                        let finished_run_id = run_id.clone();
-                        let task_prepared = prepared_for_task(&prepared);
                         let _ = output_tx.send(WorkerOutput::RunAccepted {
                             protocol_version: CONTROL_PROTOCOL_VERSION,
                             request_id,
                             run_id: run_id.clone(),
                         });
-                        let task = tokio::spawn(async move {
-                            execute_run(run_runtime, spec, task_prepared, run_sequencer, run_output).await;
-                            let _ = finished.send(finished_run_id);
-                        });
+                        let (task, control) = spawn_run_task(
+                            runtime.clone(),
+                            spec.clone(),
+                            prepared_for_task(&prepared),
+                            sequencer.clone(),
+                            output_tx.clone(),
+                            finished_tx.clone(),
+                        );
                         active = Some(ActiveRun {
                             run_id: run_id.clone(),
-                            prompt,
+                            spec,
                             prepared,
                             sequencer,
                             task,
+                            control,
+                            paused: false,
                         });
                     }
                     WorkerCommand::RunCancel { request_id, binding, run_id, .. } => {
@@ -238,6 +246,32 @@ pub async fn run_stdio_with_build_info(build: WorkerBuildInfo) -> Result<()> {
                             );
                         }
                     }
+                    WorkerCommand::RunPause { request_id, binding, run_id, .. } => {
+                        if bound.as_ref() != Some(&binding) {
+                            send_error(&output_tx, Some(request_id), "stale_binding", "pause binding does not match this worker");
+                            continue;
+                        }
+                        let Some(run) = active.as_mut().filter(|run| run.run_id == run_id) else {
+                            send_error(&output_tx, Some(request_id), "run_not_active", "run is not active in this worker");
+                            continue;
+                        };
+                        if !run.paused {
+                            let (acknowledged, acknowledgement) = oneshot::channel();
+                            if run.control.send(RunControl::Pause(acknowledged)).is_err()
+                                || acknowledgement.await.is_err()
+                                || run.task.is_finished()
+                                || run.sequencer.lock().await.is_terminal()
+                            {
+                                send_error(&output_tx, Some(request_id), "run_not_active", "run already completed");
+                                continue;
+                            }
+                            run.paused = true;
+                        }
+                        let _ = output_tx.send(WorkerOutput::CommandAccepted {
+                            protocol_version: CONTROL_PROTOCOL_VERSION,
+                            request_id,
+                        });
+                    }
                     WorkerCommand::RunResume { request_id, binding, run_id, .. } => {
                         if bound.as_ref() != Some(&binding) {
                             send_error(&output_tx, Some(request_id), "stale_binding", "resume binding does not match this worker");
@@ -247,7 +281,21 @@ pub async fn run_stdio_with_build_info(build: WorkerBuildInfo) -> Result<()> {
                             send_error(&output_tx, Some(request_id), "run_not_active", "run is not active in this worker");
                             continue;
                         }
-                        socai_core::sites::login_wait::signal_login_resume(&run_id);
+                        let run = active.as_mut().expect("active run was checked");
+                        if run.paused {
+                            let (acknowledged, acknowledgement) = oneshot::channel();
+                            if run.control.send(RunControl::Resume(acknowledged)).is_err()
+                                || acknowledgement.await.is_err()
+                                || run.task.is_finished()
+                                || run.sequencer.lock().await.is_terminal()
+                            {
+                                send_error(&output_tx, Some(request_id), "run_not_active", "run already completed");
+                                continue;
+                            }
+                            run.paused = false;
+                        } else {
+                            socai_core::sites::login_wait::signal_login_resume(&run_id);
+                        }
                         let _ = output_tx.send(WorkerOutput::CommandAccepted {
                             protocol_version: CONTROL_PROTOCOL_VERSION,
                             request_id,
@@ -274,6 +322,7 @@ pub async fn run_stdio_with_build_info(build: WorkerBuildInfo) -> Result<()> {
 
 async fn reap_terminal_run(active: &mut Option<ActiveRun>) {
     let should_reap = match active.as_ref() {
+        Some(run) if run.paused => false,
         Some(run) if run.task.is_finished() => true,
         Some(run) => run.sequencer.lock().await.is_terminal(),
         None => false,
@@ -289,6 +338,59 @@ async fn reap_terminal_run(active: &mut Option<ActiveRun>) {
         error!(%error, %run_id, "completed session worker task could not be joined");
     }
     socai_core::sites::login_wait::clear_login_resume(&run_id);
+}
+
+fn spawn_run_task(
+    runtime: SocaiRuntime,
+    spec: RunSpec,
+    prepared: PreparedRun,
+    sequencer: Arc<Mutex<EventSequencer>>,
+    output: mpsc::UnboundedSender<WorkerOutput>,
+    finished: mpsc::UnboundedSender<String>,
+) -> (JoinHandle<()>, mpsc::UnboundedSender<RunControl>) {
+    let run_id = spec.run_id.clone();
+    let (control, mut controls) = mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        let execution = execute_run(runtime, spec, prepared, sequencer, output);
+        drive_run_with_controls(execution, &mut controls).await;
+        let _ = finished.send(run_id);
+    });
+    (task, control)
+}
+
+async fn drive_run_with_controls<F>(
+    execution: F,
+    controls: &mut mpsc::UnboundedReceiver<RunControl>,
+) where
+    F: Future<Output = ()>,
+{
+    tokio::pin!(execution);
+    loop {
+        tokio::select! {
+            () = &mut execution => break,
+            command = controls.recv() => match command {
+                Some(RunControl::Pause(acknowledged)) => {
+                    let _ = acknowledged.send(());
+                    loop {
+                        match controls.recv().await {
+                            Some(RunControl::Resume(acknowledged)) => {
+                                let _ = acknowledged.send(());
+                                break;
+                            }
+                            Some(RunControl::Pause(acknowledged)) => {
+                                let _ = acknowledged.send(());
+                            }
+                            None => return,
+                        }
+                    }
+                }
+                Some(RunControl::Resume(acknowledged)) => {
+                    let _ = acknowledged.send(());
+                }
+                None => return,
+            }
+        }
+    }
 }
 
 fn prepared_for_task(prepared: &PreparedRun) -> PreparedRun {
@@ -314,7 +416,7 @@ async fn cancel_active(
     }
     let _ = run.task.await;
     socai_core::sites::login_wait::clear_login_resume(&run.run_id);
-    if !was_running {
+    if !was_running && !run.paused {
         return false;
     }
     let mut sequencer = run.sequencer.lock().await;
@@ -323,7 +425,7 @@ async fn cancel_active(
     }
     record_run(
         &run.prepared,
-        &run.prompt,
+        &run.spec.prompt,
         &format!("[task cancelled: {reason}]"),
         "cancelled",
     );
@@ -385,6 +487,7 @@ fn request_id(command: &WorkerCommand) -> Option<String> {
         WorkerCommand::SessionBind { request_id, .. }
         | WorkerCommand::RunStart { request_id, .. }
         | WorkerCommand::RunCancel { request_id, .. }
+        | WorkerCommand::RunPause { request_id, .. }
         | WorkerCommand::RunResume { request_id, .. }
         | WorkerCommand::Shutdown { request_id, .. } => request_id.clone(),
     })
@@ -428,6 +531,80 @@ mod tests {
 
     use super::*;
 
+    fn test_run_spec(run_id: &str) -> RunSpec {
+        RunSpec {
+            binding: SessionBinding {
+                user_id: "user-1".into(),
+                session_id: "session-1".into(),
+                kernel_id: "kernel-1".into(),
+                assignment_epoch: 1,
+            },
+            run_id: run_id.into(),
+            prompt: "research".into(),
+            provider: None,
+            model: None,
+            enabled_sites: Vec::new(),
+            max_steps: None,
+            max_tokens: None,
+            host_tools: Vec::new(),
+            host_tool_endpoint: None,
+            remote_ocr: false,
+            external_write_grants: Vec::new(),
+            research: Default::default(),
+        }
+    }
+
+    fn test_prepared_run() -> PreparedRun {
+        PreparedRun {
+            conversation_dir: PathBuf::from("conversation"),
+            run_dir: PathBuf::from("run"),
+            seed_messages: Vec::new(),
+            context_note: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn pause_acknowledgement_stops_polling_until_resume() {
+        let (progress, mut observed) = mpsc::unbounded_channel();
+        let execution = async move {
+            for step in 1..=3 {
+                progress.send(step).expect("progress receiver");
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        let (control, mut controls) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            drive_run_with_controls(execution, &mut controls).await;
+        });
+
+        assert_eq!(observed.recv().await, Some(1));
+        let (paused, pause_ack) = oneshot::channel();
+        control
+            .send(RunControl::Pause(paused))
+            .expect("pause command");
+        pause_ack.await.expect("pause acknowledgement");
+        while observed.try_recv().is_ok() {}
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), observed.recv(),)
+                .await
+                .is_err(),
+            "the execution future advanced after pause was acknowledged"
+        );
+
+        let (resumed, resume_ack) = oneshot::channel();
+        control
+            .send(RunControl::Resume(resumed))
+            .expect("resume command");
+        resume_ack.await.expect("resume acknowledgement");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), observed.recv(),)
+                .await
+                .expect("execution resumed")
+                .is_some()
+        );
+        task.await.expect("controlled execution task");
+    }
+
     #[tokio::test]
     async fn terminal_run_is_reaped_before_a_follow_up_is_admitted() {
         let binding = SessionBinding {
@@ -445,18 +622,15 @@ mod tests {
         let task = tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         });
-        let prepared = PreparedRun {
-            conversation_dir: PathBuf::from("conversation"),
-            run_dir: PathBuf::from("run"),
-            seed_messages: Vec::new(),
-            context_note: String::new(),
-        };
+        let (control, _controls) = mpsc::unbounded_channel();
         let mut active = Some(ActiveRun {
             run_id: "run-1".into(),
-            prompt: "research".into(),
-            prepared,
+            spec: test_run_spec("run-1"),
+            prepared: test_prepared_run(),
             sequencer,
             task,
+            control,
+            paused: false,
         });
 
         reap_terminal_run(&mut active).await;
@@ -477,5 +651,36 @@ mod tests {
             .event(socai_worker_protocol::WorkerEventPayload::Step { step: 2 })
             .expect("resumed event");
         assert_eq!(event.sequence, 18);
+    }
+
+    #[tokio::test]
+    async fn paused_run_is_retained_and_can_still_be_cancelled() {
+        let binding = SessionBinding {
+            user_id: "user-1".into(),
+            session_id: "session-1".into(),
+            kernel_id: "kernel-1".into(),
+            assignment_epoch: 1,
+        };
+        let sequencer = Arc::new(Mutex::new(EventSequencer::new(binding, "run-paused")));
+        let completed_task = tokio::spawn(async {});
+        tokio::task::yield_now().await;
+        assert!(completed_task.is_finished());
+        let (control, _controls) = mpsc::unbounded_channel();
+        let mut active = Some(ActiveRun {
+            run_id: "run-paused".into(),
+            spec: test_run_spec("run-paused"),
+            prepared: test_prepared_run(),
+            sequencer,
+            task: completed_task,
+            control,
+            paused: true,
+        });
+
+        reap_terminal_run(&mut active).await;
+        assert!(active.is_some());
+
+        let (output, _receiver) = mpsc::unbounded_channel();
+        assert!(cancel_active(&mut active, &output, "cancelled while paused").await);
+        assert!(active.is_none());
     }
 }
