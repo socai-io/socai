@@ -1850,12 +1850,14 @@ fn site_url_allowed(site: &str, value: &str) -> bool {
     let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
         return false;
     };
-    let root = match site {
-        "xhs" => "xiaohongshu.com",
-        "dy" => "douyin.com",
+    let roots: &[&str] = match site {
+        "xhs" => &["xiaohongshu.com", "rednote.com"],
+        "dy" => &["douyin.com"],
         _ => return false,
     };
-    host == root || host.ends_with(&format!(".{root}"))
+    roots
+        .iter()
+        .any(|root| host == *root || host.ends_with(&format!(".{root}")))
 }
 
 fn override_contract_version(site: &str, tool: &str) -> u32 {

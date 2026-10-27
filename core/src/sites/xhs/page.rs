@@ -78,16 +78,22 @@ pub fn rebase_xhs_url(url: &str, session_url: &str) -> String {
         return url.to_string();
     }
     if session == "rednote.com" {
+        // Ignore empty segments so a trailing slash (`/explore/<id>/`) still
+        // counts as the two-segment note route.
         let segments: Vec<String> = parsed
             .path_segments()
-            .map(|segments| segments.map(str::to_string).collect())
+            .map(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
         if segments.len() == 2
             && matches!(
                 segments[0].as_str(),
                 "explore" | "search_result" | "discovery"
             )
-            && !segments[1].is_empty()
         {
             let path = format!("/discovery/item/{}", segments[1]);
             parsed.set_path(&path);

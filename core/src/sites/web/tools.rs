@@ -141,7 +141,7 @@ fn managed_social_site(raw: &str) -> Option<&'static str> {
     let url = reqwest::Url::parse(raw).ok()?;
     let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
     let matches = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
-    if matches("xiaohongshu.com") || matches("xhslink.com") {
+    if matches("xiaohongshu.com") || matches("xhslink.com") || matches("rednote.com") {
         Some("xhs")
     } else if matches("douyin.com") {
         Some("dy")
@@ -197,7 +197,9 @@ struct SearchTool {
 
 #[async_trait]
 impl Tool for SearchTool {
-    fn name(&self) -> &str { "web_search" }
+    fn name(&self) -> &str {
+        "web_search"
+    }
     fn description(&self) -> &str {
         "Search the public web with DuckDuckGo in this worker's own browser tab. Returns up to ten observed titles, URLs and snippets. Open useful returned URLs with web_navigate and web_read before treating snippets as article evidence. Report verification/access failures instead of claiming no results."
     }
@@ -206,15 +208,22 @@ impl Tool for SearchTool {
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         let query = required_text(&input, "query")?;
-        anyhow::ensure!(query.chars().count() <= 512 && !query.contains('\0'), "Search query must be at most 512 characters");
+        anyhow::ensure!(
+            query.chars().count() <= 512 && !query.contains('\0'),
+            "Search query must be at most 512 characters"
+        );
         let mut url = reqwest::Url::parse("https://html.duckduckgo.com/html/")?;
         url.query_pairs_mut().append_pair("q", query);
         self.page.navigate_with_timeout(url.as_str(), 30.0).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             let result = crate::sites::learning::run_site_browser_tool(
-                &self.page, "web", "searchResults", Some(&json!({"query":query})),
-            ).await?;
+                &self.page,
+                "web",
+                "searchResults",
+                Some(&json!({"query":query})),
+            )
+            .await?;
             if let Some(reason) = result["reason"].as_str() {
                 if reason.contains("verification") || tokio::time::Instant::now() >= deadline {
                     return Ok(ToolResult::failure(reason));
@@ -222,8 +231,19 @@ impl Tool for SearchTool {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
-            anyhow::ensure!(result["results"].as_array().is_some_and(|r| !r.is_empty()), "Unexpected web search result");
-            ctx.write_json_artifact("web-search", &result, "artifacts", self.name(), "json", "DuckDuckGo search snippets (not full page reads)", input)?;
+            anyhow::ensure!(
+                result["results"].as_array().is_some_and(|r| !r.is_empty()),
+                "Unexpected web search result"
+            );
+            ctx.write_json_artifact(
+                "web-search",
+                &result,
+                "artifacts",
+                self.name(),
+                "json",
+                "DuckDuckGo search snippets (not full page reads)",
+                input,
+            )?;
             return Ok(json_text(&result));
         }
     }
@@ -504,12 +524,20 @@ impl Tool for ReadTool {
         let result = self.page.evaluate_json(&script).await?;
         let url = result["url"].as_str().unwrap_or_default();
         validate_public_url(url).await?;
-        anyhow::ensure!(result["text"].as_str().is_some_and(|text| !text.trim().is_empty()), "No readable web page text; preserve this coverage gap");
+        anyhow::ensure!(
+            result["text"]
+                .as_str()
+                .is_some_and(|text| !text.trim().is_empty()),
+            "No readable web page text; preserve this coverage gap"
+        );
         let id = format!("web:{url}");
-        ctx.record_note(&id, json!({
-            "note_id":id,"site":"web","url":url,"title":result["title"],
-            "content":result["text"],"media":[],"comments":[],"level":"deep"
-        }));
+        ctx.record_note(
+            &id,
+            json!({
+                "note_id":id,"site":"web","url":url,"title":result["title"],
+                "content":result["text"],"media":[],"comments":[],"level":"deep"
+            }),
+        );
         Ok(json_text(&result))
     }
 }
