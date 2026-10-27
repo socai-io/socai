@@ -60,9 +60,10 @@ pub fn xhs_note_route_url(origin: &str, note_id: &str) -> String {
 /// Rewrite an XHS `url` onto the host variant the tab at `session_url` is
 /// served from, so a canonical `xiaohongshu.com` link opened in a
 /// rednote-routed session keeps its note instead of bouncing to the rednote
-/// home: the host is swapped and an `/explore/<id>` route becomes
-/// `/discovery/item/<id>` (see `xhs_note_route_url`). Returned unchanged when
-/// either side isn't an XHS URL or the hosts already agree.
+/// home: the host is swapped and an `/explore/<id>`, `/search_result/<id>` or
+/// `/discovery/<id>` note route becomes `/discovery/item/<id>`, keeping the
+/// query (see `xhs_note_route_url`). Returned unchanged when either side isn't
+/// an XHS URL or the hosts already agree.
 pub fn rebase_xhs_url(url: &str, session_url: &str) -> String {
     let (Some(target), Some(session)) = (xhs_host_of(url), xhs_host_of(session_url)) else {
         return url.to_string();
@@ -77,8 +78,18 @@ pub fn rebase_xhs_url(url: &str, session_url: &str) -> String {
         return url.to_string();
     }
     if session == "rednote.com" {
-        if let Some(rest) = parsed.path().strip_prefix("/explore/") {
-            let path = format!("/discovery/item/{rest}");
+        let segments: Vec<String> = parsed
+            .path_segments()
+            .map(|segments| segments.map(str::to_string).collect())
+            .unwrap_or_default();
+        if segments.len() == 2
+            && matches!(
+                segments[0].as_str(),
+                "explore" | "search_result" | "discovery"
+            )
+            && !segments[1].is_empty()
+        {
+            let path = format!("/discovery/item/{}", segments[1]);
             parsed.set_path(&path);
         }
     }
@@ -1656,14 +1667,15 @@ impl<'a> XhsPageRuntime<'a> {
     pub async fn profile_info(&self) -> Result<Value> {
         // The header (`.user-info`) hydrates after the route renders, on
         // rednote.com visibly later than the note grid, so give it a moment
-        // rather than reporting an empty name / stats block.
+        // rather than reporting an empty name / stats block. `header_ready`
+        // is read from the header itself, not from the document-wide name
+        // fallbacks that also match note-card authors.
         let mut info = self.expect_object("profileInfo", None).await?;
         let deadline = Instant::now() + Duration::from_secs(6);
-        while info
-            .get("display_name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .is_empty()
+        while !info
+            .get("header_ready")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
             && Instant::now() < deadline
         {
             sleep_ms(300).await;

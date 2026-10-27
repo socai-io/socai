@@ -501,8 +501,9 @@ const SocaiXhsPageScripts = (() => {
     if (noteId) {
       for (const card of cards) {
         if (card.dataset?.noteId === noteId) return card;
-        const link = card.querySelector('a[href*="/explore/"], a[href*="/search_result/"], a[href*="/discovery/"]');
-        if (link?.href?.includes(noteId)) return card;
+        // rednote.com profile cards link only as /user/profile/<author>/<note>.
+        const links = $$('a[href*="/explore/"], a[href*="/search_result/"], a[href*="/discovery/"], a[href*="/user/profile/"]', card);
+        if (links.some((link) => String(link.href || '').includes(noteId))) return card;
       }
     }
     const index = arg && Number.isInteger(arg.index) ? arg.index : -1;
@@ -1331,17 +1332,30 @@ const SocaiXhsPageScripts = (() => {
   }
 
   function profileInfo() {
-    const displayName = firstVisibleText(
-      ['.user-name', '.profile-name', '.nickname', '.name', 'h1'],
-      document,
-    );
+    // Read the name from the hydrated `.user-info` header first: the
+    // document-wide fallbacks (`.name`) also match note-card authors, which
+    // render before the header on rednote.com and would make an empty header
+    // look ready. `header_ready` reports that header read for the caller's wait.
+    const nameSelectors = ['.user-name', '.profile-name', '.nickname', '.name', 'h1'];
+    const header = $$('.user-info').find(isVisible) || null;
+    const headerName = header ? firstVisibleText(nameSelectors, header) : '';
+    const displayName = headerName || firstVisibleText(nameSelectors, document);
     const bio = firstVisibleText(['.user-desc', '.profile-desc', '.desc', '.bio'], document);
     const body = norm(text(document.body));
     // Labels are Chinese on xiaohongshu.com and English on rednote.com
     // ("rednote ID: …", "IP location: …", "592 Follow", "6.2K Followers",
     // "69.2K Likes and saves"); both verified against profile snapshots.
-    const xhsId = (body.match(/(?:小红书号|rednote ID)[:：]?\s*([A-Za-z0-9_.-]+)/) || [])[1] || profileIdFromUrl();
-    const ipLocation = (body.match(/(?:IP属地|IP location)[:：]?\s*([^\s,，。]+)/i) || [])[1] || '';
+    // Prefer the labeled header element so a multi-word value ("IP location:
+    // United States") survives; the body regex is the fallback.
+    const labeledValue = (selector, labelRe) => {
+      const el = $$(selector, header || document).find(isVisible);
+      return el ? norm(text(el)).replace(labelRe, '').replace(/^[:：]\s*/, '').trim() : '';
+    };
+    const xhsId = (labeledValue('.user-redId', /^(?:小红书号|rednote ID)/i).match(/^[A-Za-z0-9_.-]+/) || [])[0]
+      || (body.match(/(?:小红书号|rednote ID)[:：]?\s*([A-Za-z0-9_.-]+)/) || [])[1]
+      || profileIdFromUrl();
+    const ipLocation = labeledValue('.user-IP', /^(?:IP属地|IP location)/i)
+      || (body.match(/(?:IP属地|IP location)[:：]?\s*([^\s,，。]+)/i) || [])[1] || '';
     const statText = (label) => {
       const re = new RegExp(`([0-9.,万wWkK+]+)\\s*(?:${label})`);
       return (body.match(re) || [])[1] || '';
@@ -1349,6 +1363,7 @@ const SocaiXhsPageScripts = (() => {
     const verification = profileVerification();
     return {
       ok: true,
+      header_ready: !!headerName,
       display_name: displayName,
       xhs_id: xhsId,
       profile_url: location.href,
