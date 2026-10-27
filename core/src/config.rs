@@ -28,8 +28,7 @@ pub struct XhsConfig {
     /// Which XHS web host the xhs tools open first: `xiaohongshu.com`
     /// (default) or `rednote.com`. XHS serves the same app from both and
     /// keeps a login's cookies on the host it was made on; accounts XHS
-    /// routes to rednote.com log in there. The login gate still tries the
-    /// other host when the preferred one reads logged out.
+    /// routes to rednote.com log in there, so they must set this key.
     #[serde(default)]
     pub host: Option<String>,
 }
