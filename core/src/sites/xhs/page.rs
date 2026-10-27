@@ -12,6 +12,16 @@ use crate::sites::xhs::entities::{normalize_url, XhsNote, XhsNoteCard};
 
 pub const XHS_HOME_URL: &str = "https://www.xiaohongshu.com/explore";
 
+/// The home feed the xhs tools open first: `XHS_HOME_URL` unless `xhs.host`
+/// in the socai config prefers `rednote.com`. The login gate still falls back
+/// to the other host (see `login_gate`).
+pub fn xhs_home_url() -> String {
+    let host = crate::config::load_config()
+        .map(|config| config.xhs.host().to_string())
+        .unwrap_or_else(|_| XHS_HOSTS[0].to_string());
+    format!("https://www.{host}/explore")
+}
+
 /// Hosts XHS serves its web app from. Accounts routed to the China site stay
 /// on `xiaohongshu.com`; overseas-routed accounts (and logged-out overseas
 /// visitors) are redirected to the international brand `rednote.com`, which
@@ -266,7 +276,7 @@ impl<'a> XhsPageRuntime<'a> {
             return Ok(());
         }
         if navigate_if_needed {
-            self.page.navigate(XHS_HOME_URL).await?;
+            self.page.navigate(&xhs_home_url()).await?;
             return Ok(());
         }
         anyhow::bail!(
@@ -374,7 +384,7 @@ impl<'a> XhsPageRuntime<'a> {
                     "state": state,
                 }));
             }
-            self.page.navigate(XHS_HOME_URL).await?;
+            self.page.navigate(&xhs_home_url()).await?;
         }
 
         // Pre-flight login gate: if logged out, bail immediately with

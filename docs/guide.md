@@ -633,6 +633,20 @@ entry are paced as actions; individual characters and key-down/key-up pairs do
 not each incur the delay. DOM reads and readiness polling have no added delay.
 Existing page-readiness waits still apply in every mode.
 
+### Xiaohongshu host preference
+
+Xiaohongshu serves the same web app from `www.xiaohongshu.com` and, for
+accounts it routes to its international brand, `www.rednote.com`. A login's
+cookies stay on the host it was made on. The `xhs` commands open
+`xiaohongshu.com` first by default and fall back to the other host when the
+first one reads logged out; set `xhs.host` to skip that extra hop for an
+account that lives on rednote.com:
+
+```bash
+socai config set xhs.host rednote.com      # or xiaohongshu.com (the default)
+socai config unset xhs.host
+```
+
 ### Privacy-safe browser readiness
 
 `socai status --json` reads the current daemon state without starting the

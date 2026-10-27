@@ -1173,7 +1173,7 @@ pub async fn ensure_search_ready(page: &PageSession) -> anyhow::Result<()> {
         .unwrap_or_default();
     let current_url = runtime.current_url().await.unwrap_or_default();
     if !crate::sites::xhs::page::is_xhs_url(&current_url) || state_name == "note_detail" {
-        page.navigate_with_timeout(crate::sites::xhs::XHS_HOME_URL, 60.0)
+        page.navigate_with_timeout(&crate::sites::xhs::page::xhs_home_url(), 60.0)
             .await?;
     }
     Ok(())

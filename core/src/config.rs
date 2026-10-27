@@ -18,6 +18,51 @@ pub struct SocaiConfig {
     pub runs: RunsConfig,
     #[serde(default)]
     pub cloud: CloudConfig,
+    #[serde(default)]
+    pub xhs: XhsConfig,
+}
+
+/// Xiaohongshu site preferences.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct XhsConfig {
+    /// Which XHS web host the xhs tools open first: `xiaohongshu.com`
+    /// (default) or `rednote.com`. XHS serves the same app from both and
+    /// keeps a login's cookies on the host it was made on; accounts XHS
+    /// routes to rednote.com log in there. The login gate still tries the
+    /// other host when the preferred one reads logged out.
+    #[serde(default)]
+    pub host: Option<String>,
+}
+
+pub const XHS_HOSTS: [&str; 2] = ["xiaohongshu.com", "rednote.com"];
+
+impl XhsConfig {
+    /// The preferred host, defaulting to `xiaohongshu.com`.
+    pub fn host(&self) -> &str {
+        self.host
+            .as_deref()
+            .map(str::trim)
+            .filter(|host| XHS_HOSTS.contains(host))
+            .unwrap_or(XHS_HOSTS[0])
+    }
+}
+
+fn normalized_xhs_host(value: &str) -> Result<String> {
+    let host = value
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("www.")
+        .trim_end_matches('/')
+        .to_ascii_lowercase();
+    let host = match host.as_str() {
+        "xiaohongshu" | "xhs" => "xiaohongshu.com",
+        "rednote" | "red" => "rednote.com",
+        other => other,
+    };
+    if !XHS_HOSTS.contains(&host) {
+        anyhow::bail!("xhs.host must be one of: xiaohongshu.com, rednote.com");
+    }
+    Ok(host.to_string())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -104,6 +149,7 @@ enum ConfigKey<'a> {
     ChromeProfileDir,
     RunsDir,
     CloudBaseUrl,
+    XhsHost,
 }
 
 impl<'a> ConfigKey<'a> {
@@ -126,8 +172,9 @@ impl<'a> ConfigKey<'a> {
             "cloud.base_url" | "cloud.base-url" | "cloud.url" | "server.url" => {
                 Ok(Self::CloudBaseUrl)
             }
+            "xhs.host" | "xhs.home" => Ok(Self::XhsHost),
             other => anyhow::bail!(
-                "unknown config key {other:?}; supported keys: browser.action_speeds.<platform>, chrome.profile, chrome.profile_dir, runs.dir, cloud.base_url"
+                "unknown config key {other:?}; supported keys: browser.action_speeds.<platform>, chrome.profile, chrome.profile_dir, runs.dir, cloud.base_url, xhs.host"
             ),
         }
     }
@@ -139,6 +186,7 @@ impl<'a> ConfigKey<'a> {
             Self::ChromeProfileDir => vec!["chrome", "profile_dir"],
             Self::RunsDir => vec!["runs", "dir"],
             Self::CloudBaseUrl => vec!["cloud", "base_url"],
+            Self::XhsHost => vec!["xhs", "host"],
         }
     }
 
@@ -149,6 +197,7 @@ impl<'a> ConfigKey<'a> {
             Self::ChromeProfileDir => "chrome.profile_dir".into(),
             Self::RunsDir => "runs.dir".into(),
             Self::CloudBaseUrl => "cloud.base_url".into(),
+            Self::XhsHost => "xhs.host".into(),
         }
     }
 }
@@ -255,6 +304,7 @@ fn parse_key_value(key: ConfigKey, raw_value: &str) -> Result<Value> {
         ConfigKey::ChromeProfileDir => Ok(Value::String(value.to_string())),
         ConfigKey::RunsDir => Ok(Value::String(normalized_path_value(value)?)),
         ConfigKey::CloudBaseUrl => Ok(Value::String(normalized_url_value(value)?)),
+        ConfigKey::XhsHost => Ok(Value::String(normalized_xhs_host(value)?)),
     }
 }
 
