@@ -285,7 +285,7 @@ pub static XHS_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
     browserless_tools: None,
     runtime_command: None,
     id: "xhs",
-    about: "Xiaohongshu (xiaohongshu.com)",
+    about: "Xiaohongshu (xiaohongshu.com / rednote.com)",
     home_url: XHS_HOME_URL,
     agent_tools: |page, llm| Box::pin(xhs_agent_tools(page, llm)),
     default_agent_tools: Some(|page, llm| Box::pin(xhs_default_agent_tools(page, llm))),
@@ -1172,7 +1172,7 @@ pub async fn ensure_search_ready(page: &PageSession) -> anyhow::Result<()> {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let current_url = runtime.current_url().await.unwrap_or_default();
-    if !current_url.contains("xiaohongshu.com") || state_name == "note_detail" {
+    if !crate::sites::xhs::page::is_xhs_url(&current_url) || state_name == "note_detail" {
         page.navigate_with_timeout(crate::sites::xhs::XHS_HOME_URL, 60.0)
             .await?;
     }
@@ -4090,8 +4090,14 @@ impl Tool for CommentTool {
         let expected_note_id = xhs_note_id_from_url(&url)
             .ok_or_else(|| anyhow::anyhow!("canonical Xiaohongshu URL is missing a note id"))?;
 
-        navigate_https(&self.page, &url).await?;
         let xhs = XhsPageRuntime::new(&self.page);
+        // Keep the note route on the host variant this session is served from
+        // (xiaohongshu.com vs rednote.com); see `rebase_xhs_url`.
+        let url = crate::sites::xhs::page::rebase_xhs_url(
+            &url,
+            &xhs.current_url().await.unwrap_or_default(),
+        );
+        navigate_https(&self.page, &url).await?;
         let page_state = xhs.run_script("pageState", None).await?;
         if let Some(reason) = xhs_write_gate_reason(&page_state) {
             return Ok(json_result(&failure_payload(
@@ -4521,9 +4527,8 @@ fn xhs_note_url(locator: &str) -> anyhow::Result<String> {
     let locator = locator.trim();
     if locator.starts_with("http://") || locator.starts_with("https://") {
         let parsed = reqwest::Url::parse(locator)?;
-        let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
         if parsed.scheme() != "https"
-            || (host != "xiaohongshu.com" && !host.ends_with(".xiaohongshu.com"))
+            || !crate::sites::xhs::page::is_xhs_url(parsed.as_str())
             || xhs_note_id_from_url(parsed.as_str()).is_none()
         {
             anyhow::bail!("note URL must be an HTTPS Xiaohongshu note URL");
@@ -4536,10 +4541,18 @@ fn xhs_note_url(locator: &str) -> anyhow::Result<String> {
 fn xhs_note_id_from_url(url: &str) -> Option<String> {
     let parsed = reqwest::Url::parse(url).ok()?;
     let segments = parsed.path_segments()?.collect::<Vec<_>>();
-    for pair in segments.windows(2) {
-        if matches!(pair[0], "explore" | "discovery" | "search_result") && !pair[1].is_empty() {
-            return Some(pair[1].to_string());
+    for (index, pair) in segments.windows(2).enumerate() {
+        if !matches!(pair[0], "explore" | "discovery" | "search_result") || pair[1].is_empty() {
+            continue;
         }
+        // Shared / overseas links use `/discovery/item/<id>`.
+        if pair[0] == "discovery" && pair[1] == "item" {
+            return segments
+                .get(index + 2)
+                .filter(|id| !id.is_empty())
+                .map(|id| id.to_string());
+        }
+        return Some(pair[1].to_string());
     }
     None
 }
@@ -4692,7 +4705,7 @@ impl Tool for WaitForLoginTool {
                     "timed_out": true,
                     "message": format!(
                         "Still not logged in after {timeout}s. Ask the user to scan \
-                         the QR / sign in on xiaohongshu.com in the browser, then \
+                         the QR / sign in on xiaohongshu.com (or rednote.com) in the browser, then \
                          call wait_for_login again."
                     ),
                 })));

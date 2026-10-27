@@ -5,7 +5,9 @@
     "xiaohongshu.com",
     "*.xiaohongshu.com",
     "xhslink.com",
-    "*.xhslink.com"
+    "*.xhslink.com",
+    "rednote.com",
+    "*.rednote.com"
   ],
   "notes": ["knowledge.md"],
   "browserTools": {

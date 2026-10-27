@@ -249,6 +249,11 @@ All examples below are operations within a task already started with `socai task
 
 ### RedNote (Xiaohongshu)
 
+Xiaohongshu serves some accounts (and logged-out overseas visitors) from
+`www.rednote.com` instead of `www.xiaohongshu.com`. The `xhs` commands work on
+either host; result links are always canonical `xiaohongshu.com` URLs. Some
+notes are not available on rednote.com and fail there with `note_read_failed`.
+
 #### Search and read posts
 
 ```bash

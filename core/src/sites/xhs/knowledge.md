@@ -4,6 +4,24 @@ Xiaohongshu / 小红书 / XHS is a Chinese lifestyle social platform. Posts are
 called notes (笔记) and usually include title/body text, hashtags, engagement
 counts, comments, media, and author/profile context.
 
+## Two Hosts, One Site
+
+XHS serves the same web app from `www.xiaohongshu.com` and, for accounts it
+routes to its international brand (and for logged-out overseas visitors), from
+`www.rednote.com`. Every xhs tool works on both and reports the host it ran on
+in `url`; result links stay canonical `xiaohongshu.com` URLs. Things an agent
+should expect on rednote.com:
+
+- Note detail lives at `/discovery/item/<id>`; `/explore/<id>` bounces to the
+  home feed with `?source=404`. The tools pick the route by host.
+- Not every note is served there. A note that exists on xiaohongshu.com can
+  come back `not_note_detail` / `note_read_failed` on rednote.com (XHS 404s it
+  with `errorCode=-510001`). That is content availability, not a broken link
+  or a login problem; search results from the same session are always
+  openable.
+- The UI is English (sidebar "Me", profile "Followers / Follow / Likes and
+  saves", favorites tabs "Save" → "Boards"); the tools match both languages.
+
 ## Runtime Assumption
 
 socai prepares the browser/session/login state before the app/TUI agent run.

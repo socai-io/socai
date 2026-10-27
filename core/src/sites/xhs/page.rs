@@ -12,6 +12,79 @@ use crate::sites::xhs::entities::{normalize_url, XhsNote, XhsNoteCard};
 
 pub const XHS_HOME_URL: &str = "https://www.xiaohongshu.com/explore";
 
+/// Hosts XHS serves its web app from. Accounts routed to the China site stay
+/// on `xiaohongshu.com`; overseas-routed accounts (and logged-out overseas
+/// visitors) are redirected to the international brand `rednote.com`, which
+/// runs the same SPA with the same routes and `__INITIAL_STATE__`. Both are
+/// the "XHS" site for every workflow here.
+const XHS_HOSTS: [&str; 2] = ["xiaohongshu.com", "rednote.com"];
+
+fn xhs_host_of(url: &str) -> Option<&'static str> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    XHS_HOSTS
+        .iter()
+        .copied()
+        .find(|site| host == *site || host.ends_with(&format!(".{site}")))
+}
+
+/// True when `url` is on an XHS web host (`xiaohongshu.com` or `rednote.com`,
+/// including subdomains).
+pub fn is_xhs_url(url: &str) -> bool {
+    xhs_host_of(url).is_some()
+}
+
+/// Origin to build XHS navigation URLs on for the site variant the tab is
+/// currently served. A `xiaohongshu.com` URL opened from a rednote-routed
+/// session redirects to the `rednote.com` *home* and drops the path, so note,
+/// profile and search routes must be built on the host the session is on.
+pub fn xhs_origin_for(url: &str) -> String {
+    format!(
+        "https://www.{}",
+        xhs_host_of(url).unwrap_or("xiaohongshu.com")
+    )
+}
+
+/// Note detail URL for `note_id` on `origin`. `xiaohongshu.com` opens notes
+/// at `/explore/<id>`; `rednote.com` only serves `/discovery/item/<id>` and
+/// bounces `/explore/<id>` to its home feed with `?source=404` (verified
+/// 2026-10-27 against both hosts).
+pub fn xhs_note_route_url(origin: &str, note_id: &str) -> String {
+    if origin.ends_with("rednote.com") {
+        format!("{origin}/discovery/item/{note_id}")
+    } else {
+        format!("{origin}/explore/{note_id}")
+    }
+}
+
+/// Rewrite an XHS `url` onto the host variant the tab at `session_url` is
+/// served from, so a canonical `xiaohongshu.com` link opened in a
+/// rednote-routed session keeps its note instead of bouncing to the rednote
+/// home: the host is swapped and an `/explore/<id>` route becomes
+/// `/discovery/item/<id>` (see `xhs_note_route_url`). Returned unchanged when
+/// either side isn't an XHS URL or the hosts already agree.
+pub fn rebase_xhs_url(url: &str, session_url: &str) -> String {
+    let (Some(target), Some(session)) = (xhs_host_of(url), xhs_host_of(session_url)) else {
+        return url.to_string();
+    };
+    if target == session {
+        return url.to_string();
+    }
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_string();
+    };
+    if parsed.set_host(Some(&format!("www.{session}"))).is_err() {
+        return url.to_string();
+    }
+    if session == "rednote.com" {
+        if let Some(rest) = parsed.path().strip_prefix("/explore/") {
+            let path = format!("/discovery/item/{rest}");
+            parsed.set_path(&path);
+        }
+    }
+    parsed.to_string()
+}
+
 /// How long to wait for the search-results page to actually populate cards
 /// after submitting. The wait polls and returns the instant cards appear, so a
 /// generous ceiling only costs time on genuinely slow loads (e.g. over a VPN) —
@@ -162,7 +235,7 @@ impl<'a> XhsPageRuntime<'a> {
 
     pub async fn ensure_xhs(&self, navigate_if_needed: bool) -> Result<()> {
         let url = self.current_url().await?;
-        if url.contains("xiaohongshu.com") {
+        if is_xhs_url(&url) {
             return Ok(());
         }
         if navigate_if_needed {
@@ -236,7 +309,7 @@ impl<'a> XhsPageRuntime<'a> {
         // One cheap navigation resets both; tabs that aren't on XHS at all
         // are handled by login_gate's own navigation below.
         let current = self.current_url().await?;
-        if current.contains("xiaohongshu.com") && !is_xhs_home_url(&current) {
+        if is_xhs_url(&current) && !is_xhs_home_url(&current) {
             let state = self.expect_object("searchState", None).await?;
             if let Some(reason) = search_blocker_reason(&state) {
                 return Ok(json!({
@@ -430,7 +503,7 @@ impl<'a> XhsPageRuntime<'a> {
         // Still validate the resulting page and keyword before reporting
         // success: navigation alone is not proof that search worked.
         let manual_state = state.clone();
-        let direct_url = xhs_search_result_url(query);
+        let direct_url = xhs_search_result_url(&xhs_origin_for(&self.current_url().await?), query);
         let direct_navigation = if manual_state
             .get("login_required")
             .and_then(Value::as_bool)
@@ -1284,7 +1357,7 @@ impl<'a> XhsPageRuntime<'a> {
                 "Current Xiaohongshu page is not a profile page: {url}"
             ));
         }
-        let info_value = self.expect_object("profileInfo", None).await?;
+        let info_value = self.profile_info().await?;
         let info = info_value.as_object().cloned().unwrap_or_default();
         let cards = self.extract_profile_cards(max_notes, scroll_rounds).await?;
         let fallback_url = self.current_url().await.unwrap_or_default();
@@ -1394,8 +1467,8 @@ impl<'a> XhsPageRuntime<'a> {
         }
         self.ensure_xhs(true).await?;
 
-        let mut url =
-            reqwest::Url::parse(&format!("https://www.xiaohongshu.com/explore/{note_id}"))?;
+        let origin = xhs_origin_for(&self.current_url().await?);
+        let mut url = reqwest::Url::parse(&xhs_note_route_url(&origin, note_id))?;
         url.query_pairs_mut()
             .append_pair("xsec_token", xsec_token)
             .append_pair("xsec_source", "pc_search");
@@ -1479,7 +1552,8 @@ impl<'a> XhsPageRuntime<'a> {
                 return Ok(result);
             }
         }
-        let url = format!("https://www.xiaohongshu.com/user/profile/{id}");
+        let origin = xhs_origin_for(&self.current_url().await?);
+        let url = format!("{origin}/user/profile/{id}");
         if let Err(err) = self.page.navigate_with_timeout(&url, 60.0).await {
             let mut result = json!({
                 "ok": false,
@@ -1580,7 +1654,22 @@ impl<'a> XhsPageRuntime<'a> {
     /// Extract just the author header (display name, xhs id, avatar, bio, IP
     /// location, follower/following/like counts) from the current profile page.
     pub async fn profile_info(&self) -> Result<Value> {
-        self.expect_object("profileInfo", None).await
+        // The header (`.user-info`) hydrates after the route renders, on
+        // rednote.com visibly later than the note grid, so give it a moment
+        // rather than reporting an empty name / stats block.
+        let mut info = self.expect_object("profileInfo", None).await?;
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while info
+            .get("display_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .is_empty()
+            && Instant::now() < deadline
+        {
+            sleep_ms(300).await;
+            info = self.expect_object("profileInfo", None).await?;
+        }
+        Ok(info)
     }
 
     /// Open one favorites album the way a person does: left sidebar 我, the
@@ -1727,7 +1816,7 @@ impl<'a> XhsPageRuntime<'a> {
     async fn open_favorite_board_tab(&self) -> Result<Option<Value>> {
         if !url_contains_query(&self.current_url().await?, "tab", "fav")
             && !self
-                .click_stable_tab("收藏", |url| url_contains_query(url, "tab", "fav"))
+                .click_stable_tab("收藏|Save", |url| url_contains_query(url, "tab", "fav"))
                 .await?
         {
             return Ok(Some(json!({
@@ -1774,7 +1863,7 @@ impl<'a> XhsPageRuntime<'a> {
                 sleep_ms(400).await;
                 continue;
             };
-            let Some(tab) = row.iter().find(|tab| subtab_label(tab) == "专辑") else {
+            let Some(tab) = row.iter().find(|tab| is_album_subtab(tab)) else {
                 sleep_ms(400).await;
                 continue;
             };
@@ -1784,7 +1873,7 @@ impl<'a> XhsPageRuntime<'a> {
                 .and_then(Value::as_array)
                 .and_then(|tabs| {
                     tabs.iter()
-                        .find(|item| subtab_label(item) == "专辑" && points_match(item, tab))
+                        .find(|item| is_album_subtab(item) && points_match(item, tab))
                 });
             let Some(target) = still else {
                 continue;
@@ -1914,7 +2003,7 @@ impl<'a> XhsPageRuntime<'a> {
                 .cloned()
                 .unwrap_or_default();
             let signature = subtab_signature(&tabs);
-            let ready = tabs.iter().any(|tab| subtab_label(tab) == "专辑");
+            let ready = tabs.iter().any(is_album_subtab);
             if ready && !signature.is_empty() && signature == previous {
                 return Ok(Some(tabs));
             }
@@ -2658,7 +2747,7 @@ fn normalize_keyword(value: &str) -> String {
         .to_lowercase()
 }
 
-fn xhs_search_result_url(query: &str) -> String {
+fn xhs_search_result_url(origin: &str, query: &str) -> String {
     let mut encoded = String::with_capacity(query.len());
     for byte in query.as_bytes() {
         match byte {
@@ -2671,7 +2760,7 @@ fn xhs_search_result_url(query: &str) -> String {
             }
         }
     }
-    format!("https://www.xiaohongshu.com/search_result/?keyword={encoded}&source=web_explore_feed")
+    format!("{origin}/search_result/?keyword={encoded}&source=web_explore_feed")
 }
 
 fn normalize_image_url(value: &str) -> String {
@@ -2705,14 +2794,12 @@ fn search_blocker_reason(state: &Value) -> Option<&'static str> {
 /// origin that redirects there. A note detail route (`/explore/<id>`) is not
 /// home.
 fn is_xhs_home_url(url: &str) -> bool {
-    let Some((_, rest)) = url.split_once("xiaohongshu.com") else {
+    if !is_xhs_url(url) {
         return false;
-    };
-    let path = rest
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("")
-        .trim_end_matches('/');
+    }
+    let path = reqwest::Url::parse(url)
+        .map(|parsed| parsed.path().trim_end_matches('/').to_string())
+        .unwrap_or_default();
     path.is_empty() || path == "/explore"
 }
 
@@ -2726,6 +2813,10 @@ fn opened_note_id_from_url(url: &str) -> String {
     while let Some(segment) = segments.next() {
         if matches!(segment, "explore" | "discovery" | "search_result") {
             if let Some(id) = segments.next() {
+                // Shared / overseas links use `/discovery/item/<id>`.
+                if segment == "discovery" && id == "item" {
+                    return segments.next().unwrap_or_default().to_string();
+                }
                 return id.to_string();
             }
         }
@@ -2746,6 +2837,12 @@ fn number(value: &Value, key: &str) -> f64 {
 
 fn script_ok(value: &Value) -> bool {
     value.get("ok").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// The favorites album subtab: 专辑 on xiaohongshu.com, "Boards" on
+/// rednote.com (the row reads Notes / Boards / Files there).
+fn is_album_subtab(tab: &Value) -> bool {
+    matches!(subtab_label(tab), "专辑" | "Boards")
 }
 
 fn subtab_label(tab: &Value) -> &str {
