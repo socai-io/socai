@@ -4092,7 +4092,10 @@ impl Tool for CommentTool {
 
         let xhs = XhsPageRuntime::new(&self.page);
         // Keep the note route on the host variant this session is served from
-        // (xiaohongshu.com vs rednote.com); see `rebase_xhs_url`.
+        // (xiaohongshu.com vs rednote.com); see `rebase_xhs_url`. A fresh tab
+        // is still `about:blank`, which says nothing about the routing, so
+        // land on XHS first and read the host the session actually resolved.
+        xhs.ensure_xhs(true).await?;
         let url = crate::sites::xhs::page::rebase_xhs_url(
             &url,
             &xhs.current_url().await.unwrap_or_default(),
