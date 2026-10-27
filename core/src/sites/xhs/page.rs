@@ -45,6 +45,16 @@ pub fn xhs_origin_for(url: &str) -> String {
     )
 }
 
+/// The home feed on the *other* XHS host: rednote.com for a xiaohongshu.com
+/// URL and xiaohongshu.com for a rednote.com one. `None` off XHS.
+fn xhs_alternate_home(url: &str) -> Option<String> {
+    match xhs_host_of(url)? {
+        "xiaohongshu.com" => Some("https://www.rednote.com/explore".to_string()),
+        "rednote.com" => Some(XHS_HOME_URL.to_string()),
+        _ => None,
+    }
+}
+
 /// Note detail URL for `note_id` on `origin`. `xiaohongshu.com` opens notes
 /// at `/explore/<id>`; `rednote.com` only serves `/discovery/item/<id>` and
 /// bounces `/explore/<id>` to its home feed with `?source=404` (verified
@@ -272,6 +282,32 @@ impl<'a> XhsPageRuntime<'a> {
     /// polling. The timeout fallback is only reached if no sidebar ever renders.
     pub async fn login_gate(&self, navigate_if_needed: bool) -> Result<LoginGate> {
         self.ensure_xhs(navigate_if_needed).await?;
+        if self.poll_login_state().await? == LoginGate::LoggedIn {
+            return Ok(LoginGate::LoggedIn);
+        }
+        // XHS keeps a session's cookies on the host it logged in on. An
+        // account routed to rednote.com therefore reads as logged out on
+        // xiaohongshu.com (and vice versa) when XHS does not redirect between
+        // the two, so try the other host once before reporting a logout.
+        let origin_home = xhs_origin_for(&self.current_url().await?) + "/explore";
+        let Some(alternate_home) = xhs_alternate_home(&origin_home) else {
+            return Ok(LoginGate::Required);
+        };
+        self.page.navigate(&alternate_home).await?;
+        if self.poll_login_state().await? == LoginGate::LoggedIn {
+            return Ok(LoginGate::LoggedIn);
+        }
+        // Logged out on both: go back so the login prompt (and any QR the
+        // caller surfaces) is on the host this session started from.
+        self.page.navigate(&origin_home).await?;
+        let _ = self.poll_login_state().await?;
+        Ok(LoginGate::Required)
+    }
+
+    /// Poll `loginState` until the sidebar reads `"out"` or `"in"`; `"unknown"`
+    /// means it hasn't rendered yet (~1-3s after a fresh navigation). The
+    /// timeout fallback is only reached if no sidebar ever renders.
+    async fn poll_login_state(&self) -> Result<LoginGate> {
         let deadline = Instant::now() + Duration::from_secs_f64(LOGIN_GATE_TIMEOUT_S);
         loop {
             let state = self.expect_object("loginState", None).await?;
