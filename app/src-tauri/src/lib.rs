@@ -1,6 +1,7 @@
 mod artifact_tool;
 mod commands;
 mod connectors;
+mod input_files;
 mod tasks;
 mod telemetry;
 mod timeline;
@@ -339,6 +340,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            input_files::input_files_capabilities,
+            input_files::input_file_choose,
+            input_files::input_file_drafts,
+            input_files::input_file_upload,
+            input_files::input_file_remove,
+            input_files::input_file_original_save_as,
             commands::cdp_connect,
             commands::cdp_disconnect,
             commands::cdp_status,

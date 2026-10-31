@@ -730,10 +730,37 @@ feature. The matching server must explicitly migrate `native_input_scopes`
 and advertise `native_scope_protocol: 1` with all three input-file gates enabled;
 their source defaults remain off. Before registering `native_input_tools`, a
 Desktop entry point must bind the inputs and durably persist the scope and
-accepted IDs before starting a task or billing. Picker/upload commands,
-interrupted-admission recovery, original-file saving, account-switch handling
+accepted IDs before starting a task or billing. Connecting the picker/upload
+commands to task admission, interrupted-admission recovery, account-switch UI
 and real-user acceptance remain required. A scope deletion acknowledgement
 means `delete_pending`, not that physical storage or quota has been released.
+
+The Desktop Rust bridge now registers `input_files_capabilities`,
+`input_file_choose`, `input_file_drafts`, `input_file_upload`,
+`input_file_remove` and `input_file_original_save_as`. These are internal
+integration commands, not a connected composer workflow. The capability
+explicitly reports `desktop_admission_ready: false` until durable task binding
+and UI integration are complete.
+
+The picker uses the system dialog; JavaScript cannot supply a filesystem path
+or raw file bytes. Selected originals are copied into a bounded, account/service
+partition under the app data directory's `pending-inputs-v1`, outside run
+artifacts. A draft keeps its bytes, size, SHA-256 and upload ID across retries
+and app restarts; original paths are not stored. Staging is limited to 20 files
+or 50 MiB per partition, each at most 20 MiB. On Unix, staging directories are
+0700 and temporary files 0600; Windows inherits the app user's filesystem ACLs.
+This is private local storage, not encryption against the same OS user.
+
+Upload state events report real phases, not a fabricated percentage. The bridge
+persists an attempted-upload checkpoint before HTTP and the validated response
+before returning ready. Removal keeps failed acknowledgements retryable and
+does not delete selected originals; an uncertain upload may still reserve
+server capacity until expiry. Original saving checks scope membership, exact
+bytes and integrity before asking for a destination, rechecks the account after
+the dialog, and writes through a temporary file. Cancellation writes nothing.
+No task is started, bound or billed by these bridge commands. Their presence
+and a successful build do not constitute picker, upload, model or save/open
+acceptance in the user's environment.
 
 Word ingestion is bounded to 20 MiB compressed, 64 MiB declared expanded size,
 4096 ZIP entries, 8 MiB main XML and 2 MiB extracted text. It does not unpack
