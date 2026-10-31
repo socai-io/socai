@@ -47,6 +47,23 @@
     if (blocked) return blocked;
     if (location.hostname === 'weixin.sogou.com' && location.pathname === '/link') return failure('redirect_pending');
     if (location.hostname !== 'mp.weixin.qq.com' || !/^\/s(?:\/|$)/.test(location.pathname)) return failure('wrong_article_route');
+    if (!text('#js_content') && text('.weui-msg__title') === '该公众号已迁移') {
+      const link = document.querySelector('#js_access_msg');
+      const rect = link?.getBoundingClientRect();
+      if (link?.innerText?.trim() === '访问文章' && rect?.width > 0 && rect?.height > 0) {
+        try {
+          const url = new URL(link.href);
+          if (['http:', 'https:'].includes(url.protocol) && url.hostname === 'mp.weixin.qq.com'
+              && !url.username && !url.password && !url.port && /^\/s(?:\/|$)/.test(url.pathname)) {
+            // The real migration button can contain HTTP. Open its exact
+            // destination over HTTPS; never retrieve article HTML over HTTP.
+            url.protocol = 'https:';
+            return { ...failure('account_migrated'), migration_url: url.href };
+          }
+        } catch { /* Keep an unsafe or malformed destination out of the host. */ }
+      }
+      return failure('account_migration_unavailable');
+    }
     if (!text('#js_content') || !text('#activity-name')) return failure('article_not_ready');
     return { ok: true };
   }

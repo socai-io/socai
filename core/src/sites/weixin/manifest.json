@@ -60,7 +60,7 @@
       "path": "page-tools.js",
       "binding": "window.SocaiWeixinPageTools",
       "callable": "articleState",
-      "description": "After opening a Sogou /link or mp.weixin.qq.com/s article in Chrome, wait for redirect completion and a nonempty title and #js_content body. Report challenges and unavailable articles explicitly.",
+      "description": "After opening a Sogou /link or mp.weixin.qq.com/s article in Chrome, wait for redirect completion and a nonempty title and #js_content body. Report challenges and unavailable articles explicitly. A visible publisher-migration notice returns account_migrated with the actual Visit article button destination in migration_url, normalized to HTTPS; this is not article content.",
       "args": {},
       "returns": {
         "type": "object",
