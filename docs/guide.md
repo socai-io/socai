@@ -732,16 +732,20 @@ their source defaults remain off. Before registering `native_input_tools`, a
 Desktop entry point must bind the inputs and durably persist the scope and
 accepted IDs before starting a task or billing. The native command candidate
 now implements journaled task admission and recovery as described below;
-composer integration, pending-intent UX, account-switch UI and real-user
-acceptance remain required. A scope deletion acknowledgement
+the composer and pending-intent candidate are now connected. Real-user
+acceptance, missing/advanced claimed-task resolution and legacy journal cleanup
+remain required. A scope deletion acknowledgement
 means `delete_pending`, not that physical storage or quota has been released.
 
 The Desktop Rust bridge now registers `input_files_capabilities`,
 `input_file_choose`, `input_file_drafts`, `input_file_upload`,
 `input_file_remove` and `input_file_original_save_as`. These are internal
-integration commands, not a connected composer workflow. The capability
-explicitly reports `desktop_admission_ready: false` until durable task binding
-and UI integration are complete.
+integration commands. The candidate composer uses the OS picker, real upload
+phases, explicit restored-draft selection, stable Send, recovery and Save As.
+The capability still reports `desktop_admission_ready: false`; do not enable it
+before the remaining recovery cases and real-user acceptance are done.
+The client also requires `native_admission_cancellation: true` from the server,
+so an older scope-only server does not expose a partly cancellable workflow.
 Native start/reply commands accept input IDs only with the selected `inputOwner`
 partition, a stable UUID-v4 `requestId`, and matching ordered `inputUploadIds`
 and `attachmentIds`. Missing metadata fails instead of ignoring the files.
@@ -764,10 +768,59 @@ first model request, and registers the scope-bound list/read tools. File
 content is untrusted reference material; upload success is not proof of model
 reading. Delete acknowledges remote scope tombstoning before removing local
 history and accepted private retry copies. Failures retain a retry entry; remote
-quota/physical deletion is still pending. Private intent journals are currently
-retained for recovery/non-replay, not claimed erased with the conversation.
-Pending-intent discovery/abandonment and journal-retention UX are unfinished;
-do not enable the composer gate or use these internal commands as acceptance.
+quota/physical deletion is still pending. Unresolved private intent journals
+retain the original message/options and recovery snapshot. Acknowledgement
+first requires a checked task-index checkpoint for that exact claim; if it is
+missing, retain the full journal for explicit recovery, never compact its only
+snapshot. Successful acknowledgement, confirmed cancellation, or explicit
+input retention atomically replaces the journal with a version-2 non-replay
+receipt before removing its pending reference. The receipt contains opaque
+IDs, content/run fingerprints and outcome, not the message, model settings,
+full task snapshot or a run path (whose slug could contain message text).
+Conversation/run history is separate and remains; this is not physical erasure.
+Pending discovery/acknowledgement/cancellation use `input_submissions`,
+`input_submission_ack` and `input_submission_cancel`. A separate
+`input_submission_recover` command requires a durable claim and has no dispatch
+path; the UI's “inspect original, no replay” action never calls Send. Continuing
+an unclaimed original intent is a separate explicit action and may start its
+first paid run. A maximum of 20 pending references is listed, without scanning
+all historical journals. Up to 20 cached IDs are also reconciled against local
+receipts, so a crash after Rust acknowledgement but before UI cleanup does not
+keep an executable-looking original message in UI storage. There are at most
+40 journal reads, not an unbounded historical scan. Original parameters and
+IDs, not file bytes or paths, survive in owner-partitioned UI storage before
+the first IPC Send. A compact receipt may return an already-indexed exact task,
+but cannot recreate a missing task, replay it, or overwrite a newer turn.
+
+Cancellation first persists abandonment, then uses the server's
+`POST /native-scopes/{scope}/cancel-admission`. It tombstones a new scope or
+only the selected inputs of an existing one, under the same locks as binding.
+A late bind/upload cannot revive those files. Remote errors retain the intent
+and private copies for cancellation retry. If the IPC was never received, a
+local tombstone blocks a late Send and unbound drafts stay available for explicit
+removal. Claimed turns cannot be abandoned as unsent. A conversation advanced
+by another client fails closed rather than deleting potentially reused inputs;
+an unclaimed message in an existing input conversation can instead be explicitly
+ended with `input_submission_keep_inputs`. Inline confirmation explains that
+its inputs may be bound to the original idle scope, but no task starts and no
+quota is released. The no-replay decision is persisted before binding; only
+that same resolution is retryable after an ambiguous response. Binding is
+acknowledged and checkpointed before private retry copies are removed; partial
+copy-cleanup failures retain IDs for retry. If IPC was never received, a local
+tombstone blocks late Send and files remain unbound drafts, explicitly reported
+as such. Claimed requests cannot use this action. Missing conversations and
+superseded claimed journals still fail closed and require further resolution;
+old full journals with no pending/cache reference are not silently swept.
+There is no automatic expiration of non-replay receipts, since deleting them
+would allow delayed old request IDs to become new admissions. This is not full
+conversation-data erasure or a proof of runtime durability under faults.
+
+Identity, local drafts and pending references hydrate asynchronously after
+the workspace render. Capabilities and accepted-file HTTP reads are lazy when
+the user opens inputs; ordinary no-input messages add no input network calls.
+The composer preserves a focused textarea's caret during its input updates and
+defers these redraws during composition; IME/focus behavior is not yet accepted
+on a real native runtime. Do not use these internal commands as acceptance.
 There is no synchronous journal scan on ordinary app startup. The OS lease
 protects this input conversation's dispatch, not global cross-process merging
 of every legacy task index or unrestricted local desktop tools.

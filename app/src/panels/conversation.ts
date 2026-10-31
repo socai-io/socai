@@ -45,6 +45,8 @@ import type { AgentTaskView } from "./tasks";
 export type ChromeSetupState = "waiting" | "ready" | "permission_required";
 
 export interface ComposerProps {
+  inputsHtml?: string;
+  inputBlocked?: boolean;
   sites: string[];
   sourcesExpanded: boolean;
   mode: "new" | "reply";
@@ -781,6 +783,7 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
   // a fresh hosted session) on demand.
   const needsConnection = sourcesNeedBrowser(c.sites, c.researchMode) && !connected && !c.remoteProfile && !c.managedProfile;
   const sendDisabled = disabled
+    || !!c.inputBlocked
     || !c.value.trim()
     || needsConnection
     || !c.modelReady
@@ -847,6 +850,7 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
   return `
     <div class="composer">
       <form id="composer-form" class="composer__form">
+        ${c.inputsHtml ?? ""}
         <div class="composer__row ${disabled ? "is-disabled" : ""}">
           <textarea
             id="composer-input"

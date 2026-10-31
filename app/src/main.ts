@@ -58,6 +58,7 @@ export interface ModelInfo {
 export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface AgentTaskSnapshot {
+  input_context?: { owner: string; scope_id: string; request_id: string; request_hash: string } | null;
   sites?: string[];
   task_id: string;
   task: string;

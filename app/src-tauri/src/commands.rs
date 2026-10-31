@@ -695,11 +695,11 @@ pub async fn agent_task_start(
     input_owner: Option<String>,
     request_id: Option<String>,
 ) -> Result<AgentTaskSnapshot, String> {
-    let input_hash = crate::input_admission::request_hash(&json!({
+    let input_request = json!({
         "task": task.trim(), "provider": provider, "model": model, "sites": sites,
         "language": language, "research_mode": research_mode, "workflow": workflow,
         "custom_workflow": custom_workflow,
-    })).map_err(|e| e.to_string())?;
+    });
     let workflow = workflow.unwrap_or_default();
     let custom_workflow = validate_custom_workflow(custom_workflow)?;
     if workflow == TaskWorkflow::Custom && custom_workflow.is_none() {
@@ -718,7 +718,7 @@ pub async fn agent_task_start(
             research_mode.unwrap_or(false), workflow, custom_workflow,
             input_owner.ok_or("Input owner is required; no task was started")?,
             request_id.ok_or("A stable input request ID is required; no task was started")?,
-            input_hash, input_upload_ids.unwrap_or_default(), attachment_ids.unwrap_or_default()).await;
+            input_request, input_upload_ids.unwrap_or_default(), attachment_ids.unwrap_or_default()).await;
     }
     let anonymous = !socai_core::cloud::auth_session()
         .map_err(|e| e.to_string())?
@@ -844,10 +844,10 @@ pub async fn agent_task_reply(
     input_owner: Option<String>,
     request_id: Option<String>,
 ) -> Result<AgentTaskSnapshot, String> {
-    let input_hash = crate::input_admission::request_hash(&json!({
+    let input_request = json!({
         "task_id": task_id, "message": message.trim(), "sites": sites, "language": language,
         "research_mode": research_mode, "workflow": workflow, "custom_workflow": custom_workflow,
-    })).map_err(|e| e.to_string())?;
+    });
     let custom_workflow = validate_custom_workflow(custom_workflow)?;
     let message_text = message.trim().to_string();
     if message_text.is_empty() {
@@ -874,7 +874,7 @@ pub async fn agent_task_reply(
             selected_workflow, selected_custom,
             input_owner.ok_or("Return to the original input account before replying")?,
             request_id.ok_or("A stable input request ID is required; no reply was started")?,
-            input_hash, input_upload_ids.unwrap_or_default(), attachment_ids.unwrap_or_default()).await;
+            input_request, input_upload_ids.unwrap_or_default(), attachment_ids.unwrap_or_default()).await;
     }
     if matches!(existing.status.as_str(), "queued" | "running") {
         return Err("task is still running — wait for it to finish before replying".into());
@@ -1010,10 +1010,10 @@ async fn submit_native_input_task(
     previous: Option<AgentTaskSnapshot>, message: String, provider: Option<String>, model: Option<String>,
     sites: Vec<String>, language: Option<String>, research_mode: bool, workflow: TaskWorkflow,
     custom_workflow: Option<crate::tasks::WorkflowSkill>, owner: String, request_id: String,
-    hash: String, uploads: Vec<String>, attachments: Vec<String>,
+    request: Value, uploads: Vec<String>, attachments: Vec<String>,
 ) -> Result<AgentTaskSnapshot, String> {
     use crate::input_admission::{self, Admission};
-    let prepared = input_admission::prepare(&registry, &owner, &request_id, &hash, uploads, attachments,
+    let prepared = input_admission::prepare(&registry, &owner, &request_id, request, uploads, attachments,
         previous.as_ref(), || {
             let chosen_provider = ensure_llm_provider_configured_for(provider.as_deref(), model.as_deref())?;
             let chosen_model = model.clone().filter(|value| !value.trim().is_empty())

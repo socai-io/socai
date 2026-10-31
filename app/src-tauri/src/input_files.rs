@@ -1,7 +1,7 @@
 //! Native picker and private retry bytes. No renderer-supplied file paths.
 //!
 //! Selecting/uploading is NOT task admission. Keep the composer capability
-//! closed until durable conversation/task binding has been integrated.
+//! closed until retention/recovery UX and real-user acceptance are complete.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -406,6 +406,21 @@ pub async fn input_files_capabilities() -> Result<NativeCapabilities, String> {
         transport,
         desktop_admission_ready: false,
     })
+}
+
+#[tauri::command]
+pub fn input_files_identity() -> Result<String, String> {
+    api::input_owner().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn input_scope_files(
+    owner: String,
+    scope_id: String,
+) -> Result<api::NativeInputConversation, String> {
+    api::native_input_files(&owner, uuid(&scope_id).map_err(|e| e.to_string())?)
+        .await
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// OS picker only. No JS path/byte array is accepted, returned or persisted.

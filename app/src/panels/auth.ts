@@ -124,6 +124,10 @@ export namespace authMenu {
     return session.logged_in && !sessionRejected;
   }
 
+  export function inputIdentity(): string {
+    return isLoggedIn() ? session.user_id : "";
+  }
+
   // Single write path for the session so shared copy that depends on the
   // sign-in state (the api-error nudge toward the built-in model) stays in sync.
   function setSession(next: AuthSession): void {

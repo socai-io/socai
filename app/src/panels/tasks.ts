@@ -6,6 +6,7 @@ import { getLanguage } from "../lib/i18n";
 //! live in `task_history.ts`; the conversation view lives in `conversation.ts`.
 
 import { sourcesNeedBrowser } from "../lib/platforms";
+import { nativeInputs } from "../lib/native-inputs";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentArtifact,
@@ -810,6 +811,8 @@ export namespace agentPanel {
   function newComposer(shell: ShellState): ComposerProps {
     const selected = selectedModel();
     return {
+      inputsHtml: nativeInputs.render("new", undefined, submittingTask),
+      inputBlocked: nativeInputs.blocked("new"),
       mode: "new",
       sites: draftSites,
       sourcesExpanded,
@@ -832,7 +835,10 @@ export namespace agentPanel {
   }
 
   function replyComposer(shell: ShellState, taskId: string, running: boolean): ComposerProps {
+    const inputTask = tasks.find(task => task.task_id === taskId);
     return {
+      inputsHtml: nativeInputs.render(taskId, inputTask, running || submittingReply),
+      inputBlocked: nativeInputs.blocked(taskId, inputTask),
       mode: "reply",
       sites: taskSites(taskId),
       sourcesExpanded,
@@ -870,6 +876,13 @@ export namespace agentPanel {
     });
 
     bindComposer(shell);
+    const inputTask = view === "compose" ? undefined : selectedTask();
+    nativeInputs.bind({ key: inputTask?.task_id ?? "new", task: inputTask,
+      disabled: submittingTask || submittingReply || !!inputTask && ["queued", "running"].includes(inputTask.status),
+      changed: () => shell.rerender(),
+      recovered: snapshot => { upsertTask(snapshot); selectedTaskId = snapshot.task_id; view = "detail"; shell.rerender(); },
+    }, authMenu.inputIdentity());
+    updateComposerButton(shell);
 
     // Fold/unfold a turn's activity detail. The explicit choice is remembered
     // per task+turn until the run's terminal transition clears it.
@@ -1547,6 +1560,7 @@ export namespace agentPanel {
     const selected = selectedModel();
     const modelReady = task ? true : !!selected && selected.has_key;
     const disabled = submitting
+      || nativeInputs.blocked(task?.task_id ?? "new", task)
       || running
       || !value.trim()
       || needsConnection
@@ -1575,7 +1589,7 @@ export namespace agentPanel {
     shell.rerender();
     try {
       const selected = selectedModel();
-      const snapshot = await invoke<AgentTaskSnapshot>("agent_task_start", {
+      const snapshot = await nativeInputs.submit("new", "agent_task_start", {
         language: getLanguage(),
         task: value,
         sites: draftSites,
@@ -1617,7 +1631,7 @@ export namespace agentPanel {
     streamScroll.set(taskId, { top: 0, pinned: true });
     shell.rerender();
     try {
-      const snapshot = await invoke<AgentTaskSnapshot>("agent_task_reply", {
+      const snapshot = await nativeInputs.submit(taskId, "agent_task_reply", {
         language: getLanguage(),
         taskId,
         message: value,
@@ -1625,7 +1639,7 @@ export namespace agentPanel {
         researchMode: replyResearchModes.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.research_mode ?? false,
         workflow: (() => { const id = replyWorkflows.get(taskId) ?? tasks.find(t => t.task_id === taskId)?.workflow ?? "general"; return id === "vc" || id === "general" ? id : "custom"; })(),
         customWorkflow: replyCustomWorkflows.get(taskId) ?? tasks.find(t => t.task_id === taskId)?.custom_workflow,
-      });
+      }, tasks.find(task => task.task_id === taskId));
       replySites.delete(taskId);
       upsertTask(snapshot);
       replyDraft = "";
