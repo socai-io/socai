@@ -690,7 +690,13 @@ pub async fn agent_task_start(
     research_mode: Option<bool>,
     workflow: Option<TaskWorkflow>,
     custom_workflow: Option<crate::tasks::WorkflowSkill>,
+    attachment_ids: Option<Vec<String>>,
+    input_upload_ids: Option<Vec<String>>,
 ) -> Result<AgentTaskSnapshot, String> {
+    if attachment_ids.as_ref().is_some_and(|ids| !ids.is_empty())
+        || input_upload_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+        return Err("Native attachment Send is not enabled yet. No task was started and the files have not been analyzed.".into());
+    }
     let workflow = workflow.unwrap_or_default();
     let custom_workflow = validate_custom_workflow(custom_workflow)?;
     if workflow == TaskWorkflow::Custom && custom_workflow.is_none() {
@@ -820,7 +826,13 @@ pub async fn agent_task_reply(
     research_mode: Option<bool>,
     workflow: Option<TaskWorkflow>,
     custom_workflow: Option<crate::tasks::WorkflowSkill>,
+    attachment_ids: Option<Vec<String>>,
+    input_upload_ids: Option<Vec<String>>,
 ) -> Result<AgentTaskSnapshot, String> {
+    if attachment_ids.as_ref().is_some_and(|ids| !ids.is_empty())
+        || input_upload_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+        return Err("Native attachment Send is not enabled yet. No reply was started and the files have not been analyzed.".into());
+    }
     let custom_workflow = validate_custom_workflow(custom_workflow)?;
     let message_text = message.trim().to_string();
     if message_text.is_empty() {
