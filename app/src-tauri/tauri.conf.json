@@ -52,6 +52,7 @@
       "icons/icon.ico"
     ],
     "macOS": {
+      "minimumSystemVersion": "10.13",
       "infoPlist": "Info.plist",
       "entitlements": "Entitlements.plist"
     },

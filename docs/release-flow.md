@@ -24,7 +24,9 @@ prepare
   ├─ build-macos-cli        # macOS universal CLI
   └─ build-windows-cli      # Windows x86_64 CLI
 
-release                    # waits for all platform build jobs
+verify-macos-artifacts     # CLI install, desktop startup, compatibility, updater signature
+                           # macos-15 (arm64) + macos-15-intel
+release                    # waits for all platform builds and macOS verification
   ├─ stage versioned assets on Alibaba Cloud OSS
   ├─ publish GitHub Release
   ├─ promote OSS releases/latest
@@ -102,7 +104,7 @@ and tags that commit as `vX.Y.Z`.
 
 ### macOS app/DMG build job
 
-`build-macos-app-dmg` runs on `macos-14` and produces:
+`build-macos-app-dmg` runs on `macos-15` and produces:
 
 - signed/notarized universal desktop DMG
 - `socai-macos-universal.dmg`
@@ -134,11 +136,13 @@ On `main`, in addition to the Apple Developer ID / notarization secrets, the job
 The matching public key is committed in
 [`app/src-tauri/tauri.conf.json`](../app/src-tauri/tauri.conf.json) under
 `plugins.updater.pubkey`. `fix/release-*` test branches skip the updater
-artifacts when the key is absent.
+artifacts when the key is absent; the pre-publication artifact qualification then
+fails because it requires a fully signed candidate. See the
+[macOS validation workflow](guide.md#macos-release-validation).
 
 ### macOS CLI build job
 
-`build-macos-cli` runs on `macos-14` and produces:
+`build-macos-cli` runs on `macos-15` and produces:
 
 - universal macOS CLI binary built from:
   - `aarch64-apple-darwin`
@@ -203,7 +207,7 @@ GitHub if the OSS download or checksum verification fails.
 
 ### macOS installer verification
 
-`verify-cli-installer` runs on `macos-14` and executes:
+`verify-cli-installer` runs on `macos-15` and executes:
 
 ```bash
 curl -fsSL https://github.com/socai-io/socai/releases/latest/download/install.sh | sh

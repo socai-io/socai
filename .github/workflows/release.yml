@@ -132,7 +132,10 @@ jobs:
   build-macos-cli:
     name: build macOS CLI
     needs: prepare
-    runs-on: macos-14
+    runs-on: macos-15
+    env:
+      # Preserve the v0.6.11 Intel deployment target; arm64 has an 11.0 floor.
+      MACOSX_DEPLOYMENT_TARGET: "10.12"
 
     steps:
       - name: checkout release base commit
@@ -166,7 +169,7 @@ jobs:
         with:
           workspaces: |
             . -> target
-          key: macos-cli-universal
+          key: macos-15-cli-universal-min10.12
 
       - name: clear stale CLI outputs
         shell: bash
@@ -293,9 +296,12 @@ jobs:
   build-macos-app-dmg:
     name: build macOS app DMG
     needs: prepare
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       TARGET: universal-apple-darwin
+      # The ASR pre-build helper keeps its existing target. Tauri separately
+      # sets the desktop target from bundle.macOS.minimumSystemVersion.
+      MACOSX_DEPLOYMENT_TARGET: "10.12"
 
     steps:
       - name: checkout release base commit
@@ -346,7 +352,7 @@ jobs:
         with:
           workspaces: |
             . -> target
-          key: macos-app-universal
+          key: macos-15-app-universal-min10.13
 
       - name: clear stale bundle outputs
         shell: bash
@@ -963,6 +969,32 @@ jobs:
           path: dist-artifacts/*
           if-no-files-found: error
 
+  verify-macos-artifacts:
+    name: verify macOS artifacts (${{ matrix.runner }})
+    needs: [prepare, build-macos-cli, build-macos-app-dmg]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: socai-${{ needs.prepare.outputs.version }}-macos-*
+          merge-multiple: true
+          path: dist-artifacts
+      - name: install updater signature verifier
+        run: brew install minisign
+      - name: verify compatibility, installation, and updater bundle
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: python3 .github/scripts/verify-macos-release.py dist-artifacts "${VERSION}"
+
   release:
     name: publish github release
     if: github.ref == 'refs/heads/main'
@@ -970,6 +1002,7 @@ jobs:
       - prepare
       - build-macos-app-dmg
       - build-macos-cli
+      - verify-macos-artifacts
       - build-windows-cli
       - build-windows-app
     runs-on: ubuntu-latest
@@ -1197,7 +1230,7 @@ jobs:
     needs:
       - prepare
       - release
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: install CLI from latest release

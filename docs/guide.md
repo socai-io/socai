@@ -927,6 +927,31 @@ For app build targets, icon regeneration, the Tauri version-pinning rule, the
 monochrome design system, and macOS icon-cache gotchas, see the
 [Desktop app section in AGENTS.md](../AGENTS.md#desktop-app--app).
 
+### macOS release validation
+
+Release builds use the pinned `macos-15` runner and continue producing universal
+Intel/Apple Silicon binaries. The build machine's OS is not the minimum user OS.
+The desktop target is explicitly pinned to 10.13; CLI and ASR retain 10.12 on
+Intel, and arm64 retains its 11.0 floor. The bundled Feishu CLI requires 11.0.
+These are binary deployment targets, not a claim that every feature has been
+validated on every older macOS release.
+
+Before publication, `verify-macos-artifacts` installs the candidate CLI via the
+real installer, copies the app from its DMG, and starts the app and its sidecars
+on both `macos-15` (Apple Silicon) and `macos-15-intel`. It also checks both Mach-O
+architectures and their deployment targets, Developer ID signatures, notarization
+tickets, and the updater archive's signature against the shipped public key.
+The updater archive is extracted and started separately. This does not exercise
+the in-app update button, logged-in features, or older-OS UI behavior.
+
+For a trial without publishing, dispatch `release.yml` from a `fix/release-*`
+branch. The version bump exists only in the build checkout; the publish job and
+public-latest checks are skipped. Full qualification requires the Apple signing,
+notarization, and updater secrets even on the trial branch. No new release/tag or
+OSS latest promotion is performed. For OS migrations, additionally run the same
+artifact checks on the oldest affected OS while an appropriate runner is still
+available; do not retain a retired runner as a production dependency.
+
 ### Google account login
 
 See [Google login setup](google-login.md) for OAuth client creation, backend
