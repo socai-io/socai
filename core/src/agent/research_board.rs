@@ -78,9 +78,9 @@ impl Tool for ResearchBoardTool {
             },"required":["id","name","platform","signal","url","stage"]}},
             "relations":{"type":"array","maxItems":30,"items":{"type":"object","properties":{
                 "id":{"type":"string"},"from":{"type":"string","description":"Lead id"},"to":{"type":"string","description":"Lead id"},
-                "label":{"type":"string"},"url":{"type":"string","description":"Primary supporting source"},"uncertain":{"type":"boolean"},
+                "label":{"type":"string"},"url":{"type":"string","description":"Primary supporting source"},"uncertain":{"type":"boolean","description":"Use true with kind=hypothesis; fact and comparison use false. Conflicting values are conservatively stored as an uncertain hypothesis, never promoted to a fact."},
                 "dimension":{"type":"string","enum":["identity","people","problem","audience","technology","ecosystem","business","stage"]},
-                "kind":{"type":"string","enum":["fact","comparison","hypothesis"]},
+                "kind":{"type":"string","enum":["fact","comparison","hypothesis"],"description":"fact: a source explicitly states the connection; comparison: attributes of both endpoints support the comparison; hypothesis: decisive evidence is missing (uncertain=true)."},
                 "basis":{"type":"string","description":"Concrete connection or comparison; preserve source uncertainty. Never infer partnership from similarity."},
                 "sources":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"object","properties":{
                     "lead_id":{"type":"string"},"url":{"type":"string"},"excerpt":{"type":"string","description":"Optional literal source excerpt, not a paraphrase"}
@@ -88,7 +88,7 @@ impl Tool for ResearchBoardTool {
             },"required":["id","from","to","label","url","uncertain","dimension","kind","basis","sources"]}}
         }})
     }
-    async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult> {
+    async fn call(&self, mut input: Value, ctx: &ToolContext) -> Result<ToolResult> {
         anyhow::ensure!(
             input.is_object() && serde_json::to_vec(&input)?.len() <= 64000,
             "Provide a small board update (max 64 KB)"
@@ -134,7 +134,6 @@ impl Tool for ResearchBoardTool {
                 anyhow::ensure!(matches!(edge["dimension"].as_str(), Some("identity" | "people" | "problem" | "audience" | "technology" | "ecosystem" | "business" | "stage")), "Invalid relationship dimension");
                 let kind = edge["kind"].as_str().unwrap_or("");
                 anyhow::ensure!(matches!(kind, "fact" | "comparison" | "hypothesis"), "Invalid relationship kind");
-                anyhow::ensure!(edge["uncertain"] == json!(kind == "hypothesis"), "Uncertainty must match hypothesis kind");
                 anyhow::ensure!(edge["basis"].as_str().is_some_and(|s| !s.trim().is_empty() && s.len() <= 4000), "Relationship basis is required");
                 let sources = edge["sources"].as_array().context("Relationship sources required")?;
                 anyhow::ensure!(!sources.is_empty() && sources.len() <= 6, "Provide 1-6 relationship sources");
@@ -162,6 +161,26 @@ impl Tool for ResearchBoardTool {
                 summary.as_str().is_some_and(|s| s.len() <= 4000),
                 "Invalid summary"
             );
+        }
+        // Validate the submitted kind and its evidence BEFORE reconciling
+        // uncertainty: a claimed comparison must still cite both endpoints,
+        // even when the caller also marks it uncertain. Never repair a
+        // contradiction by making an uncertain connection certain.
+        let mut normalized_relations = Vec::new();
+        for edge in input
+            .get_mut("relations")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            let conflicting = edge["kind"]
+                .as_str()
+                .is_some_and(|kind| edge["uncertain"] != json!(kind == "hypothesis"));
+            if conflicting {
+                normalized_relations.push(edge["id"].as_str().unwrap_or_default().to_owned());
+                edge["kind"] = json!("hypothesis");
+                edge["uncertain"] = json!(true);
+            }
         }
         let _guard = self.lock.lock().await;
         let path = ctx.run_dir.join("research-board.json");
@@ -197,8 +216,15 @@ impl Tool for ResearchBoardTool {
         let temporary = path.with_extension("json.tmp");
         std::fs::write(&temporary, serde_json::to_vec_pretty(&board)?)?;
         std::fs::rename(temporary, path)?;
-        Ok(ToolResult::text(
-            "Research workbench updated. Continue discovery; this is not a completion check.",
-        ))
+        let mut message =
+            "Research workbench updated. Continue discovery; this is not a completion check."
+                .to_owned();
+        if !normalized_relations.is_empty() {
+            message.push_str(&format!(
+                " Normalized conflicting kind/uncertain values to kind=hypothesis, uncertain=true for: {}. Review the evidence gap; no relationship was promoted to certainty.",
+                normalized_relations.join(", ")
+            ));
+        }
+        Ok(ToolResult::text(message))
     }
 }

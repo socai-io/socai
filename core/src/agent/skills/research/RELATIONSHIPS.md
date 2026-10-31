@@ -28,6 +28,10 @@ Use sources [{lead_id, url, excerpt?}] and a basis explaining the connection.
 For comparisons, cite both endpoint records. Excerpts must be literal source text,
 not invented quotes. Keep promotional/self-reported claims qualified. Set uncertain
 only for hypotheses; comparisons have their own kind, not disguised factual edges.
+If kind and uncertain conflict, the tool conservatively stores an uncertain
+hypothesis and reports the normalized edge ids. Review the missing evidence;
+do not treat normalization as verification. A submitted comparison still needs
+sources for both endpoints, and malformed updates are rejected before persistence.
 When useful batches arrive, add meaningful connections alongside isolated leads.
 At synthesis the parent compares across platforms and checks duplicate identities;
 workers only connect records in their assigned scope. Reuse known edge ids.
