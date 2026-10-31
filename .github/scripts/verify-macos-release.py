@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 
 def run(*args: str | Path, **kwargs) -> str:
@@ -27,6 +28,21 @@ def run(*args: str | Path, **kwargs) -> str:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def validate_ticket(target: Path) -> None:
+    # stapler consults Apple even for a stapled artifact. Retry only transport
+    # failures; an invalid/missing ticket must still fail qualification.
+    for attempt in range(3):
+        try:
+            run("xcrun", "stapler", "validate", target)
+            return
+        except subprocess.CalledProcessError as error:
+            transient = re.search(r"NSURLErrorDomain Code=-(?:1001|1004|1005|1009)\b", error.output or "")
+            if not transient or attempt == 2:
+                raise
+            print(f"Apple ticket lookup transport failure; retry {attempt + 1}/2", flush=True)
+            time.sleep(5 * (attempt + 1))
 
 
 def check_binary(binary: Path, intel_floor: str) -> None:
@@ -59,7 +75,7 @@ def check_app(app: Path, version: str, env: dict[str, str], *, launch: bool) -> 
     require(info["LSMinimumSystemVersion"] == "10.13", "desktop minimum OS changed")
     run("codesign", "--verify", "--deep", "--strict", app)
     run("spctl", "-a", "-vvv", "-t", "execute", app)
-    run("xcrun", "stapler", "validate", app)
+    validate_ticket(app)
     binaries = app / "Contents/MacOS"
     for name, minimum in ((info["CFBundleExecutable"], "10.13"),
                           ("socai-asr", "10.12"), ("lark-cli", "11.0")):
@@ -121,7 +137,7 @@ def verify(artifacts: Path, version: str, scratch: Path) -> None:
 
     dmg = artifacts / "socai-macos-universal.dmg"
     run("hdiutil", "verify", dmg)
-    run("xcrun", "stapler", "validate", dmg)
+    validate_ticket(dmg)
     run("spctl", "-a", "-vvv", "-t", "open", "--context", "context:primary-signature", dmg)
     mount = scratch / "mounted"
     mount.mkdir()

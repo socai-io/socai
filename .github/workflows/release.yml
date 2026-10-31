@@ -975,9 +975,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Temporary migration audit only; remove before merging.
-        runner: [macos-15, macos-15-intel, macos-14]
+        runner: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -991,6 +991,14 @@ jobs:
           path: dist-artifacts
       - name: install updater signature verifier
         run: brew install minisign
+      - name: use HTTPS TCP for Apple ticket checks on Intel
+        if: matrix.runner == 'macos-15-intel'
+        # GitHub's documented workaround for HTTP/3 resets on Intel runners:
+        # https://github.com/actions/runner-images/issues/14924
+        # This changes only the disposable runner, never the shipped app.
+        run: |
+          echo "block return out quick proto udp from any to any port 443" | sudo pfctl -f -
+          sudo pfctl -E
       - name: verify compatibility, installation, and updater bundle
         env:
           VERSION: ${{ needs.prepare.outputs.version }}

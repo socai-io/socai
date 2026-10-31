@@ -944,6 +944,11 @@ tickets, and the updater archive's signature against the shipped public key.
 The updater archive is extracted and started separately. This does not exercise
 the in-app update button, logged-in features, or older-OS UI behavior.
 
+The Intel verification job uses GitHub's temporary HTTPS/TCP workaround for
+[Apple ticket-service HTTP/3 resets](https://github.com/actions/runner-images/issues/14924).
+Ticket verification also retries bounded transport failures; invalid tickets
+still fail the release gate.
+
 For a trial without publishing, dispatch `release.yml` from a `fix/release-*`
 branch. The version bump exists only in the build checkout; the publish job and
 public-latest checks are skipped. Full qualification requires the Apple signing,
