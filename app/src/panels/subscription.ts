@@ -3,7 +3,7 @@ import QRCode from "qrcode";
 
 import type { ShellState } from "../main";
 import { esc } from "../lib/html";
-import { t } from "../lib/i18n";
+import { getLanguage, t } from "../lib/i18n";
 
 interface StripePlan {
   plan_id: string;
@@ -113,7 +113,9 @@ export namespace subscriptionMenu {
     if (!plan?.enabled) {
       return `<p class="t-small subtle subscription-copy">${esc(t("subscription.unavailable"))}</p>`;
     }
-    if (globalUser) {
+    // Chinese-speaking users may use Google login and still prefer Alipay.
+    // Keep both plans available without changing either plan's price or points.
+    if (globalUser && getLanguage() !== "zh") {
       return plan.stripe ? renderStripePlan(plan.stripe) : `<p class="t-small subtle subscription-copy">${esc(t("subscription.unavailable"))}</p>`;
     }
     return `
