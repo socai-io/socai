@@ -56,6 +56,11 @@ pub struct TikTokVideo {
     pub cover_url: String,
     pub video: Value,
     pub top_comments: Vec<TikTokComment>,
+    /// Raw `itemStruct.anchors` from the page JSON. TikTok Shop anchors sit in
+    /// `anchors[i].extra` (a JSON string) as `{type: 33, component_key: "anchor_shop"}`.
+    pub anchors: Vec<Value>,
+    /// `itemStruct.isECVideo`: 1 when the video sells a product, 0 otherwise.
+    pub is_ec_video: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
