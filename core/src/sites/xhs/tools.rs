@@ -43,7 +43,7 @@ use crate::sites::xhs::entities::{note_posted_at_ms, parse_stat_count};
 use crate::sites::xhs::media_manifest::{
     ensure_entity_note_id, fill_entity_from_card, search_media_manifest, write_media_manifest_file,
 };
-use crate::sites::xhs::page::{LoginGate, XHS_SEARCH_FILTERS};
+use crate::sites::xhs::page::{CommentLoadError, LoginGate, XHS_SEARCH_FILTERS};
 use crate::sites::xhs::page_diagnostics::{
     copy as copy_page_diagnostic, promote as promote_page_diagnostic,
 };
@@ -1335,25 +1335,56 @@ fn comment_load_metadata(payload: &Value) -> Value {
     })
 }
 
-/// Load up to `TOP_COMMENTS_PER_NOTE` top comments from the currently open note
-/// and insert them under `note["top_comments"]`. Best-effort: on failure the
-/// note is left without the field. Shared by `read_note` and `extract_note`.
-async fn attach_top_comments(xhs: &XhsPageRuntime<'_>, note: &mut Value) {
-    let Ok(payload) = xhs
-        .load_comments(TOP_COMMENTS_PER_NOTE, COMMENT_LOAD_TIMEOUT_S)
-        .await
-    else {
+/// Keep a usable note body on comment failure, but never disguise an unread
+/// thread as an empty successful result. Do not expose raw browser errors.
+fn attach_comment_load_result(note: &mut Value, result: anyhow::Result<Value>) {
+    let Some(map) = note.as_object_mut() else {
         return;
     };
-    let comments = payload
-        .get("comments")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if let Some(map) = note.as_object_mut() {
-        map.insert("top_comments".into(), Value::Array(comments));
-        map.insert("top_comments_wait".into(), comment_load_metadata(&payload));
+    let result = result.and_then(|payload| {
+        anyhow::ensure!(
+            payload.get("comments").is_some_and(Value::is_array),
+            "Comment collection result is missing its comments array"
+        );
+        Ok(payload)
+    });
+    match result {
+        Ok(mut payload) => {
+            map.insert("top_comments_wait".into(), comment_load_metadata(&payload));
+            map.insert("top_comments".into(), payload["comments"].take());
+        }
+        Err(error) => {
+            let changed = matches!(
+                error.downcast_ref::<CommentLoadError>(),
+                Some(CommentLoadError::NoteChanged)
+            );
+            map.remove("top_comments");
+            map.insert(
+                "top_comments_wait".into(),
+                json!({
+                    "ready": false,
+                    "complete": false,
+                    "platform_total": null,
+                    "loaded_primary": null,
+                    "loaded_total": null,
+                    "returned_total": null,
+                    "rounds": null,
+                    "stop_reason": if changed { "note_changed" } else { "read_failed" },
+                    "error": if changed { "comment_note_changed" } else { "comment_load_failed" },
+                    "recovery": if changed { "reopen_post" } else { "retry_read" },
+                }),
+            );
+        }
     }
+}
+
+/// Load up to `TOP_COMMENTS_PER_NOTE` comments from the currently open note.
+/// Shared by `read_note` and `extract_note`; failures retain explicit metadata.
+async fn attach_top_comments(xhs: &XhsPageRuntime<'_>, note: &mut Value) {
+    let result = xhs
+        .load_comments(TOP_COMMENTS_PER_NOTE, COMMENT_LOAD_TIMEOUT_S)
+        .await;
+    attach_comment_load_result(note, result);
 }
 
 /// Build a skipped-note entry. We return the full entity cached in history
@@ -1707,16 +1738,8 @@ async fn scan_card_note(
             "comments_ms".into(),
             json!(t_comments.elapsed().as_millis() as u64),
         );
-        if let Ok(payload) = comments_result {
-            let comments = payload
-                .get("comments")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if let Some(map) = entry.get_mut("entity").and_then(|v| v.as_object_mut()) {
-                map.insert("top_comments".into(), Value::Array(comments));
-                map.insert("top_comments_wait".into(), comment_load_metadata(&payload));
-            }
+        if let Some(entity) = entry.get_mut("entity") {
+            attach_comment_load_result(entity, comments_result);
         }
     }
 
@@ -3502,20 +3525,10 @@ async fn scan_direct_note(
 
     if comment_count > 0 {
         let t_comments = std::time::Instant::now();
-        if let Ok(payload) = xhs
+        let comments_result = xhs
             .load_comments(comment_count, COMMENT_LOAD_TIMEOUT_S)
-            .await
-        {
-            let comments = payload
-                .get("comments")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if let Some(map) = entity.as_object_mut() {
-                map.insert("top_comments".into(), Value::Array(comments));
-                map.insert("top_comments_wait".into(), comment_load_metadata(&payload));
-            }
-        }
+            .await;
+        attach_comment_load_result(&mut entity, comments_result);
         perf.insert(
             "comments_ms".into(),
             json!(t_comments.elapsed().as_millis() as u64),

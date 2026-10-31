@@ -12,6 +12,20 @@ use crate::sites::xhs::entities::{normalize_url, XhsNote, XhsNoteCard};
 
 pub const XHS_HOME_URL: &str = "https://www.xiaohongshu.com/explore";
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CommentLoadError {
+    #[error("The active note changed during comment collection")]
+    NoteChanged,
+}
+
+fn validate_comment_snapshot(state: &Value) -> Result<()> {
+    if state.get("error").and_then(Value::as_str) == Some("comment_note_changed") {
+        return Err(CommentLoadError::NoteChanged.into());
+    }
+    anyhow::ensure!(script_ok(state), "Comment collection snapshot failed");
+    Ok(())
+}
+
 /// The home feed the xhs tools open: `XHS_HOME_URL` unless `xhs.host` in the
 /// socai config prefers `rednote.com`. XHS keeps a login's cookies on the host
 /// it was made on, so an account XHS routes to rednote.com must set that key.
@@ -1101,7 +1115,7 @@ impl<'a> XhsPageRuntime<'a> {
                     })),
                 )
                 .await?;
-            anyhow::ensure!(script_ok(&state), "Comment collection stopped: {}", state);
+            validate_comment_snapshot(&state)?;
             all = state
                 .get("comments")
                 .cloned()
@@ -1209,11 +1223,7 @@ impl<'a> XhsPageRuntime<'a> {
                 })),
             )
             .await?;
-        anyhow::ensure!(
-            script_ok(&final_state),
-            "Comment collection stopped: {}",
-            final_state
-        );
+        validate_comment_snapshot(&final_state)?;
         let all = final_state
             .get("comments")
             .and_then(Value::as_array)

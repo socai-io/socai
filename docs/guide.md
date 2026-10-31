@@ -343,6 +343,12 @@ this is not a persisted continuation cursor. Hidden, moderated or unavailable co
 not bypassed. The coverage metadata remains in compact agent results as well as
 the full artifact.
 
+If comment collection fails, the note body remains usable but `top_comments` is
+omitted. `top_comments_wait` then has `ready:false`, `complete:false`, unknown
+counts (`null`), and `stop_reason: "note_changed"` or `"read_failed"`. Reopen the
+requested post after `note_changed`; retry the read after `read_failed`. These
+states are not an empty successful thread and must not be counted as zero comments.
+
 Available filter groups and UI values:
 
 | Group | Values |
