@@ -39,6 +39,7 @@ let target = "";
 let context = "";
 let count = "3";
 let error = "";
+let pendingPrompt = "";
 
 export function renderResearchStarters(): string {
   const scene = researchScenes.find(item => item.id === selectedScene);
@@ -51,28 +52,49 @@ export function renderResearchStarters(): string {
       <label>${tr(action.urls ? ["作品或账号链接，每行一个", "Post or profile URLs, one per line"] : ["主题、品牌或关键词", "Topic, brand or search query"])}<textarea name="target" rows="2" maxlength="1500" required>${esc(target)}</textarea></label>
       <div class="research-starters__fields"><label>${tr(action.comments ? ["期望评论数", "Requested comments"] : ["最多读取多少篇作品", "Maximum posts"])}<input name="count" type="number" min="1" max="${action.comments ? 1000 : 20}" value="${esc(count)}" required></label><label>${tr(["你的目标和已有资料（可选）", "Your goal and own facts (optional)"])}<textarea name="context" rows="2" maxlength="500">${esc(context)}</textarea></label></div>
       <p class="t-small subtle">${tr(["先填入任务，检查平台和内容后再发送；不会自动执行。", "Prepare the task, review its platform and details, then send. Nothing runs automatically."])}</p>
-      ${error ? `<p role="alert">${esc(error)}</p>` : ""}<button type="submit" class="btn-primary">${tr(["填入任务", "Prepare task"])}</button>
+      ${error ? `<p role="alert">${esc(error)}</p>` : ""}${pendingPrompt ? `<div class="research-starters__confirmation" role="group" aria-label="${tr(["确认替换草稿", "Confirm draft replacement"])}"><p role="alert">${tr(["你有未发送的草稿。要用这个场景任务替换吗？原草稿尚未更改。", "You have an unsent draft. Replace it with this task? Your original draft has not changed."])}</p><button type="button" class="btn-ghost" data-research-starter-keep>${tr(["保留原草稿", "Keep original draft"])}</button><button type="button" class="btn-primary" data-research-starter-replace>${tr(["替换草稿", "Replace draft"])}</button></div>` : `<button type="submit" class="btn-primary">${tr(["填入任务", "Prepare task"])}</button>`}
     </form>` : ""}</section>`;
 }
 
-export function bindResearchStarters(rerender: () => void, prepare: (prompt: string) => boolean): void {
+export function bindResearchStarters(rerender: () => void, prepare: (prompt: string, replace: boolean) => boolean): void {
+  const finish = () => {
+    selectedScene = ""; error = ""; pendingPrompt = "";
+    rerender();
+    document.getElementById("composer-input")?.focus();
+  };
   document.querySelectorAll<HTMLButtonElement>("[data-research-scene]").forEach(button => {
     button.addEventListener("click", () => {
       selectedScene = button.dataset.researchScene || "";
-      selectedAction = ""; count = "3"; error = "";
+      selectedAction = ""; count = "3"; error = ""; pendingPrompt = "";
       rerender();
       document.querySelector<HTMLElement>("[data-research-starter-form] select")?.focus();
     });
   });
-  document.querySelector("[data-research-starter-close]")?.addEventListener("click", () => { selectedScene = ""; error = ""; rerender(); });
+  document.querySelector("[data-research-starter-close]")?.addEventListener("click", () => { selectedScene = ""; error = ""; pendingPrompt = ""; rerender(); });
   const form = document.querySelector<HTMLFormElement>("[data-research-starter-form]");
   if (!form) return;
-  form.addEventListener("input", () => {
+  form.querySelector("[data-research-starter-keep]")?.addEventListener("click", () => {
+    pendingPrompt = ""; rerender();
+    document.querySelector<HTMLElement>("[data-research-starter-form] textarea")?.focus();
+  });
+  form.querySelector("[data-research-starter-replace]")?.addEventListener("click", () => {
+    if (pendingPrompt && prepare(pendingPrompt, true)) finish();
+  });
+  form.addEventListener("input", event => {
     const data = new FormData(form);
     target = String(data.get("target") || ""); context = String(data.get("context") || ""); count = String(data.get("count") || "");
+    if (pendingPrompt) {
+      const field = event.target as HTMLInputElement | HTMLTextAreaElement;
+      const name = field.name;
+      const start = field.selectionStart, end = field.selectionEnd;
+      pendingPrompt = ""; rerender();
+      const next = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-research-starter-form] [name="${name}"]`);
+      next?.focus();
+      if (next && typeof start === "number" && typeof end === "number") next.setSelectionRange(start, end);
+    }
   });
   form.querySelector("select")?.addEventListener("change", () => {
-    selectedAction = String(new FormData(form).get("action") || ""); count = selectedAction === "comment-leads" ? "100" : "3"; error = ""; rerender();
+    selectedAction = String(new FormData(form).get("action") || ""); count = selectedAction === "comment-leads" ? "100" : "3"; error = ""; pendingPrompt = ""; rerender();
   });
   form.addEventListener("submit", event => {
     event.preventDefault();
@@ -100,10 +122,11 @@ export function bindResearchStarters(rerender: () => void, prepare: (prompt: str
     const prompt = getLanguage() === "zh"
       ? `任务：${tr(action.label)}\n研究对象：${JSON.stringify(trimmed)}\n范围：${action.comments ? `期望读取${amount}条评论` : `最多读取${amount}篇作品`}。\n${tr(action.goal)}\n我的目标和资料：${JSON.stringify(context.trim())}\n交付要求：实际执行采集，保留原始链接、作者、采集时间和样本范围，每项判断可回溯证据。缺少登录、正文、评论、粉丝或转写时明确标注未取得及原因，不生成替代证据。遇到登录或验证码保留当前任务等待接管，不反复重试。附件必须真实可打开或下载；不要把服务端路径当成可下载文件。先完成本轮，不循环扩样。`
       : `Task: ${tr(action.label)}\nResearch target: ${JSON.stringify(trimmed)}\nScope: ${action.comments ? `${amount} requested comments` : `at most ${amount} posts`}.\n${tr(action.goal)}\nMy goal and own facts: ${JSON.stringify(context.trim())}\nDelivery: actually collect evidence with original URLs, authors, capture time and sample scope. Make claims traceable. Label unavailable login, text, comments, follower counts or transcripts and explain why; do not invent evidence. Pause the same task for login or CAPTCHA rather than repeatedly retrying. Deliver real, accessible files, not server-only paths. Complete one round without expanding the sample repeatedly.`;
-    if (prepare(prompt)) {
-      selectedScene = ""; error = "";
-      rerender();
-      document.getElementById("composer-input")?.focus();
+    if (prepare(prompt, false)) {
+      finish();
+    } else {
+      pendingPrompt = prompt; error = ""; rerender();
+      document.querySelector<HTMLElement>("[data-research-starter-keep]")?.focus();
     }
   });
 }

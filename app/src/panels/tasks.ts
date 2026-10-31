@@ -1346,8 +1346,9 @@ export namespace agentPanel {
     syncChromeSetupDetection(shell);
     bindResearchBoard(selectedTask);
     const composerTask = view === "compose" ? undefined : selectedTask();
-    if (!composerTask) bindResearchStarters(() => shell.rerender(), prompt => {
-      if (draft.trim() && !window.confirm(getLanguage() === "zh" ? "用场景任务替换当前未发送的草稿？" : "Replace your unsent draft with this task?")) return false;
+    if (!composerTask) bindResearchStarters(() => shell.rerender(), (prompt, replace) => {
+      const currentDraft = (document.getElementById("composer-input") as HTMLTextAreaElement | null)?.value ?? draft;
+      if (currentDraft.trim() && !replace) { draft = currentDraft; return false; }
       draft = prompt;
       return true;
     });
