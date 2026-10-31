@@ -1065,19 +1065,22 @@ impl<'a> XhsPageRuntime<'a> {
     /// count does not exceed the budget.
     pub async fn load_comments(&self, max_total: i64, timeout_seconds: f64) -> Result<Value> {
         self.ensure_xhs(false).await?;
-        // Let the (slow) comment list hydrate before the first measurement.
-        let first = self.extract_comments_with_wait(0, 5.0).await.ok();
-
         let deadline = Instant::now() + Duration::from_secs_f64(timeout_seconds.max(2.0));
+        // Let the (slow) comment list hydrate before the first measurement.
+        let first = self
+            .extract_comments_with_wait(0, timeout_seconds.clamp(0.5, 5.0))
+            .await?;
+
         let mut last_total: i64 = -1;
+        let mut last_progress = String::new();
+        let mut platform_total: i64 = 0;
         let mut stale_rounds = 0;
         let mut rounds = 0;
         let stop_reason;
         loop {
-            let state = self
-                .expect_object("commentAreaState", None)
-                .await
-                .unwrap_or_else(|_| json!({}));
+            let state = self.expect_object("commentAreaState", None).await?;
+            platform_total =
+                platform_total.max(state.get("total").and_then(Value::as_i64).unwrap_or(0));
             let loaded_total = state
                 .get("loaded_total")
                 .and_then(Value::as_i64)
@@ -1103,7 +1106,17 @@ impl<'a> XhsPageRuntime<'a> {
                 stop_reason = "exhausted";
                 break;
             }
-            if loaded_total == last_total {
+            // Walking a long comment column is progress even before the next
+            // parent page enters the viewport. Count-only stalls stopped after
+            // three scrolls through already loaded replies.
+            let progress = json!([
+                loaded_total,
+                pending,
+                state.get("scroll_top"),
+                state.get("scroll_height"),
+            ])
+            .to_string();
+            if progress == last_progress {
                 stale_rounds += 1;
             } else {
                 stale_rounds = 0;
@@ -1118,21 +1131,29 @@ impl<'a> XhsPageRuntime<'a> {
                 break;
             }
             last_total = loaded_total;
+            last_progress = progress;
             rounds += 1;
 
             // Expand any visible reply buttons first (cheap, surfaces sub-comments
             // that count toward the budget), then scroll for more parents.
             if pending > 0 {
-                let _ = self.expect_object("expandCommentReplies", None).await;
+                let _ = self
+                    .expect_object("expandCommentReplies", Some(&json!({ "max_clicks": 1 })))
+                    .await;
                 sleep_ms(500).await;
             }
-            if !has_end {
-                let _ = self.scroll_in_note(1200).await;
+            if !has_end || pending > 0 {
+                let _ = self
+                    .expect_object(
+                        "scrollComments",
+                        Some(&json!({ "pixels": 1200, "reveal_reply": has_end })),
+                    )
+                    .await;
             }
             sleep_ms(500).await;
         }
 
-        let all = self.extract_comments(0).await.unwrap_or_default();
+        let all = self.extract_comments(0).await?;
         let loaded_primary = all.len() as i64;
         let loaded_total: i64 = loaded_primary
             + all
@@ -1162,9 +1183,11 @@ impl<'a> XhsPageRuntime<'a> {
             "returned_total": returned_total,
             "rounds": rounds,
             "stop_reason": stop_reason,
+            "platform_total": platform_total,
+            "complete": stop_reason == "exhausted"
+                && (platform_total == 0 || returned_total >= platform_total),
             "ready": first
-                .as_ref()
-                .and_then(|v| v.get("ready"))
+                .get("ready")
                 .and_then(Value::as_bool)
                 .unwrap_or(loaded_total > 0),
         }))

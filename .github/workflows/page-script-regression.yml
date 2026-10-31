@@ -1,0 +1,33 @@
+name: page-script-regression
+
+on:
+  pull_request:
+    paths:
+      - "core/src/sites/**/page_scripts*"
+      - "core/src/sites/xhs/page.rs"
+      - "core/src/sites/xhs/tools.rs"
+      - "scripts/check-xhs-comment-dom.mjs"
+      - ".github/workflows/page-script-regression.yml"
+  push:
+    branches: [main]
+    paths:
+      - "core/src/sites/**/page_scripts*"
+      - "core/src/sites/xhs/page.rs"
+      - "core/src/sites/xhs/tools.rs"
+      - "scripts/check-xhs-comment-dom.mjs"
+      - ".github/workflows/page-script-regression.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  page-scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --test core/src/sites/*/*.test.cjs
+      - run: node --check scripts/check-xhs-comment-dom.mjs

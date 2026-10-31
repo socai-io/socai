@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XHS comment pagination DOM regression</title>
+<style>
+body {margin:0; font:14px system-ui}
+.feeds-page {height:4000px; background:#eee}
+.note-detail-mask {position:fixed; inset:20px; height:400px; display:grid; grid-template-columns:1fr 1fr; background:white}
+.note-content,.comments-el {height:400px; overflow:auto}
+.image {height:10000px; background:linear-gradient(#ddd,#999)}
+.parent-comment {min-height:64px; padding:8px; border-bottom:1px solid #ddd}
+.comment-item-sub {height:90px; margin-left:20px}
+.show-more {display:block; height:30px; cursor:pointer}
+.end-container {padding:8px}
+</style>
+<div class="feeds-page"><section class="note-item">Underlying feed must not scroll.</section></div>
+<main class="note-detail-mask"><div class="note-content"><div class="image">Image column</div></div><div class="comments-el"></div></main>
+<script src="/page_scripts.js"></script>
+<script>
+const checks = [];
+const assert = (condition, message) => {if (!condition) throw Error(message);};
+const pause = () => new Promise(resolve => setTimeout(resolve, 40));
+const area = document.querySelector('.comments-el');
+const photo = document.querySelector('.note-content');
+const root = document.querySelector('.note-detail-mask');
+const row = (id, content='Comment '+id) => `<div class="parent-comment" data-comment-id="${id}"><span class="name">Fixture author</span><div class="content">${content}</div><span class="time">2026-10-30</span></div>`;
+function reset(content) {area.onscroll=null; area.innerHTML=content; area.scrollTop=0; photo.scrollTop=0;}
+window.__commentDOM = {status:'running', scope:'Actual page_scripts.js in a Chrome DOM fixture, not live XHS or Core/Worker acceptance'};
+(async () => {
+  reset('<div class="total">共40条评论</div><div class="comments-container"></div>');
+  const list = area.querySelector('.comments-container');
+  let parents=0;
+  const append = () => {
+    for (let i=0;i<10;i++) list.insertAdjacentHTML('beforeend',row(++parents));
+    if (parents===30) area.insertAdjacentHTML('beforeend','<div class="end-container">THE END</div>');
+  };
+  append();
+  const thread=document.createElement('div');
+  thread.className='reply-container';
+  thread.innerHTML=Array.from({length:10},(_,i)=>`<div class="comment-item-sub" data-comment-id="reply-${i}"><span class="name">Reply author</span><div class="content">Reply ${i}</div></div>`).join('')+'<div class="end-container">Reply thread end</div>';
+  list.firstElementChild.append(thread);
+  area.insertAdjacentHTML('beforeend','<div class="end-container" style="display:none">Unloaded parent end</div>');
+  assert(!SocaiXhsPageScripts.commentAreaState().has_end,'A reply/hidden marker exhausted the parents');
+  area.onscroll=()=>{if(area.scrollTop+area.clientHeight>=area.scrollHeight-4 && parents<30)append();};
+  let moves=0;
+  for (let i=0;i<30;i++) {
+    const state=SocaiXhsPageScripts.commentAreaState();
+    if (state.has_end) break;
+    const result=await SocaiXhsPageScripts.scrollComments({pixels:300});
+    if(result.delta) moves++;
+    await pause();
+  }
+  let state=SocaiXhsPageScripts.commentAreaState();
+  assert(state.loaded_primary===30,'Only '+state.loaded_primary+' parents loaded');
+  assert(state.loaded_total===40,'Replies or parents lost from extraction');
+  assert(moves>3,'Fixture did not exercise long-column progress');
+  assert(photo.scrollTop===0 && window.scrollY===0,'Wrong image/feed scrolled');
+  assert(state.has_end,'Real parent end not detected');
+  checks.push({name:'primary pagination past a long reply thread',parents:state.loaded_primary,total:state.loaded_total,moves});
+
+  reset(row('a','Identical prefix '.repeat(6)+'A')+row('b','Identical prefix '.repeat(6)+'B'));
+  assert(SocaiXhsPageScripts.comments({prefer_hot:false}).length===2,'Distinct comments conflated');
+  checks.push({name:'distinct IDs and full text preserved'});
+
+  reset(Array.from({length:5},()=>'<button class="show-more">展开更多回复</button>').join(''));
+  let clicks=0;
+  area.querySelectorAll('.show-more').forEach(button=>button.onclick=()=>clicks++);
+  await SocaiXhsPageScripts.expandCommentReplies({max_clicks:60});
+  assert(clicks===3,'Reply expansion unbounded');
+  checks.push({name:'reply expansion capped',clicks});
+
+  reset(Array.from({length:20},(_,i)=>row(i)).join('')+'<button class="show-more">展开20条回复</button><div class="end-container">THE END</div>');
+  const button=area.querySelector('.show-more');
+  clicks=0;
+  button.onclick=()=>{clicks++;button.remove();};
+  await SocaiXhsPageScripts.expandCommentReplies();
+  assert(clicks===0,'Offscreen reply button clicked');
+  await SocaiXhsPageScripts.scrollComments({reveal_reply:true});
+  await pause();
+  await SocaiXhsPageScripts.expandCommentReplies();
+  assert(clicks===1,'Offscreen reply was not revealed in its own column');
+  assert(photo.scrollTop===0 && window.scrollY===0,'Reply reveal moved image/feed');
+  checks.push({name:'reveal pending reply after parent end',clicks});
+
+  reset('<div class="comments-container"></div>');
+  const result=await SocaiXhsPageScripts.scrollComments({pixels:300});
+  assert(!result.ok && window.scrollY===0,'Empty modal scrolled the feed');
+  checks.push({name:'unscrollable comments never scroll underlying feed'});
+  reset('<div style="height:410px">Small overflow</div>');
+  await SocaiXhsPageScripts.scrollComments({pixels:300});
+  assert(area.scrollTop===10,'Small overflow could not reach the pagination edge');
+  checks.push({name:'small comment overflow still scrolls',delta:area.scrollTop});
+  window.__commentDOM={...window.__commentDOM,status:'passed',checks};
+  document.title='PASS: XHS comment DOM regression';
+})().catch(error=>{window.__commentDOM={...window.__commentDOM,status:'failed',checks,error:String(error)};document.title='FAIL: XHS comment DOM regression';});
+</script>
