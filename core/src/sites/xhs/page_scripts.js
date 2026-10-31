@@ -1725,6 +1725,34 @@ const SocaiXhsPageScripts = (() => {
     };
   }
 
+  function commentIdentity(item) {
+    return item.comment_id
+      ? `id:${item.comment_id}`
+      : JSON.stringify([item.author_id || item.username, item.text, item.time]);
+  }
+
+  // The native load call owns these snapshots. No browser-global cache: a new
+  // task cannot accidentally inherit another note's or account's comments.
+  function mergeCommentSnapshots(previous, current, includeReplies = true) {
+    const byId = new Map();
+    for (const item of [...previous, ...current]) {
+      if (!item || typeof item !== 'object' || typeof item.text !== 'string' || !item.text) continue;
+      const key = commentIdentity(item);
+      const old = byId.get(key);
+      const merged = {...old};
+      for (const [field, value] of Object.entries(item)) {
+        if (field === 'like_count' && item.likes === '' && old?.likes) continue;
+        if (field !== 'sub_comments' && value !== '' && value != null) merged[field] = value;
+      }
+      merged.sub_comments = includeReplies ? mergeCommentSnapshots(
+        old?.sub_comments || [], Array.isArray(item.sub_comments) ? item.sub_comments : [], false,
+      ) : [];
+      merged.reply_count = merged.sub_comments.length;
+      byId.set(key, merged);
+    }
+    return [...byId.values()];
+  }
+
   function comments(opts = {}) {
     const root = getNoteRoot();
     const items = $$(COMMENT_ROOT_SELECTOR, root)
@@ -1734,9 +1762,7 @@ const SocaiXhsPageScripts = (() => {
     for (const item of items) {
       const parsed = parseComment(item, true);
       if (!parsed.text) continue;
-      const key = parsed.comment_id
-        ? `id:${parsed.comment_id}`
-        : JSON.stringify([parsed.author_id || parsed.username, parsed.text, parsed.time]);
+      const key = commentIdentity(parsed);
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(parsed);
@@ -1986,10 +2012,20 @@ const SocaiXhsPageScripts = (() => {
   // to stop scrolling/expanding: how many primary + reply comments are currently
   // in the DOM, whether unexpanded reply buttons remain, and whether the
   // "- THE END -" sentinel (all parent comments loaded) is present.
-  function commentAreaState() {
+  function commentAreaState(opts = {}) {
+    const noteId = extractNoteIdFromUrl();
+    if (opts.note_id && opts.note_id !== noteId) {
+      return {ok:false, error:'comment_note_changed', note_id:noteId};
+    }
     const root = getNoteRoot();
     const scope = $('.comments-el', root) || $('.comments-container, .comment-list', root) || root;
-    const items = comments({ prefer_hot: false, max_comments: 0 });
+    const visible = comments({ prefer_hot: false, max_comments: 0 });
+    const capture = Array.isArray(opts.previous_comments);
+    const items = capture ? mergeCommentSnapshots(opts.previous_comments, visible) : visible;
+    if (capture && opts.prefer_hot === true) {
+      items.sort((a,b) => ((b.like_count || 0) + b.reply_count * 3 + (b.is_pinned ? 10 : 0))
+        - ((a.like_count || 0) + a.reply_count * 3 + (a.is_pinned ? 10 : 0)));
+    }
     const subs = items.reduce((n, c) => n + ((c.sub_comments && c.sub_comments.length) || 0), 0);
     const totalText = firstText(['.total'], scope);
     const pending = $$(SHOW_MORE_SELECTOR, scope)
@@ -1997,6 +2033,9 @@ const SocaiXhsPageScripts = (() => {
     const container = commentScrollContainer(root);
     return {
       ok: true,
+      note_id: noteId,
+      ...(capture ? {comments:items, visible_primary:visible.length,
+        visible_total:visible.length + visible.reduce((n,c)=>n+c.sub_comments.length,0)} : {}),
       total: parseCount(totalText),
       loaded_primary: items.length,
       loaded_total: items.length + subs,
@@ -2015,6 +2054,9 @@ const SocaiXhsPageScripts = (() => {
   // of replies. These are Vue-bound divs, so a synthetic .click() drives the same
   // handler a human click would. Skips "收起" (collapse). Returns how many fired.
   async function expandCommentReplies(opts = {}) {
+    if (opts.note_id && opts.note_id !== extractNoteIdFromUrl()) {
+      return {ok:false, error:'comment_note_changed', clicked:0};
+    }
     const root = getNoteRoot();
     const scope = $('.comments-el', root) || $('.comments-container, .comment-list', root) || root;
     const container = commentScrollContainer(root);
@@ -2057,6 +2099,9 @@ const SocaiXhsPageScripts = (() => {
   }
 
   async function scrollComments(opts = {}) {
+    if (opts.note_id && opts.note_id !== extractNoteIdFromUrl()) {
+      return {ok:false, error:'comment_note_changed', delta:0};
+    }
     const root = getNoteRoot();
     const container = commentScrollContainer(root);
     const scope = $('.comments-el', root) || $('.comments-container, .comment-list', root) || root;
@@ -2068,7 +2113,11 @@ const SocaiXhsPageScripts = (() => {
         - container.clientHeight / 2;
       await browserAction(() => container.scrollBy({top:offset, behavior:'instant'}));
     } else if (container) {
-      await browserAction(() => container.scrollBy({top:Number(opts.pixels) || 600, behavior:'instant'}));
+      // Overlap captures: jumping 1200px through a 400px virtual viewport can
+      // skip rows that never enter any snapshot, even with a correct union.
+      const requested = Number(opts.pixels) || 600;
+      const step = Math.sign(requested) * Math.min(Math.abs(requested), Math.max(1, Math.floor(container.clientHeight * 0.8)));
+      await browserAction(() => container.scrollBy({top:step, behavior:'instant'}));
     }
     const after = container ? container.scrollTop : 0;
     return {ok:after !== before, container:container ? (container.className || container.id || container.tagName) : 'none',

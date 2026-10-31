@@ -7,6 +7,14 @@ const {spawnSync} = require('node:child_process');
 
 const source = fs.readFileSync(path.join(__dirname, 'page_scripts.js'), 'utf8');
 
+test('native comment helpers are callable through the actual site manifest', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+  for (const name of ['scrollComments','commentAreaState','expandCommentReplies']) {
+    assert.equal(manifest.browserTools[name]?.callable, name, `${name}: native calls require a declared helper`);
+    assert.ok(manifest.browserTools[name].args.note_id, `${name}: declare note guard`);
+  }
+});
+
 test('the browser regression helper fails closed before CDP without explicit account scope', () => {
   const helper = path.resolve(__dirname, '../../../../scripts/check-xhs-comment-dom.mjs');
   const result = spawnSync(process.execPath, [helper, path.resolve('unused-account-check-evidence.json')], {
@@ -84,7 +92,7 @@ test('comment pagination scrolls the comments column instead of the taller image
   const f = fixture();
   const scroll = f.scripts.scrollComments || f.scripts.scrollInNote;
   await scroll({pixels:600});
-  assert.equal(f.area.scrollTop, 600);
+  assert.equal(f.area.scrollTop, 320);
   assert.equal(f.photo.scrollTop, 0);
 });
 
@@ -132,7 +140,7 @@ test('scroll progress is included in state even before the next comment page', a
   const f = fixture();
   assert.equal(f.scripts.commentAreaState().scroll_top, 0);
   await f.scripts.scrollComments({pixels:600});
-  assert.equal(f.scripts.commentAreaState().scroll_top, 600);
+  assert.equal(f.scripts.commentAreaState().scroll_top, 320);
   assert.equal(f.scripts.commentAreaState().scroll_height, 2000);
 });
 
@@ -169,4 +177,116 @@ test('comment scrolling never falls through to an underlying results feed', asyn
   assert.equal(result.ok, false);
   assert.equal(f.area.scrollTop, 0);
   assert.equal(f.photo.scrollTop, 0);
+});
+
+test('comment snapshots retain parents and replies removed by a virtual list', () => {
+  const rows = [comment('parent-a', 'First parent')];
+  const f = fixture({rows});
+  let state = f.scripts.commentAreaState({previous_comments:[]});
+  assert.equal(state.comments?.length, 1);
+  state.comments[0].sub_comments = [{comment_id:'reply-a', text:'Previously visible reply', sub_comments:[]}];
+  rows.splice(0, 1, comment('parent-b', 'Second parent'));
+  state = f.scripts.commentAreaState({previous_comments:state.comments});
+  assert.equal(state.comments.length, 2);
+  assert.equal(state.loaded_primary, 2);
+  assert.equal(state.loaded_total, 3);
+  assert.equal(state.comments[0].sub_comments[0].comment_id, 'reply-a');
+  assert.equal(state.visible_primary, 1);
+  assert.equal(state.visible_total, 1);
+});
+
+test('overlapping snapshots merge reply IDs without replacing earlier replies', () => {
+  const f = fixture({rows:[comment('parent-a', 'Updated parent')]});
+  const previous = [{comment_id:'parent-a', text:'Old parent', sub_comments:[
+    {comment_id:'reply-a', text:'Reply A', sub_comments:[]},
+  ]}];
+  const row = f.overlay.querySelectorAll('.comment-item, .parent-comment')[0];
+  row.querySelectorAll = () => [comment('reply-b', 'Reply B')];
+  const original = JSON.stringify(previous);
+  const once = f.scripts.commentAreaState({previous_comments:previous});
+  const twice = f.scripts.commentAreaState({previous_comments:once.comments});
+  assert.equal(twice.loaded_total, 3);
+  assert.equal(twice.comments[0].text, 'Updated parent');
+  assert.equal(twice.comments[0].reply_count, 2);
+  assert.deepEqual(Array.from(twice.comments[0].sub_comments, item=>item.comment_id), ['reply-a','reply-b']);
+  assert.equal(JSON.stringify(previous), original, 'Snapshot input must not be mutated');
+});
+
+test('snapshot capture refuses to merge a different note', () => {
+  const state = fixture({rows:[comment('b', 'Wrong note')]}).scripts.commentAreaState({
+    note_id:'another-note', previous_comments:[{comment_id:'a',text:'Original note',sub_comments:[]}],
+  });
+  assert.equal(state.ok, false);
+  assert.equal(state.error, 'comment_note_changed');
+  assert.equal(state.comments, undefined);
+});
+
+test('note changes reject scrolling and expansion before any mutation', async () => {
+  const f = fixture();
+  const scroll = await f.scripts.scrollComments({note_id:'another-note',pixels:600});
+  const expand = await f.scripts.expandCommentReplies({note_id:'another-note'});
+  assert.equal(scroll.error, 'comment_note_changed');
+  assert.equal(expand.error, 'comment_note_changed');
+  assert.equal(expand.clicked, 0);
+  assert.equal(f.area.scrollTop, 0);
+});
+
+test('snapshots use stable IDs, full fallback text and a fresh per-call scope', () => {
+  const prefix = '相同开头'.repeat(15);
+  const rows = [comment('a',prefix),comment('b',prefix),comment('',prefix+'A'),comment('',prefix+'B')];
+  const f = fixture({rows});
+  let saved = f.scripts.commentAreaState({previous_comments:[]});
+  assert.equal(saved.loaded_total, 4);
+  rows.splice(0,4,comment('a',prefix));
+  saved = f.scripts.commentAreaState({previous_comments:saved.comments});
+  assert.equal(saved.loaded_total, 4);
+  assert.equal(f.scripts.commentAreaState({previous_comments:[]}).loaded_total, 1);
+});
+
+test('large virtual pages accumulate 1269 unique parents without DOM growth', t => {
+  const rows = [];
+  const f = fixture({rows});
+  let saved = [];
+  const start = performance.now();
+  for(let offset=0;offset<1269;offset+=100) {
+    rows.splice(0,rows.length,...Array.from({length:Math.min(100,1269-offset)},(_,i)=>comment(String(offset+i),'Comment '+(offset+i))));
+    const state = f.scripts.commentAreaState({previous_comments:saved});
+    saved = JSON.parse(JSON.stringify(state.comments)); // include the native JSON round trip
+    assert.ok(state.visible_primary<=100);
+  }
+  assert.equal(saved.length,1269);
+  assert.equal(new Set(saved.map(item=>item.comment_id)).size,1269);
+  t.diagnostic(`13 snapshots including JSON serialization: ${(performance.now()-start).toFixed(1)} ms`);
+});
+
+test('comment scroll steps overlap the viewport instead of skipping virtual rows', async () => {
+  const f = fixture();
+  const result = await f.scripts.scrollComments({pixels:1200});
+  assert.ok(result.delta>0 && result.delta<=f.area.clientHeight*0.8);
+});
+
+test('snapshot hydration preserves known likes but accepts an explicit zero', () => {
+  const row = comment('a','Parent');
+  const f = fixture({rows:[row]});
+  let saved = f.scripts.commentAreaState({previous_comments:[{
+    comment_id:'a',text:'Parent',likes:'12',like_count:12,sub_comments:[],
+  }]});
+  assert.equal(saved.comments[0].like_count,12);
+  const original = row.querySelector;
+  row.querySelector = selector => selector === '.like .count' ? {innerText:'0'} : original(selector);
+  saved = f.scripts.commentAreaState({previous_comments:saved.comments});
+  assert.equal(saved.comments[0].likes,'0');
+  assert.equal(saved.comments[0].like_count,0);
+});
+
+test('final hot sorting uses accumulated replies and keeps partial rows out', () => {
+  const f = fixture({rows:[comment('b','Five likes')]});
+  const state = f.scripts.commentAreaState({prefer_hot:true,previous_comments:[
+    {comment_id:'b',text:'Five likes',likes:'5',like_count:5,sub_comments:[]},
+    {comment_id:'a',text:'Two replies',like_count:0,sub_comments:[
+      {comment_id:'r1',text:'R1'}, {comment_id:'r2',text:'R2'}, {comment_id:'r2',text:'R2'},
+    ]}, null, {}, {comment_id:'empty',text:''},
+  ]});
+  assert.deepEqual(Array.from(state.comments,item=>item.comment_id),['a','b']);
+  assert.equal(state.loaded_total,4);
 });

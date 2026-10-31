@@ -89,6 +89,38 @@ window.__commentDOM = {status:'running', scope:'Actual page_scripts.js in a Chro
   await SocaiXhsPageScripts.scrollComments({pixels:300});
   assert(area.scrollTop===10,'Small overflow could not reach the pagination edge');
   checks.push({name:'small comment overflow still scrolls',delta:area.scrollTop});
+
+  reset(row('parent-a','Saved parent A'));
+  let snapshot=SocaiXhsPageScripts.commentAreaState({previous_comments:[]});
+  area.querySelector('.parent-comment').insertAdjacentHTML('beforeend','<div class="reply-container"><div class="comment-item-sub" data-comment-id="reply-a"><span class="name">Reply author</span><div class="content">Saved reply A</div></div></div>');
+  snapshot=SocaiXhsPageScripts.commentAreaState({previous_comments:snapshot.comments});
+  reset(row('parent-b','Saved parent B'));
+  snapshot=SocaiXhsPageScripts.commentAreaState({previous_comments:snapshot.comments});
+  assert(snapshot.loaded_primary===2 && snapshot.loaded_total===3,'Virtualized parent or reply lost');
+  assert(snapshot.visible_primary===1 && snapshot.visible_total===1,'Visible and accumulated counts conflated');
+  assert(snapshot.comments[0].sub_comments[0].comment_id==='reply-a','Saved reply identity changed');
+  checks.push({name:'virtualized parents and replies retained',primary:snapshot.loaded_primary,total:snapshot.loaded_total,visible:snapshot.visible_total});
+
+  reset(row('parent-a','Updated parent A'));
+  area.querySelector('.parent-comment').insertAdjacentHTML('beforeend','<div class="reply-container"><div class="comment-item-sub" data-comment-id="reply-b"><span class="name">Reply author</span><div class="content">Saved reply B</div></div></div>');
+  snapshot=SocaiXhsPageScripts.commentAreaState({previous_comments:snapshot.comments});
+  snapshot=SocaiXhsPageScripts.commentAreaState({previous_comments:snapshot.comments});
+  assert(snapshot.loaded_primary===2 && snapshot.loaded_total===4,'Overlap duplicated or replaced replies');
+  assert(snapshot.comments[0].text==='Updated parent A' && snapshot.comments[0].reply_count===2,'Parent update/reply union failed');
+  assert(SocaiXhsPageScripts.commentAreaState({previous_comments:[]}).loaded_primary===1,'Independent collection inherited old state');
+  checks.push({name:'overlap preserves replies and fresh calls stay isolated',total:snapshot.loaded_total});
+
+  const rejected=SocaiXhsPageScripts.commentAreaState({previous_comments:snapshot.comments,note_id:'different-note'});
+  assert(!rejected.ok && !rejected.comments,'Different notes were merged');
+  const refusedScroll=await SocaiXhsPageScripts.scrollComments({note_id:'different-note'});
+  const refusedExpand=await SocaiXhsPageScripts.expandCommentReplies({note_id:'different-note'});
+  assert(!refusedScroll.ok && !refusedExpand.ok && area.scrollTop===0,'Different-note mutation was not rejected');
+  checks.push({name:'note changes reject capture, scrolling and expansion'});
+  reset(Array.from({length:20},(_,i)=>row(i)).join(''));
+  const overlap=await SocaiXhsPageScripts.scrollComments({pixels:1200});
+  assert(overlap.delta>0 && overlap.delta<=area.clientHeight*0.8,'A scroll skipped virtual viewport rows');
+  assert(photo.scrollTop===0 && window.scrollY===0,'Overlap scroll moved another column');
+  checks.push({name:'scroll steps preserve viewport overlap',delta:overlap.delta,viewport:area.clientHeight});
   window.__commentDOM={...window.__commentDOM,status:'passed',checks};
   document.title='PASS: XHS comment DOM regression';
 })().catch(error=>{window.__commentDOM={...window.__commentDOM,status:'failed',checks,error:String(error)};document.title='FAIL: XHS comment DOM regression';});

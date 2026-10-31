@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "core/src/sites/**/page_scripts*"
+      - "core/src/sites/**/manifest.json"
+      - "core/src/sites/xhs/fixtures/**"
       - "core/src/sites/xhs/page.rs"
       - "core/src/sites/xhs/tools.rs"
       - "scripts/check-xhs-comment-dom.mjs"
@@ -12,6 +14,8 @@ on:
     branches: [main]
     paths:
       - "core/src/sites/**/page_scripts*"
+      - "core/src/sites/**/manifest.json"
+      - "core/src/sites/xhs/fixtures/**"
       - "core/src/sites/xhs/page.rs"
       - "core/src/sites/xhs/tools.rs"
       - "scripts/check-xhs-comment-dom.mjs"

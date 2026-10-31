@@ -163,7 +163,11 @@
       "path": "page_scripts.js",
       "binding": "SocaiXhsPageScripts",
       "callable": "commentAreaState",
-      "args": {},
+      "args": {
+        "previous_comments": { "type": "array", "required": false, "description": "Snapshots owned by the current native comment-load call; merge before virtualized rows disappear." },
+        "note_id": { "type": "string", "required": false, "description": "Expected active note id; refuse to merge after a note switch." },
+        "prefer_hot": { "type": "boolean", "required": false, "description": "Hot-sort the final accumulated snapshot." }
+      },
       "returns": { "type": "object", "description": "Current comment-area state." }
     },
     "commentEditorTarget": {
@@ -214,9 +218,23 @@
       "binding": "SocaiXhsPageScripts",
       "callable": "expandCommentReplies",
       "args": {
-        "max_clicks": { "type": "integer", "required": false, "description": "Maximum reply controls to expand." }
+        "max_clicks": { "type": "integer", "required": false, "description": "Maximum reply controls to expand." },
+        "note_id": { "type": "string", "required": false, "description": "Expected active note id; refuse after a note switch." }
       },
       "returns": { "type": "object", "description": "Reply expansion outcome." }
+    },
+    "scrollComments": {
+      "action": true,
+      "description": "Scroll only the active note's comments column or reveal its next pending reply control.",
+      "path": "page_scripts.js",
+      "binding": "SocaiXhsPageScripts",
+      "callable": "scrollComments",
+      "args": {
+        "pixels": { "type": "integer", "required": false, "description": "Requested distance inside the comments column, clamped to an overlapping viewport step." },
+        "reveal_reply": { "type": "boolean", "required": false, "description": "Reveal the next reply control after parent pagination ends." },
+        "note_id": { "type": "string", "required": false, "description": "Expected active note id; refuse after a note switch." }
+      },
+      "returns": { "type": "object", "description": "Comment-column scroll outcome; never falls back to the underlying feed." }
     },
     "scrollFeed": {
       "action": true,
