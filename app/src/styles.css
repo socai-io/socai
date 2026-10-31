@@ -400,6 +400,7 @@ body.has-paper > #app { position: relative; z-index: 1; }
 .auth-chip { min-height: 26px; }
 .auth-popover {
   width: min(420px, calc(100vw - var(--sp-6)));
+  max-width: calc(100vw - var(--sp-6));
   max-height: min(78vh, 680px);
   gap: var(--sp-3);
   overflow-y: auto;
@@ -549,8 +550,19 @@ body.has-paper > #app { position: relative; z-index: 1; }
 }
 .subscription-plan-details > div:last-child { border-bottom: 0; }
 .subscription-payment-options { display: flex; flex-direction: column; gap: var(--sp-2); }
-.subscription-payment-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.subscription-option { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-3); }
+.subscription-payment-choice { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); }
+.subscription-method {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: var(--hairline);
+  border-radius: var(--r-3);
+}
+.subscription-method > h3,
+.subscription-method > p { margin: 0; }
+.subscription-method .subscription-full-button { margin-top: auto; white-space: normal; }
 .subscription-qr-wrap {
   display: flex;
   align-items: center;

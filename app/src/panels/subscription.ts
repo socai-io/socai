@@ -53,6 +53,7 @@ export namespace subscriptionMenu {
   let qrDataUrl = "";
   let paymentProvider: PaymentProvider | null = null;
   let error = "";
+  let renewalError = "";
   let pollTimer: number | null = null;
   let polling = false;
   let walletChanged: (() => Promise<void>) | null = null;
@@ -65,6 +66,7 @@ export namespace subscriptionMenu {
       paymentProvider = null;
       phase = "idle";
       error = "";
+      renewalError = "";
       stopPolling();
       return;
     }
@@ -72,6 +74,7 @@ export namespace subscriptionMenu {
     try {
       plan = await invoke<PaymentPlan>("billing_plan");
       error = "";
+      renewalError = "";
     } catch (err) {
       console.error("billing_plan failed:", err);
       plan = null;
@@ -115,23 +118,21 @@ export namespace subscriptionMenu {
     }
     // Chinese-speaking users may use Google login and still prefer Alipay.
     // Keep both plans available without changing either plan's price or points.
-    if (globalUser && getLanguage() !== "zh") {
-      return plan.stripe ? renderStripePlan(plan.stripe) : `<p class="t-small subtle subscription-copy">${esc(t("subscription.unavailable"))}</p>`;
+    const showAlipay = plan.alipay_enabled && (!globalUser || getLanguage() === "zh");
+    if (!showAlipay && !plan.stripe) {
+      return `<p class="t-small subtle subscription-copy">${esc(t("subscription.unavailable"))}</p>`;
     }
     return `
       <div class="subscription-payment-options subscription-payment-choice">
-        ${plan.alipay_enabled ? `<button id="subscription-buy-alipay" type="button" class="btn-primary subscription-option" ${phase === "creating" ? "disabled" : ""}>
-          <span>${esc(t("subscription.alipay"))}</span>
-          <span class="t-small">${esc(t("subscription.pointCount", { points: plan.points }))}</span>
-          <span class="t-small">${esc(formatCny(plan.amount_fen))}</span>
-        </button>` : ""}
-        ${plan.stripe && !plan.stripe.subscription_status ? `<button id="subscription-buy-stripe" type="button" class="btn-primary subscription-option" ${phase === "creating" ? "disabled" : ""}>
-          <span>${esc(t("subscription.stripePayment"))}</span>
-          <span class="t-small">${esc(t("subscription.pointCount", { points: plan.stripe.points }))}</span>
-          <span class="t-small">${esc(formatMoney(plan.stripe.amount_minor, plan.stripe.currency))}${esc(t("subscription.perMonth"))}</span>
-        </button>` : ""}
+        ${showAlipay ? `<section class="subscription-method" aria-labelledby="subscription-alipay-title">
+          <h3 id="subscription-alipay-title" class="t-h3">${esc(t("subscription.alipayName"))}</h3>
+          <p class="t-h3 subscription-price">${esc(formatCny(plan.amount_fen))}</p>
+          <p class="t-small subtle">${esc(t("subscription.pointCount", { points: plan.points }))}</p>
+          <p class="t-small">${esc(t("subscription.noAutoRenew"))}</p>
+          <button id="subscription-buy-alipay" type="button" class="btn-primary subscription-full-button" ${phase === "creating" ? "disabled" : ""}>${esc(t("subscription.alipay"))}</button>
+        </section>` : ""}
+        ${plan.stripe ? renderStripePlan(plan.stripe) : ""}
       </div>
-      ${plan.stripe ? renderStripeStatus(plan.stripe) : ""}
     `;
   }
 
@@ -140,18 +141,19 @@ export namespace subscriptionMenu {
       ${stripe.sandbox ? `<p class="t-small subtle subscription-copy">${esc(t("subscription.sandbox"))}</p>` : ""}
       ${stripe.subscription_status ? `<p class="t-small">${esc(t(stripe.cancel_at_period_end ? "subscription.renewalCancelled" : stripe.subscription_status === "active" ? "subscription.active" : "subscription.paymentAttention"))}</p>
         ${!stripe.cancel_at_period_end ? `<button id="subscription-cancel-renewal" type="button" class="btn-ghost subscription-full-button">${esc(t("subscription.cancelRenewal"))}</button>` : ""}` : ""}
+      ${renewalError ? `<p class="t-small result-error subscription-error" role="alert">${esc(renewalError)}</p>` : ""}
     `;
   }
 
   function renderStripePlan(stripe: StripePlan): string {
     return `
-      <div class="subscription-plan-head">
-        <p class="t-h2 subscription-plan-name">socai pro</p>
-        <p class="t-h2 subscription-price">${esc(formatMoney(stripe.amount_minor, stripe.currency))}${esc(t("subscription.perMonth"))}</p>
-      </div>
-      <p class="t-small subtle subscription-copy">${esc(t("subscription.monthlyPoints", { points: stripe.points }))}</p>
-      ${renderStripeStatus(stripe)}
-      ${!stripe.subscription_status ? `<button id="subscription-buy-stripe" type="button" class="btn-primary subscription-full-button" ${phase === "creating" ? "disabled" : ""}>${esc(t("subscription.stripe"))}</button>` : ""}
+      <section class="subscription-method" aria-labelledby="subscription-stripe-title">
+        <h3 id="subscription-stripe-title" class="t-h3">Stripe</h3>
+        <p class="t-h3 subscription-price">${esc(formatMoney(stripe.amount_minor, stripe.currency))}${esc(t("subscription.perMonth"))}</p>
+        <p class="t-small subtle">${esc(t("subscription.monthlyPoints", { points: stripe.points }))}</p>
+        ${renderStripeStatus(stripe)}
+        ${!stripe.subscription_status ? `<button id="subscription-buy-stripe" type="button" class="btn-primary subscription-full-button" ${phase === "creating" ? "disabled" : ""}>${esc(t("subscription.stripe"))}</button>` : ""}
+      </section>
     `;
   }
 
@@ -192,10 +194,11 @@ export namespace subscriptionMenu {
     document.getElementById("subscription-cancel-renewal")?.addEventListener("click", async (event) => {
       const button = event.currentTarget as HTMLButtonElement;
       button.disabled = true;
+      renewalError = "";
       try {
         await invoke("billing_cancel_stripe_subscription");
         await refresh(true);
-      } catch (err) { error = friendlyError(err); }
+      } catch (err) { renewalError = friendlyError(err, "cancel"); }
       shell.rerender();
     });
     document.getElementById("subscription-buy-wechat")?.addEventListener("click", () => {
@@ -228,6 +231,7 @@ export namespace subscriptionMenu {
     if (!plan || phase === "creating") return;
     phase = "creating";
     error = "";
+    renewalError = "";
     qrDataUrl = "";
     paymentProvider = provider;
     shell.rerender();
@@ -333,12 +337,12 @@ export namespace subscriptionMenu {
     }).format(date);
   }
 
-  function friendlyError(value: unknown): string {
+  function friendlyError(value: unknown, action: "payment" | "cancel" = "payment"): string {
     const message = String(value).toLowerCase();
     if (message.includes("sign in")) return t("subscription.loginHint");
     if (message.includes("not enabled") || message.includes("not configured")) {
       return t("subscription.unavailable");
     }
-    return t("subscription.paymentFailed");
+    return t(action === "cancel" ? "subscription.cancelFailed" : "subscription.paymentFailed");
   }
 }

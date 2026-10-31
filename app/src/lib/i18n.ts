@@ -305,6 +305,7 @@ const messages = {
   "subscription.openCheckout": { en: "open checkout again", zh: "重新打开结账页" },
   "subscription.wechatPay": { en: "pay with WeChat", zh: "微信扫码支付" },
   "subscription.alipay": { en: "pay with Alipay", zh: "支付宝支付" },
+  "subscription.alipayName": { en: "Alipay", zh: "支付宝" },
   "subscription.alipayOpened": {
     en: "Alipay checkout opened in your browser. Complete payment there, then return to socai.",
     zh: "已在浏览器打开支付宝收银台。完成支付后请返回 socai。",
@@ -331,6 +332,10 @@ const messages = {
   "subscription.paymentFailed": {
     en: "payment could not be started. try again shortly.",
     zh: "暂时无法发起支付，请稍后重试。",
+  },
+  "subscription.cancelFailed": {
+    en: "Stripe renewal could not be cancelled. Please try again.",
+    zh: "暂时无法取消 Stripe 自动续费，请稍后重试。",
   },
 
   "voice.startCloud": { en: "start cloud voice input", zh: "开始云端语音输入" },
