@@ -803,7 +803,7 @@ impl Tool for HostTool {
             && status.is_success()
             && response.headers().contains_key("x-socai-input-id")
         {
-            return match crate::input_files::read(response, &input, ctx).await {
+            return match socai_core::agent::input_files::read(response, &input, ctx).await {
                 Ok(result) => Ok(result),
                 Err(_) => Ok(ToolResult::failure(
                     "The uploaded input could not be downloaded or verified. It has not been analyzed; retry once or ask the user to re-upload.",

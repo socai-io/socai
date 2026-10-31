@@ -12,7 +12,6 @@ async-trait.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
 sha2 = "0.10"
-tempfile = "3"
 socai-core.workspace = true
 socai-worker-protocol.workspace = true
 tokio.workspace = true

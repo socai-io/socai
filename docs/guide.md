@@ -713,6 +713,23 @@ binding, frontend integration and real-user acceptance. In particular it is
 not evidence that the native Desktop upload UI, hosted deployment, image
 analysis, follow-up or reopened-task workflows have passed acceptance.
 
+The internal `cloud::input_files` client adds a separate native-scope protocol
+for future Desktop integration. It uses the existing device credential and
+configured service URL, refuses redirects and non-loopback plaintext HTTP, and
+checks bounded responses, IDs and content hashes. Native scopes are explicit
+UUID v4 values owned by the linked account, not local directory names or Web
+conversation IDs. The shared Core reader is also used by the hosted Worker.
+
+This is a disabled integration candidate, not an available Desktop attachment
+feature. The matching server must explicitly migrate `native_input_scopes`
+and advertise `native_scope_protocol: 1` with all three input-file gates enabled;
+their source defaults remain off. Before registering `native_input_tools`, a
+Desktop entry point must bind the inputs and durably persist the scope and
+accepted IDs before starting a task or billing. Picker/upload commands,
+interrupted-admission recovery, original-file saving, account-switch handling
+and real-user acceptance remain required. A scope deletion acknowledgement
+means `delete_pending`, not that physical storage or quota has been released.
+
 Word ingestion is bounded to 20 MiB compressed, 64 MiB declared expanded size,
 4096 ZIP entries, 8 MiB main XML and 2 MiB extracted text. It does not unpack
 archive paths, execute macros or fetch linked resources. This local reading
