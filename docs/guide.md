@@ -730,9 +730,10 @@ feature. The matching server must explicitly migrate `native_input_scopes`
 and advertise `native_scope_protocol: 1` with all three input-file gates enabled;
 their source defaults remain off. Before registering `native_input_tools`, a
 Desktop entry point must bind the inputs and durably persist the scope and
-accepted IDs before starting a task or billing. Connecting the picker/upload
-commands to task admission, interrupted-admission recovery, account-switch UI
-and real-user acceptance remain required. A scope deletion acknowledgement
+accepted IDs before starting a task or billing. The native command candidate
+now implements journaled task admission and recovery as described below;
+composer integration, pending-intent UX, account-switch UI and real-user
+acceptance remain required. A scope deletion acknowledgement
 means `delete_pending`, not that physical storage or quota has been released.
 
 The Desktop Rust bridge now registers `input_files_capabilities`,
@@ -741,10 +742,35 @@ The Desktop Rust bridge now registers `input_files_capabilities`,
 integration commands, not a connected composer workflow. The capability
 explicitly reports `desktop_admission_ready: false` until durable task binding
 and UI integration are complete.
-Until then, native start/reply commands explicitly reject non-empty
-`attachmentIds` or `inputUploadIds` before preflight/task creation, rather than
-silently accepting an old command and ignoring the files. Ordinary messages
-without inputs keep the existing path.
+Native start/reply commands accept input IDs only with the selected `inputOwner`
+partition, a stable UUID-v4 `requestId`, and matching ordered `inputUploadIds`
+and `attachmentIds`. Missing metadata fails instead of ignoring the files.
+Every reply in an input conversation needs this intent metadata, even without
+new files. Ordinary messages without inputs keep the existing network path.
+
+An input intent is stored privately under `pending-inputs-v1/<owner>/admissions`.
+It fixes the original message/options, effective provider/model, conversation,
+scope and upload IDs before remote binding. Binding reserves the local copies
+for that intent; a timeout must be reconciled with the same ID, not removed or
+resent as a fresh task. Before spawning, a durable dispatch claim and checked
+task-index checkpoint are written. A per-conversation OS lease is held through
+the runner. A live local retry reads the original task; after an interrupted or
+uncertain dispatch, recovery records an interrupted turn and requires an
+explicit new follow-up. It never automatically executes the claimed turn again.
+Remote binding and local storage are **not** one distributed transaction.
+
+The actual task verifies the owned scope after queue/browser waits, before the
+first model request, and registers the scope-bound list/read tools. File
+content is untrusted reference material; upload success is not proof of model
+reading. Delete acknowledges remote scope tombstoning before removing local
+history and accepted private retry copies. Failures retain a retry entry; remote
+quota/physical deletion is still pending. Private intent journals are currently
+retained for recovery/non-replay, not claimed erased with the conversation.
+Pending-intent discovery/abandonment and journal-retention UX are unfinished;
+do not enable the composer gate or use these internal commands as acceptance.
+There is no synchronous journal scan on ordinary app startup. The OS lease
+protects this input conversation's dispatch, not global cross-process merging
+of every legacy task index or unrestricted local desktop tools.
 
 The picker uses the system dialog; JavaScript cannot supply a filesystem path
 or raw file bytes. Selected originals are copied into a bounded, account/service

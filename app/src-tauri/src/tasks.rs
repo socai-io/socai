@@ -26,6 +26,7 @@ struct AgentTaskRegistryInner {
     abort_handles: HashMap<String, AbortHandle>,
     timeline_next_seq: HashMap<String, u64>,
     timeline_locks: HashMap<String, Arc<Mutex<()>>>,
+    command_locks: HashMap<String, Arc<Mutex<()>>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default, PartialEq, Eq)]
@@ -47,6 +48,8 @@ pub struct WorkflowSkill {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct AgentTaskSnapshot {
+    #[serde(default)]
+    pub(crate) input_context: Option<NativeTaskInput>,
     pub(crate) task_id: String,
     pub(crate) task: String,
     #[serde(default = "default_task_sites")]
@@ -90,8 +93,73 @@ pub struct AgentTaskSnapshot {
     pub(crate) points_used: Option<i64>,
     // The text driving the in-flight/most recent run — distinct from `task`,
     // which stays the thread's original title across replies. It is process-
-    // local; interrupted startup recovery reads the canonical run.json task.
+    // local for ordinary tasks; native input admission persists it as well,
+    // because a durable dispatch claim can precede creation of run.json.
     pub(crate) current_message: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
+pub(crate) struct NativeTaskInput {
+    pub owner: String,
+    pub scope_id: String,
+    pub request_id: String,
+    pub request_hash: String,
+}
+
+impl AgentTaskSnapshot {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn queued(
+        task_id: String,
+        task: String,
+        provider: Option<String>,
+        model: Option<String>,
+        run_dir: String,
+        session_dir: String,
+        sites: Vec<String>,
+        research_mode: bool,
+        workflow: TaskWorkflow,
+        custom_workflow: Option<WorkflowSkill>,
+    ) -> Self {
+        Self {
+            input_context: None,
+            task_id,
+            current_message: Some(task.clone()),
+            task,
+            sites,
+            provider,
+            model,
+            research_mode,
+            workflow,
+            custom_workflow: if workflow == TaskWorkflow::Custom {
+                custom_workflow
+            } else {
+                None
+            },
+            research_board: None,
+            status: "queued".into(),
+            created_at: now_ms(),
+            started_at: None,
+            finished_at: None,
+            run_id: None,
+            run_dir: Some(run_dir),
+            session_dir: Some(session_dir),
+            target_id: None,
+            page_url: None,
+            page_title_marker: None,
+            final_text: None,
+            error: None,
+            steps: None,
+            input_tokens: None,
+            output_tokens: None,
+            cached_input_tokens: None,
+            cache_creation_input_tokens: None,
+            estimated_cost: None,
+            cost_currency: None,
+            partial: false,
+            degraded_reason: None,
+            points_used: None,
+        }
+    }
 }
 
 pub(crate) fn default_task_sites() -> Vec<String> {
@@ -145,6 +213,7 @@ impl Default for AgentTaskRegistry {
                 abort_handles: HashMap::new(),
                 timeline_next_seq: HashMap::new(),
                 timeline_locks: HashMap::new(),
+                command_locks: HashMap::new(),
             })),
             runner_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_AGENT_TASKS)),
         }
@@ -163,6 +232,41 @@ fn persisted_run_task(run_dir: &str) -> Option<String> {
 }
 
 impl AgentTaskRegistry {
+    /// Serialize reply/delete admission, not streaming timeline events.
+    pub(crate) async fn command_lock(
+        &self,
+        task_id: &str,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        let lock = {
+            let mut guard = self.inner.lock().await;
+            if !guard.tasks.iter().any(|task| task.task_id == task_id) {
+                return Err(format!("unknown task: {task_id}"));
+            }
+            guard
+                .command_locks
+                .entry(task_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        Ok(lock.lock_owned().await)
+    }
+
+    pub(crate) async fn live_input_claim(
+        &self,
+        claim: &AgentTaskSnapshot,
+    ) -> Option<AgentTaskSnapshot> {
+        let guard = self.inner.lock().await;
+        let handle = guard.abort_handles.get(&claim.task_id)?;
+        if handle.is_finished() {
+            return None;
+        }
+        guard
+            .tasks
+            .iter()
+            .find(|task| task.task_id == claim.task_id && task.input_context == claim.input_context)
+            .cloned()
+            .map(hydrate_task_snapshot)
+    }
     pub(crate) async fn create(
         &self,
         task: String,
@@ -178,43 +282,118 @@ impl AgentTaskRegistry {
         let mut guard = self.inner.lock().await;
         guard.next_seq += 1;
         let task_id = format!("task-{}-{}", now_ms(), guard.next_seq);
-        let snapshot = AgentTaskSnapshot {
+        let snapshot = AgentTaskSnapshot::queued(
             task_id,
-            current_message: Some(task.clone()),
             task,
-            sites,
             provider,
             model,
+            run_dir,
+            session_dir,
+            sites,
             research_mode,
             workflow,
-            custom_workflow: if workflow == TaskWorkflow::Custom { custom_workflow } else { None },
-            research_board: None,
-            status: "queued".into(),
-            created_at: now_ms(),
-            started_at: None,
-            finished_at: None,
-            run_id: None,
-            run_dir: Some(run_dir),
-            session_dir: Some(session_dir),
-            target_id: None,
-            page_url: None,
-            page_title_marker: None,
-            final_text: None,
-            error: None,
-            steps: None,
-            input_tokens: None,
-            output_tokens: None,
-            cached_input_tokens: None,
-            cache_creation_input_tokens: None,
-            estimated_cost: None,
-            cost_currency: None,
-            partial: false,
-            degraded_reason: None,
-            points_used: None,
-        };
+            custom_workflow,
+        );
         guard.tasks.push(snapshot.clone());
         persist_task_index(&guard.tasks);
         snapshot
+    }
+
+    /// Journal claim MUST already be durable. An uncertain index write must
+    /// never cause the caller to acquire a fresh dispatch identity.
+    pub(crate) async fn admit_input_snapshot(
+        &self,
+        snapshot: AgentTaskSnapshot,
+        previous: Option<&AgentTaskSnapshot>,
+    ) -> Result<(), String> {
+        let mut guard = self.inner.lock().await;
+        let position = guard
+            .tasks
+            .iter()
+            .position(|task| task.task_id == snapshot.task_id);
+        let old = if let Some(position) = position {
+            let current = &guard.tasks[position];
+            let previous = previous.ok_or("Input task identity is already in use")?;
+            if matches!(current.status.as_str(), "queued" | "running")
+                || current.run_dir != previous.run_dir
+                || current.input_context != previous.input_context
+            {
+                return Err("Conversation changed during input admission; inspect the original request before continuing".into());
+            }
+            Some(std::mem::replace(&mut guard.tasks[position], snapshot))
+        } else {
+            if previous.is_some() {
+                return Err("Conversation was removed during input admission".into());
+            }
+            guard.tasks.push(snapshot);
+            None
+        };
+        if persist_task_index_checked(&guard.tasks).is_err() {
+            if let (Some(position), Some(old)) = (position, old) {
+                guard.tasks[position] = old;
+            } else {
+                guard.tasks.pop();
+            }
+            return Err(
+                "Task dispatch could not be confirmed; retry the SAME input request".into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Caller holds the free dispatch lease. Restoring a claim is NOT running
+    /// it again: interrupted/uncertain dispatches require an explicit new turn.
+    pub(crate) async fn recover_input_claim(
+        &self,
+        claim: &AgentTaskSnapshot,
+        previous_run_dir: &Option<String>,
+        previous_context: &Option<NativeTaskInput>,
+    ) -> Result<AgentTaskSnapshot, String> {
+        let mut guard = self.inner.lock().await;
+        let position = guard
+            .tasks
+            .iter()
+            .position(|task| task.task_id == claim.task_id);
+        let mut recovered = if let Some(position) = position {
+            let current = &guard.tasks[position];
+            if current.input_context != claim.input_context {
+                if &current.run_dir != previous_run_dir
+                    || &current.input_context != previous_context
+                    || matches!(current.status.as_str(), "queued" | "running")
+                {
+                    return Err("This input request was already superseded; inspect conversation history, do not replay it".into());
+                }
+                // Claim committed, index did not: preserve the uncertain new
+                // turn as interrupted, rather than overwriting or replaying it.
+                claim.clone()
+            } else if !matches!(current.status.as_str(), "queued" | "running") {
+                return Ok(hydrate_task_snapshot(current.clone()));
+            } else {
+                current.clone()
+            }
+        } else {
+            claim.clone()
+        };
+        recovered.status = "interrupted".into();
+        recovered.finished_at = Some(now_ms());
+        recovered.target_id = None;
+        recovered.error = Some("Input dispatch was interrupted or unconfirmed. It has NOT been automatically executed again; continue explicitly in this conversation.".into());
+        let old = position
+            .map(|position| std::mem::replace(&mut guard.tasks[position], recovered.clone()));
+        if position.is_none() {
+            guard.tasks.push(recovered.clone());
+        }
+        if persist_task_index_checked(&guard.tasks).is_err() {
+            if let (Some(position), Some(old)) = (position, old) {
+                guard.tasks[position] = old;
+            } else {
+                guard.tasks.pop();
+            }
+            return Err(
+                "Cannot restore the original input dispatch; it will not be replayed".into(),
+            );
+        }
+        Ok(hydrate_task_snapshot(recovered))
     }
 
     pub(crate) async fn acquire_run_permit(&self) -> Option<OwnedSemaphorePermit> {
@@ -318,10 +497,18 @@ impl AgentTaskRegistry {
             return Err("task is still active; cancel it before deleting".into());
         }
         let snapshot = guard.tasks.remove(pos);
+        if snapshot.input_context.is_some() {
+            if persist_task_index_checked(&guard.tasks).is_err() {
+                guard.tasks.insert(pos, snapshot);
+                return Err("Input scope was removed remotely but local history removal is unconfirmed; retry deletion".into());
+            }
+        } else {
+            persist_task_index(&guard.tasks);
+        }
         guard.abort_handles.remove(task_id);
         guard.timeline_next_seq.remove(task_id);
         guard.timeline_locks.remove(task_id);
-        persist_task_index(&guard.tasks);
+        guard.command_locks.remove(task_id);
         Ok(snapshot)
     }
 
@@ -571,11 +758,15 @@ pub(crate) fn now_ms() -> u64 {
 fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
     if let Some(run_dir) = snapshot.run_dir.as_deref() {
         snapshot.final_text = final_text_from_run_dir(run_dir);
-        snapshot.research_board = std::fs::read(PathBuf::from(run_dir).join("research-board.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        snapshot.research_board = std::fs::read(PathBuf::from(run_dir).join("research-board.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
         if let Ok(text) = std::fs::read_to_string(PathBuf::from(run_dir).join("run.json")) {
             if let Ok(run) = serde_json::from_str::<Value>(&text) {
                 snapshot.run_id = run.get("id").and_then(Value::as_str).map(str::to_string);
-                snapshot.error = run.get("error").and_then(Value::as_str).map(str::to_string);
+                if snapshot.input_context.is_none() || snapshot.error.is_none() {
+                    snapshot.error = run.get("error").and_then(Value::as_str).map(str::to_string);
+                }
                 // Pre-rename runs (< #190) recorded the step count as "turns".
                 snapshot.steps = run
                     .get("steps")
@@ -655,20 +846,19 @@ fn load_task_index() -> Vec<AgentTaskSnapshot> {
     tasks
 }
 
-fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
-    let path = task_index_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+fn task_index_records(tasks: &[AgentTaskSnapshot]) -> Vec<Value> {
     // Keep tasks.json as an app index only. Run id, result, error, token usage,
     // and target state are hydrated from the run or are process-local. Hosted
     // points are persisted because only the server can authoritatively settle
     // them; they cannot be reconstructed from the local run's estimated cost.
-    let records: Vec<Value> = tasks
+    tasks
         .iter()
         .map(|task| {
             serde_json::json!({
                 "task_id": &task.task_id,
+                "input_context": &task.input_context,
+                "current_message": task.input_context.as_ref().and(task.current_message.as_ref()),
+                "error": task.input_context.as_ref().and(task.error.as_ref()),
                 "task": &task.task,
                 "sites": &task.sites,
                 "research_mode": task.research_mode,
@@ -687,10 +877,48 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
                 "points_used": task.points_used,
             })
         })
-        .collect();
-    if let Ok(text) = serde_json::to_string_pretty(&records) {
-        let _ = std::fs::write(path, text);
-    }
+        .collect()
+}
+
+fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
+    use std::io::Write;
+    // Streaming events remain best-effort and do not fsync on every update,
+    // but must not truncate an index containing a checked input admission.
+    let save = || -> std::io::Result<()> {
+        let path = task_index_path();
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("Task index has no parent"))?;
+        std::fs::create_dir_all(parent)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(
+            &serde_json::to_vec_pretty(&task_index_records(tasks))
+                .map_err(std::io::Error::other)?,
+        )?;
+        temporary.persist(path).map_err(|error| error.error)?;
+        Ok(())
+    };
+    let _ = save();
+}
+
+fn persist_task_index_checked(tasks: &[AgentTaskSnapshot]) -> std::io::Result<()> {
+    use std::io::Write;
+    let path = task_index_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("Task index has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    // The checked checkpoint retains the same index projection, excluding
+    // transcripts and artifacts, and never truncates an existing index.
+    let bytes =
+        serde_json::to_vec_pretty(&task_index_records(tasks)).map_err(std::io::Error::other)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]

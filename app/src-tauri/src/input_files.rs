@@ -21,13 +21,13 @@ const MAX_STAGED_BYTES: usize = 50 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 16 * 1024;
 static STAGING: Mutex<()> = Mutex::const_new(());
 
-struct StagingGuard {
+pub(crate) struct StagingGuard {
     _local: tokio::sync::MutexGuard<'static, ()>,
     // Closing the file releases the OS lock, including on process death.
     _file: File,
 }
 
-async fn staging(owner: &str) -> Result<StagingGuard> {
+pub(crate) async fn staging(owner: &str) -> Result<StagingGuard> {
     check_owner(owner)?;
     let local = STAGING.lock().await;
     check_owner(owner)?;
@@ -71,16 +71,16 @@ async fn staging(owner: &str) -> Result<StagingGuard> {
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Record {
-    version: u8,
-    owner: String,
-    upload_id: String,
-    name: String,
-    size: usize,
-    sha256: String,
-    attempted: bool,
-    remote: Option<api::InputFileDescriptor>,
-    bound_scope: Option<String>,
+pub(crate) struct Record {
+    pub(crate) version: u8,
+    pub(crate) owner: String,
+    pub(crate) upload_id: String,
+    pub(crate) name: String,
+    pub(crate) size: usize,
+    pub(crate) sha256: String,
+    pub(crate) attempted: bool,
+    pub(crate) remote: Option<api::InputFileDescriptor>,
+    pub(crate) bound_scope: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -127,7 +127,7 @@ struct UploadState {
     phase: &'static str,
 }
 
-fn uuid(value: &str) -> Result<Uuid> {
+pub(crate) fn uuid(value: &str) -> Result<Uuid> {
     let id = Uuid::parse_str(value).context("Invalid private input ID")?;
     if id.get_version_num() != 4 {
         bail!("Private input ID must be UUID v4");
@@ -135,7 +135,7 @@ fn uuid(value: &str) -> Result<Uuid> {
     Ok(id)
 }
 
-fn check_owner(owner: &str) -> Result<()> {
+pub(crate) fn check_owner(owner: &str) -> Result<()> {
     if owner.len() != 64
         || !owner.bytes().all(|byte| byte.is_ascii_hexdigit())
         || api::input_owner()? != owner
@@ -160,7 +160,7 @@ fn supported_name(name: &str) -> bool {
         })
 }
 
-fn private_directory(path: &Path) -> Result<()> {
+pub(crate) fn private_directory(path: &Path) -> Result<()> {
     if !path.exists() {
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
@@ -191,7 +191,7 @@ fn private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn root(owner: &str) -> Result<PathBuf> {
+pub(crate) fn root(owner: &str) -> Result<PathBuf> {
     if owner.len() != 64 || !owner.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("Invalid private input owner");
     }
@@ -204,7 +204,7 @@ fn root(owner: &str) -> Result<PathBuf> {
     Ok(account)
 }
 
-fn read_private(path: &Path, limit: usize) -> Result<Vec<u8>> {
+pub(crate) fn read_private(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -239,7 +239,7 @@ fn read_private(path: &Path, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn write_record(record: &Record) -> Result<()> {
+pub(crate) fn write_record(record: &Record) -> Result<()> {
     let id = uuid(&record.upload_id)?;
     let directory = root(&record.owner)?;
     let bytes = serde_json::to_vec(record)?;
@@ -256,7 +256,7 @@ fn write_record(record: &Record) -> Result<()> {
     Ok(())
 }
 
-fn read_record(owner: &str, id: Uuid) -> Result<Record> {
+pub(crate) fn read_record(owner: &str, id: Uuid) -> Result<Record> {
     let bytes = read_private(&root(owner)?.join(format!("{id}.json")), MAX_METADATA_BYTES)?;
     let record: Record =
         serde_json::from_slice(&bytes).context("Invalid private input retry metadata")?;
@@ -288,7 +288,7 @@ fn read_record(owner: &str, id: Uuid) -> Result<Record> {
     Ok(record)
 }
 
-fn records(owner: &str) -> Result<Vec<Record>> {
+pub(crate) fn records(owner: &str) -> Result<Vec<Record>> {
     let mut result = Vec::new();
     for entry in std::fs::read_dir(root(owner)?)? {
         let entry = entry?;
@@ -578,15 +578,20 @@ pub async fn input_file_remove(
     } else {
         "local-only"
     };
-    let directory = root(&owner).map_err(|error| error.to_string())?;
+    remove_local(&owner, id).map_err(|error| error.to_string())?;
+    check_owner(&owner).map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({ "status": status }))
+}
+
+// Caller holds staging(), and has confirmed remote acceptance or deletion.
+pub(crate) fn remove_local(owner: &str, id: Uuid) -> Result<()> {
+    let directory = root(owner)?;
     // Delete only copies for this validated opaque ID, never selected originals.
     // A process killed during the atomic byte write can leave its named temp
     // copy. Remove those owned copies before dropping the counted reservation.
     let mut copies = vec![directory.join(format!("{id}.bin"))];
-    for entry in std::fs::read_dir(&directory)
-        .map_err(|_| "Cannot inspect private input retry data".to_string())?
-    {
-        let entry = entry.map_err(|_| "Cannot inspect private input retry data".to_string())?;
+    for entry in std::fs::read_dir(&directory).context("Cannot inspect private input retry data")? {
+        let entry = entry.context("Cannot inspect private input retry data")?;
         if entry
             .file_name()
             .to_str()
@@ -599,12 +604,13 @@ pub async fn input_file_remove(
     for path in copies {
         if let Err(error) = std::fs::remove_file(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                return Err("Cannot remove private input draft; retry removal".into());
+                bail!("Cannot remove private input draft; retry removal");
             }
         }
     }
-    check_owner(&owner).map_err(|error| error.to_string())?;
-    Ok(serde_json::json!({ "status": status }))
+    #[cfg(unix)]
+    File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 #[tauri::command]
