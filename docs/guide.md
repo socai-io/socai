@@ -135,6 +135,12 @@ own facts. **Prepare task** fills the composer; it does not start or publish
 anything. Review the platform and instructions, then send normally. Replacing
 an existing unsent draft requires confirmation.
 
+Background updates retain focus and selection in the same unchanged draft or
+starter field. Switching tasks, changing a draft programmatically, and opening
+a dialog do not restore the previous field's focus. Shell redraws wait until
+an active input-method composition commits; this does not defer task execution
+or authentication itself.
+
 These starters use the existing research tools, not a separate collection
 backend. A missing platform login, unavailable media, or partial comment set
 must be disclosed in the actual result. A monitoring plan is not an enabled

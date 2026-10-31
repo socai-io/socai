@@ -847,7 +847,7 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
     (connected || !sourcesNeedBrowser(c.sites, c.researchMode)) && !c.modelReady ? `<p class="composer__hint">${esc(t("task.addKeyHint"))}</p>` : "";
   return `
     <div class="composer">
-      <form id="composer-form" class="composer__form">
+      <form id="composer-form" class="composer__form" data-composer-mode="${esc(c.mode)}" ${c.taskId ? `data-composer-task-id="${esc(c.taskId)}"` : ""}>
         <div class="composer__row ${disabled ? "is-disabled" : ""}">
           <textarea
             id="composer-input"
