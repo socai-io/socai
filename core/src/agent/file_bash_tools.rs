@@ -254,13 +254,16 @@ impl Tool for ReadFileTool {
              an image you can actually see — use this to inspect screenshot or \
              note-media artifacts from earlier run dirs. For plain text you may \
              also just use `shell`, but images must go through this \
-             tool."
+             tool. Word .docx files return body text (including tables and hyperlink text); \
+             headers, footers and embedded images are not extracted. Legacy .doc is unsupported."
         } else {
             "Read a local file. Text files return their contents (optionally a line \
              window via `offset`/`limit`); image files (png/jpg/webp/gif) are \
              returned as an image you can actually see — use this to inspect \
              screenshot artifacts from earlier run dirs. For plain text you may \
-             also just use `shell`, but images must go through this tool."
+             also just use `shell`, but images must go through this tool. Word .docx \
+             files return body text (including tables and hyperlink text); headers, \
+             footers and embedded images are not extracted. Legacy .doc is unsupported."
         }
     }
 
@@ -325,15 +328,40 @@ impl Tool for ReadFileTool {
             ]));
         }
 
-        if meta.len() > MAX_TEXT_BYTES {
-            anyhow::bail!(
-                "{} is {} bytes — too large to read; use offset/limit",
-                path.display(),
-                meta.len()
-            );
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let word = extension.eq_ignore_ascii_case("docx");
+        if extension.eq_ignore_ascii_case("doc") {
+            anyhow::bail!("Legacy .doc is not supported; save the document as .docx first");
         }
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+        let content = if word {
+            super::document::read_docx(&path).map_err(|error| {
+                anyhow::anyhow!("cannot read Word {}: {error:#}", path.display())
+            })?
+        } else {
+            if meta.len() > MAX_TEXT_BYTES {
+                anyhow::bail!(
+                    "{} is {} bytes — too large to read; use offset/limit",
+                    path.display(),
+                    meta.len()
+                );
+            }
+            std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?
+        };
+
+        let result = |text: String| {
+            if word {
+                ToolResult::blocks(vec![
+                    ToolResultBlock::text("[Word body text only: paragraphs, tables and hyperlink text, without rendered list numbering or layout. Headers, footers, comments, embedded images and other assets are not extracted or OCRed. offset/limit count body-text lines.]"),
+                    ToolResultBlock::text(text),
+                ])
+            } else {
+                ToolResult::text(text)
+            }
+        };
 
         let offset = input
             .get("offset")
@@ -348,18 +376,18 @@ impl Tool for ReadFileTool {
             let lines: Vec<&str> = content.lines().collect();
             if lines.len() > DEFAULT_READ_LIMIT {
                 let shown = lines[..DEFAULT_READ_LIMIT].join("\n");
-                return Ok(ToolResult::text(format!(
+                return Ok(result(format!(
                     "{shown}\n\n[truncated at {DEFAULT_READ_LIMIT} of {} lines; use offset/limit for more]",
                     lines.len()
                 )));
             }
-            return Ok(ToolResult::text(content));
+            return Ok(result(content));
         }
 
         let start = offset.unwrap_or(1).saturating_sub(1);
         let take = limit.unwrap_or(DEFAULT_READ_LIMIT);
         let windowed: Vec<&str> = content.lines().skip(start).take(take).collect();
-        Ok(ToolResult::text(windowed.join("\n")))
+        Ok(result(windowed.join("\n")))
     }
 }
 

@@ -688,6 +688,20 @@ socai daemon answered the version-exempt local ping.
 
 ## Run results and artifacts
 
+The local agent's `read_file` tool can read existing `.docx` files as Word body
+text, including paragraphs, table cells and hyperlink text. Its `offset` and
+`limit` select body-text lines. This is not a Word renderer: automatic list
+numbering, layout, headers, footers, comments and embedded images are not
+extracted, and the returned content states that limitation. Empty or image-only
+documents are reported as unreadable rather than as successful text extraction.
+Legacy `.doc` must first be saved as `.docx`.
+
+Word ingestion is bounded to 20 MiB compressed, 64 MiB declared expanded size,
+4096 ZIP entries, 8 MiB main XML and 2 MiB extracted text. It does not unpack
+archive paths, execute macros or fetch linked resources. This local reading
+capability does not provide Web uploads, per-account storage or a Desktop
+attachment picker; those require their own authenticated attachment transport.
+
 Each run is written under the following directory by default:
 
 ```text
