@@ -187,9 +187,13 @@ jobs:
 
           node scripts/prepare-sherpa-onnx-libs.mjs aarch64-apple-darwin x86_64-apple-darwin
           export SHERPA_ONNX_ARCHIVE_DIR="$PWD/target/sherpa-onnx-archives"
+
+          export SHERPA_ONNX_LIB_DIR="$PWD/target/sherpa-onnx-libs/aarch64-apple-darwin/lib"
           cargo build -p socai-cli --release --target aarch64-apple-darwin
-          cargo build -p socai-cli --release --target x86_64-apple-darwin
           cargo build -p socai-asr --release --target aarch64-apple-darwin
+
+          export SHERPA_ONNX_LIB_DIR="$PWD/target/sherpa-onnx-libs/x86_64-apple-darwin/lib"
+          cargo build -p socai-cli --release --target x86_64-apple-darwin
           cargo build -p socai-asr --release --target x86_64-apple-darwin
 
           cli_dir="target/socai-cli-macos-universal"
@@ -733,6 +737,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           node scripts/prepare-sherpa-onnx-libs.mjs x86_64-pc-windows-msvc
           $env:SHERPA_ONNX_ARCHIVE_DIR = Join-Path $PWD 'target/sherpa-onnx-archives'
+          $env:SHERPA_ONNX_LIB_DIR = Join-Path $PWD 'target/sherpa-onnx-libs/x86_64-pc-windows-msvc/lib'
           cargo build -p socai-cli -p socai-asr --release
           $versionOutput = & .\target\release\socai.exe --version
           $versionOutput
