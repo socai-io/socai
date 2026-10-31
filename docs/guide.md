@@ -741,6 +741,10 @@ The Desktop Rust bridge now registers `input_files_capabilities`,
 integration commands, not a connected composer workflow. The capability
 explicitly reports `desktop_admission_ready: false` until durable task binding
 and UI integration are complete.
+Until then, native start/reply commands explicitly reject non-empty
+`attachmentIds` or `inputUploadIds` before preflight/task creation, rather than
+silently accepting an old command and ignoring the files. Ordinary messages
+without inputs keep the existing path.
 
 The picker uses the system dialog; JavaScript cannot supply a filesystem path
 or raw file bytes. Selected originals are copied into a bounded, account/service
