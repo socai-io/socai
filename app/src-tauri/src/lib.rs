@@ -342,11 +342,17 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             input_files::input_files_capabilities,
+            input_files::input_files_identity,
+            input_files::input_scope_files,
             input_files::input_file_choose,
             input_files::input_file_drafts,
             input_files::input_file_upload,
             input_files::input_file_remove,
             input_files::input_file_original_save_as,
+            input_admission::input_submissions,
+            input_admission::input_submission_ack,
+            input_admission::input_submission_cancel,
+            input_admission::input_submission_recover,
             commands::cdp_connect,
             commands::cdp_disconnect,
             commands::cdp_status,

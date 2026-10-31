@@ -45,6 +45,8 @@ pub struct InputFileCapabilities {
     pub max_attachments: usize,
     pub extensions: Vec<String>,
     pub native_scope_protocol: Option<u64>,
+    #[serde(default)]
+    pub native_admission_cancellation: bool,
 }
 
 fn valid_name(name: &str) -> bool {
@@ -226,6 +228,7 @@ pub async fn input_file_capabilities(owner: &str) -> Result<InputFileCapabilitie
             max_attachments: 10,
             extensions: Vec::new(),
             native_scope_protocol: None,
+            native_admission_cancellation: false,
         });
     }
     if !response.status().is_success() {
@@ -405,6 +408,42 @@ pub async fn remove_native_input_scope(owner: &str, scope: Uuid) -> Result<()> {
         || value.get("status").and_then(Value::as_str) != Some("delete_pending")
     {
         bail!("Invalid native input removal acknowledgement");
+    }
+    Ok(())
+}
+
+/// Cancel an unclaimed admission without deleting earlier conversation inputs.
+pub async fn cancel_native_input_admission(
+    owner: &str,
+    scope: Uuid,
+    ids: &[String],
+    preserve_scope: bool,
+) -> Result<()> {
+    validate_scope(scope)?;
+    if ids.len() > 10
+        || ids.iter().any(|id| Uuid::parse_str(id).is_err())
+        || ids.iter().collect::<HashSet<_>>().len() != ids.len()
+        || (!preserve_scope && ids.is_empty())
+    {
+        bail!("Invalid native input cancellation");
+    }
+    let value: Value = json_body(
+        send(
+            request(
+                Method::POST,
+                &format!("/native-scopes/{scope}/cancel-admission"),
+                owner,
+            )?
+            .json(&json!({"attachment_ids":ids,"preserve_scope":preserve_scope})),
+        )
+        .await?,
+    )
+    .await?;
+    if value.get("scope_id").and_then(Value::as_str) != Some(scope.to_string().as_str())
+        || value.get("status").and_then(Value::as_str) != Some("delete_pending")
+        || value.get("attachment_ids") != Some(&json!(ids))
+    {
+        bail!("Invalid input admission cancellation acknowledgement");
     }
     Ok(())
 }

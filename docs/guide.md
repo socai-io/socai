@@ -732,16 +732,20 @@ their source defaults remain off. Before registering `native_input_tools`, a
 Desktop entry point must bind the inputs and durably persist the scope and
 accepted IDs before starting a task or billing. The native command candidate
 now implements journaled task admission and recovery as described below;
-composer integration, pending-intent UX, account-switch UI and real-user
-acceptance remain required. A scope deletion acknowledgement
+the composer and pending-intent candidate are now connected. Real-user
+acceptance, advanced/superseded-intent resolution and journal-retention UX
+remain required. A scope deletion acknowledgement
 means `delete_pending`, not that physical storage or quota has been released.
 
 The Desktop Rust bridge now registers `input_files_capabilities`,
 `input_file_choose`, `input_file_drafts`, `input_file_upload`,
 `input_file_remove` and `input_file_original_save_as`. These are internal
-integration commands, not a connected composer workflow. The capability
-explicitly reports `desktop_admission_ready: false` until durable task binding
-and UI integration are complete.
+integration commands. The candidate composer uses the OS picker, real upload
+phases, explicit restored-draft selection, stable Send, recovery and Save As.
+The capability still reports `desktop_admission_ready: false`; do not enable it
+before the remaining retention/recovery cases and real-user acceptance are done.
+The client also requires `native_admission_cancellation: true` from the server,
+so an older scope-only server does not expose a partly cancellable workflow.
 Native start/reply commands accept input IDs only with the selected `inputOwner`
 partition, a stable UUID-v4 `requestId`, and matching ordered `inputUploadIds`
 and `attachmentIds`. Missing metadata fails instead of ignoring the files.
@@ -766,8 +770,32 @@ reading. Delete acknowledges remote scope tombstoning before removing local
 history and accepted private retry copies. Failures retain a retry entry; remote
 quota/physical deletion is still pending. Private intent journals are currently
 retained for recovery/non-replay, not claimed erased with the conversation.
-Pending-intent discovery/abandonment and journal-retention UX are unfinished;
-do not enable the composer gate or use these internal commands as acceptance.
+Pending discovery/acknowledgement/cancellation use `input_submissions`,
+`input_submission_ack` and `input_submission_cancel`. A separate
+`input_submission_recover` command requires a durable claim and has no dispatch
+path; the UI's “inspect original, no replay” action never calls Send. Continuing
+an unclaimed original intent is a separate explicit action and may start its
+first paid run. A maximum of 20 pending references is listed, without scanning
+all historical journals. Original parameters and IDs, not file bytes or paths,
+also survive in owner-partitioned UI storage before the first IPC Send.
+
+Cancellation first persists abandonment, then uses the server's
+`POST /native-scopes/{scope}/cancel-admission`. It tombstones a new scope or
+only the selected inputs of an existing one, under the same locks as binding.
+A late bind/upload cannot revive those files. Remote errors retain the intent
+and private copies for cancellation retry. If the IPC was never received, a
+local tombstone blocks a late Send and unbound drafts stay available for explicit
+removal. Claimed turns cannot be abandoned as unsent. A conversation advanced
+by another client fails closed rather than deleting potentially reused inputs;
+its explicit resolution UX is still unfinished. Journals still retain original
+parameters for recovery; this is not full conversation-data erasure.
+
+Identity, local drafts and pending references hydrate asynchronously after
+the workspace render. Capabilities and accepted-file HTTP reads are lazy when
+the user opens inputs; ordinary no-input messages add no input network calls.
+The composer preserves a focused textarea's caret during its input updates and
+defers these redraws during composition; IME/focus behavior is not yet accepted
+on a real native runtime. Do not use these internal commands as acceptance.
 There is no synchronous journal scan on ordinary app startup. The OS lease
 protects this input conversation's dispatch, not global cross-process merging
 of every legacy task index or unrestricted local desktop tools.

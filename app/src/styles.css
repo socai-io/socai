@@ -3181,6 +3181,13 @@ code {
 .note-cite__kind .platform-icon { width: 12px; height: 12px; flex: 0 0 12px; }
 .research-lead-cite .research-source > .platform-icon { width: 12px; height: 12px; flex: 0 0 12px; }
 .composer__expert-label { color: var(--fg-muted); white-space: nowrap; }
+.native-inputs { color: var(--fg-muted); border-bottom: 1px solid var(--line); padding: 8px 0; max-height: 280px; overflow: auto; }
+.native-inputs > button, .native-inputs li button { font: inherit; color: var(--fg); background: var(--canvas); border: 1px solid var(--line); border-radius: 5px; padding: 4px 7px; margin: 3px; cursor: pointer; }
+.native-inputs button:disabled { opacity: .5; cursor: default; }
+.native-inputs ul { list-style: none; margin: 5px 0; padding: 0; }
+.native-inputs li { padding: 5px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.native-inputs li label, .native-inputs li > span { margin-right: 6px; }
+.native-inputs p { margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .workflow-dialog { width: min(590px, 100%); padding: 20px; }
 .workflow-grid { gap: 8px; margin: 16px 0 0; }
 .workflow-card > button:first-child, .workflow-card-add { gap: 7px; padding: 14px; }

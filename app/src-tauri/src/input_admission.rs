@@ -24,6 +24,12 @@ struct Intent {
     claimed: bool,
     previous_run_dir: Option<String>,
     previous_context: Option<NativeTaskInput>,
+    #[serde(default)]
+    request: Option<serde_json::Value>,
+    #[serde(default)]
+    abandoned: bool,
+    #[serde(default)]
+    cancelled: bool,
 }
 
 pub(crate) enum Admission {
@@ -40,6 +46,248 @@ pub(crate) struct Prepared {
 
 pub(crate) fn request_hash(value: &serde_json::Value) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(value)?)))
+}
+
+#[derive(Serialize)]
+pub(crate) struct PendingSubmission {
+    request_id: String,
+    task_id: String,
+    scope_id: String,
+    request: Option<serde_json::Value>,
+    uploads: Vec<String>,
+    attachments: Vec<String>,
+    claimed: bool,
+    abandoned: bool,
+}
+
+fn pending_directory(owner: &str) -> Result<PathBuf> {
+    let path = directory(owner)?.join("pending");
+    staging::private_directory(&path)?;
+    Ok(path)
+}
+
+fn cancellation_path(owner: &str, id: uuid::Uuid) -> Result<PathBuf> {
+    let parent = directory(owner)?.join("cancelled-requests");
+    staging::private_directory(&parent)?;
+    Ok(parent.join(format!("{id}.json")))
+}
+
+fn cancel_not_received(owner: &str, request_id: &str) -> Result<()> {
+    let path = cancellation_path(owner, staging::uuid(request_id)?)?;
+    let parent = path.parent().context("Missing cancellation directory")?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(b"1")?;
+    file.as_file().sync_all()?;
+    file.persist(&path).map_err(|e| e.error)?;
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    // No admission journal means no bind/dispatch was started. Keep unbound
+    // drafts for explicit removal; the tombstone blocks a delayed IPC Send.
+    Ok(())
+}
+
+fn pending_ids(owner: &str) -> Result<Vec<uuid::Uuid>> {
+    let mut ids = Vec::new();
+    for entry in std::fs::read_dir(pending_directory(owner)?)? {
+        let path = entry?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let id = staging::uuid(
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .context("Invalid pending input reference")?,
+        )?;
+        if staging::read_private(&path, 16)? != b"1" {
+            bail!("Invalid pending input reference");
+        }
+        ids.push(id);
+        if ids.len() > 20 {
+            bail!("More than 20 pending input submissions; inspect them before submitting again");
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+fn ensure_pending(intent: &Intent) -> Result<()> {
+    let context = intent
+        .snapshot
+        .input_context
+        .as_ref()
+        .context("Missing input context")?;
+    let id = staging::uuid(&context.request_id)?;
+    let existing = pending_ids(&context.owner)?;
+    if existing.contains(&id) {
+        return Ok(());
+    }
+    if existing.len() >= 20 {
+        bail!("Review or cancel pending input submissions before sending another");
+    }
+    let parent = pending_directory(&context.owner)?;
+    let mut file = tempfile::NamedTempFile::new_in(&parent)?;
+    file.write_all(b"1")?;
+    file.as_file().sync_all()?;
+    file.persist(parent.join(format!("{id}.json")))
+        .map_err(|e| e.error)?;
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn read_intent(owner: &str, request_id: &str) -> Result<Intent> {
+    let id = staging::uuid(request_id)?;
+    if id.to_string() != request_id {
+        bail!("Invalid submission ID");
+    }
+    let intent: Intent = serde_json::from_slice(&staging::read_private(
+        &directory(owner)?.join(format!("{id}.json")),
+        MAX_JOURNAL,
+    )?)?;
+    let context = intent
+        .snapshot
+        .input_context
+        .as_ref()
+        .context("Missing input context")?;
+    validate_ids(&intent.uploads)?;
+    validate_ids(&intent.attachments)?;
+    staging::uuid(&context.scope_id)?;
+    if intent.version != 1
+        || context.owner != owner
+        || context.request_id != request_id
+        || intent.uploads.len() != intent.attachments.len()
+        || (intent.claimed && intent.abandoned)
+        || (intent.cancelled && !intent.abandoned)
+        || intent
+            .request
+            .as_ref()
+            .is_some_and(|value| request_hash(value).ok().as_ref() != Some(&context.request_hash))
+    {
+        bail!("Input intent does not match its private identity");
+    }
+    Ok(intent)
+}
+
+fn forget_pending(owner: &str, request_id: &str) -> Result<()> {
+    let id = staging::uuid(request_id)?;
+    let parent = pending_directory(owner)?;
+    if let Err(error) = std::fs::remove_file(parent.join(format!("{id}.json"))) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error.into());
+        }
+    }
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn input_submissions(
+    owner: String,
+) -> std::result::Result<Vec<PendingSubmission>, String> {
+    let result = async {
+        let _guard = staging::staging(&owner).await?;
+        let mut result = Vec::new();
+        // Only unacknowledged references are listed. No full history scan on
+        // app startup; at most 20 bounded private journals are read here.
+        for id in pending_ids(&owner)? {
+            let intent = read_intent(&owner, &id.to_string())?;
+            let context = intent
+                .snapshot
+                .input_context
+                .as_ref()
+                .context("Missing input context")?;
+            result.push(PendingSubmission {
+                request_id: id.to_string(),
+                task_id: intent.snapshot.task_id.clone(),
+                scope_id: context.scope_id.clone(),
+                request: intent.request,
+                uploads: intent.uploads,
+                attachments: intent.attachments,
+                claimed: intent.claimed,
+                abandoned: intent.abandoned,
+            });
+        }
+        staging::check_owner(&owner)?;
+        Ok::<_, anyhow::Error>(result)
+    }
+    .await;
+    result.map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) async fn input_submission_ack(
+    owner: String,
+    request_id: String,
+) -> std::result::Result<(), String> {
+    let result = async {
+        let _guard = staging::staging(&owner).await?;
+        let intent = read_intent(&owner, &request_id)?;
+        if !intent.claimed {
+            bail!("An unsent input request must be explicitly cancelled, not acknowledged");
+        }
+        forget_pending(&owner, &request_id)
+    }
+    .await;
+    result.map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub(crate) async fn input_submission_cancel(
+    owner: String,
+    request_id: String,
+    tasks: tauri::State<'_, AgentTaskRegistry>,
+) -> std::result::Result<(), String> {
+    let result = async {
+        let _guard = staging::staging(&owner).await?;
+        let mut intent = match read_intent(&owner, &request_id) {
+            Ok(intent) => intent,
+            Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {
+                if pending_ids(&owner)?.contains(&staging::uuid(&request_id)?) {
+                    bail!("Pending reference exists but its durable intent is missing; inspect the original task, do not discard this record");
+                }
+                cancel_not_received(&owner, &request_id)?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        if intent.claimed { bail!("This request already has a dispatch claim. Inspect/cancel the original task; it cannot be abandoned as unsent"); }
+        let context = intent.snapshot.input_context.as_ref().context("Missing input context")?.clone();
+        // try-lock (never await) keeps the staging/conversation lock order safe.
+        let _lease = conversation_lease(&owner, &intent.snapshot.task_id)?;
+        if let Some(current) = tasks.get(&intent.snapshot.task_id).await {
+            if current.run_dir != intent.previous_run_dir || current.input_context != intent.previous_context
+                || matches!(current.status.as_str(), "queued" | "running") {
+                bail!("Conversation changed after this request. Inspect its inputs before removing anything");
+            }
+        } else if intent.previous_run_dir.is_some() && !intent.cancelled {
+            bail!("Original conversation is missing; inspect the saved request before removing inputs");
+        }
+        // Persist the no-replay decision before any network deletion. An
+        // interrupted cancellation remains listed and can only be cancelled.
+        intent.abandoned = true;
+        write(&intent)?;
+        if !intent.cancelled {
+            api::cancel_native_input_admission(&owner, staging::uuid(&context.scope_id)?,
+                &intent.attachments, intent.previous_context.is_some()).await?;
+            staging::check_owner(&owner)?;
+            intent.cancelled = true;
+            write(&intent)?;
+        }
+        for (upload, attachment) in intent.uploads.iter().zip(&intent.attachments) {
+            let id = staging::uuid(upload)?;
+            let path = staging::root(&owner)?.join(format!("{id}.json"));
+            if !path.try_exists()? { continue; }
+            let record = staging::read_record(&owner, id)?;
+            if record.remote.as_ref().map(|remote| &remote.id) != Some(attachment)
+                || record.bound_scope.as_ref().is_some_and(|scope| scope != &context.scope_id) {
+                bail!("Cancelled input copy does not match the original intent");
+            }
+            staging::remove_local(&owner, id)?;
+        }
+        forget_pending(&owner, &request_id)
+    }.await;
+    result.map_err(|e| format!("{e:#}"))
 }
 
 fn directory(owner: &str) -> Result<PathBuf> {
@@ -122,18 +370,76 @@ fn validate_ids(values: &[String]) -> Result<()> {
     Ok(())
 }
 
+// Caller holds staging(). This function contains no task creation/spawn path.
+async fn recover_claim(registry: &AgentTaskRegistry, intent: &Intent) -> Result<AgentTaskSnapshot> {
+    if !intent.claimed || intent.abandoned {
+        bail!("No executable claim exists; recovery will not send this request");
+    }
+    let context = intent
+        .snapshot
+        .input_context
+        .as_ref()
+        .context("Missing input context")?;
+    api::native_input_files(&context.owner, staging::uuid(&context.scope_id)?).await?;
+    cleanup_claimed_copies(intent);
+    if let Some(snapshot) = registry.live_input_claim(&intent.snapshot).await {
+        return Ok(snapshot);
+    }
+    let _lease = conversation_lease(&context.owner, &intent.snapshot.task_id)?;
+    let recovered = registry
+        .recover_input_claim(
+            &intent.snapshot,
+            &intent.previous_run_dir,
+            &intent.previous_context,
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    if recovered.status == "interrupted" {
+        if let (Some(session), Some(run)) = (&recovered.session_dir, &recovered.run_dir) {
+            let mut conversation = socai_core::agent::Conversation::load(session)?;
+            if !conversation.runs.iter().any(|entry| &entry.run_dir == run) {
+                conversation.record_run(
+                    recovered
+                        .current_message
+                        .as_deref()
+                        .unwrap_or(&recovered.task),
+                    "[input dispatch unconfirmed; not automatically replayed]",
+                    &PathBuf::from(run),
+                    "interrupted",
+                );
+            }
+        }
+    }
+    Ok(recovered)
+}
+
+#[tauri::command]
+pub(crate) async fn input_submission_recover(
+    owner: String,
+    request_id: String,
+    tasks: tauri::State<'_, AgentTaskRegistry>,
+) -> std::result::Result<AgentTaskSnapshot, String> {
+    let result = async {
+        let _guard = staging::staging(&owner).await?;
+        recover_claim(tasks.inner(), &read_intent(&owner, &request_id)?).await
+    }
+    .await;
+    result.map_err(|e| format!("{e:#}"))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare(
     registry: &AgentTaskRegistry,
     owner: &str,
     request_id: &str,
-    hash: &str,
+    request_payload: serde_json::Value,
     uploads: Vec<String>,
     attachments: Vec<String>,
     previous: Option<&AgentTaskSnapshot>,
     create: impl FnOnce() -> Result<AgentTaskSnapshot>,
 ) -> Result<Admission> {
     staging::check_owner(owner)?;
+    let hash = request_hash(&request_payload)?;
     let request = staging::uuid(request_id)?;
     if request.to_string() != request_id
         || hash.len() != 64
@@ -147,6 +453,9 @@ pub(crate) async fn prepare(
         bail!("Every submitted input needs its confirmed upload ID");
     }
     let guard = staging::staging(owner).await?;
+    if cancellation_path(owner, request)?.try_exists()? {
+        bail!("This input submission was explicitly cancelled before admission; it cannot be replayed");
+    }
     let path = directory(owner)?.join(format!("{request}.json"));
     let intent = match staging::read_private(&path, MAX_JOURNAL) {
         Ok(bytes) => {
@@ -176,7 +485,7 @@ pub(crate) async fn prepare(
                 owner: owner.into(),
                 scope_id: scope.to_string(),
                 request_id: request_id.into(),
-                request_hash: hash.into(),
+                request_hash: hash.clone(),
             });
             Intent {
                 version: 1,
@@ -186,6 +495,9 @@ pub(crate) async fn prepare(
                 claimed: false,
                 previous_run_dir: previous.and_then(|p| p.run_dir.clone()),
                 previous_context: previous.and_then(|p| p.input_context.clone()),
+                request: Some(request_payload.clone()),
+                abandoned: false,
+                cancelled: false,
             }
         }
         Err(error) => return Err(error),
@@ -206,43 +518,22 @@ pub(crate) async fn prepare(
         || intent.attachments != attachments
         || intent.snapshot.task_id != expected_task_id
         || intent.snapshot.status != "queued"
+        || intent
+            .request
+            .as_ref()
+            .is_some_and(|value| value != &request_payload)
     {
         bail!("The original input request has different content; recover that request before changing it");
+    }
+    if intent.abandoned {
+        bail!("This submission was explicitly abandoned; it cannot be sent or replayed");
     }
     let scope = staging::uuid(&context.scope_id)?;
     if intent.claimed {
         // A revoked/deleted remote scope must never resurrect a removed row.
-        api::native_input_files(owner, scope).await?;
-        cleanup_claimed_copies(&intent);
-        if let Some(snapshot) = registry.live_input_claim(&intent.snapshot).await {
-            return Ok(Admission::Recovered(snapshot));
-        }
-        let _lease = conversation_lease(owner, &intent.snapshot.task_id)?;
-        let recovered = registry
-            .recover_input_claim(
-                &intent.snapshot,
-                &intent.previous_run_dir,
-                &intent.previous_context,
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-        if recovered.status == "interrupted" {
-            if let (Some(session), Some(run)) = (&recovered.session_dir, &recovered.run_dir) {
-                let mut conversation = socai_core::agent::Conversation::load(session)?;
-                if !conversation.runs.iter().any(|entry| &entry.run_dir == run) {
-                    conversation.record_run(
-                        recovered
-                            .current_message
-                            .as_deref()
-                            .unwrap_or(&recovered.task),
-                        "[input dispatch unconfirmed; not automatically replayed]",
-                        &PathBuf::from(run),
-                        "interrupted",
-                    );
-                }
-            }
-        }
-        return Ok(Admission::Recovered(recovered));
+        return Ok(Admission::Recovered(
+            recover_claim(registry, &intent).await?,
+        ));
     }
     if intent.previous_run_dir != previous.and_then(|p| p.run_dir.clone())
         || intent.previous_context != previous.and_then(|p| p.input_context.clone())
@@ -270,6 +561,7 @@ pub(crate) async fn prepare(
     // Before any remote mutation: even if the response disappears, retries
     // bind the same owner/scope/files instead of creating a second task.
     write(&intent)?;
+    ensure_pending(&intent)?;
     for record in &mut records {
         // Reserve the local copy for this intent before an ambiguous remote
         // bind. Removing or reusing it now must go through intent recovery.
