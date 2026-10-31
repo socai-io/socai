@@ -975,7 +975,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, macos-15-intel]
+        # Temporary migration audit only; remove before merging.
+        runner: [macos-15, macos-15-intel, macos-14]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
