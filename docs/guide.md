@@ -121,6 +121,14 @@ The desktop app keeps task history and artifacts for each research task.
 
 ### Research sources
 
+When a failed site tool requires a `browser_script` repair, `input` is a JSON
+value passed unchanged to the script. Structured parameters must be a JSON
+object: `{"input":{"url":"https://www.xiaohongshu.com/explore"},"script":"await socai.navigate(input.url); return await socai.pageInfo();"}`.
+Do not stringify that object: a JSON-encoded string has no `input.url` field.
+String inputs are still valid; use them directly as strings or explicitly
+`JSON.parse(input)` when JSON text is intentional. `socai.navigate(url)` requires
+a non-empty string and still enforces the configured site's navigation boundary.
+
 The desktop composer supports Auto or one or more research sources: Xiaohongshu,
 Douyin, TikTok, Instagram, LinkedIn, and X. Auto is exclusive and is the new-task
 default when no choice was saved; the agent chooses platforms from the request.
