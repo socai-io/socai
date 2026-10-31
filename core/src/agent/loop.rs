@@ -1097,6 +1097,9 @@ pub async fn run_agent_with_events(
         if extension_stop_reason.is_some() {
             break;
         }
+        if let Some(reason) = ctx.acquisition_stop_reason() {
+            degraded_reason.get_or_insert(reason);
+        }
         if degraded_reason.is_some() && delivery_steps_left.is_none() {
             if !tools
                 .iter()
@@ -1365,6 +1368,7 @@ pub async fn run_agent_with_events(
             degraded_reason
                 .clone()
                 .or(extension_stop_reason)
+                .or_else(|| ctx.acquisition_stop_reason())
                 .or_else(|| extensions.partial_reason(&ctx))
         })
         .flatten();
