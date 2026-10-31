@@ -757,7 +757,12 @@ before returning ready. Removal keeps failed acknowledgements retryable and
 does not delete selected originals; an uncertain upload may still reserve
 server capacity until expiry. Original saving checks scope membership, exact
 bytes and integrity before asking for a destination, rechecks the account after
-the dialog, and writes through a temporary file. Cancellation writes nothing.
+the dialog, and writes through a temporary file. Canceling the save dialog
+writes nothing. Once Save is confirmed, the owned write may finish even if the
+window closes; inspect the selected destination before manually saving again.
+Staging uses an in-process mutex and a per-partition OS file lock; a second
+Desktop process fails busy rather than racing quota or deletion. Blocking file
+threads own the lock until they settle, even if their command future is dropped.
 No task is started, bound or billed by these bridge commands. Their presence
 and a successful build do not constitute picker, upload, model or save/open
 acceptance in the user's environment.

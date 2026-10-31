@@ -21,6 +21,54 @@ const MAX_STAGED_BYTES: usize = 50 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 16 * 1024;
 static STAGING: Mutex<()> = Mutex::const_new(());
 
+struct StagingGuard {
+    _local: tokio::sync::MutexGuard<'static, ()>,
+    // Closing the file releases the OS lock, including on process death.
+    _file: File,
+}
+
+async fn staging(owner: &str) -> Result<StagingGuard> {
+    check_owner(owner)?;
+    let local = STAGING.lock().await;
+    check_owner(owner)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000);
+    }
+    let file = options
+        .open(root(owner)?.join(".staging.lock"))
+        .context("Cannot lock private input drafts")?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        bail!("Private input lock is not a regular file");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            bail!("Private input lock cannot be a reparse point");
+        }
+    }
+    // Do not freeze a second Desktop's UI waiting for a picker/network call
+    // held by another process. No mutation has occurred if this is busy.
+    fs2::FileExt::try_lock_exclusive(&file)
+        .map_err(|_| anyhow::anyhow!("Private inputs are busy in another Desktop process; retry after its operation finishes"))?;
+    Ok(StagingGuard {
+        _local: local,
+        _file: file,
+    })
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -363,7 +411,7 @@ pub async fn input_files_capabilities() -> Result<NativeCapabilities, String> {
 /// OS picker only. No JS path/byte array is accepted, returned or persisted.
 #[tauri::command]
 pub async fn input_file_choose(app: AppHandle, owner: String) -> Result<PickerResult, String> {
-    let _guard = STAGING.lock().await;
+    let _guard = staging(&owner).await.map_err(|error| error.to_string())?;
     enabled(&owner).await.map_err(|error| error.to_string())?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -388,6 +436,10 @@ pub async fn input_file_choose(app: AppHandle, owner: String) -> Result<PickerRe
         });
     };
     tokio::task::spawn_blocking(move || {
+        // Dropping the command future does not stop spawn_blocking. Transfer
+        // lock ownership so a cancelled picker cannot race a newer upload or
+        // removal while this thread is still persisting selected bytes.
+        let _guard = _guard;
         let mut result = PickerResult {
             inputs: Vec::new(),
             errors: Vec::new(),
@@ -417,9 +469,10 @@ pub async fn input_file_choose(app: AppHandle, owner: String) -> Result<PickerRe
 
 #[tauri::command]
 pub async fn input_file_drafts(owner: String) -> Result<Vec<StagedInput>, String> {
-    let _guard = STAGING.lock().await;
+    let _guard = staging(&owner).await.map_err(|error| error.to_string())?;
     check_owner(&owner).map_err(|error| error.to_string())?;
     tokio::task::spawn_blocking(move || {
+        let _guard = _guard;
         let result = records(&owner)?
             .into_iter()
             .filter(|record| record.bound_scope.is_none())
@@ -439,11 +492,11 @@ pub async fn input_file_upload(
     owner: String,
     upload_id: String,
 ) -> Result<api::InputFileDescriptor, String> {
-    let _guard = STAGING.lock().await;
+    let guard = staging(&owner).await.map_err(|error| error.to_string())?;
     enabled(&owner).await.map_err(|error| error.to_string())?;
     let id = uuid(&upload_id).map_err(|error| error.to_string())?;
     let captured_owner = owner.clone();
-    let (mut record, bytes) = tokio::task::spawn_blocking(move || {
+    let (guard, mut record, bytes) = tokio::task::spawn_blocking(move || {
         let mut record = read_record(&captured_owner, id)?;
         if record.bound_scope.is_some() {
             bail!("Input already belongs to an admitted conversation");
@@ -458,7 +511,7 @@ pub async fn input_file_upload(
         }
         record.attempted = true;
         write_record(&record)?;
-        Ok::<_, anyhow::Error>((record, bytes))
+        Ok::<_, anyhow::Error>((guard, record, bytes))
     })
     .await
     .map_err(|_| "Cannot prepare private input upload".to_string())?
@@ -485,10 +538,13 @@ pub async fn input_file_upload(
         }
     };
     record.remote = Some(remote.clone());
-    tokio::task::spawn_blocking(move || write_record(&record))
-        .await
-        .map_err(|_| "Upload outcome is unconfirmed; retry the same input".to_string())?
-        .map_err(|_| "Cannot persist upload acknowledgement; retry the same input".to_string())?;
+    let _guard = tokio::task::spawn_blocking(move || {
+        write_record(&record)?;
+        Ok::<_, anyhow::Error>(guard)
+    })
+    .await
+    .map_err(|_| "Upload outcome is unconfirmed; retry the same input".to_string())?
+    .map_err(|_| "Cannot persist upload acknowledgement; retry the same input".to_string())?;
     check_owner(&owner).map_err(|error| error.to_string())?;
     let _ = app.emit(
         "input-file-state",
@@ -505,7 +561,7 @@ pub async fn input_file_remove(
     owner: String,
     upload_id: String,
 ) -> Result<serde_json::Value, String> {
-    let _guard = STAGING.lock().await;
+    let _guard = staging(&owner).await.map_err(|error| error.to_string())?;
     check_owner(&owner).map_err(|error| error.to_string())?;
     let id = uuid(&upload_id).map_err(|error| error.to_string())?;
     let record = read_record(&owner, id).map_err(|error| error.to_string())?;
