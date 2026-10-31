@@ -2,6 +2,7 @@ mod artifact_tool;
 mod commands;
 mod connectors;
 mod input_files;
+mod input_admission;
 mod tasks;
 mod telemetry;
 mod timeline;
