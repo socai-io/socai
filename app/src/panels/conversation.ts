@@ -39,6 +39,7 @@ import chromeAllowDialogImage from "../assets/chrome-allow-dialog.png";
 import { mergeNoteRegistry, noteDataForRef, renderNoteAnswer, renderNoteCards } from "./notes";
 import { artifactFileIcon, formatArtifactSize, renderArtifactActionMenu } from "./artifact_preview";
 import { workflowIcon, workflowLabel } from "./workflows";
+import { renderResearchStarters } from "./research-starters";
 import { renderResearchBoard } from "./research-board";
 import type { AgentTaskView } from "./tasks";
 
@@ -167,6 +168,7 @@ export function renderComposePane(composer: ComposerProps): string {
           </div>
           ${gated ? renderConnectOverlay(composer) : ""}
         </div>
+        ${renderResearchStarters()}
       </div>
     </div>
   `;

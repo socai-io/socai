@@ -119,6 +119,21 @@ All three interfaces share the same browser connection, site capabilities, and r
 
 The desktop app keeps task history and artifacts for each research task.
 
+### Start with a concrete task
+
+The new-task screen offers four starting points: ideas and drafts, media assets,
+post and creator research, and public feedback. Choose an operation, enter real
+post/profile links or a search query, limit the sample, and optionally add your
+own facts. **Prepare task** fills the composer; it does not start or publish
+anything. Review the platform and instructions, then send normally. Replacing
+an existing unsent draft requires confirmation.
+
+These starters use the existing research tools, not a separate collection
+backend. A missing platform login, unavailable media, or partial comment set
+must be disclosed in the actual result. A monitoring plan is not an enabled
+schedule: verify its saved schedule ID and subsequent execution separately.
+Artifact downloads and transcripts must be checked against real files.
+
 ### Research sources
 
 The desktop composer supports Auto or one or more research sources: Xiaohongshu,

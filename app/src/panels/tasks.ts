@@ -1,6 +1,7 @@
 import { bindWorkflows, openWorkflows, renderWorkflows, type WorkflowSkill } from "./workflows";
 import { refreshResearchBoard, bindResearchBoard } from "./research-board";
 import { getLanguage } from "../lib/i18n";
+import { bindResearchStarters } from "./research-starters";
 //! Task workspace coordinator: shared state, agent configuration popover,
 //! task event intake, and bindings. The sidebar (history list) + delete dialog
 //! live in `task_history.ts`; the conversation view lives in `conversation.ts`.
@@ -1345,6 +1346,11 @@ export namespace agentPanel {
     syncChromeSetupDetection(shell);
     bindResearchBoard(selectedTask);
     const composerTask = view === "compose" ? undefined : selectedTask();
+    if (!composerTask) bindResearchStarters(() => shell.rerender(), prompt => {
+      if (draft.trim() && !window.confirm(getLanguage() === "zh" ? "用场景任务替换当前未发送的草稿？" : "Replace your unsent draft with this task?")) return false;
+      draft = prompt;
+      return true;
+    });
     const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     disposeComposerAutosize?.();
     disposeComposerAutosize = input ? bindTextareaAutosize(input) : undefined;
