@@ -1,7 +1,7 @@
 {
   "name": "socai-app",
   "private": true,
-  "version": "0.6.12",
+  "version": "0.6.13",
   "packageManager": "pnpm@10.28.2",
   "type": "module",
   "scripts": {

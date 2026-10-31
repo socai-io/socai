@@ -5408,7 +5408,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "socai-asr"
-version = "0.6.12"
+version = "0.6.13"
 dependencies = [
  "anyhow",
  "serde",
@@ -5419,7 +5419,7 @@ dependencies = [
 
 [[package]]
 name = "socai-cli"
-version = "0.6.12"
+version = "0.6.13"
 dependencies = [
  "anyhow",
  "clap",
@@ -5439,7 +5439,7 @@ dependencies = [
 
 [[package]]
 name = "socai-core"
-version = "0.6.12"
+version = "0.6.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5502,7 +5502,7 @@ dependencies = [
 
 [[package]]
 name = "socai_app"
-version = "0.6.12"
+version = "0.6.13"
 dependencies = [
  "anyhow",
  "async-trait",
