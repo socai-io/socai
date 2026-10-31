@@ -27,14 +27,18 @@ PLATFORMS = ("darwin-aarch64", "darwin-x86_64", "windows-x86_64")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=("stage", "promote"))
+    parser.add_argument("phase", choices=("stage", "promote", "mirror-latest"))
     parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--bucket", required=True)
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--prefix", default="releases")
     parser.add_argument("--public-base-url", required=True)
-    return parser.parse_args()
+    parser.add_argument("--asset-base-url", help="Canonical release URL for mirror-latest")
+    args = parser.parse_args()
+    if (args.phase == "mirror-latest") != bool(args.asset_base_url):
+        parser.error("--asset-base-url is required only for mirror-latest")
+    return args
 
 
 def content_type(name: str) -> str:
@@ -74,11 +78,15 @@ def public_url(base_url: str, *parts: str) -> str:
 
 def build_oss_manifest(source_dir: Path, tag: str, base_url: str) -> bytes:
     source = json.loads((source_dir / "latest.json").read_text())
+    if source.get("version") != tag.removeprefix("v"):
+        raise SystemExit("source manifest version does not match release tag")
     platforms = source.get("platforms", {})
     for platform in PLATFORMS:
         entry = platforms.get(platform)
         if not isinstance(entry, dict):
             raise SystemExit(f"latest.json missing platform {platform}")
+        if not entry.get("signature"):
+            raise SystemExit(f"latest.json {platform} signature is empty")
         asset_name = Path(urlparse(entry.get("url", "")).path).name
         if not asset_name or not (source_dir / asset_name).is_file():
             raise SystemExit(
@@ -192,7 +200,9 @@ def main() -> None:
     bucket = oss2.Bucket(auth, args.endpoint, args.bucket)
     prefix = args.prefix.strip("/")
     base_url = args.public_base_url.rstrip("/")
-    oss_manifest = build_oss_manifest(source_dir, args.tag, base_url)
+    asset_base_url = (args.asset_base_url or base_url).rstrip("/")
+    mirror = args.phase == "mirror-latest"
+    oss_manifest = build_oss_manifest(source_dir, args.tag, asset_base_url)
     payloads = source_payloads(source_dir, oss_manifest)
 
     if args.phase == "stage":
@@ -211,16 +221,29 @@ def main() -> None:
         )
         return
 
+    if mirror:
+        # Old clients still read the retired bucket. Keep its mutable aliases
+        # current, but point updater downloads at the canonical immutable assets.
+        # Verify the canonical release before writing anything to the old bucket.
+        verify_public_manifest(
+            public_url(asset_base_url, "latest", "latest.json"), args.tag, asset_base_url
+        )
+        for name, payload in payloads.items():
+            verify_public_object(
+                public_url(asset_base_url, args.tag, name), payload_size(payload)
+            )
+
     # Update mutable assets first and latest.json last. Existing updater
     # manifests always reference immutable versioned assets, so this promotion
     # cannot invalidate an older updater response.
     for name, payload in payloads.items():
         if name == "latest.json":
             continue
-        versioned_key = f"{prefix}/{args.tag}/{name}"
-        versioned = bucket.head_object(versioned_key)
-        if versioned.content_length != payload_size(payload):
-            raise SystemExit(f"staged OSS object is missing or incomplete: {versioned_key}")
+        if not mirror:
+            versioned_key = f"{prefix}/{args.tag}/{name}"
+            versioned = bucket.head_object(versioned_key)
+            if versioned.content_length != payload_size(payload):
+                raise SystemExit(f"staged OSS object is missing or incomplete: {versioned_key}")
         upload(
             bucket,
             f"{prefix}/latest/{name}",
@@ -229,6 +252,11 @@ def main() -> None:
             LATEST_CACHE_CONTROL,
         )
 
+    if mirror:
+        # Do not publish a stale manifest if a newer release won during upload.
+        verify_public_manifest(
+            public_url(asset_base_url, "latest", "latest.json"), args.tag, asset_base_url
+        )
     upload(
         bucket,
         f"{prefix}/latest/latest.json",
@@ -239,7 +267,7 @@ def main() -> None:
     verify_public_manifest(
         public_url(base_url, "latest", "latest.json"),
         args.tag,
-        base_url,
+        asset_base_url,
     )
     for name, payload in payloads.items():
         verify_public_object(

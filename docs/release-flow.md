@@ -57,16 +57,35 @@ The release job reads `ALIYUN_ACCESS_KEY_ID` and
 be restricted to uploading objects under the configured bucket/prefix. Do not
 put credentials in the repository.
 
+The retired Beijing download source remains supported for installed clients.
+Configure `SOCAI_LEGACY_OSS_BUCKET`, `SOCAI_LEGACY_OSS_ENDPOINT`, and
+`SOCAI_LEGACY_OSS_PUBLIC_BASE_URL`, plus separate
+`ALIYUN_LEGACY_ACCESS_KEY_ID` / `ALIYUN_LEGACY_ACCESS_KEY_SECRET` secrets scoped
+to that bucket. The current Hangzhou publisher credentials must stay separate.
+The release job checks legacy access before publication, then runs
+`publish-oss-release.py mirror-latest` after promoting the canonical release.
+This updates all old `releases/latest/` downloads and installer scripts, with
+`latest.json` written last and its signed asset URLs pointing to the new
+immutable release. Old versioned objects are left intact. The updater check
+must verify both OSS sources and GitHub; a legacy sync failure fails the release.
+
+For a repair without rebuilding the app, download and verify the current
+published release assets, then run `mirror-latest` with the old bucket as the
+target and the canonical public release URL as `--asset-base-url`. The script
+refuses a mismatched source manifest and verifies the canonical latest release
+before copying and again before publishing the old manifest. Do not repair an
+older tag over a newer canonical release.
+
 ### Local Alibaba Cloud credentials
 
 The operator machine keeps local credentials under
 `~/.config/socai/aliyun/`. The CSV contents are local secrets and must never be
 committed, pasted into logs, or included in a PR:
 
-- `oss-release-publisher.csv` is RAM user `socai-oss`. Use it for release-object
-  publishing and OSS inspection. It is the local counterpart of the two
-  `ALIYUN_ACCESS_KEY_*` GitHub Actions secrets and does not have SLS query
-  access.
+- `oss-release-publisher.csv` is RAM user `socai-oss` for the retired Beijing
+  `socai-download` bucket. It corresponds to the `ALIYUN_LEGACY_ACCESS_KEY_*`
+  GitHub Actions secrets and does not have SLS query access. Do not use it for
+  the current Hangzhou bucket.
 - `sls-operator.csv` is RAM user `cym`. Reserve it for read-only OSS/SLS
   diagnostics, including download-log queries; do not use it as a CI publisher
   credential.
