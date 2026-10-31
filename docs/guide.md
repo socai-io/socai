@@ -719,6 +719,11 @@ configured service URL, refuses redirects and non-loopback plaintext HTTP, and
 checks bounded responses, IDs and content hashes. Native scopes are explicit
 UUID v4 values owned by the linked account, not local directory names or Web
 conversation IDs. The shared Core reader is also used by the hosted Worker.
+Callers capture `input_owner()` when selecting inputs and pass that opaque
+account/service partition to subsequent operations and tools. The request uses
+one credential snapshot, refusing a changed account or service before sending
+any bytes. A scope-bound original download separately verifies membership,
+type, exact size and SHA-256 before returning bytes for an explicit save dialog.
 
 This is a disabled integration candidate, not an available Desktop attachment
 feature. The matching server must explicitly migrate `native_input_scopes`

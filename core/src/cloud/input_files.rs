@@ -91,9 +91,16 @@ impl InputFileDescriptor {
     }
 }
 
-fn request(method: Method, path: &str) -> Result<RequestBuilder> {
-    let credentials = auth::llm_gateway_config()?;
-    let base = reqwest::Url::parse(&credentials.base_url)
+// Load identity and token from the SAME credential snapshot. A separate
+// auth_session() check followed by llm_gateway_config() could race account
+// switching and send a selected file under a different user's credential.
+fn credential_snapshot() -> Result<(String, String, String)> {
+    let base_url = auth::configured_base_url()
+        .ok_or_else(|| anyhow::anyhow!("Private input service is not configured"))?;
+    let credentials = auth::load_credentials()
+        .filter(|value| !value.user_id.trim().is_empty() && !value.device_token.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Sign in before using private inputs"))?;
+    let base = reqwest::Url::parse(&base_url)
         .map_err(|_| anyhow::anyhow!("Invalid configured input service URL"))?;
     let loopback = matches!(
         base.host_str(),
@@ -108,6 +115,29 @@ fn request(method: Method, path: &str) -> Result<RequestBuilder> {
     {
         bail!("Private inputs require HTTPS or an explicitly configured loopback service");
     }
+    // Opaque local partition key, not a bearer, email or backend account ID.
+    // Service changes must invalidate drafts too; identical-looking file IDs
+    // from another deployment must never silently replace this selection.
+    let base_url = base.as_str().trim_end_matches('/').to_string();
+    let owner = format!(
+        "{:x}",
+        Sha256::digest(format!(
+            "socai-input-owner-v1\0{base_url}\0{}",
+            credentials.user_id
+        ))
+    );
+    Ok((base_url, credentials.device_token, owner))
+}
+
+pub fn input_owner() -> Result<String> {
+    credential_snapshot().map(|(_, _, owner)| owner)
+}
+
+fn request(method: Method, path: &str, expected_owner: &str) -> Result<RequestBuilder> {
+    let (base_url, token, owner) = credential_snapshot()?;
+    if expected_owner != owner {
+        bail!("Input account or service changed; return to the original account before retrying");
+    }
     let client = match CLIENT.get() {
         Some(client) => client.clone(),
         None => {
@@ -121,14 +151,8 @@ fn request(method: Method, path: &str) -> Result<RequestBuilder> {
         }
     };
     Ok(client
-        .request(
-            method,
-            format!(
-                "{}/v1/input-files{path}",
-                credentials.base_url.trim_end_matches('/')
-            ),
-        )
-        .bearer_auth(credentials.device_token.trim()))
+        .request(method, format!("{}/v1/input-files{path}", base_url))
+        .bearer_auth(token.trim()))
 }
 
 async fn send(request: RequestBuilder) -> Result<Response> {
@@ -188,8 +212,8 @@ fn validate_conversation(value: &NativeInputConversation, scope: Uuid) -> Result
     Ok(())
 }
 
-pub async fn input_file_capabilities() -> Result<InputFileCapabilities> {
-    let response = request(Method::GET, "/capabilities")?
+pub async fn input_file_capabilities(owner: &str) -> Result<InputFileCapabilities> {
+    let response = request(Method::GET, "/capabilities", owner)?
         .query(&[("client", "native")])
         .timeout(Duration::from_secs(12))
         .send()
@@ -229,6 +253,7 @@ pub async fn input_file_capabilities() -> Result<InputFileCapabilities> {
 }
 
 pub async fn upload_input_bytes(
+    owner: &str,
     name: &str,
     bytes: Vec<u8>,
     upload_id: Uuid,
@@ -244,7 +269,7 @@ pub async fn upload_input_bytes(
     let expected_size = bytes.len();
     let expected_sha = format!("{:x}", Sha256::digest(&bytes));
     let response = send(
-        request(Method::POST, "")?
+        request(Method::POST, "", owner)?
             .query(&[("name", name)])
             .header("Content-Type", "application/octet-stream")
             .header("X-Upload-ID", upload_id.to_string())
@@ -260,6 +285,7 @@ pub async fn upload_input_bytes(
 }
 
 pub async fn bind_native_input_files(
+    owner: &str,
     scope: Uuid,
     ids: &[String],
 ) -> Result<NativeInputConversation> {
@@ -272,7 +298,7 @@ pub async fn bind_native_input_files(
     }
     let value: NativeInputConversation = json_body(
         send(
-            request(Method::POST, &format!("/native-scopes/{scope}/bind"))?
+            request(Method::POST, &format!("/native-scopes/{scope}/bind"), owner)?
                 .json(&json!({"attachment_ids":ids})),
         )
         .await?,
@@ -288,11 +314,11 @@ pub async fn bind_native_input_files(
     Ok(value)
 }
 
-pub async fn native_input_files(scope: Uuid) -> Result<NativeInputConversation> {
+pub async fn native_input_files(owner: &str, scope: Uuid) -> Result<NativeInputConversation> {
     validate_scope(scope)?;
     let value = json_body(
         send(
-            request(Method::GET, &format!("/native-scopes/{scope}"))?
+            request(Method::GET, &format!("/native-scopes/{scope}"), owner)?
                 .timeout(Duration::from_secs(12)),
         )
         .await?,
@@ -302,8 +328,57 @@ pub async fn native_input_files(scope: Uuid) -> Result<NativeInputConversation> 
     Ok(value)
 }
 
-pub async fn remove_input_file(id: Uuid) -> Result<()> {
-    let value: Value = json_body(send(request(Method::DELETE, &format!("/{id}"))?).await?).await?;
+/// Download an unchanged original only after membership in this owned scope
+/// has been freshly confirmed. Never use a filename, URL or local path as ID.
+pub async fn native_input_original(
+    owner: &str,
+    scope: Uuid,
+    id: Uuid,
+) -> Result<(InputFileDescriptor, Vec<u8>)> {
+    let files = native_input_files(owner, scope).await?;
+    let file = files
+        .input_files
+        .into_iter()
+        .find(|file| file.id == id.to_string())
+        .ok_or_else(|| anyhow::anyhow!("Input does not belong to this conversation"))?;
+    let mut response = send(request(Method::GET, &format!("/{id}/content"), owner)?).await?;
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim);
+    if content_type != Some(file.media_type.as_str())
+        || response
+            .content_length()
+            .is_some_and(|size| size != file.size as u64)
+    {
+        bail!("Original input metadata did not match the response");
+    }
+    let mut bytes = Vec::with_capacity(file.size);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| anyhow::anyhow!("Original download was interrupted"))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > file.size {
+            bail!("Original download exceeds its declared size");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.len() != file.size
+        || !file
+            .sha256
+            .eq_ignore_ascii_case(&format!("{:x}", Sha256::digest(&bytes)))
+    {
+        bail!("Original input integrity check failed");
+    }
+    Ok((file, bytes))
+}
+
+pub async fn remove_input_file(owner: &str, id: Uuid) -> Result<()> {
+    let value: Value =
+        json_body(send(request(Method::DELETE, &format!("/{id}"), owner)?).await?).await?;
     if value.get("id").and_then(Value::as_str) != Some(id.to_string().as_str())
         || !matches!(
             value.get("status").and_then(Value::as_str),
@@ -315,11 +390,17 @@ pub async fn remove_input_file(id: Uuid) -> Result<()> {
     Ok(())
 }
 
-pub async fn remove_native_input_scope(scope: Uuid) -> Result<()> {
+pub async fn remove_native_input_scope(owner: &str, scope: Uuid) -> Result<()> {
     validate_scope(scope)?;
-    let value: Value =
-        json_body(send(request(Method::DELETE, &format!("/native-scopes/{scope}"))?).await?)
-            .await?;
+    let value: Value = json_body(
+        send(request(
+            Method::DELETE,
+            &format!("/native-scopes/{scope}"),
+            owner,
+        )?)
+        .await?,
+    )
+    .await?;
     if value.get("scope_id").and_then(Value::as_str) != Some(scope.to_string().as_str())
         || value.get("status").and_then(Value::as_str) != Some("delete_pending")
     {
@@ -330,15 +411,24 @@ pub async fn remove_native_input_scope(scope: Uuid) -> Result<()> {
 
 /// Entry points must first bind and durably save scope/IDs before task creation
 /// or billing, then register these tools for that conversation only.
-pub fn native_input_tools(scope: Uuid) -> Vec<SharedTool> {
+pub fn native_input_tools(owner: &str, scope: Uuid) -> Vec<SharedTool> {
     vec![
-        Arc::new(NativeInputTool { scope, read: false }),
-        Arc::new(NativeInputTool { scope, read: true }),
+        Arc::new(NativeInputTool {
+            scope,
+            owner: owner.to_owned(),
+            read: false,
+        }),
+        Arc::new(NativeInputTool {
+            scope,
+            owner: owner.to_owned(),
+            read: true,
+        }),
     ]
 }
 
 struct NativeInputTool {
     scope: Uuid,
+    owner: String,
     read: bool,
 }
 
@@ -372,13 +462,14 @@ impl Tool for NativeInputTool {
                 if input.as_object().is_none_or(|object| !object.is_empty()) {
                     bail!("Input list takes no arguments");
                 }
-                let files = native_input_files(self.scope).await?;
+                let files = native_input_files(&self.owner, self.scope).await?;
                 return Ok(ToolResult::text(serde_json::to_string(&files.input_files)?));
             }
             let (id, _, _) = crate::agent::input_files::arguments(&input)?;
             let response = send(request(
                 Method::GET,
                 &format!("/native-scopes/{}/files/{id}/model-content", self.scope),
+                &self.owner,
             )?)
             .await?;
             crate::agent::input_files::read(response, &input, ctx).await
