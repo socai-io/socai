@@ -655,6 +655,12 @@ function eventPathHasClass(event: Event, className: string): boolean {
 
 async function main(): Promise<void> {
   applyLanguageToDocument();
+  // Authentication includes remote wallet reads. Show the local workspace
+  // before awaiting any IPC/network work; task submission still uses the
+  // unchanged native authentication and model/browser readiness checks.
+  render();
+  bindGlobalDismiss();
+  bindExternalLinks();
   // Overlay titlebar (see tauri.conf.json) floats the native macOS traffic
   // lights over our header; reserve their inset only on macOS.
   if (navigator.userAgent.includes("Macintosh")) {
@@ -708,6 +714,7 @@ async function main(): Promise<void> {
   });
 
   await Promise.all([settingsMenu.loadConfig(), authMenu.loadSession()]);
+  render();
   let initialTasks: AgentTaskSnapshot[] = [];
   try {
     status = await invoke<Status>("cdp_status");
@@ -732,14 +739,14 @@ async function main(): Promise<void> {
   } catch (e) {
     console.error("getVersion failed:", e);
   }
-  await subscriptionMenu.refresh(authMenu.isLoggedIn());
-  await agentPanel.prepareArtifactDownloads();
   render();
+  // Subscription/catalog and old download reconciliation are not prerequisites
+  // for a usable composer. Keep their completion visible without gating paint.
+  void subscriptionMenu.refresh(authMenu.isLoggedIn()).then(() => render());
+  void agentPanel.prepareArtifactDownloads().then(() => render());
   // Account/local-model inspection may hash the installed Whisper model on
   // the first check. Keep that work off the initial-render critical path.
   void voiceInput.initialize(() => render());
-  bindGlobalDismiss();
-  bindExternalLinks();
   installUpdatePreviewHook();
   void hydrateTaskEvents(initialTasks);
   void agentPanel.loadSelectedTaskNotes(shell());
