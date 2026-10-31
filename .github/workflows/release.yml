@@ -1031,6 +1031,9 @@ jobs:
       SOCAI_OSS_ENDPOINT: ${{ vars.SOCAI_OSS_ENDPOINT }}
       SOCAI_OSS_PREFIX: ${{ vars.SOCAI_OSS_PREFIX }}
       SOCAI_OSS_PUBLIC_BASE_URL: ${{ vars.SOCAI_OSS_PUBLIC_BASE_URL }}
+      SOCAI_LEGACY_OSS_BUCKET: ${{ vars.SOCAI_LEGACY_OSS_BUCKET }}
+      SOCAI_LEGACY_OSS_ENDPOINT: ${{ vars.SOCAI_LEGACY_OSS_ENDPOINT }}
+      SOCAI_LEGACY_OSS_PUBLIC_BASE_URL: ${{ vars.SOCAI_LEGACY_OSS_PUBLIC_BASE_URL }}
 
     steps:
       - name: checkout main
@@ -1087,6 +1090,32 @@ jobs:
 
       - name: install OSS release publisher dependencies
         run: python3 -m pip install --disable-pip-version-check --quiet oss2==2.19.1
+
+      - name: verify publisher and legacy download target
+        env:
+          ALIYUN_LEGACY_ACCESS_KEY_ID: ${{ secrets.ALIYUN_LEGACY_ACCESS_KEY_ID }}
+          ALIYUN_LEGACY_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_LEGACY_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/test-publish-oss-release.py
+          python3 - <<'PY'
+          import os
+          import oss2
+          required = (
+              "SOCAI_LEGACY_OSS_BUCKET", "SOCAI_LEGACY_OSS_ENDPOINT",
+              "SOCAI_LEGACY_OSS_PUBLIC_BASE_URL", "ALIYUN_LEGACY_ACCESS_KEY_ID",
+              "ALIYUN_LEGACY_ACCESS_KEY_SECRET",
+          )
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit("Missing legacy release configuration: " + ", ".join(missing))
+          bucket = oss2.Bucket(
+              oss2.Auth(os.environ["ALIYUN_LEGACY_ACCESS_KEY_ID"], os.environ["ALIYUN_LEGACY_ACCESS_KEY_SECRET"]),
+              os.environ["SOCAI_LEGACY_OSS_ENDPOINT"], os.environ["SOCAI_LEGACY_OSS_BUCKET"],
+          )
+          bucket.head_object(os.environ["SOCAI_OSS_PREFIX"].strip("/") + "/latest/latest.json")
+          print("Legacy download target is accessible")
+          PY
 
       - name: stage versioned release on Alibaba Cloud OSS
         env:
@@ -1243,6 +1272,22 @@ jobs:
             --tag "${TAG}" \
             --prefix "${SOCAI_OSS_PREFIX}" \
             --public-base-url "${SOCAI_OSS_PUBLIC_BASE_URL}"
+
+      - name: synchronize legacy download source
+        env:
+          ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_LEGACY_ACCESS_KEY_ID }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_LEGACY_ACCESS_KEY_SECRET }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/publish-oss-release.py mirror-latest \
+            --source-dir dist-artifacts \
+            --bucket "${SOCAI_LEGACY_OSS_BUCKET}" \
+            --endpoint "${SOCAI_LEGACY_OSS_ENDPOINT}" \
+            --tag "${TAG}" \
+            --prefix "${SOCAI_OSS_PREFIX}" \
+            --public-base-url "${SOCAI_LEGACY_OSS_PUBLIC_BASE_URL}" \
+            --asset-base-url "${SOCAI_OSS_PUBLIC_BASE_URL}"
 
   verify-cli-installer:
     name: verify latest CLI installer
@@ -1419,11 +1464,12 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           OSS_MANIFEST_URL: ${{ vars.SOCAI_OSS_PUBLIC_BASE_URL }}/latest/latest.json
+          LEGACY_OSS_MANIFEST_URL: ${{ vars.SOCAI_LEGACY_OSS_PUBLIC_BASE_URL }}/latest/latest.json
         run: |
           set -euo pipefail
 
           github_manifest_url="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.json"
-          for manifest_url in "${OSS_MANIFEST_URL}" "${github_manifest_url}"; do
+          for manifest_url in "${OSS_MANIFEST_URL}" "${LEGACY_OSS_MANIFEST_URL}" "${github_manifest_url}"; do
             manifest=""
             for attempt in {1..12}; do
               echo "fetch attempt ${attempt}: ${manifest_url}"
