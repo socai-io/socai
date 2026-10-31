@@ -353,6 +353,7 @@ pub fn run() {
             input_admission::input_submission_ack,
             input_admission::input_submission_cancel,
             input_admission::input_submission_recover,
+            input_admission::input_submission_keep_inputs,
             commands::cdp_connect,
             commands::cdp_disconnect,
             commands::cdp_status,

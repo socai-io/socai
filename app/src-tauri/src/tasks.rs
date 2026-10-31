@@ -341,6 +341,25 @@ impl AgentTaskRegistry {
         Ok(())
     }
 
+    /// Only compact a claim's recovery journal after this exact turn has a
+    /// checked durable index checkpoint. Never discard the sole snapshot of an
+    /// uncertain dispatch or overwrite a superseding conversation.
+    pub(crate) async fn checkpoint_input_claim(
+        &self,
+        claim: &AgentTaskSnapshot,
+    ) -> Result<(), String> {
+        let guard = self.inner.lock().await;
+        if !guard.tasks.iter().any(|current| {
+            current.task_id == claim.task_id
+                && current.run_dir == claim.run_dir
+                && current.input_context == claim.input_context
+        }) {
+            return Err("Inspect/recover this original task before clearing its input submission record".into());
+        }
+        persist_task_index_checked(&guard.tasks)
+            .map_err(|_| "Cannot checkpoint the original task; its full recovery journal was retained".into())
+    }
+
     /// Caller holds the free dispatch lease. Restoring a claim is NOT running
     /// it again: interrupted/uncertain dispatches require an explicit new turn.
     pub(crate) async fn recover_input_claim(

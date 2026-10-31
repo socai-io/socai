@@ -9,14 +9,15 @@ interface Draft { upload_id: string; name: string; size: number; remote: FileInf
 interface Caps { owner: string; enabled: boolean; desktop_admission_ready: boolean; native_admission_cancellation: boolean; max_attachments: number }
 interface Pending {
   request_id: string; task_id: string; scope_id: string; request: Record<string, unknown> | null;
-  uploads: string[]; attachments: string[]; claimed: boolean; abandoned: boolean;
+  uploads: string[]; attachments: string[]; claimed: boolean; abandoned: boolean; keep_inputs?: boolean;
 }
+interface SubmissionIndex { pending: Pending[]; closed: string[] }
 interface Mount { key: string; task?: AgentTaskSnapshot; disabled: boolean; changed: () => void; recovered: (task: AgentTaskSnapshot) => void }
 const label = (zh: string, en: string) => getLanguage() === "zh" ? zh : en;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 let identity = "", owner = "", generation = 0, busy = false, expanded = false, error = "", notice = "";
 let caps: Caps | null = null, mount: Mount | null = null, drafts: Draft[] = [], pending: Pending[] = [];
-let accepted: FileInfo[] = [], acceptedKey = "", confirmCancel = "", listening = false;
+let accepted: FileInfo[] = [], acceptedKey = "", confirmCancel = "", confirmKeep = "", listening = false;
 let composing = false, notifyAfterComposition = false;
 let localReady = false;
 const selected = new Map<string, Set<string>>();
@@ -61,11 +62,14 @@ function restore(): Pending[] {
 
 async function loadLocal(expectedGeneration = generation): Promise<void> {
   const account = owner;
-  const saved = await invoke<Pending[]>("input_submissions", { owner: account });
+  const cached = restore();
+  const saved = await invoke<SubmissionIndex>("input_submissions", { owner: account, knownRequestIds: cached.map(item => item.request_id) });
   const localDrafts = await invoke<Draft[]>("input_file_drafts", { owner: account });
   if (expectedGeneration !== generation || owner !== account) return;
-  const merged = new Map(restore().map(item => [item.request_id, item]));
-  for (const item of saved) merged.set(item.request_id, { ...item,
+  const closed = new Set(saved.closed);
+  const merged = new Map(cached.filter(item => !closed.has(item.request_id)).map(item => [item.request_id, item]));
+  for (const item of saved.pending) merged.set(item.request_id, { ...item,
+    keep_inputs: item.keep_inputs || !!merged.get(item.request_id)?.keep_inputs,
     abandoned: item.claimed ? false : item.abandoned || !!merged.get(item.request_id)?.abandoned });
   if (merged.size > 20) throw new Error(label("待确认提交超过20条，请先处理。", "Review pending submissions before sending more."));
   pending = [...merged.values()]; drafts = localDrafts; persist(); localReady = true;
@@ -125,6 +129,7 @@ async function dispatch(item: Pending): Promise<AgentTaskSnapshot> {
     // task or turn a successful dispatch into another Send.
     if (current === generation) error = label("任务已接纳；提交记录清理待重试：", "Task accepted; intent cleanup pending: ") + String(failure);
   }
+  if (current !== generation || owner !== account) throw new Error(label("原账号任务已接纳，请切回原账号核对，不要重发。", "Task accepted in the original account; return there to inspect it, do not resend."));
   const sent = new Set(item.uploads);
   drafts = drafts.filter(file => !sent.has(file.upload_id)); selected.delete(target(item)); acceptedKey = "";
   return snapshot;
@@ -149,8 +154,9 @@ export namespace nativeInputs {
     const sameScope = context && acceptedKey === `${owner}:${context.scope_id}:${context.request_id}`;
     const stored = expanded && sameScope ? accepted.map(file => `<li><span>${esc(file.name)} · ${Math.ceil(file.size / 1024)} KiB</span><button type="button" data-input-save="${esc(file.id)}" ${busy ? "disabled" : ""}>${label("另存原件", "Save original as")}</button></li>`).join("") : "";
     const waiting = pending.map(item => `<li><p>${esc(String(item.request?.task ?? item.request?.message ?? item.task_id))}</p><small>${esc(item.request_id)} · ${item.attachments.length} ${label("份附件", "inputs")}</small>
-      ${!item.abandoned ? `<button type="button" data-input-recover="${esc(item.request_id)}" ${busy ? "disabled" : ""}>${item.claimed ? label("核对原任务，不重发", "Inspect original, no replay") : label("按原内容继续发送", "Continue original Send")}</button>` : `<span>${label("已放弃；撤销尚待确认", "Abandoned; cancellation pending")}</span>`}
-      ${!item.claimed ? (confirmCancel === item.request_id ? `<p>${label("确认撤销这次提交及本次附件？其他既有附件不受影响；未绑定草稿可能保留，存储容量不会立即释放。", "Cancel this submission and its inputs? Earlier inputs stay; unbound drafts may remain and quota is not released immediately.")}</p><button type="button" data-input-cancel-confirm="${esc(item.request_id)}" ${busy ? "disabled" : ""}>${label("确认撤销", "Confirm cancellation")}</button><button type="button" data-input-keep>${label("保留", "Keep")}</button>` : `<button type="button" data-input-cancel="${esc(item.request_id)}" ${busy ? "disabled" : ""}>${label("撤销本次提交", "Cancel this submission")}</button>`) : ""}</li>`).join("");
+      ${!item.abandoned ? `<button type="button" data-input-recover="${esc(item.request_id)}" ${busy ? "disabled" : ""}>${item.claimed ? label("核对原任务，不重发", "Inspect original, no replay") : label("按原内容继续发送", "Continue original Send")}</button>` : `<span>${item.keep_inputs ? label("消息已放弃；保留附件尚待确认", "Message abandoned; input retention pending") : label("已放弃；撤销尚待确认", "Abandoned; cancellation pending")}</span>`}
+      ${!item.claimed && !item.keep_inputs ? (confirmCancel === item.request_id ? `<p>${label("确认撤销这次提交及本次附件？其他既有附件不受影响；未绑定草稿可能保留，存储容量不会立即释放。", "Cancel this submission and its inputs? Earlier inputs stay; unbound drafts may remain and quota is not released immediately.")}</p><button type="button" data-input-cancel-confirm="${esc(item.request_id)}" ${busy ? "disabled" : ""}>${label("确认撤销", "Confirm cancellation")}</button><button type="button" data-input-keep>${label("返回", "Back")}</button>` : `<button type="button" data-input-cancel="${esc(item.request_id)}" ${busy ? "disabled" : ""}>${label("撤销本次提交", "Cancel this submission")}</button>`) : ""}
+      ${!item.claimed && target(item) !== "new" && (!item.abandoned || item.keep_inputs) ? (confirmKeep === item.request_id ? `<p>${label("结束这条未发送的消息，将本次附件保留（必要时绑定）到原会话？不会启动任务或释放存储容量；确认后不能继续发送这次原消息。", "End this unsent message and retain (bind if needed) its inputs in the original conversation? No task starts or quota is released; this request cannot be sent afterward.")}</p><button type="button" data-input-retain-confirm="${esc(item.request_id)}" ${busy ? "disabled" : ""}>${label("结束消息，保留附件", "End message, retain inputs")}</button><button type="button" data-input-keep>${label("返回", "Back")}</button>` : `<button type="button" data-input-retain="${esc(item.request_id)}" ${busy ? "disabled" : ""}>${item.keep_inputs ? label("重试保留附件并结束", "Retry retaining inputs") : label("不发消息，保留附件", "Retain inputs, do not send")}</button>`) : ""}</li>`).join("");
     return `<section class="native-inputs t-small" aria-label="${label("对话附件", "Conversation inputs")}">
       <button type="button" data-input-toggle ${busy || !owner ? "disabled" : ""}>${label("附件", "Inputs")}${chosen(key).length ? ` (${chosen(key).length})` : ""}</button>
       ${expanded ? `<button type="button" data-input-choose ${locked || !available() ? "disabled" : ""}>${label("选择图片、Word或文本", "Choose image, Word or text")}</button><button type="button" data-input-refresh ${busy ? "disabled" : ""}>${label("刷新账号/服务及附件", "Refresh account/service and inputs")}</button><p>${label("勾选的文件随本次消息发送；恢复的草稿不会自动加入。上传不代表已读取。", "Only checked inputs accompany Send. Restored drafts are not auto-selected. Upload does not mean read.")}</p><ul>${files}${stored}</ul>` : ""}
@@ -167,7 +173,7 @@ export namespace nativeInputs {
     input?.addEventListener("compositionend", () => { composing = false; if (notifyAfterComposition) { notifyAfterComposition = false; changed(); } });
     if (identity !== accountIdentity) {
       identity = accountIdentity; owner = ""; caps = null; drafts = []; pending = []; accepted = []; acceptedKey = "";
-      selected.clear(); phases.clear(); error = ""; notice = ""; busy = false; expanded = false; confirmCancel = ""; localReady = !identity;
+      selected.clear(); phases.clear(); error = ""; notice = ""; busy = false; expanded = false; confirmCancel = ""; confirmKeep = ""; localReady = !identity;
       const current = ++generation;
       if (identity) void (async () => {
         try {
@@ -191,8 +197,14 @@ export namespace nativeInputs {
       if (expanded) void operation(async () => { await capabilities(); await loadLocal(); await loadAccepted(); });
     });
     document.querySelector("[data-input-refresh]")?.addEventListener("click", () => void operation(async () => {
+      const current = generation;
       const account = await invoke<string>("input_files_identity");
-      if (account !== owner) { owner = account; caps = null; pending = []; drafts = []; selected.clear(); accepted = []; acceptedKey = ""; localReady = false; }
+      if (current !== generation) return;
+      if (account !== owner) {
+        // Re-enter the same identity-reset path as a sign-in change. This
+        // invalidates async callbacks for the old service partition as well.
+        identity = ""; changed(); return;
+      }
       await loadLocal(); await capabilities(); await loadAccepted();
     }));
     document.querySelector("[data-input-choose]")?.addEventListener("click", () => {
@@ -248,7 +260,21 @@ export namespace nativeInputs {
       });
     }));
     document.querySelectorAll<HTMLElement>("[data-input-cancel]").forEach(element => element.addEventListener("click", () => { confirmCancel = element.dataset.inputCancel!; changed(); }));
-    document.querySelector("[data-input-keep]")?.addEventListener("click", () => { confirmCancel = ""; changed(); });
+    document.querySelectorAll("[data-input-keep]").forEach(element => element.addEventListener("click", () => { confirmCancel = ""; confirmKeep = ""; changed(); }));
+    document.querySelectorAll<HTMLElement>("[data-input-retain]").forEach(element => element.addEventListener("click", () => { confirmKeep = element.dataset.inputRetain!; confirmCancel = ""; changed(); }));
+    document.querySelectorAll<HTMLElement>("[data-input-retain-confirm]").forEach(element => element.addEventListener("click", () => void operation(async () => {
+      const item = pending.find(item => item.request_id === element.dataset.inputRetainConfirm); if (!item || item.claimed) return;
+      item.abandoned = true; item.keep_inputs = true; persist();
+      const current = generation;
+      const outcome = await invoke<string>("input_submission_keep_inputs", { owner, requestId: item.request_id });
+      if (current !== generation) return;
+      pending = pending.filter(value => value.request_id !== item.request_id); selected.delete(target(item)); persist();
+      confirmKeep = ""; acceptedKey = ""; await loadLocal();
+      notice = outcome === "unreceived_drafts"
+        ? label("发送命令尚未收到，已阻止迟到发送。文件仍在草稿池，没有绑定到会话，可继续选择或单独移除。", "Send was not received; late dispatch is blocked. Files remain unbound drafts for explicit selection/removal.")
+        : label("这条消息已结束，附件保留在原会话中，没有启动任务。原始提交缓存已压缩为防重放凭据；不是整个会话或存储的物理擦除。", "Message ended without starting a task; inputs remain in the original conversation. Original submission cache was compacted to a non-replay receipt, not full conversation/storage erasure.");
+      try { await loadAccepted(); } catch (failure) { error = label("提交已结束；附件列表刷新未确认：", "Submission ended; input list refresh unconfirmed: ") + String(failure); }
+    })));
     document.querySelectorAll<HTMLElement>("[data-input-cancel-confirm]").forEach(element => element.addEventListener("click", () => void operation(async () => {
       const item = pending.find(item => item.request_id === element.dataset.inputCancelConfirm); if (!item || item.claimed) return;
       item.abandoned = true; persist();
