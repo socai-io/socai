@@ -333,8 +333,13 @@ loaded parent/total counts, returned count, stop reason, and `complete`.
 The count budget includes replies, and collection remains time-bounded per post.
 `complete:false` means the result is a sample or partial collection, not every
 comment; a missing comment result is not evidence of zero comments. Completion
-requires the visible parent-list end, no remaining reply controls, and no known
-count shortfall after trimming. Hidden, moderated or unavailable comments are
+requires the visible parent-list end, no remaining reply controls, a known
+positive platform total and no count shortfall after trimming. An unknown total
+does not prove completeness. The loader merges observed parent and reply IDs
+across overlapping viewport steps before virtualized rows disappear, re-captures expanded replies
+before scrolling, and refuses collection or actions after the active note changes.
+Snapshots belong only to the current native call, not a browser-global cache;
+this is not a persisted continuation cursor. Hidden, moderated or unavailable comments are
 not bypassed. The coverage metadata remains in compact agent results as well as
 the full artifact.
 

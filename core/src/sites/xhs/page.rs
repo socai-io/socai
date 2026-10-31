@@ -1066,6 +1066,21 @@ impl<'a> XhsPageRuntime<'a> {
     pub async fn load_comments(&self, max_total: i64, timeout_seconds: f64) -> Result<Value> {
         self.ensure_xhs(false).await?;
         let deadline = Instant::now() + Duration::from_secs_f64(timeout_seconds.max(2.0));
+        let initial = self
+            .expect_object(
+                "commentAreaState",
+                Some(&json!({ "previous_comments": [] })),
+            )
+            .await?;
+        let note_id = initial.get("note_id").and_then(Value::as_str).unwrap_or("");
+        anyhow::ensure!(
+            !note_id.is_empty(),
+            "Cannot collect comments without an active note id"
+        );
+        let mut all = initial
+            .get("comments")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
         // Let the (slow) comment list hydrate before the first measurement.
         let first = self
             .extract_comments_with_wait(0, timeout_seconds.clamp(0.5, 5.0))
@@ -1078,7 +1093,19 @@ impl<'a> XhsPageRuntime<'a> {
         let mut rounds = 0;
         let stop_reason;
         loop {
-            let state = self.expect_object("commentAreaState", None).await?;
+            let state = self
+                .expect_object(
+                    "commentAreaState",
+                    Some(&json!({
+                        "previous_comments": all, "note_id": note_id,
+                    })),
+                )
+                .await?;
+            anyhow::ensure!(script_ok(&state), "Comment collection stopped: {}", state);
+            all = state
+                .get("comments")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Comment snapshot missing from collection state"))?;
             platform_total =
                 platform_total.max(state.get("total").and_then(Value::as_i64).unwrap_or(0));
             let loaded_total = state
@@ -1137,23 +1164,61 @@ impl<'a> XhsPageRuntime<'a> {
             // Expand any visible reply buttons first (cheap, surfaces sub-comments
             // that count toward the budget), then scroll for more parents.
             if pending > 0 {
-                let _ = self
-                    .expect_object("expandCommentReplies", Some(&json!({ "max_clicks": 1 })))
+                let expanded = self
+                    .expect_object(
+                        "expandCommentReplies",
+                        Some(&json!({
+                            "max_clicks": 1, "note_id": note_id,
+                        })),
+                    )
                     .await;
                 sleep_ms(500).await;
+                // Capture newly revealed replies before scrolling can unmount
+                // their parent. The next iteration also checks the budget.
+                if expanded
+                    .as_ref()
+                    .ok()
+                    .and_then(|v| v.get("clicked"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    > 0
+                {
+                    continue;
+                }
             }
             if !has_end || pending > 0 {
                 let _ = self
                     .expect_object(
                         "scrollComments",
-                        Some(&json!({ "pixels": 1200, "reveal_reply": has_end })),
+                        Some(
+                            &json!({ "pixels": 1200, "reveal_reply": has_end, "note_id": note_id }),
+                        ),
                     )
                     .await;
             }
             sleep_ms(500).await;
         }
 
-        let all = self.extract_comments(0).await?;
+        // Preserve every observed parent/reply before virtualized rows leave the
+        // DOM. Re-read once for late hydration, guarded against a note switch.
+        let final_state = self
+            .expect_object(
+                "commentAreaState",
+                Some(&json!({
+                    "previous_comments": all, "note_id": note_id, "prefer_hot": true,
+                })),
+            )
+            .await?;
+        anyhow::ensure!(
+            script_ok(&final_state),
+            "Comment collection stopped: {}",
+            final_state
+        );
+        let all = final_state
+            .get("comments")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Final comment snapshot missing"))?;
         let loaded_primary = all.len() as i64;
         let loaded_total: i64 = loaded_primary
             + all
@@ -1185,7 +1250,7 @@ impl<'a> XhsPageRuntime<'a> {
             "stop_reason": stop_reason,
             "platform_total": platform_total,
             "complete": stop_reason == "exhausted"
-                && (platform_total == 0 || returned_total >= platform_total),
+                && platform_total > 0 && returned_total >= platform_total,
             "ready": first
                 .get("ready")
                 .and_then(Value::as_bool)
