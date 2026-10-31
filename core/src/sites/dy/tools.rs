@@ -640,7 +640,9 @@ impl Tool for WaitForLoginTool {
 
     async fn call(&self, _input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         if self.page.is_remote_browser() && !interactive_remote_login_enabled() {
+            ctx.stop_acquisition("Douyin login requires user interaction, but interactive hosted login is unavailable.");
             return Ok(json_result(&json!({
+                "ok": false,
                 "logged_in": false,
                 "remote_browser": true,
                 "message": "The hosted Douyin session cannot be signed in by the local user.",
@@ -672,7 +674,9 @@ impl Tool for WaitForLoginTool {
                 })));
             }
             if std::time::Instant::now() >= deadline {
+                ctx.stop_acquisition("Douyin login timed out after ten minutes; collection stopped with incomplete coverage.");
                 return Ok(json_result(&json!({
+                    "ok": false,
                     "logged_in": false,
                     "timed_out": true,
                     "reason": "login_timeout",

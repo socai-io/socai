@@ -235,6 +235,9 @@ pub struct ToolContext {
     /// to the same non-skill tool can verify a recovery; model text cannot set
     /// this state directly.
     recovery_evidence: Arc<Mutex<RecoveryEvidenceState>>,
+    /// A trusted tool may stop further collection after an unrecoverable gate.
+    /// Shared by nested tools; model-written text cannot clear this reason.
+    acquisition_stop_reason: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Default)]
@@ -340,7 +343,19 @@ impl ToolContext {
             notes_seen: Arc::new(Mutex::new(archived_notes)),
             loaded_skills: Arc::new(Mutex::new(BTreeMap::new())),
             recovery_evidence: Arc::new(Mutex::new(RecoveryEvidenceState::default())),
+            acquisition_stop_reason: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn stop_acquisition(&self, reason: impl Into<String>) {
+        let reason = reason.into();
+        if !reason.trim().is_empty() {
+            self.acquisition_stop_reason.lock().expect("poisoned").get_or_insert(reason);
+        }
+    }
+
+    pub(crate) fn acquisition_stop_reason(&self) -> Option<String> {
+        self.acquisition_stop_reason.lock().expect("poisoned").clone()
     }
 
     pub fn with_progress_sender(mut self, progress: Option<ToolProgressSender>) -> Self {
