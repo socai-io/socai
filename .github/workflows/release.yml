@@ -474,6 +474,13 @@ jobs:
             echo "no updater signing key for this branch build; updater artifacts will be skipped"
           fi
 
+      - name: use HTTPS TCP for Apple signing and ticket checks
+        # HTTP/3 resets were also observed on macos-15 arm64 during migration.
+        # https://github.com/actions/runner-images/issues/14924
+        run: |
+          echo "block return out quick proto udp from any to any port 443" | sudo pfctl -f -
+          sudo pfctl -E
+
       - name: build app bundle and dmg
         working-directory: app
         env:
@@ -991,9 +998,8 @@ jobs:
           path: dist-artifacts
       - name: install updater signature verifier
         run: brew install minisign
-      - name: use HTTPS TCP for Apple ticket checks on Intel
-        if: matrix.runner == 'macos-15-intel'
-        # GitHub's documented workaround for HTTP/3 resets on Intel runners:
+      - name: use HTTPS TCP for Apple ticket checks
+        # GitHub's documented workaround for HTTP/3 resets:
         # https://github.com/actions/runner-images/issues/14924
         # This changes only the disposable runner, never the shipped app.
         run: |
