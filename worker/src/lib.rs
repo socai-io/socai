@@ -3,7 +3,6 @@
 #![forbid(unsafe_code)]
 
 pub mod runner;
-mod input_files;
 mod runtime;
 
 pub use runtime::{run_stdio, run_stdio_with_build_info};

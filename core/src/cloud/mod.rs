@@ -7,6 +7,7 @@ mod browser;
 mod google;
 mod growth;
 mod guest;
+pub mod input_files;
 pub use growth::{
     cancel_scheduled_task, create_conversation_share, create_promotion_invites,
     create_scheduled_task, delete_scheduled_task, promotion, revoke_conversation_share,

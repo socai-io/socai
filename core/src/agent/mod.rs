@@ -10,6 +10,7 @@ pub mod conversation;
 mod document;
 pub mod extensions;
 pub mod file_bash_tools;
+pub mod input_files;
 pub mod llm;
 pub mod local_memory;
 pub mod r#loop;

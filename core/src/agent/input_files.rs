@@ -1,25 +1,53 @@
-//! Read only the opaque file returned by the authenticated, run-bound host.
+//! Read only the opaque file returned by an authenticated conversation host.
 //! No user-supplied path or URL reaches the filesystem or HTTP client.
 
+use crate::agent::file_bash_tools::ReadFileTool;
+use crate::agent::tool::ToolResultBlock;
+use crate::agent::{Tool, ToolContext, ToolResult};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use socai_core::agent::file_bash_tools::ReadFileTool;
-use socai_core::agent::tool::ToolResultBlock;
-use socai_core::agent::{Tool, ToolContext, ToolResult};
 
 const MAX_INPUT_BYTES: usize = 20 * 1024 * 1024;
 
-pub(crate) async fn read(
-    mut response: reqwest::Response,
-    input: &Value,
-    ctx: &ToolContext,
-) -> Result<ToolResult> {
+/// Validate tool arguments before any network request or filesystem access.
+pub fn arguments(input: &Value) -> Result<(uuid::Uuid, u64, u64)> {
+    let arguments = input
+        .as_object()
+        .context("Input file arguments must be an object")?;
+    if arguments
+        .keys()
+        .any(|key| !matches!(key.as_str(), "file_id" | "offset" | "limit"))
+    {
+        bail!("Unexpected input file argument");
+    }
     let requested = input
         .get("file_id")
         .and_then(Value::as_str)
         .context("Input file ID is required")?;
     let requested = uuid::Uuid::parse_str(requested).context("Invalid input file ID")?;
+    let window = |key: &str, default: u64| -> Result<u64> {
+        match input.get(key) {
+            None => Ok(default),
+            Some(value) => value
+                .as_u64()
+                .context("Input file line window must be an integer"),
+        }
+    };
+    let offset = window("offset", 1)?;
+    let limit = window("limit", 2000)?;
+    if !(1..=10_000_000).contains(&offset) || !(1..=2000).contains(&limit) {
+        bail!("Invalid input file line window");
+    }
+    Ok((requested, offset, limit))
+}
+
+pub async fn read(
+    mut response: reqwest::Response,
+    input: &Value,
+    ctx: &ToolContext,
+) -> Result<ToolResult> {
+    let (requested, offset, limit) = arguments(input)?;
     let header = |name| {
         response
             .headers()
@@ -82,7 +110,7 @@ pub(crate) async fn read(
     while let Some(chunk) = response
         .chunk()
         .await
-        .context("Input file download was interrupted")?
+        .map_err(|_| anyhow::anyhow!("Input file download was interrupted"))?
     {
         if bytes.len().saturating_add(chunk.len()) > MAX_INPUT_BYTES {
             bail!("Input file exceeds the 20 MiB runtime limit");
@@ -98,11 +126,6 @@ pub(crate) async fn read(
         // Core's image reader cannot inline larger images. Never return its
         // "reference by path" message for an inaccessible hosted temp file.
         bail!("Image model view exceeds the 4 MiB runtime limit");
-    }
-    let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(1);
-    let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(2000);
-    if !(1..=10_000_000).contains(&offset) || !(1..=2000).contains(&limit) {
-        bail!("Invalid input file line window");
     }
     // tempfile creates an exclusive private directory. Keep original inputs
     // out of the run artifact tree so a generated report/archive cannot
