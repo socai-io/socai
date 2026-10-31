@@ -39,6 +39,7 @@ import chromeAllowDialogImage from "../assets/chrome-allow-dialog.png";
 import { mergeNoteRegistry, noteDataForRef, renderNoteAnswer, renderNoteCards } from "./notes";
 import { artifactFileIcon, formatArtifactSize, renderArtifactActionMenu } from "./artifact_preview";
 import { workflowIcon, workflowLabel } from "./workflows";
+import { renderResearchStarters } from "./research-starters";
 import { renderResearchBoard } from "./research-board";
 import type { AgentTaskView } from "./tasks";
 
@@ -149,8 +150,8 @@ export function renderConversation(props: ConversationProps): string {
 }
 
 // ── new-task compose (centered) ──────────────────────────────────────
-// A centered hero + the same chat composer. When chrome isn't connected the
-// form is masked behind the connect overlay.
+// Drafting does not require Chrome. Keep the composer accessible while the
+// existing send guard still requires a connection for browser-backed tasks.
 export function renderComposePane(composer: ComposerProps): string {
   const gated = sourcesNeedBrowser(composer.sites, composer.researchMode) && !composer.remoteProfile && !composer.managedProfile && composer.status.state !== "connected";
   return `
@@ -160,13 +161,13 @@ export function renderComposePane(composer: ComposerProps): string {
           <h2 class="t-h2">${esc(t("task.hero"))}</h2>
           <p class="t-small subtle">${esc(t("task.lede"))}</p>
         </div>
-        ${gated ? renderSourcePicker(composer, false) : ""}
-        <div class="compose-form-stack ${gated ? "is-masked" : ""}">
-          <div class="compose-form-inner" aria-hidden="${gated ? "true" : "false"}">
-            ${renderComposer(composer, gated)}
+        <div class="compose-form-stack">
+          <div class="compose-form-inner">
+            ${renderComposer(composer)}
           </div>
-          ${gated ? renderConnectOverlay(composer) : ""}
+          ${gated ? `<details class="connect-setup-help"><summary class="t-small">${esc(t("chrome.setupTitle"))}</summary>${renderConnectOverlay(composer)}</details>` : ""}
         </div>
+        ${renderResearchStarters()}
       </div>
     </div>
   `;
@@ -175,7 +176,7 @@ export function renderComposePane(composer: ComposerProps): string {
 function renderConnectOverlay(composer: ComposerProps): string {
   const connecting = composer.status.state === "connecting";
   if (composer.managedProfile) return `
-    <div class="connect-overlay" role="dialog" aria-label="${esc(t("chrome.requiredAria"))}">
+    <div class="connect-overlay" role="region" aria-label="${esc(t("chrome.requiredAria"))}">
       <h3 class="connect-overlay-head">${esc(t("chrome.managedTitle"))}</h3>
       <p class="t-small subtle">${esc(t("chrome.managedHelp"))}</p>
       <button id="overlay-chrome-connect" type="button" class="btn-primary connect-setup-action" ${connecting ? "disabled" : ""}>
@@ -186,7 +187,7 @@ function renderConnectOverlay(composer: ComposerProps): string {
   const ready = composer.chromeSetupState === "ready";
   const permissionRequired = composer.chromeSetupState === "permission_required";
   return `
-    <div class="connect-overlay" role="dialog" aria-label="${esc(t("chrome.requiredAria"))}">
+    <div class="connect-overlay" role="region" aria-label="${esc(t("chrome.requiredAria"))}">
       <h3 class="connect-overlay-head">${esc(t("chrome.setupTitle"))}</h3>
       <div class="connect-overlay-steps">
         <section class="connect-setup-step ${ready ? "is-complete" : "is-active"}">
@@ -846,7 +847,7 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
     (connected || !sourcesNeedBrowser(c.sites, c.researchMode)) && !c.modelReady ? `<p class="composer__hint">${esc(t("task.addKeyHint"))}</p>` : "";
   return `
     <div class="composer">
-      <form id="composer-form" class="composer__form">
+      <form id="composer-form" class="composer__form" data-composer-mode="${esc(c.mode)}" ${c.taskId ? `data-composer-task-id="${esc(c.taskId)}"` : ""}>
         <div class="composer__row ${disabled ? "is-disabled" : ""}">
           <textarea
             id="composer-input"

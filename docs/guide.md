@@ -29,6 +29,13 @@ After installation, follow the in-app steps to connect Chrome and enter a task s
 
 The first connection to your existing Chrome requires enabling remote debugging and confirming the browser permission prompt. See the [Connect Chrome guide](https://socai.io/connect).
 
+You can prepare and edit a task before connecting Chrome. The connection guide
+is expandable and does not cover the draft; sending browser-backed tasks still
+requires the connection. The reference-to-first-draft starter asks the agent to
+collect and analyze first, then wait for your topic choice and your own material
+in the same conversation before drafting. These instructions do not guarantee
+successful collection when a platform requires login or blocks access.
+
 See [Desktop workflow](#desktop-workflow) for source selection and Feishu exports,
 and [Run results and artifacts](#run-results-and-artifacts) for saved deliverables.
 
@@ -118,6 +125,27 @@ All three interfaces share the same browser connection, site capabilities, and r
 ## Desktop workflow
 
 The desktop app keeps task history and artifacts for each research task.
+
+### Start with a concrete task
+
+The new-task screen offers four starting points: ideas and drafts, media assets,
+post and creator research, and public feedback. Choose an operation, enter real
+post/profile links or a search query, limit the sample, and optionally add your
+own facts. **Prepare task** fills the composer; it does not start or publish
+anything. Review the platform and instructions, then send normally. Replacing
+an existing unsent draft requires confirmation.
+
+Background updates retain focus and selection in the same unchanged draft or
+starter field. Switching tasks, changing a draft programmatically, and opening
+a dialog do not restore the previous field's focus. Shell redraws wait until
+an active input-method composition commits; this does not defer task execution
+or authentication itself.
+
+These starters use the existing research tools, not a separate collection
+backend. A missing platform login, unavailable media, or partial comment set
+must be disclosed in the actual result. A monitoring plan is not an enabled
+schedule: verify its saved schedule ID and subsequent execution separately.
+Artifact downloads and transcripts must be checked against real files.
 
 ### Research sources
 
