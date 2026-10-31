@@ -29,6 +29,13 @@ After installation, follow the in-app steps to connect Chrome and enter a task s
 
 The first connection to your existing Chrome requires enabling remote debugging and confirming the browser permission prompt. See the [Connect Chrome guide](https://socai.io/connect).
 
+You can prepare and edit a task before connecting Chrome. The connection guide
+is expandable and does not cover the draft; sending browser-backed tasks still
+requires the connection. The reference-to-first-draft starter asks the agent to
+collect and analyze first, then wait for your topic choice and your own material
+in the same conversation before drafting. These instructions do not guarantee
+successful collection when a platform requires login or blocks access.
+
 See [Desktop workflow](#desktop-workflow) for source selection and Feishu exports,
 and [Run results and artifacts](#run-results-and-artifacts) for saved deliverables.
 

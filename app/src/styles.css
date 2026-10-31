@@ -2323,19 +2323,12 @@ body.has-paper > #app { position: relative; z-index: 1; }
   gap: var(--sp-3);
   transition: filter var(--t-base) var(--ease), opacity var(--t-base) var(--ease);
 }
-.compose-form-stack.is-masked .compose-form-inner {
-  pointer-events: none;
-  filter: saturate(0) blur(1.5px);
-  opacity: 0.55;
-  user-select: none;
-}
+.connect-setup-help { text-align: left; }
+.connect-setup-help > summary { cursor: pointer; color: var(--ink-3); }
+.connect-setup-help[open] > summary { margin-bottom: var(--sp-2); }
 .connect-overlay {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 5;
-  width: min(560px, calc(100% - var(--sp-6)));
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -2344,7 +2337,6 @@ body.has-paper > #app { position: relative; z-index: 1; }
   background: var(--surface);
   border: var(--hairline);
   border-radius: var(--r-4);
-  box-shadow: var(--shadow-pop);
 }
 .connect-overlay-head {
   margin: 0;
