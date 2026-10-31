@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod runner;
+mod input_files;
 mod runtime;
 
 pub use runtime::{run_stdio, run_stdio_with_build_info};
@@ -19,6 +20,7 @@ pub const WORKER_CAPABILITIES: &[&str] = &[
     "interactive_login_resume.v1",
     "kernel_cdp_binding.v1",
     "host_tools.v1",
+    "input_files.v1",
     "remote_ocr.v1",
     "multi_site_namespaces.v1",
     "parallel_platform_tools.v1",

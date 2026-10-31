@@ -696,6 +696,23 @@ extracted, and the returned content states that limitation. Empty or image-only
 documents are reported as unreadable rather than as successful text extraction.
 Legacy `.doc` must first be saved as `.docx`.
 
+The hosted Worker also has an opt-in `input_files.v1` transport. Its
+`list_input_files` / `read_input_file` host tools accept opaque IDs scoped by
+the server to the current account, conversation, run and assignment epoch;
+they do not expose an arbitrary filesystem reader. The Worker verifies the
+returned ID, format, view type, size and SHA-256 before passing a single
+private temporary file to the same Core reader. Temporary originals stay
+outside the run artifact tree and are removed when the call returns. Images
+are returned as actual vision blocks from a declared, derived JPEG view of at
+most 2048 pixels per side; the original download is unchanged. This is not OCR
+or a promise that small text remains legible.
+
+This runtime capability alone does not enable conversation uploads. It still
+requires matching server authentication, private storage, transactional task
+binding, frontend integration and real-user acceptance. In particular it is
+not evidence that the native Desktop upload UI, hosted deployment, image
+analysis, follow-up or reopened-task workflows have passed acceptance.
+
 Word ingestion is bounded to 20 MiB compressed, 64 MiB declared expanded size,
 4096 ZIP entries, 8 MiB main XML and 2 MiB extracted text. It does not unpack
 archive paths, execute macros or fetch linked resources. This local reading
