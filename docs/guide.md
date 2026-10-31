@@ -328,6 +328,16 @@ socai xhs comment '<complete_note_url>' --text 'Exact comment text'
 | `--pretty` | Pretty-print the final JSON result. |
 | `--debug-snapshot` | Save page DOM, accessibility trees, and screenshots for development diagnostics. |
 
+XHS comment results include `top_comments_wait`: the platform's displayed total,
+loaded parent/total counts, returned count, stop reason, and `complete`.
+The count budget includes replies, and collection remains time-bounded per post.
+`complete:false` means the result is a sample or partial collection, not every
+comment; a missing comment result is not evidence of zero comments. Completion
+requires the visible parent-list end, no remaining reply controls, and no known
+count shortfall after trimming. Hidden, moderated or unavailable comments are
+not bypassed. The coverage metadata remains in compact agent results as well as
+the full artifact.
+
 Available filter groups and UI values:
 
 | Group | Values |
@@ -752,6 +762,29 @@ cargo build                 # build the whole workspace (core + cli)
 cargo run -p socai-cli -- xhs search "运营爆款思路" --num-notes 30
 cargo test                  # run the workspace test suite
 ```
+
+Page-script regressions run without a browser or third-party Node packages:
+
+```bash
+node --test core/src/sites/*/*.test.cjs
+```
+
+For the XHS native-DOM pagination fixture, reuse the already-approved daily
+Chrome through the local CDP daemon (no new Chrome process):
+
+```bash
+SOCAI_ACCEPTANCE_TARGET='existing-dev-tab-id' \
+SOCAI_ACCEPTANCE_EMAIL='your-email@example.com' \
+SOCAI_ACCEPTANCE_ACCOUNT_ID='expected-account-id' \
+node scripts/check-xhs-comment-dom.mjs /absolute/new-comment-dom-evidence.json
+```
+
+This local operator helper requires an already-signed-in dev tab and explicit
+expected identity; it verifies both email and account ID before
+opening its own loopback fixture in that tab's browser context. It foregrounds
+only the verified fixture so Chrome dispatches native scroll events. An optional
+second argument reuses a fixture target created by this helper. The fixture is
+not live-platform or model/Worker acceptance.
 
 Browser/session ownership lives in `core/src/runtime/` and `core/src/cdp/`; the
 CLI daemon/socket plumbing stays thin. See the

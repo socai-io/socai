@@ -1734,7 +1734,9 @@ const SocaiXhsPageScripts = (() => {
     for (const item of items) {
       const parsed = parseComment(item, true);
       if (!parsed.text) continue;
-      const key = `${parsed.username}:${parsed.text.slice(0, 30)}`;
+      const key = parsed.comment_id
+        ? `id:${parsed.comment_id}`
+        : JSON.stringify([parsed.author_id || parsed.username, parsed.text, parsed.time]);
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(parsed);
@@ -1986,19 +1988,26 @@ const SocaiXhsPageScripts = (() => {
   // "- THE END -" sentinel (all parent comments loaded) is present.
   function commentAreaState() {
     const root = getNoteRoot();
-    const scope = $('.comments-el', root) || root;
+    const scope = $('.comments-el', root) || $('.comments-container, .comment-list', root) || root;
     const items = comments({ prefer_hot: false, max_comments: 0 });
     const subs = items.reduce((n, c) => n + ((c.sub_comments && c.sub_comments.length) || 0), 0);
     const totalText = firstText(['.total'], scope);
     const pending = $$(SHOW_MORE_SELECTOR, scope)
       .filter((b) => isVisible(b) && !/收起/.test(text(b)));
+    const container = commentScrollContainer(root);
     return {
       ok: true,
       total: parseCount(totalText),
       loaded_primary: items.length,
       loaded_total: items.length + subs,
       pending_show_more: pending.length,
-      has_end: !!$(COMMENT_END_SELECTOR, scope),
+      // Reply lists can have their own sentinel, and Vue can keep a hidden
+      // end placeholder mounted while the next parent page is still loading.
+      has_end: $$(COMMENT_END_SELECTOR, scope).some((end) => isVisible(end)
+        && !end.closest(`${COMMENT_ROOT_SELECTOR}, ${SUB_COMMENT_SELECTOR}, .reply-container`)),
+      scroll_top: container ? container.scrollTop : 0,
+      scroll_height: container ? container.scrollHeight : 0,
+      viewport_height: container ? container.clientHeight : 0,
     };
   }
 
@@ -2007,16 +2016,63 @@ const SocaiXhsPageScripts = (() => {
   // handler a human click would. Skips "收起" (collapse). Returns how many fired.
   async function expandCommentReplies(opts = {}) {
     const root = getNoteRoot();
-    const scope = $('.comments-el', root) || root;
-    const max = Number(opts.max_clicks) || 60;
+    const scope = $('.comments-el', root) || $('.comments-container, .comment-list', root) || root;
+    const container = commentScrollContainer(root);
+    const max = Math.min(3, Math.max(1, Number(opts.max_clicks) || 1));
     const buttons = $$(SHOW_MORE_SELECTOR, scope)
-      .filter((b) => isVisible(b) && !/收起/.test(text(b)));
+      .filter((b) => {
+        if (!inViewport(b) || /收起/.test(text(b))) return false;
+        if (!container) return true;
+        const rect = b.getBoundingClientRect();
+        const bounds = container.getBoundingClientRect();
+        return rect.bottom > bounds.top && rect.top < bounds.bottom;
+      });
     let clicked = 0;
     for (const b of buttons) {
       if (clicked >= max) break;
+      if (b.isConnected === false) continue;
       try { await browserAction(() => b.click()); clicked += 1; } catch (e) { /* ignore */ }
     }
-    return { ok: true, clicked, remaining: Math.max(0, buttons.length - clicked) };
+    const remaining = $$(SHOW_MORE_SELECTOR, scope)
+      .filter((b) => isVisible(b) && !/收起/.test(text(b))).length;
+    return { ok: true, clicked, remaining };
+  }
+
+  // Follow the comments' ancestors, never the tallest unrelated image/body
+  // column. On a modal, an underlying feed must not become our fallback.
+  function commentScrollContainer(root = getNoteRoot()) {
+    const anchor = $('.comments-el', root) || $('.comments-container, .comment-list', root);
+    if (!anchor) return null;
+    const hasFeed = !!$('section.note-item, .feeds-page .note-item, .ai-feeds-page .note-item');
+    for (let node = anchor; node instanceof HTMLElement; node = node.parentElement) {
+      if (node === document.body || node === document.documentElement) break;
+      const style = window.getComputedStyle(node);
+      const overflow = style.overflowY || style.overflow || '';
+      if (node.scrollHeight > node.clientHeight + 1 && ['auto', 'scroll', 'overlay'].includes(overflow)) return node;
+      if (node === root) break;
+    }
+    if (getNoteOverlay() || hasFeed) return null;
+    const scrolling = document.scrollingElement;
+    return scrolling && scrolling.scrollHeight > scrolling.clientHeight + 1 ? scrolling : null;
+  }
+
+  async function scrollComments(opts = {}) {
+    const root = getNoteRoot();
+    const container = commentScrollContainer(root);
+    const scope = $('.comments-el', root) || $('.comments-container, .comment-list', root) || root;
+    const pending = opts.reveal_reply && $$(SHOW_MORE_SELECTOR, scope)
+      .find((button) => isVisible(button) && !/收起/.test(text(button)));
+    const before = container ? container.scrollTop : 0;
+    if (pending && container) {
+      const offset = pending.getBoundingClientRect().top - container.getBoundingClientRect().top
+        - container.clientHeight / 2;
+      await browserAction(() => container.scrollBy({top:offset, behavior:'instant'}));
+    } else if (container) {
+      await browserAction(() => container.scrollBy({top:Number(opts.pixels) || 600, behavior:'instant'}));
+    }
+    const after = container ? container.scrollTop : 0;
+    return {ok:after !== before, container:container ? (container.className || container.id || container.tagName) : 'none',
+      delta:after-before, error:after !== before ? '' : 'comments_not_scrollable'};
   }
 
   // ── search/feed scroll ───────────────────────────────────────
@@ -2174,6 +2230,7 @@ const SocaiXhsPageScripts = (() => {
     commentSubmitTarget,
     renderedCommentState,
     expandCommentReplies,
+    scrollComments,
     scrollFeed,
     scrollInNote,
     carouselImages,

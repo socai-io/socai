@@ -1322,6 +1322,19 @@ fn media_for(
 /// but short enough that one stalled note does not consume minutes.
 const COMMENT_LOAD_TIMEOUT_S: f64 = 30.0;
 
+fn comment_load_metadata(payload: &Value) -> Value {
+    json!({
+        "ready": payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
+        "complete": payload.get("complete").and_then(Value::as_bool).unwrap_or(false),
+        "platform_total": payload.get("platform_total").and_then(Value::as_i64).unwrap_or(0),
+        "loaded_primary": payload.get("loaded_primary").and_then(Value::as_i64).unwrap_or(0),
+        "loaded_total": payload.get("loaded_total").and_then(Value::as_i64).unwrap_or(0),
+        "returned_total": payload.get("returned_total").and_then(Value::as_i64).unwrap_or(0),
+        "rounds": payload.get("rounds").and_then(Value::as_i64).unwrap_or(0),
+        "stop_reason": payload.get("stop_reason").and_then(Value::as_str).unwrap_or(""),
+    })
+}
+
 /// Load up to `TOP_COMMENTS_PER_NOTE` top comments from the currently open note
 /// and insert them under `note["top_comments"]`. Best-effort: on failure the
 /// note is left without the field. Shared by `read_note` and `extract_note`.
@@ -1339,6 +1352,7 @@ async fn attach_top_comments(xhs: &XhsPageRuntime<'_>, note: &mut Value) {
         .unwrap_or_default();
     if let Some(map) = note.as_object_mut() {
         map.insert("top_comments".into(), Value::Array(comments));
+        map.insert("top_comments_wait".into(), comment_load_metadata(&payload));
     }
 }
 
@@ -1701,16 +1715,7 @@ async fn scan_card_note(
                 .unwrap_or_default();
             if let Some(map) = entry.get_mut("entity").and_then(|v| v.as_object_mut()) {
                 map.insert("top_comments".into(), Value::Array(comments));
-                map.insert(
-                    "top_comments_wait".into(),
-                    json!({
-                        "ready": payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
-                        "loaded_total": payload.get("loaded_total").and_then(Value::as_i64).unwrap_or(0),
-                        "returned_total": payload.get("returned_total").and_then(Value::as_i64).unwrap_or(0),
-                        "rounds": payload.get("rounds").and_then(Value::as_i64).unwrap_or(0),
-                        "stop_reason": payload.get("stop_reason").and_then(Value::as_str).unwrap_or(""),
-                    }),
-                );
+                map.insert("top_comments_wait".into(), comment_load_metadata(&payload));
             }
         }
     }
@@ -2740,7 +2745,7 @@ fn compact_filter_result(filters: &Value) -> Option<Value> {
 /// comment texts, and the three handoff locators (`note_id`, `url`,
 /// `author_id`). Everything else — hashtags, images, image_count, author URLs,
 /// location, type, video,
-/// content_source, and the wait diagnostics — stays only in the run artifact,
+/// content_source, and the body wait diagnostics — stays only in the run artifact,
 /// which the LLM can re-read by `note_id` when it needs the dropped detail.
 const LEAN_NOTE_FIELDS: &[&str] = &[
     "note_id",
@@ -2762,6 +2767,9 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     "favorites",
     "comments_count",
     "top_comments",
+    // Keep comment coverage beside the sample: timeout/stall/budget limits
+    // must not disappear when full entities are trimmed for the model.
+    "top_comments_wait",
     // Per-note OCR summary (joined from each image's ocr_text). Only present
     // when the scan ran with `ocr`; the per-image texts stay in the artifact.
     "ocr_text",
@@ -3505,16 +3513,7 @@ async fn scan_direct_note(
                 .unwrap_or_default();
             if let Some(map) = entity.as_object_mut() {
                 map.insert("top_comments".into(), Value::Array(comments));
-                map.insert(
-                    "top_comments_wait".into(),
-                    json!({
-                        "ready": payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
-                        "loaded_total": payload.get("loaded_total").and_then(Value::as_i64).unwrap_or(0),
-                        "returned_total": payload.get("returned_total").and_then(Value::as_i64).unwrap_or(0),
-                        "rounds": payload.get("rounds").and_then(Value::as_i64).unwrap_or(0),
-                        "stop_reason": payload.get("stop_reason").and_then(Value::as_str).unwrap_or(""),
-                    }),
-                );
+                map.insert("top_comments_wait".into(), comment_load_metadata(&payload));
             }
         }
         perf.insert(
