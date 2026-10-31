@@ -438,6 +438,7 @@ async fn read_article(
     validate_article_url(url)?;
     // The caller owns a platform-scoped tab; reuse it across article reads.
     let page = parent;
+    let mut migration_redirects = Vec::<Value>::new();
     let outcome = async {
         let (session_id, mut responses, frame_id) = page.document_responses().await?;
         let session = search::session_for(url);
@@ -450,7 +451,27 @@ async fn read_article(
             wait as f64,
         )
         .await?;
-        let state = wait_state(&page, "articleState", &json!({}), wait).await?;
+        let state = loop {
+            let state = wait_state(&page, "articleState", &json!({}), wait).await?;
+            if state["reason"] != "account_migrated" {
+                break state;
+            }
+            let target = required_string(&state, "migration_url")?;
+            validate_article_url(&target)?;
+            anyhow::ensure!(
+                reqwest::Url::parse(&target)?.host_str() == Some("mp.weixin.qq.com"),
+                "publisher migration must remain on the WeChat article host"
+            );
+            if migration_redirects.len() >= 3
+                || migration_redirects.iter().any(|hop| hop["to"] == target)
+            {
+                break json!({"ok":false,"reason":"account_migration_loop","url":state["url"]});
+            }
+            let from = required_string(&state, "url")?;
+            migration_redirects.push(json!({"from":from,"to":target}));
+            page.navigate_with_referrer(&target, Some(&from), wait as f64)
+                .await?;
+        };
         while let Ok((event_session, response)) = responses.try_recv() {
             if event_session == session_id && response["frame_id"] == frame_id {
                 if let Some(gate) = retry::response_gate(
@@ -490,5 +511,11 @@ async fn read_article(
         }
     }
     .await;
-    outcome
+    outcome.map(|mut value| {
+        if !migration_redirects.is_empty() {
+            value["requested_url"] = json!(url);
+            value["migration_redirects"] = json!(migration_redirects);
+        }
+        value
+    })
 }
