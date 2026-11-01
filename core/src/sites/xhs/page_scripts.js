@@ -470,6 +470,12 @@ const SocaiXhsPageScripts = (() => {
       const options = [];
       for (const tag of $$('.tag-container .tags', groupEl)) {
         if (!(tag instanceof HTMLElement) || !isVisible(tag)) continue;
+        // Same overlay decoys as findSearchInput: each tag can get an
+        // aria-hidden, opacity 1e-05 clone (data-hp-kind) placed before the
+        // real one. The clone is never `active`, so matching it by label
+        // makes a filter that was applied read back as filter_not_applied.
+        if (tag.getAttribute('aria-hidden') === 'true') continue;
+        if (parseFloat(window.getComputedStyle(tag).opacity) < 0.1) continue;
         const label = text(tag);
         if (!label) continue;
         options.push({
