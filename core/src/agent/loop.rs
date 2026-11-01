@@ -1596,7 +1596,13 @@ async fn dispatch_tool(
     }
     let outcome = match find_tool(tools, name) {
         Some(tool) if tool.is_available(ctx) => match tool.call(input.clone(), ctx).await {
-            Ok(r) => (r, None),
+            Ok(r) => {
+                // A tool can report a trusted failure without throwing. Keep
+                // that outcome in events/traces as well as recovery evidence;
+                // never infer success from an Ok transport or from page text.
+                let error = r.failed().then(|| truncate_summary(&r.flat_text(), 240));
+                (r, error)
+            }
             Err(e) => {
                 let msg = format!("{e:#}");
                 (
@@ -2531,7 +2537,7 @@ mod tests {
         let input = json!({"command": command});
         let (failed, error) = dispatch_tool(&tools, "shell", &input, &ctx).await;
         assert!(failed.failed());
-        assert!(error.is_none());
+        assert!(error.is_some());
         assert!(ctx.verified_recovery().is_none());
 
         std::fs::write(&marker, b"ready").unwrap();
