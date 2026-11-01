@@ -1,6 +1,7 @@
 import { bindWorkflows, openWorkflows, renderWorkflows, type WorkflowSkill } from "./workflows";
 import { refreshResearchBoard, bindResearchBoard } from "./research-board";
 import { getLanguage } from "../lib/i18n";
+import { bindTaskExamples } from "../lib/task-examples";
 //! Task workspace coordinator: shared state, agent configuration popover,
 //! task event intake, and bindings. The sidebar (history list) + delete dialog
 //! live in `task_history.ts`; the conversation view lives in `conversation.ts`.
@@ -1347,6 +1348,18 @@ export namespace agentPanel {
     const composerTask = view === "compose" ? undefined : selectedTask();
     const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     disposeComposerAutosize?.();
+    if (!composerTask) bindTaskExamples(({ platform, prompt }) => {
+      draft = prompt;
+      if (input) input.value = prompt;
+      draftSites = [platform];
+      saveSources(draftSites);
+      sourcesChosen = true;
+      sourcesExpanded = false;
+      workflow = "general";
+      customWorkflow = undefined;
+      shell.rerender();
+      document.getElementById("composer-input")?.focus();
+    });
     disposeComposerAutosize = input ? bindTextareaAutosize(input) : undefined;
     updateComposerButton(shell);
     document.getElementById("composer-workflow")?.addEventListener("click", () => { openWorkflows(); shell.rerender(); });

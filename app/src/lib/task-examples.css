@@ -1,0 +1,14 @@
+.task-examples { width: 100%; color: var(--fg); }
+.task-examples > p { margin: 0 0 10px; }
+.task-examples details { border-top: 1px solid var(--line); }
+.task-examples summary { display: flex; align-items: center; gap: 10px; padding: 12px 4px; cursor: pointer; font-size: 14px; list-style: none; }
+.task-examples summary::-webkit-details-marker { display: none; }
+.task-examples summary::before { content: "›"; display: inline-block; transition: transform 120ms; }
+.task-examples details[open] > summary::before { transform: rotate(90deg); }
+.task-examples summary:focus-visible, .task-examples button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.task-examples__count { margin-left: auto; opacity: .55; font-size: 12px; }
+.task-examples__list { padding: 0 8px 8px 18px; }
+.task-examples__prompts { display: grid; gap: 6px; padding: 0 0 12px 18px; }
+.task-examples__prompts button { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 13px; line-height: 1.6; cursor: pointer; }
+.task-examples__prompts button:hover { background: color-mix(in srgb, currentColor 4%, transparent); }
+
