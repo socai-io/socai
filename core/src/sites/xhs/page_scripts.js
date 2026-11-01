@@ -1138,6 +1138,20 @@ const SocaiXhsPageScripts = (() => {
     const push = (url, source) => {
       const value = absUrl(url || '');
       if (!value || candidates.some((item) => item.url === value)) return;
+      if (!value.startsWith('blob:')) {
+        try {
+          const parsed = new URL(value);
+          if (!/^https?:$/.test(parsed.protocol)) return;
+          // Match the resource path, not a CDN hostname containing "video" or
+          // a telemetry query containing a media URL. HLS playlists are not
+          // downloadable standalone video files in the current media pipeline.
+          if (source === 'performance') {
+            if (!/\.(mp4|m4v|mov|webm|mkv)$/i.test(parsed.pathname)) return;
+          } else if (/\.(json|js|css|map|html?|txt|svg|webmanifest|m3u8|mpd|png|jpe?g|webp|gif|avif|ico|wasm)$/i.test(parsed.pathname)) {
+            return;
+          }
+        } catch (_) { return; }
+      }
       candidates.push({ url: value, source });
     };
     push(stateVideo.best_url, 'initial_state');
@@ -1150,9 +1164,7 @@ const SocaiXhsPageScripts = (() => {
     try {
       for (const entry of performance.getEntriesByType('resource')) {
         const name = String(entry.name || '');
-        if (/(\.mp4|\.m3u8|\.m4v|\.mov)(\?|$)|video|vod|hls|sns-video/i.test(name)) {
-          push(name, 'performance');
-        }
+        push(name, 'performance');
       }
     } catch (e) {}
     const poster = video?.poster || root.querySelector?.('img')?.src || '';

@@ -24,7 +24,7 @@ test('the browser regression helper fails closed before CDP without explicit acc
   assert.match(result.stderr, /SOCAI_ACCEPTANCE_TARGET, SOCAI_ACCEPTANCE_EMAIL and SOCAI_ACCEPTANCE_ACCOUNT_ID are required/);
 });
 
-function fixture({ rows = [], ends = [], replies = [], feed = false } = {}) {
+function fixture({ rows = [], ends = [], replies = [], feed = false, video = null, resources = [] } = {}) {
   class Element {
     constructor(className, parentElement = null) {
       Object.assign(this, {className, parentElement, scrollTop:0, scrollHeight:400,
@@ -52,6 +52,7 @@ function fixture({ rows = [], ends = [], replies = [], feed = false } = {}) {
     return [];
   };
   overlay.querySelectorAll = selector => {
+    if (selector === 'video') return video ? [video] : [];
     if (selector.includes('.note-content')) return [photo];
     if (selector === '.comments-el' || selector.includes('.comments-container, .comment-list')) return [area];
     if (selector.startsWith('.comment-item, .parent-comment')) return rows;
@@ -69,11 +70,40 @@ function fixture({ rows = [], ends = [], replies = [], feed = false } = {}) {
   const window = {getComputedStyle: element => element.style,
     innerHeight:800, innerWidth:1200, scrollY:0, scrollBy(){ throw Error('Must not scroll the feed window'); }};
   const context = {document, window, HTMLElement:Element, URL, location:{href:'https://www.xiaohongshu.com/explore/fixture'},
+    performance: {getEntriesByType: () => resources},
     innerHeight:800, innerWidth:1200, setTimeout: callback => callback()};
   vm.createContext(context);
   vm.runInContext(source, context);
   return {scripts:vm.runInContext('SocaiXhsPageScripts', context), area, photo, overlay, Element};
 }
+
+test('video resource fallback skips JSON and scripts on fe-video CDN before the real MP4', () => {
+  const video = {currentSrc:'blob:https://www.xiaohongshu.com/owned', src:'', poster:'', duration:2.8,
+    querySelectorAll:()=>[]};
+  const clip = 'https://sns-video-zl.xhscdn.com/owned/clip.mp4?sign=fixture';
+  const result = fixture({video, resources:[
+    {name:'https://fe-video-qc.xhscdn.com/player-icons.json'},
+    {name:'https://fe-video-qc.xhscdn.com/player.js'},
+    {name:clip},
+  ]}).scripts.note();
+  assert.equal(result.type, 'video');
+  assert.equal(result.video.resolved_url, clip);
+  assert.ok(!result.video.source_urls.some(url=>/\.(json|js)(?:\?|$)/.test(url)));
+});
+
+test('a video domain name or query parameter alone does not identify media', () => {
+  const video = {currentSrc:'blob:https://www.xiaohongshu.com/owned', src:'', poster:'', duration:2.8,
+    querySelectorAll:()=>[]};
+  for (const resources of [
+    [{name:'https://fe-video-qc.xhscdn.com/player-icons.json'}],
+    [{name:'https://www.xiaohongshu.com/telemetry?video=clip.mp4'}],
+    [{name:'https://sns-video-zl.xhscdn.com/stream.m3u8'}],
+  ]) {
+    const result = fixture({video, resources}).scripts.note();
+    assert.equal(result.video.resolved_url, video.currentSrc);
+    assert.deepEqual(Array.from(result.video.source_urls), [video.currentSrc]);
+  }
+});
 
 function comment(id, text) {
   return {
