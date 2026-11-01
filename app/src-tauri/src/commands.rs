@@ -815,6 +815,8 @@ pub async fn agent_task_reply(
     telemetry: State<'_, DesktopTelemetry>,
     task_id: String,
     message: String,
+    provider: Option<String>,
+    model: Option<String>,
     sites: Option<Vec<String>>,
     language: Option<String>,
     research_mode: Option<bool>,
@@ -841,8 +843,12 @@ pub async fn agent_task_reply(
     let Some(session_dir) = existing.session_dir.as_deref() else {
         return Err("task has no conversation to continue".into());
     };
-    let provider = existing.provider.clone();
-    let model = existing.model.clone();
+    let (provider, model) = reply_model_choice(
+        existing.provider.clone(),
+        existing.model.clone(),
+        provider,
+        model,
+    )?;
     let anonymous = !socai_core::cloud::auth_session()
         .map_err(|e| e.to_string())?
         .logged_in;
@@ -955,6 +961,26 @@ pub async fn agent_task_reply(
         let _ = start_tx.send(());
     }
     Ok(snapshot)
+}
+
+fn reply_model_choice(
+    existing_provider: Option<String>,
+    existing_model: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    match (provider, model) {
+        (None, None) => Ok((existing_provider, existing_model)),
+        (Some(provider), Some(model))
+            if !provider.trim().is_empty() && !model.trim().is_empty() =>
+        {
+            Ok((
+                Some(provider.trim().to_string()),
+                Some(model.trim().to_string()),
+            ))
+        }
+        _ => Err("A reply model change requires both provider and model.".into()),
+    }
 }
 
 async fn run_task_preflight(
@@ -4200,6 +4226,32 @@ mod tests {
 
     #[test]
     fn preflight_rejects_empty_hosted_balance() {
+        let original = (
+            Some("openai-codex".to_string()),
+            Some("previous".to_string()),
+        );
+        assert_eq!(
+            reply_model_choice(original.0.clone(), original.1.clone(), None, None).unwrap(),
+            original
+        );
+        assert_eq!(
+            reply_model_choice(
+                original.0.clone(),
+                original.1.clone(),
+                Some("socai".into()),
+                Some("managed".into())
+            )
+            .unwrap(),
+            (Some("socai".into()), Some("managed".into()))
+        );
+        assert!(reply_model_choice(
+            original.0.clone(),
+            original.1.clone(),
+            Some("socai".into()),
+            None
+        )
+        .is_err());
+        assert!(reply_model_choice(original.0, original.1, None, Some("managed".into())).is_err());
         assert!(validate_preflight_balance(100).is_ok());
         let error = validate_preflight_balance(0).expect_err("zero balance must fail");
         let payload: Value = serde_json::from_str(&error).expect("preflight error must be JSON");

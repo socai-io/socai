@@ -461,6 +461,9 @@ const messages = {
     zh: "无法加载设置。",
   },
   "agent.label": { en: "model", zh: "模型" },
+  "task.replyUseManaged": { en: "Use Socai points for the next reply", zh: "下次回复改用 Socai 点数" },
+  "task.replyManagedPending": { en: "Next send will use the built-in model ({model}). Nothing has been resubmitted.", zh: "下次发送将使用内置模型（{model}），尚未重新提交任务。" },
+  "task.replyRestoreModel": { en: "Keep original model", zh: "保留原模型" },
   "agent.configurationAria": { en: "agent configuration", zh: "智能体设置" },
   "agent.selectModelAria": { en: "select agent model", zh: "选择智能体模型" },
   "agent.selectProviderAria": {
@@ -691,6 +694,11 @@ const messages = {
     zh: "{provider} 拒绝了您提供的 API Key。请在右上角账号菜单中更新 API Key。",
   },
   "task.apiErrorBalanceTitle": { en: "model balance is insufficient", zh: "模型余额不足" },
+  "task.apiErrorConnectedQuotaTitle": { en: "connected model account is out of quota", zh: "所连接模型账号额度不足" },
+  "task.apiErrorConnectedQuota": {
+    en: "The connected OpenAI Codex account is out of quota. Its quota and your Socai points are independent; recharging Socai does not add quota to it. After signing in to Socai, choose “Use Socai points for the next reply” below the conversation input, confirm the model, then send your reply. Changing the default model alone does not change this conversation.",
+    zh: "当前连接的 OpenAI Codex 账号额度不足，它与您的 Socai 点数相互独立；充值 Socai 不会增加该模型账号的额度。登录 Socai 后，可在对话输入框下选择「下次回复改用 Socai 点数」，确认模型后正常发送。仅修改默认模型不会改变此对话。",
+  },
   "task.apiErrorBalance": {
     en: "{provider} reported insufficient balance or quota. recharge the account or switch to another configured model, then try again.",
     zh: "{provider} 返回余额或额度不足。请充值对应账号或切换到其他已配置的模型，然后重试。",
@@ -742,6 +750,11 @@ const messages = {
     zh: "{provider} 正在限制您提供的 API Key 的请求频率。请稍后重新发送任务。",
   },
   "task.apiErrorUnavailableTitle": { en: "model service is unavailable", zh: "模型服务暂时不可用" },
+  "task.apiErrorUpstreamTitle": { en: "upstream model service error", zh: "模型上游服务异常" },
+  "task.apiErrorUpstream": {
+    en: "socai's model provider rejected the request. This error does not establish that your socai points or sign-in are invalid. Try another configured model, or contact support with the error code before sending the task again.",
+    zh: "Socai 的上游模型服务拒绝了请求，不能据此判断您的 Socai 点数不足或登录失效。请切换其他已配置的模型，或提供错误码联系支持，处理后再重新发送任务。",
+  },
   "task.apiErrorUnavailable": {
     en: "{provider} is temporarily unavailable. wait briefly and send the task again.",
     zh: "{provider} 服务暂时不可用。请稍后重新发送任务。",
@@ -777,8 +790,8 @@ const messages = {
     zh: "socai 内置模型无需 API Key，注册账号即可免费领取 {points} 点额度，继续当前任务。",
   },
   "task.apiErrorSwitchManagedHint": {
-    en: "or switch to socai's built-in model in the account menu, which runs on account points without an API key.",
-    zh: "也可以在账号菜单中切换到 socai 内置模型，使用账号点数、无需 API Key。",
+    en: "To continue this conversation with account points, choose “Use Socai points for the next reply” below the input, then send your reply. No API key is needed.",
+    zh: "如需使用账号点数继续此对话，可在输入框下选择「下次回复改用 Socai 点数」，再正常发送，无需 API Key。",
   },
 
   "artifact.intermediate": { en: "Intermediate files", zh: "中间文件" },
@@ -1077,7 +1090,13 @@ export function formatTaskApiError(error: string): TaskApiErrorPresentation {
   let fallbackCode: string;
   let titleKey: MessageKey;
   let messageKey: MessageKey;
-  if (modelNotActivated) {
+  // The gateway preserves upstream HTTP status codes. Its provider's 401/402
+  // is not evidence that the user's Socai login or wallet needs attention.
+  if (parsed.providerSlug === "socai" && parsed.type.toLowerCase() === "upstream_error") {
+    titleKey = "task.apiErrorUpstreamTitle";
+    messageKey = "task.apiErrorUpstream";
+    fallbackCode = "upstream_error";
+  } else if (modelNotActivated) {
     titleKey = "task.apiErrorModelNotActivatedTitle";
     messageKey = "task.apiErrorModelNotActivated";
     fallbackCode = "model_not_activated";
@@ -1085,6 +1104,12 @@ export function formatTaskApiError(error: string): TaskApiErrorPresentation {
     titleKey = "task.apiErrorAuthTitle";
     messageKey = "task.apiErrorAuth";
     fallbackCode = "authentication_error";
+  } else if (parsed.providerSlug === "openai-codex" && (
+    status === 402 || /insufficient_quota|credit_balance_exhausted|usage_limit_reached|no credits remaining/.test(signal)
+  )) {
+    titleKey = "task.apiErrorConnectedQuotaTitle";
+    messageKey = "task.apiErrorConnectedQuota";
+    fallbackCode = "insufficient_quota";
   } else if (/usage_limit_reached|usage limit (?:has been )?reached/.test(signal)) {
     titleKey = "task.apiErrorUsageLimitTitle";
     messageKey = "task.apiErrorUsageLimit";

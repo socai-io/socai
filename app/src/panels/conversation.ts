@@ -61,6 +61,8 @@ export interface ComposerProps {
   status: Status;
   /** New-task gate: the selected model has a key. Replies always pass. */
   modelReady: boolean;
+  hostedReplyRecovery?: string;
+  replyModelOverride?: string;
   /** True while the shown task runs — the composer waits for the slot. */
   running: boolean;
   /**
@@ -882,6 +884,9 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
           </button>
         </div>
       </form>
+      ${c.replyModelOverride ? `<p class="composer__hint" role="status">${esc(t("task.replyManagedPending", {model: c.replyModelOverride}))}
+        <button id="composer-restore-model" type="button" class="btn-ghost btn-compact" ${disabled ? "disabled" : ""}>${esc(t("task.replyRestoreModel"))}</button></p>`
+        : c.hostedReplyRecovery ? `<p class="composer__hint"><button id="composer-recover-model" type="button" class="btn-ghost btn-compact" ${disabled ? "disabled" : ""}>${esc(t("task.replyUseManaged"))}</button></p>` : ""}
       ${connectHint}
       ${keyHint}
       ${c.voice.error ? `<pre class="composer__error" role="alert" aria-live="assertive" aria-atomic="true">${esc(c.voice.error)}</pre>` : ""}
