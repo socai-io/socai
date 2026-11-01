@@ -115,11 +115,18 @@ export namespace subscriptionMenu {
     }
     // Chinese-speaking users may use Google login and still prefer Alipay.
     // Keep both plans available without changing either plan's price or points.
-    if (globalUser && getLanguage() !== "zh") {
-      return plan.stripe ? renderStripePlan(plan.stripe) : `<p class="t-small subtle subscription-copy">${esc(t("subscription.unavailable"))}</p>`;
+    // Locale and Google sign-in cannot hide an enabled regional payment rail.
+    // Use the Stripe-only layout only when no alternative is available.
+    if (globalUser && getLanguage() !== "zh" && plan.stripe && !plan.alipay_enabled && !plan.wechat_enabled) {
+      return renderStripePlan(plan.stripe);
     }
     return `
       <div class="subscription-payment-options subscription-payment-choice">
+        ${plan.wechat_enabled ? `<button id="subscription-buy-wechat" type="button" class="btn-primary subscription-option" ${phase === "creating" ? "disabled" : ""}>
+          <span>${esc(t("subscription.wechatPay"))}</span>
+          <span class="t-small">${esc(t("subscription.pointCount", { points: plan.points }))}</span>
+          <span class="t-small">${esc(formatCny(plan.amount_fen))}</span>
+        </button>` : ""}
         ${plan.alipay_enabled ? `<button id="subscription-buy-alipay" type="button" class="btn-primary subscription-option" ${phase === "creating" ? "disabled" : ""}>
           <span>${esc(t("subscription.alipay"))}</span>
           <span class="t-small">${esc(t("subscription.pointCount", { points: plan.points }))}</span>
