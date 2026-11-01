@@ -151,6 +151,7 @@ pub fn xhs_tools_with_llm_provider(
         Arc::new(WaitForLoginTool { page: page.clone() }),
         Arc::new(WaitForRateLimitTool),
         Arc::new(PageStateTool { page: page.clone() }),
+        Arc::new(SearchSuggestionsTool { page: page.clone() }),
     ];
     add_research_readers(&mut tools, page, llm_provider, history);
     tools
@@ -205,6 +206,7 @@ pub fn xhs_macro_tools_with_ocr_policy(
         Arc::new(WaitForLoginTool { page: page.clone() }),
         Arc::new(WaitForRateLimitTool),
     ];
+    tools.push(Arc::new(SearchSuggestionsTool { page: page.clone() }));
     add_research_readers(&mut tools, page, llm_provider, history);
     tools
 }
@@ -229,6 +231,7 @@ pub(crate) fn exploration_tools(
     history: Arc<XhsHistoryStore>,
 ) -> Vec<Arc<dyn Tool>> {
     vec![
+        Arc::new(SearchSuggestionsTool { page: page.clone() }),
         Arc::new(SearchTool {
             page: page.clone(),
             llm_provider: Some(backend.clone()),
@@ -292,6 +295,19 @@ pub static XHS_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
     agent_instructions: xhs_agent_instructions,
     default_agent_instructions: Some(xhs_agent_instructions),
     commands: &[
+        SiteCommand {
+            name: "search-suggestions",
+            tool_name: "search_suggestions",
+            about: "Read visible search-box suggestions without submitting; restore the original input.",
+            args: &[
+                CommandArg { key: "query", long: None, value_name: "QUERY",
+                    help: "Seed query, 1–80 characters; no control characters.", required: true, kind: ArgKind::Str },
+                CommandArg { key: "limit", long: Some("limit"), value_name: "N",
+                    help: "Maximum visible suggestions to return (1–20, default 10).", required: false, kind: ArgKind::Int },
+            ],
+            slow: SlowWhen::Always,
+            run: run_search_suggestions,
+        },
         SiteCommand {
             name: "get-notes",
             tool_name: "get_notes",
@@ -770,6 +786,30 @@ fn run_get_notes(
 /// `search` dispatches on `--preview`: default opens each result (full scan —
 /// body + top comments); `--preview` returns result cards only (titles/likes/
 /// covers) without opening any note.
+fn run_search_suggestions(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
+    Box::pin(async move {
+        run_xhs_tool_command(
+            page,
+            XhsCommandSpec {
+                command_name: "search-suggestions",
+                tool_name: "search_suggestions",
+                before: CommandPageAction::None,
+                after: CommandPageAction::None,
+                include_run_metadata: false,
+            },
+            args,
+            debug_snapshot,
+            progress,
+        )
+        .await
+    })
+}
+
 fn run_search(
     page: Arc<PageSession>,
     args: Value,
@@ -4597,6 +4637,48 @@ impl Tool for ExtractCommentsTool {
         let xhs = XhsPageRuntime::new(&self.page);
         let value = xhs.extract_comments(max).await?;
         Ok(json_result(&Value::Array(value)))
+    }
+}
+
+/// Fixed, non-submitting search-box action; unlike browser_script it cannot
+/// execute caller-provided code or publish platform content.
+pub struct SearchSuggestionsTool {
+    page: Arc<PageSession>,
+}
+
+#[async_trait]
+impl Tool for SearchSuggestionsTool {
+    fn name(&self) -> &str {
+        "search_suggestions"
+    }
+    fn description(&self) -> &str {
+        "Read real Xiaohongshu search-box dropdown suggestions for one seed query. \
+         Types without submitting or opening posts, waits for fresh visible labels, \
+         and restores the original input. Returns source URL and observation time. \
+         Not search results, popularity or search-volume estimates. A missing dropdown \
+         is a failure, never replace it with model-generated keywords."
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type":"object","additionalProperties":false,"properties":{
+            "query":{"type":"string","minLength":1,"maxLength":80},
+            "limit":{"type":"integer","minimum":1,"maximum":20,"default":10}
+        },"required":["query"]})
+    }
+    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let query = required_string(&input, "query")?;
+        let limit = input
+            .get("limit")
+            .map(|v| {
+                v.as_u64()
+                    .ok_or_else(|| anyhow::anyhow!("limit must be an integer from 1–20"))
+            })
+            .transpose()?
+            .unwrap_or(10);
+        anyhow::ensure!((1..=20).contains(&limit), "limit must be 1–20");
+        let value = XhsPageRuntime::new(&self.page)
+            .search_suggestions(&query, limit as usize)
+            .await?;
+        Ok(json_result(&value))
     }
 }
 

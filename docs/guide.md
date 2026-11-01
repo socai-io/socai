@@ -269,6 +269,19 @@ socai xhs search "content marketing ideas" \
 
 `search` opens result posts and reads their bodies and comments. Add `--preview` to return only result-card metadata such as titles, covers, and engagement counts without opening post details.
 
+To read actual visible dropdown suggestions without submitting a search:
+
+```bash
+socai xhs search-suggestions "咖啡机" --limit 10 --debug-snapshot --pretty
+```
+
+This types one seed query, waits for matching visible suggestions, and restores
+the original input. It returns the observed labels, source URL and timestamp,
+not search-volume estimates. Missing suggestions, login walls and verification
+gates are reported as failures rather than successful empty demand. The current
+extractor supports the verified home-page AI search composer; other page
+variants may return `suggestions_not_available`.
+
 #### Read an author and their posts
 
 ```bash

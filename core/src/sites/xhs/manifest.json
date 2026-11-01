@@ -82,6 +82,16 @@
       },
       "returns": { "type": "object", "description": "Input update outcome." }
     },
+    "searchSuggestions": {
+      "description": "Read visible search dropdown labels for the exact current query; exclude stale rows and history. Does not input or submit.",
+      "path": "page_scripts.js",
+      "binding": "SocaiXhsPageScripts",
+      "callable": "searchSuggestions",
+      "args": {
+        "query": { "type": "string", "required": true, "description": "Exact expected search input text." }
+      },
+      "returns": { "type": "object", "description": "Visible suggestions with input identity, stale-row count, URL and observation timestamp." }
+    },
     "searchState": {
       "description": "Read the current Xiaohongshu search transition and result state.",
       "path": "page_scripts.js",

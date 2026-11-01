@@ -426,6 +426,99 @@ impl<'a> XhsPageRuntime<'a> {
         Ok(result)
     }
 
+    /// Bounded search-box inspection: trusted typing, no submit, and restoration.
+    pub async fn search_suggestions(&self, query: &str, limit: usize) -> Result<Value> {
+        anyhow::ensure!(
+            !query.trim().is_empty()
+                && query.chars().count() <= 80
+                && !query.chars().any(char::is_control),
+            "query must be 1–80 characters without control characters"
+        );
+        anyhow::ensure!((1..=20).contains(&limit), "limit must be 1–20");
+        if self.login_gate(true).await? == LoginGate::Required {
+            return Ok(json!({"ok": false, "reason": "login_required"}));
+        }
+        let before_url = self.current_url().await?;
+        let location = self.expect_object("searchInput", None).await?;
+        if !script_ok(&location) {
+            return Ok(json!({"ok": false, "reason": "search_input_unavailable"}));
+        }
+        let input = &location["input"];
+        self.page
+            .click(number(input, "x"), number(input, "y"))
+            .await?;
+        let selected = self.expect_object("selectSearchInput", None).await?;
+        anyhow::ensure!(script_ok(&selected), "Search input selection failed");
+        let previous = selected
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let result = async {
+            self.page.type_chars(query).await?;
+            let deadline = Instant::now() + Duration::from_secs(8);
+            let mut previous_terms = Value::Null;
+            let mut observations = 0;
+            loop {
+                let state = self.expect_object("searchState", None).await?;
+                if let Some(reason) = crate::sites::skill_cli::gate_reason(&state) {
+                    return Ok(json!({"ok": false, "reason": reason, "query": query}));
+                }
+                anyhow::ensure!(
+                    self.current_url().await? == before_url,
+                    "Page changed during suggestion capture; no further input sent"
+                );
+                let mut snapshot = self
+                    .expect_object("searchSuggestions", Some(&json!({"query": query})))
+                    .await?;
+                let terms = snapshot["suggestions"].clone();
+                observations += 1;
+                if terms.as_array().is_some_and(|items| !items.is_empty())
+                    && terms == previous_terms
+                {
+                    let items = snapshot["suggestions"].as_array_mut().unwrap();
+                    let visible_count = items.len();
+                    items.truncate(limit);
+                    snapshot["visible_count"] = json!(visible_count);
+                    snapshot["source"] = json!("visible_search_dropdown");
+                    return Ok::<Value, anyhow::Error>(snapshot);
+                }
+                // Debug snapshot recording itself can exceed eight seconds.
+                // A first fresh nonempty read still needs one confirmation;
+                // permit at most three reads past that observation budget.
+                let awaiting_confirmation =
+                    terms.as_array().is_some_and(|items| !items.is_empty()) && observations < 3;
+                previous_terms = terms;
+                if Instant::now() >= deadline && !awaiting_confirmation {
+                    return Ok(json!({"ok": false, "reason": "suggestions_not_available",
+                        "query": query, "snapshot": snapshot}));
+                }
+                sleep_ms(300).await;
+            }
+        }
+        .await;
+        // Never restore into a different page after a user navigation.
+        anyhow::ensure!(
+            self.current_url().await? == before_url,
+            "Page changed; original search input could not be restored"
+        );
+        let restored = self.expect_object("selectSearchInput", None).await?;
+        anyhow::ensure!(script_ok(&restored), "Cannot restore search input");
+        if previous.is_empty() {
+            self.page.press_key("Backspace").await?;
+        } else {
+            self.page.type_chars(previous).await?;
+        }
+        let state = self.expect_object("searchState", None).await?;
+        anyhow::ensure!(
+            state["input_keyword"].as_str().unwrap_or_default() == previous.trim(),
+            "Original search input was not restored"
+        );
+        self.page.press_key("Escape").await?;
+        let mut value = result?;
+        value["input_restored"] = json!(true);
+        Ok(value)
+    }
+
     pub async fn submit_search(&self, query: &str, wait_seconds: f64) -> Result<Value> {
         let mut loc = self.expect_object("searchInput", None).await?;
         if !script_ok(&loc) {
