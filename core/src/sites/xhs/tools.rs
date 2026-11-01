@@ -51,6 +51,7 @@ use crate::sites::xhs::publish;
 use crate::sites::xhs::{
     ReadNoteOptions, XhsAuthorProfile, XhsHistoryStore, XhsNoteCard, XhsPageRuntime, XHS_HOME_URL,
 };
+use crate::util::execution_clock::ExecutionDeadline;
 
 /// Default number of notes `search` reads when the caller doesn't specify.
 const DEFAULT_NUM_NOTES: i64 = 10;
@@ -4774,7 +4775,7 @@ impl Tool for WaitForLoginTool {
 
         let timeout = get_i64(&input, "timeout_seconds", WAIT_FOR_LOGIN_DEFAULT_SECS)
             .clamp(10, WAIT_FOR_LOGIN_MAX_SECS);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout as u64);
+        let deadline = ExecutionDeadline::after(Duration::from_secs(timeout as u64));
         let mut human_ready = login_resume_receiver(&ctx.run_id);
         loop {
             if xhs.is_logged_in().await.unwrap_or(false) {
@@ -4796,7 +4797,7 @@ impl Tool for WaitForLoginTool {
                     "message": "Login confirmed from the live browser. Re-run the original tool.",
                 })));
             }
-            if std::time::Instant::now() >= deadline {
+            if deadline.is_elapsed() {
                 return Ok(json_result(&json!({
                     "logged_in": false,
                     "timed_out": true,
@@ -5602,13 +5603,13 @@ impl Tool for SearchTool {
         let mut recovery_attempted = false;
         let mut consecutive_note_failures = 0usize;
         let scan_deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(SEARCH_SCAN_TIMEOUT_SECONDS);
+            ExecutionDeadline::after(Duration::from_secs(SEARCH_SCAN_TIMEOUT_SECONDS));
 
         while notes.len() < want {
-            if std::time::Instant::now() >= scan_deadline {
+            if scan_deadline.is_elapsed() {
                 stop_reason = "search_timeout".to_string();
                 page_error = Some(format!(
-                    "search browse phase exceeded {SEARCH_SCAN_TIMEOUT_SECONDS}s"
+                    "search browse phase exceeded {SEARCH_SCAN_TIMEOUT_SECONDS}s of active execution"
                 ));
                 append_search_debug_event(
                     ctx,

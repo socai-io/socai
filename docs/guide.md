@@ -860,8 +860,13 @@ Browserless site adapters keep their browser-free execution path.
 
 Hosted operators can set `SOCAI_READ_TOOL_IDLE_SECONDS` (1–300) and
 `SOCAI_READ_TOOL_WALL_SECONDS` (1–3600, default 900) to bound selected read-only
-research calls. Only real tool progress renews the idle deadline; the wall-clock
-deadline never renews. On timeout the agent stops bulk retries and produces an
+research calls. Only real tool progress renews the idle deadline; the hard
+execution budget never renews. Acknowledged `run.pause` / `run.resume` takeover
+intervals do not consume either budget or XHS page/search polling budgets.
+Local entrypoints without pause controls retain ordinary elapsed-time limits.
+This does not freeze already issued HTTP/CDP requests or background media jobs;
+their transport deadlines and wall-clock telemetry remain independent.
+On timeout the agent stops bulk retries and produces an
 explicitly partial answer from saved evidence instead of losing the whole run
 to the host's outer inactivity timeout. This watchdog does not cancel external
 writes or shell commands and is disabled unless the idle setting is supplied.

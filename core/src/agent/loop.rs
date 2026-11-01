@@ -50,6 +50,7 @@ use crate::agent::tool::{
 };
 use crate::media::RemoteOcrConfig;
 use crate::telemetry::trace::RunTraceBuilder;
+use crate::util::execution_clock::{ExecutionClock, ExecutionDeadline};
 
 /// Events streamed to subscribers while the agent is running.
 #[derive(Debug, Clone)]
@@ -287,7 +288,7 @@ async fn execute_parallel_tool_call(
         loop {
             tokio::select! {
                 outcome = &mut dispatch => break outcome,
-                _ = tokio::time::sleep_until(watchdog.deadline()), if watchdog.enabled => {
+                _ = watchdog.deadline().wait(), if watchdog.enabled => {
                     pending.tool_ctx.record_tool_outcome(&pending.name, &pending.effective_input, false);
                     break watchdog.failure(&pending.name);
                 }
@@ -912,7 +913,7 @@ pub async fn run_agent_with_events(
                         let outcome = loop {
                             tokio::select! {
                                 outcome = &mut dispatch => break outcome,
-                                _ = tokio::time::sleep_until(watchdog.deadline()), if watchdog.enabled => {
+                                _ = watchdog.deadline().wait(), if watchdog.enabled => {
                                     tool_ctx.record_tool_outcome(name, &effective_input, false);
                                     break watchdog.failure(name);
                                 }
@@ -1522,7 +1523,7 @@ fn emit(events: &broadcast::Sender<AgentEvent>, event: AgentEvent) {
 
 /// Hosted read-only research must return control to the model before the
 /// backend's outer inactivity watchdog kills the entire run. Only genuine
-/// tool progress renews the idle deadline; a separate wall limit still bounds
+/// tool progress renews the idle deadline; a separate active-time limit bounds
 /// pathological tools that keep emitting progress forever. Opt-in keeps CLI
 /// and Desktop behavior unchanged. Never cancel external writes this way.
 const READ_TOOL_DEADLINE_ERROR: &str = "[socai:read-deadline]";
@@ -1530,8 +1531,9 @@ const READ_TOOL_DEADLINE_ERROR: &str = "[socai:read-deadline]";
 struct ReadToolWatchdog {
     enabled: bool,
     idle: Duration,
-    idle_until: tokio::time::Instant,
-    hard_until: tokio::time::Instant,
+    clock: ExecutionClock,
+    idle_until: Duration,
+    hard_until: Duration,
 }
 
 impl ReadToolWatchdog {
@@ -1550,27 +1552,29 @@ impl ReadToolWatchdog {
             read_name,
             "search" | "get_notes" | "author_scan" | "web_read" | "web_navigate"
         ) && find_tool(tools, name).is_some_and(|tool| !tool.external_write());
-        let now = tokio::time::Instant::now();
+        let clock = ExecutionClock::current();
+        let now = clock.elapsed();
         let idle = Duration::from_secs(idle_seconds.unwrap_or(90));
         Self {
             enabled: read_only && idle_seconds.is_some(),
             idle,
+            clock,
             idle_until: now + idle,
             hard_until: now + Duration::from_secs(wall_seconds),
         }
     }
 
     fn progress(&mut self) {
-        self.idle_until = tokio::time::Instant::now() + self.idle;
+        self.idle_until = self.clock.elapsed() + self.idle;
     }
 
-    fn deadline(&self) -> tokio::time::Instant {
-        self.idle_until.min(self.hard_until)
+    fn deadline(&self) -> ExecutionDeadline {
+        self.clock.deadline_at(self.idle_until.min(self.hard_until))
     }
 
     fn failure(&self, name: &str) -> (ToolResult, Option<String>) {
         let message = format!(
-            "{READ_TOOL_DEADLINE_ERROR} Read-only tool {name} exceeded its progress or wall-clock deadline. \
+            "{READ_TOOL_DEADLINE_ERROR} Read-only tool {name} exceeded its progress or active-execution deadline. \
             Do not repeat the same bulk request. Review any saved evidence and files, \
             then provide an explicitly partial answer with sources. If nothing was \
             saved, explain that limitation instead of claiming the research completed."
@@ -2572,18 +2576,26 @@ mod tests {
         assert!(spoof_ctx.verified_recovery().is_none());
 
         // A deadline is a trusted failure, not a successful tool merely
-        // containing the word Error. Progress renews idle, never wall time.
-        let now = tokio::time::Instant::now();
+        // containing the word Error. Progress renews idle, never the hard budget.
+        let clock = ExecutionClock::default();
+        let now = clock.elapsed();
         let mut watchdog = ReadToolWatchdog {
             enabled: true,
             idle: Duration::from_millis(10),
+            clock: clock.clone(),
             idle_until: now,
             hard_until: now + Duration::from_millis(30),
         };
         watchdog.progress();
-        assert!(watchdog.deadline() > now);
-        assert!(watchdog.deadline() <= watchdog.hard_until);
-        tokio::time::sleep_until(watchdog.deadline()).await;
+        assert!(watchdog.deadline().remaining() > Duration::ZERO);
+        assert!(watchdog.idle_until <= watchdog.hard_until);
+        clock.pause();
+        let remaining = watchdog.deadline().remaining();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(watchdog.deadline().remaining(), remaining);
+        clock.resume();
+        watchdog.deadline().wait().await;
+        assert!(watchdog.deadline().is_elapsed());
         let (result, error) = watchdog.failure("search");
         assert!(result.failed());
         assert!(error.unwrap().starts_with(READ_TOOL_DEADLINE_ERROR));
