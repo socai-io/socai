@@ -2,6 +2,7 @@ import { bindWorkflows, openWorkflows, renderWorkflows, type WorkflowSkill } fro
 import { refreshResearchBoard, bindResearchBoard } from "./research-board";
 import { getLanguage } from "../lib/i18n";
 import { bindTaskExamples } from "../lib/task-examples";
+import { hostedReplyRecovery, type ReplyModelChoice } from "../lib/reply-model-recovery";
 //! Task workspace coordinator: shared state, agent configuration popover,
 //! task event intake, and bindings. The sidebar (history list) + delete dialog
 //! live in `task_history.ts`; the conversation view lives in `conversation.ts`.
@@ -846,7 +847,11 @@ export namespace agentPanel {
     };
   }
 
+  const replyModelOverrides = new Map<string, ReplyModelChoice>();
+
   function replyComposer(shell: ShellState, taskId: string, running: boolean): ComposerProps {
+    const task = tasks.find(item => item.task_id === taskId);
+    const recovery = task ? hostedReplyRecovery(task, modelsCache, authMenu.isLoggedIn()) : null;
     return {
       mode: "reply",
       sites: taskSites(taskId),
@@ -861,6 +866,8 @@ export namespace agentPanel {
       error: cancellationErrors.get(taskId) ?? replyError,
       status: shell.status,
       modelReady: true,
+      hostedReplyRecovery: recovery?.model,
+      replyModelOverride: replyModelOverrides.get(taskId)?.model,
       running,
       remoteProfile: settingsMenu.isRemoteProfile(),
       managedProfile: settingsMenu.isManagedProfile(),
@@ -1361,6 +1368,18 @@ export namespace agentPanel {
     syncChromeSetupDetection(shell);
     bindResearchBoard(selectedTask);
     const composerTask = view === "compose" ? undefined : selectedTask();
+    document.getElementById("composer-recover-model")?.addEventListener("click", () => {
+      if (!composerTask) return;
+      const choice = hostedReplyRecovery(composerTask, modelsCache, authMenu.isLoggedIn());
+      if (!choice || submittingReply) return;
+      replyModelOverrides.set(composerTask.task_id, choice);
+      shell.rerender();
+    });
+    document.getElementById("composer-restore-model")?.addEventListener("click", () => {
+      if (!composerTask || submittingReply) return;
+      replyModelOverrides.delete(composerTask.task_id);
+      shell.rerender();
+    });
     const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     disposeComposerAutosize?.();
     if (!composerTask) bindTaskExamples(({ platform, prompt }) => {
@@ -1649,6 +1668,7 @@ export namespace agentPanel {
         language: getLanguage(),
         taskId,
         message: value,
+        ...replyModelOverrides.get(taskId),
         sites: taskSites(taskId),
         researchMode: replyResearchModes.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.research_mode ?? false,
         workflow: (() => { const id = replyWorkflows.get(taskId) ?? tasks.find(t => t.task_id === taskId)?.workflow ?? "general"; return id === "vc" || id === "general" ? id : "custom"; })(),
@@ -1656,6 +1676,7 @@ export namespace agentPanel {
       });
       replySites.delete(taskId);
       upsertTask(snapshot);
+      replyModelOverrides.delete(taskId);
       replyDraft = "";
       replyResearchModes.delete(taskId);
       replyWorkflows.delete(taskId);
