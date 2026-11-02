@@ -492,12 +492,21 @@ export function citationLabel(label: string): string {
   for (const char of label) { if (used + width(char) > 38) break; result += char; used += width(char); }
   return result + "…";
 }
-function pillHTML(id: string, label: string, note: NoteData): string {
+function isXhsNoteUrl(url: URL): boolean {
+  return ["www.xiaohongshu.com", "xiaohongshu.com"].includes(url.hostname)
+    && /^\/(?:explore|search_result|discovery(?:\/item)?)\/[^/]+\/?$/.test(url.pathname);
+}
+function citationOpenAttrs(id: string, url?: URL): string {
+  const attrs = `data-note-open="${esc(id)}"`;
+  return url && isXhsNoteUrl(url) && url.searchParams.has("source")
+    ? `${attrs} data-citation-url="${esc(url.href)}"` : attrs;
+}
+function pillHTML(id: string, label: string, note: NoteData, url?: URL): string {
   const cover = coverOf(note);
   const icon = note.site === "web" || note.site === "weixin" || note.site === "podcast" || note.site === "github" ? avatar(note, "note-cite__avatar") : mediaFrame(note, cover, "dot");
   return (
     `<span class="note-cite-wrap" data-note-cite="${esc(id)}">` +
-    `<span class="note-cite" data-note-open="${esc(id)}" role="button" tabindex="0">` +
+    `<span class="note-cite" ${citationOpenAttrs(id, url)} role="button" tabindex="0">` +
     `<span class="note-cite__dot">${icon}</span>${esc(citationLabel(label))}` +
     `<span class="note-cite__kind">${platformIcon(note.site || "xhs")}</span></span></span>`
   );
@@ -507,22 +516,24 @@ function pillHTML(id: string, label: string, note: NoteData): string {
 export function renderLeadCitation(url: string, label: string, site: string): string {
   let parsed: URL;
   try { parsed = new URL(url); if (!['http:', 'https:'].includes(parsed.protocol)) return esc(label); } catch { return esc(label); }
-  let note = Object.values(REGISTRY).find(n => citationUrlKey(n.url) === citationUrlKey(url));
+  const key = citationUrlKey(url);
+  let note = Object.values(REGISTRY).find(n => citationUrlKey(n.url) === key);
   if (!note && site === 'x') { const id = parsed.pathname.match(/status\/(\d+)/)?.[1]; if (id) note = REGISTRY[`x:${id}`]; }
   if (!note) {
     note = githubNote(url) ?? {note_id: `lead:${url}`, site, url, title: label, content: getLanguage() === 'zh' ? '尚未保存原文内容。' : 'Source content has not been saved.'};
     REGISTRY[note.note_id] = note;
   }
-  return `<span class="note-cite-wrap research-lead-cite" data-note-cite="${esc(note.note_id)}"><button class="research-source" data-note-open="${esc(note.note_id)}">${platformIcon(site)}<strong>${esc(citationLabel(label))}</strong></button></span>`;
+  return `<span class="note-cite-wrap research-lead-cite" data-note-cite="${esc(note.note_id)}"><button class="research-source" ${citationOpenAttrs(note.note_id, parsed)}>${platformIcon(site)}<strong>${esc(citationLabel(label))}</strong></button></span>`;
 }
 
-/** Ignore only fragments; signed query parameters remain part of the match. */
+/** XHS adds a navigation source to note URLs. Ignore it only in the lookup key. */
 function citationUrlKey(value: string | undefined): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);
     if (url.protocol !== "https:" && url.protocol !== "http:") return null;
     url.hash = "";
+    if (isXhsNoteUrl(url)) url.searchParams.delete("source");
     return url.href;
   } catch { return null; }
 }
@@ -585,11 +596,20 @@ export function renderNoteAnswer(src: string): string {
       if (candidate?.site === "instagram") note = candidate;
     }
     if (!note?.title?.trim()) {
+      // A search preview can be cited even when no full note was archived.
+      // Keep the original anchor so the pill can open that exact citation.
+      if (isXhsNoteUrl(url)) {
+        const label = a.textContent?.trim();
+        const title = label && !/^https?:\/\//i.test(label) ? citationLabel(label) : t("note.openExternal");
+        a.classList.add("note-cite");
+        a.innerHTML = `<span class="note-cite__kind">${platformIcon("xhs")}</span>${esc(title)}`;
+        return;
+      }
       a.textContent = href;
       return;
     }
     const holder = doc.createElement("span");
-    holder.innerHTML = pillHTML(note.note_id, note.site === "github" ? (a.textContent || note.title) : note.title, note);
+    holder.innerHTML = pillHTML(note.note_id, note.site === "github" ? (a.textContent || note.title) : note.title, note, url);
     a.replaceWith(...Array.from(holder.childNodes));
   });
   return root.innerHTML;
@@ -800,10 +820,10 @@ function viewPanel(note: NoteData): string {
 // No X: clicking outside the panel closes (and Esc still works), matching the
 // social-post modal. The top-right corner instead opens the original post —
 // only a note with no archived url keeps a close glyph so the corner isn't dead.
-function viewerHTML(note: NoteData): string {
+function viewerHTML(note: NoteData, externalUrl = note.url): string {
   const externalLabel = getLanguage() === "zh" ? `在 ${platformLabel(note.site || "xhs")} 打开` : `Open on ${platformLabel(note.site || "xhs")}`;
-  const corner = note.url
-    ? `<button type="button" class="note-viewer-corner" data-note-external="${esc(note.url)}" title="${esc(externalLabel)}" aria-label="${esc(externalLabel)}">${platformIcon(note.site || "xhs")}${IC.external()}</button>`
+  const corner = externalUrl
+    ? `<button type="button" class="note-viewer-corner" data-note-external="${esc(externalUrl)}" title="${esc(externalLabel)}" aria-label="${esc(externalLabel)}">${platformIcon(note.site || "xhs")}${IC.external()}</button>`
     : `<button type="button" class="note-viewer-corner" data-note-close aria-label="close">${IC.close()}</button>`;
   if (note.site === "x") return `<div class="note-viewer-backdrop" data-note-close>
     <article class="note-viewer-panel note-viewer-panel--x" role="dialog" aria-label="${esc(note.title || 'X')}" data-note-stop>
@@ -864,7 +884,7 @@ function galleryGo(gallery: HTMLElement, idx: number): void {
 function closeViewer(): void {
   document.querySelector(".note-viewer-backdrop")?.parentElement?.remove();
 }
-function openViewer(id: string): void {
+function openViewer(id: string, citationUrl?: string): void {
   const note = resolveNote(id);
   if (!note) return;
   closeViewer();
@@ -874,7 +894,7 @@ function openViewer(id: string): void {
   document.querySelectorAll<HTMLVideoElement>(".note-media video").forEach((v) => v.pause());
   const host = document.createElement("div");
   host.className = "note-viewer note-viewer--lightbox";
-  host.innerHTML = viewerHTML(note);
+  host.innerHTML = viewerHTML(note, citationUrl);
   document.body.appendChild(host);
   hydratePodcastPreview(host, note);
   playVisibleGalleryVideo(host);
@@ -1069,7 +1089,7 @@ export function bindNoteInteractions(): void {
     const open = target.closest<HTMLElement>("[data-note-open]");
     if (open) {
       e.preventDefault();
-      openViewer(open.getAttribute("data-note-open") || "");
+      openViewer(open.dataset.noteOpen || "", open.dataset.citationUrl);
     }
   });
 

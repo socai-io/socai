@@ -2651,6 +2651,7 @@ button.note-media__play:hover { background: rgba(10, 10, 10, 0.78); transform: s
   transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 .note-cite:hover { border-color: var(--line-strong); color: var(--ink-0); }
+.result-md a.note-cite { text-decoration: none; }
 .note-cite__dot { flex: 0 0 auto; width: 15px; height: 15px; border-radius: var(--r-pill); overflow: hidden; position: relative; }
 .note-cite__kind { display: inline-flex; color: var(--fg-faint); }
 .note-cite__kind svg { width: 11px; height: 11px; }
