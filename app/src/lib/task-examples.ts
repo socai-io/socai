@@ -170,6 +170,7 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
   const dialog = section?.querySelector<HTMLDialogElement>("dialog");
   const body = section?.querySelector<HTMLElement>("[data-workset-body]");
   if (!section || !dialog || !body) return;
+  const chinese = getLanguage() === "zh";
   let trigger: HTMLButtonElement | undefined;
   let pending: { platform: Platform; prompt: string; draft: string } | undefined;
   const confirmation = dialog.querySelector<HTMLElement>("[data-workset-confirm]")!;
