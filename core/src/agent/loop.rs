@@ -160,6 +160,7 @@ pub struct AgentOptions {
     /// the loop to bounded local delivery followed by a partial summary.
     pub tool_failure_recovery: Option<SharedToolFailureRecovery>,
     pub desktop_network_recovery: bool,
+    pub model_previews: bool,
     /// Read and update `~/.socai/memories` for this run. Hosted workers turn
     /// this off; their session home is not the durable local task store.
     pub local_memory: bool,
@@ -184,6 +185,7 @@ impl Default for AgentOptions {
             remote_ocr: None,
             tool_failure_recovery: None,
             desktop_network_recovery: false,
+            model_previews: false,
             local_memory: true,
         }
     }
@@ -523,6 +525,7 @@ pub async fn run_agent_with_events(
             &schemas,
             options.max_tokens,
             step,
+            options.model_previews.then_some(&events),
             options
                 .desktop_network_recovery
                 .then_some((&events, &mut run_trace)),
@@ -1186,6 +1189,7 @@ pub async fn run_agent_with_events(
                 &[],
                 options.max_tokens,
                 summary_step,
+                options.model_previews.then_some(&events),
                 options
                     .desktop_network_recovery
                     .then_some((&events, &mut run_trace)),
@@ -1453,7 +1457,7 @@ pub(crate) async fn send_with_retry(
     max_tokens: u32,
     step: u32,
 ) -> anyhow::Result<LLMResponse> {
-    send_chat(backend, system, messages, schemas, max_tokens, step, None).await
+    send_chat(backend, system, messages, schemas, max_tokens, step, None, None).await
 }
 
 async fn send_chat(
@@ -1463,6 +1467,7 @@ async fn send_chat(
     schemas: &[ToolSchema],
     max_tokens: u32,
     step: u32,
+    previews: Option<&broadcast::Sender<AgentEvent>>,
     mut recovery: Option<(&broadcast::Sender<AgentEvent>, &mut RunTraceBuilder)>,
 ) -> anyhow::Result<LLMResponse> {
     use crate::util::suspend_clock::SuspendClock;
@@ -1470,8 +1475,7 @@ async fn send_chat(
     loop {
         attempt += 1;
         let start = recovery.as_ref().and_then(|_| SuspendClock::sample());
-        let desktop_events = recovery.as_ref().map(|(events, _)| *events);
-        let result = if let Some(events) = desktop_events.filter(|_| backend.provider() == "socai") {
+        let result = if let Some(events) = previews {
             let preview = |text: &str, reasoning: &str| {
                 emit(events, AgentEvent::ModelPreview {
                     text: text.to_owned(),

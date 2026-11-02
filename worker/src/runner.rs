@@ -1076,6 +1076,7 @@ async fn execute_run_inner(
         }
     }
     let mut config = AgentRunConfig {
+        model_previews: matches!(llm_provider.provider(), "openrouter" | "deepseek"),
         initial_skills: spec.research.initial_skills(),
         max_steps: spec.research.max_steps(),
         run_id: Some(spec.run_id.clone()),
@@ -1125,7 +1126,7 @@ async fn execute_run_inner(
                 while let Ok(event) = events_rx.try_recv() {
                     match forward_agent_event(
                         &sequencer,
-                        output,
+                        spec, output,
                         event,
                         &prepared.run_dir,
                         &mut evidence,
@@ -1146,7 +1147,7 @@ async fn execute_run_inner(
                     Ok(event) => {
                         match forward_agent_event(
                             &sequencer,
-                            output,
+                            spec, output,
                             event,
                             &prepared.run_dir,
                             &mut evidence,
@@ -1221,11 +1222,31 @@ async fn execute_run_inner(
 
 async fn forward_agent_event(
     sequencer: &Arc<Mutex<EventSequencer>>,
+    spec: &RunSpec,
     output: &mpsc::UnboundedSender<WorkerOutput>,
     event: AgentEvent,
     run_dir: &Path,
     evidence_tracker: &mut EvidenceTracker,
 ) -> ForwardDisposition {
+    let preview = match &event {
+        AgentEvent::ModelPreview { text, reasoning } => Some((text.as_str(), reasoning.as_str(), false)),
+        AgentEvent::Done { final_text, .. } => Some((final_text.as_str(), "", true)),
+        _ => None,
+    };
+    if let Some((text, reasoning, accepted)) = preview {
+        let seq = sequencer.lock().await;
+        if !seq.is_terminal() {
+            let _ = output.send(WorkerOutput::ModelPreview {
+                binding: spec.binding.clone(),
+                run_id: spec.run_id.clone(),
+                after_sequence: seq.next_sequence() - 1,
+                accepted,
+                text: bounded_event_text(text.to_owned()),
+                reasoning: bounded_event_text(reasoning.to_owned()),
+            });
+        }
+        return ForwardDisposition::Continue;
+    }
     let browser_session_lost = is_recoverable_browser_session_loss(&event);
     let replay_existing_evidence = matches!(&event, AgentEvent::Started { .. });
     let evidence_source = match &event {
