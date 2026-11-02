@@ -8,7 +8,7 @@ pub(super) struct SocialSkill {
 pub(super) const SKILLS: &[SocialSkill] = &[
     SocialSkill {
         name: "xhs-content-workflow",
-        description: "小红书 内容工作流. Turn collected posts into evidence-backed analysis, topic choices and an editable draft.",
+        description: "小红书 内容工作流. Start from a short topic or reference post, collect evidence, offer topic choices, then draft after selection.",
         document: include_str!("xhs-content-workflow/SKILL.md"),
     },
     SocialSkill {
@@ -63,7 +63,7 @@ pub(super) const SKILLS: &[SocialSkill] = &[
     },
     SocialSkill {
         name: "dy-content-workflow",
-        description: "抖音 内容工作流. Turn collected posts into evidence-backed analysis, topic choices and an editable draft.",
+        description: "抖音 内容工作流. Start from a short topic or reference post, collect evidence, offer topic choices, then draft after selection.",
         document: include_str!("dy-content-workflow/SKILL.md"),
     },
     SocialSkill {
@@ -124,5 +124,6 @@ pub(super) fn catalog_prompt() -> String {
         catalog.push_str(&format!("- `{}` — {}\n", skill.name, skill.description));
     }
     catalog.push_str("Select only methods relevant to the user's current request. read_site_skills describes page tools, not these task methods. Loading a method does not prove a download, OCR, transcript, send, or scheduled monitor succeeded; verify the actual tools and user-visible result.\n");
+    catalog.push_str("For Xiaohongshu or Douyin content ideas, topic selection, or writing (including a short topic and 'not drafting yet'), load `xhs-content-workflow` or `dy-content-workflow` first, before collecting. Keyword insights can supplement that workflow, not replace it. Do not load these workflows for unrelated tasks or an explicit keyword-only request. For text-only topic research, pass `download_media:false` when supported unless media download, visual analysis, OCR, or transcription is actually needed; retain source links and state the real collection scope.\n");
     catalog
 }
