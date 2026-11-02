@@ -20,6 +20,9 @@ importers:
       marked:
         specifier: ^18.0.5
         version: 18.0.5
+      opencc-js:
+        specifier: 1.4.2
+        version: 1.4.2
       papaparse:
         specifier: ^5.6.0
         version: 5.6.0
@@ -827,6 +830,9 @@ packages:
         optional: true
       zod:
         optional: true
+
+  opencc-js@1.4.2:
+    resolution: {integrity: sha512-EdcspgdROiCCZDM+jZR6Pa670xW+EW2QhctPBQ8gRjg6lrx4IHEl+2s+kt5izk/TkxVRgdWuFgaGkaEdIUfdaw==}
 
   p-limit@2.3.0:
     resolution: {integrity: sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w==}
@@ -1760,6 +1766,8 @@ snapshots:
       '@smithy/signature-v4': 5.7.4
       ws: 8.21.3
       zod: 4.4.3
+
+  opencc-js@1.4.2: {}
 
   p-limit@2.3.0:
     dependencies:
