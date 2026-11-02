@@ -15,7 +15,7 @@ use socai_core::agent::{
     ToolFailureRecovery, ToolRecoveryOutcome,
 };
 use socai_core::runtime::{
-    create_llm_provider_for_task, ensure_llm_provider_configured_for,
+    create_llm_provider_for_task_with_gateway_context, ensure_llm_provider_configured_for,
     run_agent_task as run_agent_with_tools, AgentRunConfig, BrowserBusy, BrowserBusyKind,
     BrowserLease, BrowserStatus, ChromeConnectOptions, ChromeProfile, RuntimePageSession,
     SocaiRuntime,
@@ -744,10 +744,11 @@ pub async fn agent_task_start(
         )
         .await;
     let task_id = snapshot.task_id.clone();
+    let billing_id = snapshot.billing_id().to_owned();
     if let Some(trial) = &guest_trial {
-        trial.bind_task(&task_id).map_err(|e| e.to_string())?;
+        trial.bind_task(&billing_id).map_err(|e| e.to_string())?;
     } else {
-        socai_core::cloud::prepare_account_task(&task_id).map_err(|e| e.to_string())?;
+        socai_core::cloud::prepare_account_task(&billing_id).map_err(|e| e.to_string())?;
     }
     socai_core::media::cancel_all_background_media();
     let background_media_generation = socai_core::media::begin_background_media_generation();
@@ -766,6 +767,8 @@ pub async fn agent_task_start(
             registry_for_task.clone(),
             runtime,
             task_id_for_spawn.clone(),
+            billing_id,
+            None,
             task_text,
             provider,
             model,
@@ -871,6 +874,7 @@ pub async fn agent_task_reply(
     let snapshot = registry
         .update(&task_id, |snapshot| {
             snapshot.status = "queued".into();
+            snapshot.billing_turn_id = Some(crate::tasks::new_billing_turn_id());
             snapshot.provider = provider.clone();
             snapshot.model = model.clone();
             snapshot.sites = sites.clone();
@@ -899,10 +903,11 @@ pub async fn agent_task_reply(
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
 
+    let billing_id = snapshot.billing_id().to_owned();
     if let Some(trial) = &guest_trial {
-        trial.bind_task(&task_id).map_err(|e| e.to_string())?;
+        trial.bind_task(&billing_id).map_err(|e| e.to_string())?;
     } else {
-        socai_core::cloud::prepare_account_task(&task_id).map_err(|e| e.to_string())?;
+        socai_core::cloud::prepare_account_task(&billing_id).map_err(|e| e.to_string())?;
     }
     socai_core::media::cancel_all_background_media();
     let background_media_generation = socai_core::media::begin_background_media_generation();
@@ -916,11 +921,23 @@ pub async fn agent_task_reply(
         if start_rx.await.is_err() {
             return;
         }
+        // Carry an unacknowledged stop on the first model request as well.
+        // Only old desktop records require a separate legacy settlement.
+        let predecessor = if existing.status == "cancelled" && existing.points_used.is_none() {
+            if existing.billing_turn_id.is_none() && socai_core::cloud::pro_activated() {
+                settle_hosted_task_with_retry(existing.billing_id(), "cancelled").await;
+            }
+            existing.billing_turn_id
+        } else {
+            None
+        };
         run_agent_task_background(
             app_for_task,
             registry_for_task.clone(),
             runtime,
             task_id_for_spawn.clone(),
+            billing_id,
+            predecessor,
             message_text,
             provider,
             model,
@@ -1423,7 +1440,7 @@ pub async fn agent_task_recover_billing(
     let has_cloud_session = socai_core::cloud::pro_activated();
     for snapshot in snapshots {
         if snapshot.points_used.is_some()
-            || (!has_cloud_session && !socai_core::cloud::is_guest_task(&snapshot.task_id))
+            || (!has_cloud_session && !socai_core::cloud::is_guest_task(snapshot.billing_id()))
             || !matches!(
                 snapshot.status.as_str(),
                 "completed" | "failed" | "cancelled" | "interrupted"
@@ -1441,7 +1458,7 @@ pub async fn agent_task_recover_billing(
         {
             continue;
         }
-        match socai_core::cloud::settle_llm_task(&snapshot.task_id, &snapshot.status).await {
+        match socai_core::cloud::settle_llm_task(snapshot.billing_id(), &snapshot.status).await {
             Ok(settlement) => {
                 let points = visible_billed_points(snapshot.provider.as_deref(), &settlement);
                 if let Some(points) = points {
@@ -2657,7 +2674,7 @@ pub async fn agent_task_cancel(
     telemetry: State<'_, DesktopTelemetry>,
     task_id: String,
 ) -> Result<AgentTaskSnapshot, String> {
-    let (mut snapshot, abort_handle, target_id, changed) = tasks
+    let (snapshot, abort_handle, target_id, changed) = tasks
         .cancel(&task_id)
         .await
         .ok_or_else(|| format!("unknown task: {task_id}"))?;
@@ -2669,24 +2686,32 @@ pub async fn agent_task_cancel(
     if let Some(handle) = abort_handle {
         handle.abort();
     }
-    if let Some(target_id) = target_id {
-        let _ = runtime.close_target(&target_id).await;
-    }
     if changed {
-        if socai_core::cloud::pro_activated() || socai_core::cloud::is_guest_task(&task_id) {
-            if let Some(settlement) = settle_hosted_task_with_retry(&task_id, "cancelled").await {
-                if let Some(updated) = tasks
-                    .update(&task_id, |task| {
-                        task.points_used =
-                            visible_billed_points(task.provider.as_deref(), &settlement);
-                    })
-                    .await
-                {
-                    snapshot = updated;
+        let billing_id = snapshot.billing_id().to_owned();
+        let cancelled = snapshot.clone();
+        let registry = tasks.inner().clone();
+        if let Some(target_id) = target_id {
+            let runtime = runtime.inner().clone();
+            if let Some(session) = snapshot.session_dir.as_ref().and_then(|dir| Conversation::load(dir).ok()) {
+                runtime.forget_session_target(&session.id, APP_SITE_ID, &target_id).await;
+            }
+            tauri::async_runtime::spawn(async move {
+                let _ = runtime.close_target(&target_id).await;
+            });
+        }
+        tauri::async_runtime::spawn(async move {
+            if socai_core::cloud::pro_activated() || socai_core::cloud::is_guest_task(&billing_id) {
+                if let Some(settlement) = settle_hosted_task_with_retry(&billing_id, "cancelled").await {
+                    let points = visible_billed_points(cancelled.provider.as_deref(), &settlement);
+                    persist_run_points_used(cancelled.run_dir.as_deref(), points);
+                    registry.update(&cancelled.task_id, |current| {
+                        if current.billing_id() == billing_id && current.status == "cancelled" {
+                            current.points_used = points;
+                        }
+                    }).await;
                 }
             }
-        }
-        persist_run_points_used(snapshot.run_dir.as_deref(), snapshot.points_used);
+        });
         let usage = snapshot.run_dir.as_deref().and_then(read_run_usage);
         if let Some(run_dir) = snapshot.run_dir.as_deref() {
             let _ = mark_agent_run_status(run_dir, "cancelled", None);
@@ -2852,6 +2877,8 @@ async fn run_agent_task_background(
     registry: AgentTaskRegistry,
     runtime: SocaiRuntime,
     task_id: String,
+    billing_id: String,
+    cancelled_predecessor: Option<String>,
     task: String,
     provider: Option<String>,
     model: Option<String>,
@@ -3011,6 +3038,8 @@ async fn run_agent_task_background(
     let result = run_agent_task_on_session_page(
         app.clone(),
         task_id.clone(),
+        &billing_id,
+        cancelled_predecessor,
         runtime.clone(),
         browser,
         &task,
@@ -3025,13 +3054,13 @@ async fn run_agent_task_background(
     .await;
 
     let settlement =
-        if socai_core::cloud::pro_activated() || socai_core::cloud::is_guest_task(&task_id) {
+        if socai_core::cloud::pro_activated() || socai_core::cloud::is_guest_task(&billing_id) {
             let final_status = if result.is_ok() {
                 "completed"
             } else {
                 "failed"
             };
-            settle_hosted_task_with_retry(&task_id, final_status).await
+            settle_hosted_task_with_retry(&billing_id, final_status).await
         } else {
             None
         };
@@ -3264,6 +3293,8 @@ fn record_desktop_session(snapshot: &AgentTaskSnapshot, assistant: &str, status:
 async fn run_agent_task_on_session_page(
     app: AppHandle,
     task_id: String,
+    billing_id: &str,
+    cancelled_predecessor: Option<String>,
     runtime: SocaiRuntime,
     browser: Option<(
         Arc<BrowserLease>,
@@ -3316,7 +3347,9 @@ async fn run_agent_task_on_session_page(
         .unwrap_or_default();
 
     ensure_llm_provider_configured_for(provider, model)?;
-    let llm_provider = create_llm_provider_for_task(provider, model, &task_id)?;
+    let llm_provider = create_llm_provider_for_task_with_gateway_context(
+        provider, model, billing_id, telemetry.shared(), cancelled_predecessor,
+    )?;
     let sites = registry
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("task registry unavailable"))?
@@ -3508,7 +3541,7 @@ async fn run_agent_task_on_session_page(
             run_dir,
             session_id: Some(session_id),
             background_media_generation,
-            billing_task_id: Some(task_id.clone()),
+            billing_task_id: Some(billing_id.to_owned()),
             tool_failure_recovery,
             ..AgentRunConfig::default()
         };

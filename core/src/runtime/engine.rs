@@ -822,6 +822,17 @@ impl SocaiRuntime {
         Ok(page)
     }
 
+    /// Prevent the next turn from reusing a target while its CDP close is in flight.
+    pub async fn forget_session_target(&self, session_id: &str, site_id: &str, target_id: &str) {
+        let key = format!("session:{session_id}:{site_id}");
+        let mut pages = self.site_pages.lock().await;
+        if let Some(page) = pages.get(&key) {
+            if page.target_id().await == target_id {
+                pages.remove(&key);
+            }
+        }
+    }
+
     pub async fn close_site_session(&self, site_id: &str) -> Result<bool> {
         let Some(page) = self.site_pages.lock().await.remove(site_id.trim()) else {
             return Ok(false);
@@ -1000,6 +1011,16 @@ pub fn create_llm_provider_for_task(
     model: Option<&str>,
     task_id: &str,
 ) -> Result<Arc<dyn Backend>> {
+    create_llm_provider_for_task_with_gateway_context(provider, model, task_id, None, None)
+}
+
+pub fn create_llm_provider_for_task_with_gateway_context(
+    provider: Option<&str>,
+    model: Option<&str>,
+    task_id: &str,
+    telemetry: Option<crate::telemetry::Telemetry>,
+    cancelled_predecessor: Option<String>,
+) -> Result<Arc<dyn Backend>> {
     let (provider, effective_model) = resolve_llm_model_for(provider, model)?;
     let llm_provider: Arc<dyn Backend> = match provider {
         Provider::Anthropic => Arc::new(AnthropicBackend::new(&effective_model)?),
@@ -1007,7 +1028,7 @@ pub fn create_llm_provider_for_task(
             other,
             &effective_model,
             Some(task_id),
-        )?),
+        )?.with_gateway_context(telemetry, cancelled_predecessor)),
     };
     Ok(llm_provider)
 }

@@ -48,6 +48,8 @@ pub struct WorkflowSkill {
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct AgentTaskSnapshot {
     pub(crate) task_id: String,
+    #[serde(default)]
+    pub(crate) billing_turn_id: Option<String>,
     pub(crate) task: String,
     #[serde(default = "default_task_sites")]
     pub(crate) sites: Vec<String>,
@@ -92,6 +94,16 @@ pub struct AgentTaskSnapshot {
     // which stays the thread's original title across replies. It is process-
     // local; interrupted startup recovery reads the canonical run.json task.
     pub(crate) current_message: Option<String>,
+}
+
+impl AgentTaskSnapshot {
+    pub(crate) fn billing_id(&self) -> &str {
+        self.billing_turn_id.as_deref().unwrap_or(&self.task_id)
+    }
+}
+
+pub(crate) fn new_billing_turn_id() -> String {
+    format!("turn-{}", uuid::Uuid::new_v4())
 }
 
 pub(crate) fn default_task_sites() -> Vec<String> {
@@ -180,6 +192,7 @@ impl AgentTaskRegistry {
         let task_id = format!("task-{}-{}", now_ms(), guard.next_seq);
         let snapshot = AgentTaskSnapshot {
             task_id,
+            billing_turn_id: Some(new_billing_turn_id()),
             current_message: Some(task.clone()),
             task,
             sites,
@@ -670,6 +683,7 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
         .map(|task| {
             serde_json::json!({
                 "task_id": &task.task_id,
+                "billing_turn_id": &task.billing_turn_id,
                 "task": &task.task,
                 "sites": &task.sites,
                 "research_mode": task.research_mode,

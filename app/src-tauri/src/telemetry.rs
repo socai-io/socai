@@ -29,6 +29,10 @@ impl DesktopTelemetry {
         )))
     }
 
+    pub(crate) fn shared(&self) -> Option<Telemetry> {
+        self.0.clone()
+    }
+
     pub(crate) fn capture(&self, name: &str, properties: Value) {
         if let Some(telemetry) = &self.0 {
             telemetry.capture(name, properties);

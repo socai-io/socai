@@ -61,6 +61,9 @@ pub struct OpenAICompatBackend {
     base_url: String,
     client: reqwest::Client,
     task_id: Option<String>,
+    telemetry: Option<crate::telemetry::Telemetry>,
+    cancelled_predecessor: Option<String>,
+    handoff_acknowledged: std::sync::Arc<std::sync::OnceLock<()>>,
 }
 
 impl OpenAICompatBackend {
@@ -120,11 +123,22 @@ impl OpenAICompatBackend {
             credential,
             base_url,
             client,
+            telemetry: None,
+            cancelled_predecessor: None,
+            handoff_acknowledged: Default::default(),
             task_id: task_id
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
                 .map(ToOwned::to_owned),
         })
+    }
+
+    pub(crate) fn with_gateway_context(
+        mut self, telemetry: Option<crate::telemetry::Telemetry>, cancelled_predecessor: Option<String>,
+    ) -> Self {
+        self.cancelled_predecessor = cancelled_predecessor;
+        self.telemetry = telemetry;
+        self
     }
 
     fn url(&self) -> String {
@@ -411,6 +425,9 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output
             credential: Credential::ApiKey("test-key".into()),
             base_url: "https://example.invalid/v1".into(),
             client: reqwest::Client::new(),
+            telemetry: None,
+            cancelled_predecessor: None,
+            handoff_acknowledged: Default::default(),
             task_id: None,
         };
         let request = deepseek.build_chat_request(
@@ -440,6 +457,9 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output
             credential: Credential::ApiKey("test-key".into()),
             base_url: "https://example.invalid/v1".into(),
             client: reqwest::Client::new(),
+            telemetry: None,
+            cancelled_predecessor: None,
+            handoff_acknowledged: Default::default(),
             task_id: None,
         };
         let payload = serde_json::to_value(kimi.build_chat_request(
@@ -1091,7 +1111,37 @@ impl OpenAICompatBackend {
         if let Some(task_id) = &self.task_id {
             request = request.header("X-Socai-Task-ID", task_id);
         }
-        let response = request.json(&body).send().await?;
+        let request_id = (self.provider == Provider::Socai).then(uuid::Uuid::new_v4);
+        if let Some(id) = request_id {
+            request = request.header("X-Socai-Request-ID", id.to_string());
+            if self.handoff_acknowledged.get().is_none() {
+                if let Some(previous) = &self.cancelled_predecessor {
+                    request = request.header("X-Socai-Cancelled-Turn", previous);
+                }
+            }
+        }
+        let started = std::time::Instant::now();
+        let report = |phase: &str, error: reqwest::Error| {
+            if let (Some(id), Some(telemetry)) = (request_id, &self.telemetry) {
+                let phase = if error.is_connect() { "connect" } else { phase };
+                let timed_out = error.is_timeout();
+                let chain = anyhow::Error::new(error);
+                let io_error = chain.chain().find_map(|cause| cause.downcast_ref::<std::io::Error>());
+                telemetry.capture("socai_gateway_request_error", json!({
+                    "gateway_request_id": id.to_string(),
+                    "billing_turn_id": self.task_id,
+                    "stage": phase,
+                    "duration_ms": started.elapsed().as_millis() as u64,
+                    "timed_out": timed_out,
+                    "os_error": io_error.and_then(std::io::Error::raw_os_error),
+                    "error": crate::telemetry::redact_telemetry_error(&format!("{chain:#}"))
+                        .chars().take(480).collect::<String>(),
+                }));
+                return chain;
+            }
+            anyhow::Error::new(error)
+        };
+        let response = request.json(&body).send().await.map_err(|e| report("send", e))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -1103,7 +1153,10 @@ impl OpenAICompatBackend {
             ));
         }
 
-        let parsed: WireResponse = response.json().await?;
+        if self.cancelled_predecessor.is_some() {
+            let _ = self.handoff_acknowledged.set(());
+        }
+        let parsed: WireResponse = response.json().await.map_err(|e| report("response_body", e))?;
         let provider_usage = parsed.usage.clone();
         let response_model = parsed.model.as_deref().unwrap_or(&self.model);
         let choice = parsed

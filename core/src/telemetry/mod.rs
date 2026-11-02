@@ -144,7 +144,7 @@ impl TelemetrySource {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Telemetry {
     sender: mpsc::Sender<QueuedItem>,
     pending_trace_dir: PathBuf,
