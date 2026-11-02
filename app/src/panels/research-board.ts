@@ -44,14 +44,14 @@ function graph(board: ResearchBoard, _taskId: string): string {
 export function renderResearchBoard(task: AgentTaskView): string {
   const board = task.research_board ?? {};
   if (!task.research_mode && !board.leads?.length && !board.summary && !board.operations?.length) return "";
-  const running = ["running", "queued"].includes(task.status);
+  const running = !task.research_board_is_previous && ["running", "queued"].includes(task.status);
   const leads = board.leads ?? [];
   if (!running && !leads.length && !board.summary && !board.operations?.length) return "";
   const counts = new Map<string, number>();
-  for (const note of task.notes ?? []) counts.set(note.site || "xhs", (counts.get(note.site || "xhs") ?? 0) + 1);
+  for (const note of task.research_board_is_previous ? [] : task.notes ?? []) counts.set(note.site || "xhs", (counts.get(note.site || "xhs") ?? 0) + 1);
   const operations = [...(board.operations ?? [])];
   const start = task.events.map(e => e.kind).lastIndexOf("started");
-  const events = task.events.slice(Math.max(0, start));
+  const events = task.research_board_is_previous ? [] : task.events.slice(Math.max(0, start));
   for (const event of events.filter(e => e.kind === "tool_result" || e.kind === "tool_error")) {
     const call = events.find(e => e.kind === "tool_call" && e.id === event.id);
     if (!call || call.name === "explore_platforms" || call.name === "update_research_board") continue;
@@ -69,12 +69,12 @@ export function renderResearchBoard(task: AgentTaskView): string {
   }
   operations.sort((a,b) => a.at-b.at);
   const dispatched = new Set<string>();
-  for (const event of task.events) {
+  for (const event of task.research_board_is_previous ? [] : task.events) {
     if (event.kind === "tool_call" && event.name === "explore_platforms") {
       for (const b of (event.args as { branches?: Array<{site: string}> })?.branches ?? []) dispatched.add(b.site);
     }
   }
-  const sites = [...new Set([...(task.sites ?? []).filter(s => s !== "auto"), ...dispatched, ...counts.keys(), ...(board.platforms ?? []).map(p => p.id), ...leads.map(l => l.platform), ...operations.map(o => o.platform)])];
+  const sites = [...new Set([...(task.research_board_is_previous ? [] : task.sites ?? []).filter(s => s !== "auto"), ...dispatched, ...counts.keys(), ...(board.platforms ?? []).map(p => p.id), ...leads.map(l => l.platform), ...operations.map(o => o.platform)])];
   const statusLabel: Record<string,string> = {scouting:tr("发现", "Scouting"), reading:tr("阅读", "Reading"), following:tr("追踪", "Following"), synthesizing:tr("归纳", "Synthesis"), blocked:tr("受阻", "Blocked"), done:tr("已汇总", "Summarized")};
 
   const actionLabel = (name: string): string => {
@@ -90,7 +90,7 @@ export function renderResearchBoard(task: AgentTaskView): string {
 
   const shown = leads;
   return `<section class="research-board" data-board-task="${esc(task.task_id)}" aria-label="${tr("研究工作台", "Research workbench")}">
-    <header class="research-board-head"><h3 class="t-h3">${tr("研究工作台", "Research workbench")}</h3></header>
+    <header class="research-board-head"><h3 class="t-h3">${task.research_board_is_previous ? tr(`第 ${(task.research_board_turn_index ?? 0) + 1} 轮研究`, `Research from turn ${(task.research_board_turn_index ?? 0) + 1}`) : tr("研究工作台", "Research workbench")}</h3></header>
     ${board.summary ? `<div class="research-hypothesis t-body">${esc(board.summary)}</div>` : ""}
     <div class="research-platforms">${sites.map(site => { const p = board.platforms?.find(p => p.id === site); return `<div class="research-platform ${p?.status === "blocked" ? "is-blocked" : ""}"><div>${platformIcon(site)}<strong class="t-small">${esc(platformLabel(site))}</strong><span class="t-small">${esc(p ? statusLabel[p.status] ?? p.status : counts.has(site) ? tr("已采集", "Collected") : dispatched.has(site) ? tr("已分派", "Assigned") : tr("待探索", "Pending"))}</span></div>${p?.focus ? `<p class="t-small">${esc(p.focus)}</p>` : ""}${platformStats(task, site, counts.get(site) ?? 0)}<ol class="research-operation-path">${operations.filter(o => o.platform === site).slice(-3).map(o => `<li title="${esc(o.detail)}"><span>${o.failed ? "!" : "↳"}</span>${esc(actionLabel(o.tool))}${o.failed ? ` · ${tr("受限", "limited")}` : ""}</li>`).join("")}</ol></div>`; }).join("") || `<p class="t-small research-empty">${tr("正在选择适合的平台", "Choosing relevant platforms")}</p>`}</div>
     ${graph(board, task.task_id)}
@@ -99,7 +99,7 @@ export function renderResearchBoard(task: AgentTaskView): string {
   </section>`;
 }
 function platformStats(task: AgentTaskView, site: string, count: number): string {
-  const latest = Math.max(0, ...(task.readingStats ?? []).map(s => s.turn_index));
+  const latest = task.research_board_turn_index ?? Math.max(0, ...(task.readingStats ?? []).map(s => s.turn_index));
   const stats = task.readingStats?.find(s => s.turn_index === latest && (s.site || 'xhs') === site);
   if (!stats) return count > 0 ? `<small>${count} ${tr("条已存来源","saved sources")}</small>` : "";
   const items: Array<[string, number]> = [[tr('速读','Preview'), stats.preview_notes], [tr('精读','Detail'),stats.detail_notes], [tr('评论','Comments'),stats.comments], [stats.authors_kind === 'observed' ? tr('来源作者','Source authors') : tr('追踪作者','Profiles read'),stats.authors]];

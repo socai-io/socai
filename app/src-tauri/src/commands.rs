@@ -905,6 +905,8 @@ pub async fn agent_task_reply(
                     None
                 };
                 snapshot.research_board = None;
+                snapshot.research_board_turn_index = None;
+                snapshot.research_board_is_previous = false;
             },
         )
         .await
