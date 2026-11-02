@@ -36,7 +36,6 @@
 .task-workset__alternate { align-self: flex-start; display: inline-flex; align-items: center; gap: 5px; margin: 0 12px 11px; padding: 4px; color: var(--fg-soft); border: 0; border-radius: 5px; background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
 .task-workset__alternate svg { width: 12px; height: 12px; stroke-width: 1.5; }
 .task-workset__alternate:hover { color: var(--fg); background: var(--surface-2); }
-.prompt-template__hint kbd { border: 1px solid var(--line); background: var(--canvas); padding: 1px 4px; border-radius: 4px; font: inherit; }
 .task-workset__empty { margin: 0; padding: 48px 24px; color: var(--fg-soft); text-align: center; font-size: 13px; }
 .task-workset__empty[hidden] { display: none; }
 .task-workset__confirmation { flex: none; padding: 14px 28px; margin-bottom: 14px; border-block: 1px solid var(--line); background: var(--canvas); }
@@ -52,7 +51,6 @@
 .prompt-template__fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 3px 2px; color: var(--fg-soft); font-size: 11px; }
 .prompt-template__fields[hidden], .prompt-template__mirror[hidden] { display: none; }
 .prompt-template__fields > button { padding: 4px 8px; color: var(--fg-muted); border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); cursor: pointer; font: inherit; }
-.prompt-template__hint { margin-left: auto; white-space: nowrap; }
 @keyframes workset-enter { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: none; } }
 @keyframes workset-backdrop { from { opacity: 0; } to { opacity: 1; } }
 @media (max-width: 600px) {

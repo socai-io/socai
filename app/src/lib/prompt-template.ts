@@ -50,9 +50,8 @@ export function bindPromptTemplate(input: HTMLTextAreaElement): void {
     mirror.style.width = `${input.clientWidth}px`;
     mirror.style.height = `${input.clientHeight}px`;
     mirror.scrollTop = input.scrollTop;
-    controls.innerHTML = fields.length ? `<span>${chinese ? "填写" : "Fill in"}</span>` + fields.map((field, index) =>
-      `<button type="button" tabindex="-1" data-prompt-field="${index}">${esc(field.label)}</button>`).join("")
-      + `<span class="prompt-template__hint"><kbd>Tab</kbd> ${chinese ? "下一项" : "next field"}</span>` : "";
+    controls.innerHTML = fields.map((field, index) =>
+      `<button type="button" tabindex="-1" data-prompt-field="${index}">${esc(field.label)}</button>`).join("");
   };
   const choose = (field: PromptField): void => focusPromptField(input, field);
   controls.addEventListener("click", event => {

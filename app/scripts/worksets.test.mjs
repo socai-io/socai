@@ -39,6 +39,9 @@ test('worksets replace the nested tree with an accessible animated dialog', asyn
 
 test('worksets omit decorative hints and question counts without removing actions', async () => {
   const source = await readFile(new URL('../src/lib/task-examples.ts', import.meta.url), 'utf8');
+  const template = await readFile(new URL('../src/lib/prompt-template.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(template, /prompt-template__hint|<span>/);
+  assert.match(template, /data-prompt-field/);
   assert.doesNotMatch(source, /task-worksets__hint|task-workset-hint|data-workset-count|task-workset__footer/);
   assert.match(source, /aria-labelledby="task-workset-title"/);
   for (const action of ['data-workset-search', 'data-workset-close', 'data-example-alternate', 'data-keep-draft', 'data-replace-draft']) assert.ok(source.includes(action));
