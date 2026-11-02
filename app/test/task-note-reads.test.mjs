@@ -14,12 +14,13 @@ for(const [name,path] of [["Desktop",new URL("../src/panels/tasks.ts",import.met
  function harness(){
   const task={task_id:'owned',run_dir:'run-old',notes:[{note_id:'old'}],readingStats:[]};
   const reads=[];let renders=0;
-  const c={tasks:[task],selectedTaskId:'owned',selectedTask:()=>task,
+  const c={tasks:[task],selectedTaskId:'owned',selectedTask:()=>task,view:'detail',
+   document:{visibilityState:'visible',body:{dataset:{socaiRuntime:'desktop'}}},
    console:{error(){}},setTaskNotes:(_id,notes)=>{task.notes=notes;return true;},
    invoke:command=>new Promise((resolve,reject)=>reads.push({command,resolve,reject})),
   };
-  runInNewContext(code+'\nglobalThis.load=loadTaskNotes;globalThis.read=readTaskNotes;',c);
-  return{task,reads,load:()=>c.load('owned',{rerender(){renders++;}}),read:()=>c.read('owned',task.run_dir),renders:()=>renders};
+  runInNewContext(code+'\nglobalThis.load=loadTaskNotes;globalThis.read=readTaskNotes;globalThis.eventLoad=typeof loadTaskNotesForEvent === "function" ? loadTaskNotesForEvent : loadTaskNotes;',c);
+  return{task,reads,context:c,load:()=>c.load('owned',{rerender(){renders++;}}),event:(id='owned')=>c.eventLoad(id,{rerender(){renders++;}}),read:()=>c.read('owned',task.run_dir),renders:()=>renders};
  }
  const resolve=(h,notes)=>h.reads.forEach(r=>r.resolve(r.command==='agent_task_notes'?notes:[]));
  test(name+' concurrent archive loads share a single pair of reads',async()=>{
@@ -48,5 +49,22 @@ for(const [name,path] of [["Desktop",new URL("../src/panels/tasks.ts",import.met
   h.reads.find(r=>r.command==='agent_task_reading_stats').reject(Error('offline'));
   h.reads.find(r=>r.command==='agent_task_notes').resolve([{note_id:'old'}]);
   await a;assert.equal(h.task.readingStats[0].detail_notes,8);assert.equal(h.renders(),0);
+ });
+ test(name+' background task replay does not read invisible note archives',()=>{
+  const h=harness();h.task.task_id='background';h.context.selectedTask=()=>({task_id:'selected'});
+  void h.event('background');assert.equal(h.reads.length,0);
+ });
+ test(name+' compose view does not refresh a previously selected archive',()=>{
+  const h=harness();h.context.view='compose';void h.event();assert.equal(h.reads.length,0);
+ });
+ test(name+' visible selected task events still refresh notes and statistics',async()=>{
+  const h=harness(),a=h.event();assert.equal(h.reads.length,2);resolve(h,[{note_id:'event'}]);await a;
+  assert.equal(h.task.notes[0].note_id,'event');
+ });
+ test(name+' main event handler uses selected-only refresh and foreground rehydration',async()=>{
+  const main=await readFile(new URL('../src/main.ts',import.meta.url),'utf8');
+  assert.doesNotMatch(main,/loadTaskNotes\(event\.payload\.task_id/);
+  assert.match(main,/loadTaskNotesForEvent\(event\.payload\.task_id/);
+  assert.match(main,/visibilitychange[\s\S]*?loadSelectedTaskNotes\(shell\(\)\)/);
  });
 }

@@ -693,14 +693,14 @@ async function main(): Promise<void> {
       // Each finished step's notes are on disk — refresh so the result row's
       // embed and newly-created artifact cards render now, not when the whole
       // task ends.
-      void agentPanel.loadTaskNotes(event.payload.task_id, shell());
+      void agentPanel.loadTaskNotesForEvent(event.payload.task_id, shell());
       void agentPanel.loadTaskArtifacts(event.payload.task_id, shell());
     }
     if (isTaskFinishedEvent(event.payload)) {
       // A finished task is a good, quiet moment to check for an update, and the
       // point at which its full note archive (notes.json) is on disk to render.
       void maybeCheckForUpdate();
-      void agentPanel.loadTaskNotes(event.payload.task_id, shell());
+      void agentPanel.loadTaskNotesForEvent(event.payload.task_id, shell());
       void agentPanel.loadTaskArtifacts(event.payload.task_id, shell());
       maybeRelaunchReadyUpdate();
       void authMenu.refreshWallet().then(() => voiceInput.refresh());
@@ -763,7 +763,10 @@ async function main(): Promise<void> {
     maybeRelaunchReadyUpdate();
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refresh();
+    if (document.visibilityState === "visible") {
+      refresh();
+      agentPanel.loadSelectedTaskNotes(shell());
+    }
   });
 }
 

@@ -377,6 +377,13 @@ export namespace agentPanel {
     return request;
   }
 
+  // Background task events still update their snapshots and event history.
+  // Load their full note archive only when selected, not on every tool result.
+  export function loadTaskNotesForEvent(taskId: string, shell: ShellState): Promise<void> {
+    if (view !== "detail" || selectedTask()?.task_id !== taskId) return Promise.resolve();
+    return loadTaskNotes(taskId, shell);
+  }
+
   export function loadSelectedTaskNotes(shell: ShellState): void {
     const selected = selectedTask();
     if (selected) void loadTaskNotes(selected.task_id, shell);
