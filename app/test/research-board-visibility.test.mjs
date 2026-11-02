@@ -22,3 +22,11 @@ test('ordinary active or terminal chat without a board does not grow an empty pa
 test('deep research retains its existing pending workbench',()=>{
  assert.match(context.renderBoard({...task(),research_mode:true,status:'queued'}),/data-board-task="owned"/);
 });
+test('previous board is labelled by its own turn, without current actions or statistics',()=>{
+ const html=context.renderBoard({...task(),status:'running',research_board_is_previous:true,research_board_turn_index:0,
+  readingStats:[{turn_index:0,site:'xhs',detail_notes:7,comments:19},{turn_index:1,site:'xhs',detail_notes:1,comments:2}],
+  events:[{id:'new',kind:'tool_call',name:'search',args:{query:'CURRENT_UNRELATED'}},{id:'new',kind:'tool_result',created_at:20}],
+  research_board:{summary:'Prior evidence',leads:[{id:'one',name:'Saved source',platform:'xhs',signal:'Prior signal',url:'https://example.com',stage:'context'}],next_steps:['OLD_NEXT_STEP']}});
+ assert.match(html,/第 1 轮研究/);assert.match(html,/精读 7/);assert.match(html,/评论 19/);
+ assert.doesNotMatch(html,/CURRENT_UNRELATED|OLD_NEXT_STEP/);
+});

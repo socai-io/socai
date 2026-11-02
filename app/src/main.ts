@@ -76,6 +76,8 @@ export interface AgentTaskSnapshot {
   workflow?: "general" | "vc" | "custom";
   custom_workflow?: import("./panels/workflows").WorkflowSkill | null;
   research_board?: import("./panels/research-board").ResearchBoard | null;
+  research_board_turn_index?: number | null;
+  research_board_is_previous?: boolean;
   status: AgentTaskStatus;
   created_at: number;
   started_at: number | null;

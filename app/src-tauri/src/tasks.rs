@@ -64,6 +64,10 @@ pub struct AgentTaskSnapshot {
     pub(crate) custom_workflow: Option<WorkflowSkill>,
     #[serde(default)]
     pub(crate) research_board: Option<Value>,
+    #[serde(default)]
+    pub(crate) research_board_turn_index: Option<usize>,
+    #[serde(default)]
+    pub(crate) research_board_is_previous: bool,
     pub(crate) status: String,
     pub(crate) created_at: u64,
     pub(crate) started_at: Option<u64>,
@@ -202,6 +206,8 @@ impl AgentTaskRegistry {
             workflow,
             custom_workflow: if workflow == TaskWorkflow::Custom { custom_workflow } else { None },
             research_board: None,
+            research_board_turn_index: None,
+            research_board_is_previous: false,
             status: "queued".into(),
             created_at: now_ms(),
             started_at: None,
@@ -589,7 +595,33 @@ pub(crate) fn now_ms() -> u64 {
 fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
     if let Some(run_dir) = snapshot.run_dir.as_deref() {
         snapshot.final_text = final_text_from_run_dir(run_dir);
-        snapshot.research_board = std::fs::read(PathBuf::from(run_dir).join("research-board.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let read_board = |dir: &str| -> Option<Value> {
+            let path = PathBuf::from(dir).join("research-board.json");
+            if std::fs::metadata(&path).ok()?.len() > 4_000_000 { return None; }
+            let board: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+            board.as_object().filter(|value| !value.is_empty())?;
+            Some(board)
+        };
+        let has_leads = |board: &Value| board["leads"].as_array().is_some_and(|rows| !rows.is_empty());
+        snapshot.research_board = read_board(run_dir);
+        snapshot.research_board_turn_index = None;
+        snapshot.research_board_is_previous = false;
+        if let Some(conversation) = snapshot.session_dir.as_deref().and_then(|dir| Conversation::load(dir).ok()) {
+            snapshot.research_board_turn_index = Some(conversation.runs.iter().position(|run| run.run_dir == run_dir).unwrap_or(conversation.runs.len()));
+            if !snapshot.research_board.as_ref().is_some_and(has_leads) {
+                for (index, run) in conversation.runs.iter().enumerate().rev() {
+                    if run.run_dir == run_dir { continue; }
+                    let Some(board) = read_board(&run.run_dir) else { continue; };
+                    let sourced = has_leads(&board);
+                    if sourced || snapshot.research_board.is_none() {
+                        snapshot.research_board = Some(board);
+                        snapshot.research_board_turn_index = Some(index);
+                        snapshot.research_board_is_previous = true;
+                    }
+                    if sourced { break; }
+                }
+            }
+        }
         if let Ok(text) = std::fs::read_to_string(PathBuf::from(run_dir).join("run.json")) {
             if let Ok(run) = serde_json::from_str::<Value>(&text) {
                 snapshot.run_id = run.get("id").and_then(Value::as_str).map(str::to_string);
