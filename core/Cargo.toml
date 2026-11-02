@@ -19,6 +19,7 @@ tracing.workspace = true
 reqwest.workspace = true
 dom_query = "0.27"
 quick-xml = "0.41"
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 cookie = "0.18"
 base64.workspace = true
 dirs = "5"
