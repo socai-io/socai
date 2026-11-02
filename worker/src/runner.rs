@@ -941,7 +941,11 @@ async fn execute_run_inner(
     )?;
 
     let _activity = runtime.begin_activity().await;
-    let mut tools = Vec::new();
+    // Canonical method loading is shared with Desktop, but hosted runs must
+    // never expose local shell/file tools or a process-global learning store.
+    let mut tools: Vec<SharedTool> = vec![Arc::new(socai_core::agent::ReadSkillTool::new(
+        prepared.conversation_dir.join("skills"),
+    ))];
     let mut instruction_blocks = Vec::new();
     let mut namespace_blocks = Vec::new();
     let mut research_page = None;
