@@ -1,13 +1,45 @@
 .task-examples { width: 100%; color: var(--fg); }
-.task-examples > p { margin: 0 0 10px; }
-.task-examples details { border-top: 1px solid var(--line); }
-.task-examples summary { display: flex; align-items: center; gap: 10px; padding: 12px 4px; cursor: pointer; font-size: 14px; list-style: none; }
-.task-examples summary::-webkit-details-marker { display: none; }
-.task-examples summary::before { content: "›"; display: inline-block; transition: transform 120ms; }
-.task-examples details[open] > summary::before { transform: rotate(90deg); }
-.task-examples summary:focus-visible, .task-examples button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
-.task-examples__count { margin-left: auto; opacity: .55; font-size: 12px; }
-.task-examples__list { padding: 0 8px 8px 18px; }
-.task-examples__prompts { display: grid; gap: 6px; padding: 0 0 12px 18px; }
-.task-examples__prompts button { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 13px; line-height: 1.6; cursor: pointer; }
-.task-examples__prompts button:hover { background: color-mix(in srgb, currentColor 4%, transparent); }
+.task-examples > p { margin: 0 0 14px; text-align: center; }
+.task-worksets { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; }
+.task-worksets > button { display: inline-flex; align-items: center; gap: 7px; padding: 9px 13px; color: var(--fg-soft, var(--fg)); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; font: inherit; font-size: 12px; cursor: pointer; transition: background 160ms, border-color 160ms, transform 160ms; }
+.task-worksets > button:hover { border-color: var(--fg-soft); background: var(--surface-2); transform: translateY(-2px); }
+.task-worksets .platform-icon, .task-worksets .platform-icon img { width: 16px; height: 16px; object-fit: contain; }
+.task-worksets__arrow { opacity: .45; }
+.task-examples button:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+.task-workset { box-sizing: border-box; color: var(--fg); background: var(--canvas, #fff); border: 1px solid var(--line); border-radius: 22px; padding: 0; width: min(850px, calc(100vw - 32px)); max-height: min(820px, calc(100dvh - 48px)); overflow: hidden; }
+.task-workset[open] { display: flex; flex-direction: column; animation: workset-enter 210ms cubic-bezier(.2,.8,.2,1) both; }
+.task-workset::backdrop { background: rgb(20 20 20 / 18%); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); animation: workset-backdrop 210ms ease both; }
+.task-workset__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 28px 28px 20px; border-bottom: 1px solid var(--line); }
+.task-workset__header .t-eyebrow { color: var(--fg-faint, #777); font-size: 10px; margin: 0 0 9px; }
+.task-workset__header h2 { margin: 0; font-size: 24px; letter-spacing: -.025em; }
+.task-workset__header .t-small { margin: 10px 0 0; }
+.task-workset__close { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 50%; background: transparent; color: inherit; font-size: 22px; cursor: pointer; }
+.task-workset__body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 20px 28px; overflow: auto; overscroll-behavior: contain; min-height: 0; }
+.task-workset__card { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); transition: border-color 150ms, background 150ms; }
+.task-workset__card:hover { border-color: var(--fg-soft); background: var(--surface-2); }
+.task-workset__card > button:first-child { flex: 1; padding: 17px 18px 10px; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.task-workset__card-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; font-weight: 600; }
+.task-workset__card-title > span { color: var(--fg-faint, #777); font-weight: 400; }
+.task-workset__description { display: block; font-size: 12px; line-height: 1.75; color: var(--fg-soft); margin-top: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-workset__alternate { align-self: flex-start; display: inline-flex; gap: 6px; margin: 0 12px 9px; padding: 5px 6px; color: var(--fg-faint, #777); border: 0; background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
+.task-workset__alternate:hover { color: var(--fg); }
+.task-workset__footer { flex: none; margin: 0; padding: 16px 28px; border-top: 1px solid var(--line); font-size: 11px; }
+.task-workset__confirmation { flex: none; padding: 14px 28px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.task-workset__confirmation[hidden] { display: none; }
+.task-workset__confirmation p { margin: 0 0 10px; font-size: 13px; }
+.task-workset__confirmation > div { display: flex; gap: 8px; }
+.task-workset__confirmation button { padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; }
+.task-workset__confirmation [data-replace-draft] { color: var(--canvas); background: var(--fg); border-color: var(--fg); }
+.prompt-template { position: relative; flex: 1; width: 100%; min-width: 0; }
+.prompt-template > .composer__input { position: relative; z-index: 1; display: block; box-sizing: border-box; width: 100%; background: transparent; }
+.prompt-template__mirror { position: absolute; top: 0; left: 0; box-sizing: border-box; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; color: transparent; pointer-events: none; }
+.prompt-template__mirror mark { color: transparent; background: color-mix(in srgb, var(--fg) 10%, transparent); border-radius: 3px; }
+.prompt-template__fields { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 8px 3px 2px; color: var(--fg-faint, #777); font-size: 10px; }
+.prompt-template__fields[hidden], .prompt-template__mirror[hidden] { display: none; }
+.prompt-template__fields > button { padding: 3px 7px; color: var(--fg-soft); border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); cursor: pointer; font: inherit; }
+.prompt-template__hint { margin-left: auto; white-space: nowrap; }
+.prompt-template__hint kbd { border: 1px solid var(--line); padding: 1px 4px; border-radius: 3px; font: inherit; }
+@keyframes workset-enter { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes workset-backdrop { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 600px) { .task-workset { max-height: calc(100dvh - 24px); width: calc(100vw - 20px); border-radius: 18px; } .task-workset__body { grid-template-columns: 1fr; padding: 16px; } .task-workset__header { padding: 20px 18px 16px; } .task-workset__footer { padding: 12px 18px; } .task-worksets > button { padding: 8px 10px; } }
+@media (prefers-reduced-motion: reduce) { .task-workset[open], .task-workset::backdrop { animation: none; } .task-worksets > button, .task-workset__card { transition: none; } }

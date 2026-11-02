@@ -2,6 +2,7 @@ import { bindWorkflows, openWorkflows, renderWorkflows, type WorkflowSkill } fro
 import { refreshResearchBoard, bindResearchBoard } from "./research-board";
 import { getLanguage } from "../lib/i18n";
 import { bindTaskExamples } from "../lib/task-examples";
+import { bindPromptTemplate, focusPromptField } from "../lib/prompt-template";
 import { hostedReplyRecovery, type ReplyModelChoice } from "../lib/reply-model-recovery";
 //! Task workspace coordinator: shared state, agent configuration popover,
 //! task event intake, and bindings. The sidebar (history list) + delete dialog
@@ -1392,8 +1393,10 @@ export namespace agentPanel {
       workflow = "general";
       customWorkflow = undefined;
       shell.rerender();
-      document.getElementById("composer-input")?.focus();
+      const refreshed = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+      if (refreshed) focusPromptField(refreshed);
     });
+    if (input) bindPromptTemplate(input);
     disposeComposerAutosize = input ? bindTextareaAutosize(input) : undefined;
     updateComposerButton(shell);
     document.getElementById("composer-workflow")?.addEventListener("click", () => { openWorkflows(); shell.rerender(); });

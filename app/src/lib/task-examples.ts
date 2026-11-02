@@ -1,10 +1,11 @@
 import { esc } from "./html";
 import { getLanguage } from "./i18n";
+import { platformIcon, platformLabel } from "./platforms";
 import "./task-examples.css";
 
-type Platform = "xhs" | "dy";
+const platforms = ["xhs", "dy", "x", "instagram", "tiktok", "linkedin", "github", "podcast", "weixin"] as const;
+type Platform = typeof platforms[number];
 export interface TaskExample { id: string; platform: Platform; title: string; prompts: string[] }
-const opened = new Set<string>();
 const entries = [
   ["content-workflow", "内容工作流", "Content workflow",
     "围绕咖啡机为新手用户规划内容。先采集并比较真实样本，给出5个有来源的选题，等我选题后再写原创稿。",
@@ -64,6 +65,15 @@ const entries = [
 ] as const;
 
 export function taskExamples(platform: Platform, chinese = getLanguage() === "zh"): TaskExample[] {
+  if (platform !== "xhs" && platform !== "dy") {
+    const name = platformLabel(platform);
+    return [{ id: `${platform}-research`, platform, title: chinese ? "主题调研" : "Topic research", prompts: [
+      chinese ? `在${name}研究“【你的研究关键词】”，面向【你的目标受众】比较真实内容、主要观点和未满足需求，说明样本范围并附原始来源。`
+        : `Research [[Your keyword]] on ${name} for [[Your audience]]. Compare real content, key viewpoints and unmet needs. Explain the sample and link original sources.`,
+      chinese ? `围绕“【你的研究关键词】”，在${name}找有代表性的内容和账号，对比差异并交付来源表格；数据不足时明确说明，不编造指标。`
+        : `Find representative ${name} content and creators about [[Your keyword]]. Compare differences and deliver a source table. State missing data instead of inventing metrics.`,
+    ] }];
+  }
   const name = platform === "xhs" ? (chinese ? "小红书" : "RedNote") : (chinese ? "抖音" : "Douyin");
   return entries.map(([key, zh, en, a, b, c, d]) => {
     const suffix = key === "collection" ? (platform === "xhs" ? "note-collection" : "video-collection") : key;
@@ -75,41 +85,109 @@ export function taskExamples(platform: Platform, chinese = getLanguage() === "zh
     return {
       id: `${platform}-${suffix}`, platform,
       title: `${name} ${chinese ? title : en}`,
-      prompts: (chinese ? [a, b] : [c, d]).map(text => chinese
+      prompts: (chinese ? [a, b] : [c, d]).map((text, index) => editablePrompt(chinese
         ? `请使用${name}的${title}能力。${text}`
-        : `Use ${name} ${en.toLowerCase()}. ${text}`),
+        : `Use ${name} ${en.toLowerCase()}. ${text}`, key, index, chinese)),
     };
   });
+}
+
+function editablePrompt(prompt: string, key: string, index: number, chinese: boolean): string {
+  let text = chinese
+    ? prompt.replaceAll("咖啡机", "【你的研究关键词】").replaceAll("租房收纳", "【你的研究关键词】").replaceAll("新手用户", "【你的目标受众】")
+    : prompt.replace(/coffee[- ]machines?|rental-home storage/gi, "[[Your keyword]]").replaceAll("beginners", "[[Your audience]]");
+  const fields: string[] = [];
+  if ((key === "viral-analysis" || key === "account-analysis" || key === "collection") && index === 1) {
+    fields.push(key === "viral-analysis" ? "作品链接" : "账号主页链接");
+    if (key === "account-analysis") fields.push("对标账号链接", "研究目标");
+    if (key === "collection") fields.push("时间范围", "采集数量");
+  }
+  if ((key === "comment-collection" && index === 0) || ["media-download", "image-text", "video-transcript"].includes(key) || (key === "comment-leads" && index === 1)) fields.push("作品链接");
+  if (key === "media-download" && index === 1) fields[0] = "三个作品链接";
+  if (key === "video-transcript" && index === 1) fields[0] = "两个视频链接";
+  if (key === "comment-leads" && index === 1) fields.push("产品信息");
+  if (key === "account-monitoring") fields.push("账号主页链接", "时区", "执行时间", "提醒方式");
+  const english: Record<string, string> = { "作品链接": "post link", "账号主页链接": "profile link", "对标账号链接": "comparison profile link", "研究目标": "research objective", "时间范围": "date range", "采集数量": "post count", "三个作品链接": "three post links", "两个视频链接": "two video links", "产品信息": "product facts", "时区": "timezone", "执行时间": "schedule time", "提醒方式": "notification preference" };
+  if (fields.length) text += "\n\n" + fields.map(field => chinese ? `${field}：【你的${field}】` : `${english[field]}: [[Your ${english[field]}]]`).join("\n");
+  return text;
 }
 
 export function renderTaskExamples(): string {
   const chinese = getLanguage() === "zh";
   return `<section class="task-examples" data-task-examples aria-label="${chinese ? "任务示例" : "Task examples"}">
-    <p class="t-small subtle">${chinese ? "从一个例子开始，填入后可以继续修改" : "Start with an example, then make it your own"}</p>
-    ${(["xhs", "dy"] as const).map(platform => `<details data-example-group="${platform}" ${opened.has(platform) ? "open" : ""}>
-      <summary>${platform === "xhs" ? (chinese ? "小红书" : "RedNote") : (chinese ? "抖音" : "Douyin")}<span class="task-examples__count">11</span></summary>
-      <div class="task-examples__list">${taskExamples(platform, chinese).map(example => `<details data-example-group="${example.id}" ${opened.has(example.id) ? "open" : ""}>
-        <summary>${esc(example.title)}</summary>
-        <div class="task-examples__prompts">${example.prompts.map((prompt, index) => `<button type="button" data-task-example="${example.id}" data-example-platform="${platform}" data-example-index="${index}">${esc(prompt)}</button>`).join("")}</div>
-      </details>`).join("")}</div>
-    </details>`).join("")}
+    <p class="t-small subtle">${chinese ? "选择工作集，从一个问题开始" : "Choose a workset. Make the question yours."}</p>
+    <div class="task-worksets">${platforms.map(platform => `<button type="button" data-workset-trigger="${platform}" aria-haspopup="dialog" aria-controls="task-workset-dialog" aria-expanded="false">${platformIcon(platform)}<span>${esc(platformLabel(platform))}${chinese ? "工作集" : " workset"}</span><span class="task-worksets__arrow" aria-hidden="true">↗</span></button>`).join("")}</div>
+    <dialog id="task-workset-dialog" class="task-workset" aria-labelledby="task-workset-title" aria-describedby="task-workset-hint">
+      <div class="task-workset__header"><div><p class="t-eyebrow">${chinese ? "从灵感到有来源的结果" : "From a question to sourced results"}</p><h2 class="t-h2" id="task-workset-title"></h2><p class="t-small subtle" id="task-workset-hint">${chinese ? "选一个问题，填写高亮内容后再发送" : "Choose a question, fill the highlighted fields, then send"}</p></div><button type="button" class="task-workset__close" data-workset-close aria-label="${chinese ? "关闭工作集" : "Close workset"}">×</button></div>
+      <div class="task-workset__confirmation" data-workset-confirm hidden role="alert"><p>${chinese ? "输入框里已有草稿。要替换为这个问题吗？" : "You already have a draft. Replace it with this question?"}</p><div><button type="button" data-keep-draft>${chinese ? "保留草稿" : "Keep draft"}</button><button type="button" data-replace-draft>${chinese ? "替换草稿" : "Replace draft"}</button></div></div>
+      <div class="task-workset__body" data-workset-body></div>
+      <p class="task-workset__footer t-small subtle">${chinese ? "仅填入草稿 · 不会自动发送 · Tab 切换待填内容" : "Draft only · Never sends automatically · Tab moves between fields"}</p>
+    </dialog>
   </section>`;
 }
 
 export function bindTaskExamples(select: (example: { platform: Platform; prompt: string }) => void): void {
-  document.querySelectorAll<HTMLDetailsElement>("[data-example-group]").forEach(details => {
-    details.addEventListener("toggle", () => {
-      const key = details.dataset.exampleGroup!;
-      if (details.open) opened.add(key); else opened.delete(key);
+  const section = document.querySelector<HTMLElement>("[data-task-examples]");
+  const dialog = section?.querySelector<HTMLDialogElement>("dialog");
+  const body = section?.querySelector<HTMLElement>("[data-workset-body]");
+  if (!section || !dialog || !body) return;
+  const chinese = getLanguage() === "zh";
+  let trigger: HTMLButtonElement | undefined;
+  let pending: { platform: Platform; prompt: string; draft: string } | undefined;
+  const confirmation = dialog.querySelector<HTMLElement>("[data-workset-confirm]")!;
+  const apply = (platform: Platform, prompt: string): void => {
+    pending = undefined;
+    dialog.close("selected");
+    select({ platform, prompt });
+  };
+  section.querySelectorAll<HTMLButtonElement>("[data-workset-trigger]").forEach(button => {
+    button.addEventListener("click", () => {
+      const platform = button.dataset.worksetTrigger as Platform;
+      if (!platforms.includes(platform)) return;
+      trigger = button;
+      confirmation.hidden = true;
+      pending = undefined;
+      dialog.querySelector("#task-workset-title")!.textContent = platformLabel(platform) + (chinese ? "工作集" : " workset");
+      body.innerHTML = taskExamples(platform).map(example => `<article class="task-workset__card"><button type="button" data-task-example="${example.id}" data-example-platform="${platform}" data-example-index="0"><span class="task-workset__card-title">${esc(example.title.replace(platformLabel(platform) + " ", ""))}<span aria-hidden="true">↗</span></span><span class="task-workset__description">${esc(example.prompts[0])}</span></button><button type="button" class="task-workset__alternate" data-example-alternate="${example.id}">${chinese ? "换个例子" : "Another example"}<span aria-hidden="true">↻</span></button></article>`).join("");
+      button.setAttribute("aria-expanded", "true");
+      dialog.showModal();
     });
   });
-  document.querySelectorAll<HTMLButtonElement>("[data-task-example]").forEach(button => {
-    button.addEventListener("click", () => {
-      const platform = button.dataset.examplePlatform;
-      if (platform !== "xhs" && platform !== "dy") return;
-      const example = taskExamples(platform).find(item => item.id === button.dataset.taskExample);
-      const prompt = example?.prompts[Number(button.dataset.exampleIndex)];
-      if (prompt) select({ platform, prompt });
-    });
+  dialog.querySelector("[data-workset-close]")?.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => { trigger?.setAttribute("aria-expanded", "false"); if (dialog.returnValue !== "selected") trigger?.focus(); });
+  dialog.addEventListener("click", event => {
+    if (event.target !== dialog) return;
+    const box = dialog.getBoundingClientRect();
+    if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close();
+  });
+  body.addEventListener("click", event => {
+    const clicked = (event.target as Element).closest<HTMLButtonElement>("[data-task-example], [data-example-alternate]");
+    if (!clicked) return;
+    const button = clicked.matches("[data-example-alternate]") ? clicked.closest("article")!.querySelector<HTMLButtonElement>("[data-task-example]")! : clicked;
+    const platform = button.dataset.examplePlatform as Platform;
+    const example = taskExamples(platform).find(item => item.id === button.dataset.taskExample);
+    if (!example) return;
+    if (clicked.matches("[data-example-alternate]")) {
+      const index = (Number(button.dataset.exampleIndex) + 1) % example.prompts.length;
+      button.dataset.exampleIndex = String(index);
+      button.querySelector(".task-workset__description")!.textContent = example.prompts[index];
+      return;
+    }
+    const prompt = example.prompts[Number(button.dataset.exampleIndex)];
+    const input = document.querySelector<HTMLTextAreaElement>("#composer-input");
+    if (!input || input.disabled) return;
+    if (input.value.trim() && input.value !== prompt) {
+      pending = { platform, prompt, draft: input.value };
+      confirmation.hidden = false;
+      confirmation.querySelector<HTMLButtonElement>("[data-keep-draft]")?.focus();
+      return;
+    }
+    apply(platform, prompt);
+  });
+  dialog.querySelector("[data-keep-draft]")?.addEventListener("click", () => { pending = undefined; confirmation.hidden = true; dialog.close(); });
+  dialog.querySelector("[data-replace-draft]")?.addEventListener("click", () => {
+    const input = document.querySelector<HTMLTextAreaElement>("#composer-input");
+    if (!pending || !input || input.disabled || input.value !== pending.draft) { pending = undefined; dialog.close(); return; }
+    apply(pending.platform, pending.prompt);
   });
 }
