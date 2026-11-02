@@ -113,4 +113,3 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
     });
   });
 }
-

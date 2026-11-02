@@ -11,4 +11,3 @@
 .task-examples__prompts { display: grid; gap: 6px; padding: 0 0 12px 18px; }
 .task-examples__prompts button { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 13px; line-height: 1.6; cursor: pointer; }
 .task-examples__prompts button:hover { background: color-mix(in srgb, currentColor 4%, transparent); }
-
