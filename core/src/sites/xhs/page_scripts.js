@@ -276,6 +276,32 @@ const SocaiXhsPageScripts = (() => {
     };
   }
 
+  // Verified against the authenticated home composer on 2026-11-01.
+  // Each Chinese character is a separate span: innerText inserts line breaks,
+  // so read the label's textContent, not the surrounding panel's visible text.
+  function searchSuggestions(arg) {
+    const query = String((arg && arg.query) || '').trim();
+    const input = findSearchInput();
+    const current = input ? String(input.value || input.textContent || '').trim() : '';
+    const panel = input && input.closest('.wendian-wrapper')
+      ?.querySelector('.ai-dropdown-panel .ai-sug-container');
+    const rows = panel && isVisible(panel)
+      ? $$('.sug-item .sug-text', panel).filter(inViewport) : [];
+    const suggestions = [];
+    let staleRows = 0;
+    for (const row of rows) {
+      const highlighted = $$('.highlight', row).map(el => el.textContent || '').join('').trim();
+      // Input can already contain the next query while the previous dropdown
+      // is still on screen. Only accept rows explicitly highlighting this one.
+      if (current !== query || highlighted !== query) { staleRows++; continue; }
+      const value = String(row.textContent || '').trim();
+      if (value && !suggestions.includes(value)) suggestions.push(value);
+    }
+    return { query, input_keyword: current, panel_visible: !!panel && isVisible(panel),
+      suggestions, stale_rows: staleRows, url: location.href,
+      collected_at: new Date().toISOString() };
+  }
+
   // ── login state ──────────────────────────────────────────────
   // The logged-out wall: XHS's .reds-modal.login-modal / .login-container (QR +
   // phone-login form). Structural classes verified against snapshot DOM (not
@@ -1112,6 +1138,20 @@ const SocaiXhsPageScripts = (() => {
     const push = (url, source) => {
       const value = absUrl(url || '');
       if (!value || candidates.some((item) => item.url === value)) return;
+      if (!value.startsWith('blob:')) {
+        try {
+          const parsed = new URL(value);
+          if (!/^https?:$/.test(parsed.protocol)) return;
+          // Match the resource path, not a CDN hostname containing "video" or
+          // a telemetry query containing a media URL. HLS playlists are not
+          // downloadable standalone video files in the current media pipeline.
+          if (source === 'performance') {
+            if (!/\.(mp4|m4v|mov|webm|mkv)$/i.test(parsed.pathname)) return;
+          } else if (/\.(json|js|css|map|html?|txt|svg|webmanifest|m3u8|mpd|png|jpe?g|webp|gif|avif|ico|wasm)$/i.test(parsed.pathname)) {
+            return;
+          }
+        } catch (_) { return; }
+      }
       candidates.push({ url: value, source });
     };
     push(stateVideo.best_url, 'initial_state');
@@ -1124,9 +1164,7 @@ const SocaiXhsPageScripts = (() => {
     try {
       for (const entry of performance.getEntriesByType('resource')) {
         const name = String(entry.name || '');
-        if (/(\.mp4|\.m3u8|\.m4v|\.mov)(\?|$)|video|vod|hls|sns-video/i.test(name)) {
-          push(name, 'performance');
-        }
+        push(name, 'performance');
       }
     } catch (e) {}
     const poster = video?.poster || root.querySelector?.('img')?.src || '';
@@ -2266,6 +2304,7 @@ const SocaiXhsPageScripts = (() => {
     selectSearchInput,
     setSearchInput,
     searchState,
+    searchSuggestions,
     searchFilterTrigger,
     searchFilters,
     clickCard,

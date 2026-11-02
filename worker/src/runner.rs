@@ -793,9 +793,14 @@ impl Tool for HostTool {
         {
             Ok(value) => value,
             Err(_) => {
-                return Ok(ToolResult::failure(
-                    "The host application tool is temporarily unavailable. Retry once.",
-                ));
+                let recovery = match self.definition.name.as_str() {
+                    "publish_artifact" => "The artifact may already have been saved. Call read_conversation_context to inspect existing files before deciding whether anything is still missing. Do not retry by changing the filename or content.",
+                    "create_scheduled_task" | "update_scheduled_task" | "cancel_scheduled_task" => "The schedule may already have changed. Call list_scheduled_tasks and reconcile its current state before taking any further action. Do not blindly repeat the mutation.",
+                    _ => "Inspect the application's current state before any retry. Do not repeat a state-changing action while its outcome is unknown.",
+                };
+                return Ok(ToolResult::failure(format!(
+                    "The host application response was not received; the operation outcome is unknown. {recovery}"
+                )));
             }
         };
         let status = response.status();

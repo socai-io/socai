@@ -6,7 +6,7 @@ use crate::agent::Backend as LlmProvider;
 use anyhow::Result;
 use futures::StreamExt;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::media::common::{
     ensure_dir, named_file_path, save_bytes, save_named_bytes, MediaConfig, USER_AGENT,
@@ -180,6 +180,44 @@ impl MediaProcessor {
         filename: &str,
         timeout: Duration,
     ) -> Result<PathBuf> {
+        self.download_named_file_streaming_checked(url, referer, label, filename, timeout, false)
+            .await
+    }
+
+    pub(crate) async fn download_named_video_streaming_with_timeout(
+        &self,
+        url: &str,
+        referer: &str,
+        label: &str,
+        filename: &str,
+        timeout: Duration,
+    ) -> Result<PathBuf> {
+        self.download_named_file_streaming_checked(url, referer, label, filename, timeout, true)
+            .await
+    }
+
+    async fn download_named_file_streaming_checked(
+        &self,
+        url: &str,
+        referer: &str,
+        label: &str,
+        filename: &str,
+        timeout: Duration,
+        require_video: bool,
+    ) -> Result<PathBuf> {
+        fn validate_video(prefix: &[u8]) -> Result<()> {
+            let iso_video = prefix.len() >= 12
+                && &prefix[4..8] == b"ftyp"
+                && !matches!(
+                    &prefix[8..12],
+                    b"avif" | b"avis" | b"heic" | b"heix" | b"mif1" | b"msf1"
+                );
+            if iso_video || prefix.starts_with(b"\x1aE\xdf\xa3") {
+                Ok(())
+            } else {
+                anyhow::bail!("downloaded content is not a supported MP4/WebM video")
+            }
+        }
         struct PartialFileGuard(Option<PathBuf>);
         impl Drop for PartialFileGuard {
             fn drop(&mut self) {
@@ -195,6 +233,12 @@ impl MediaProcessor {
         }
         let path = named_file_path(&self.config.base_dir, label, filename)?;
         if std::fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() > 0) {
+            if require_video {
+                let mut prefix = [0_u8; 32];
+                let mut file = tokio::fs::File::open(&path).await?;
+                let size = file.read(&mut prefix).await?;
+                validate_video(&prefix[..size])?;
+            }
             return Ok(path);
         }
         let part_path = path.with_extension(format!(
@@ -214,17 +258,34 @@ impl MediaProcessor {
             let response = request.send().await?.error_for_status()?;
             let mut stream = response.bytes_stream();
             let mut file = tokio::fs::File::create(&part_path).await?;
+            let mut prefix = Vec::with_capacity(32);
             while let Some(chunk) = stream.next().await {
-                file.write_all(&chunk?).await?;
+                let chunk = chunk?;
+                if require_video && prefix.len() < 32 {
+                    prefix.extend_from_slice(&chunk[..chunk.len().min(32 - prefix.len())]);
+                    if prefix.len() == 32 {
+                        validate_video(&prefix)?;
+                    }
+                }
+                file.write_all(&chunk).await?;
+            }
+            if require_video {
+                validate_video(&prefix)?;
             }
             file.flush().await?;
             drop(file);
             if let Err(err) = tokio::fs::rename(&part_path, &path).await {
                 // Another concurrent read of the same note may have completed
-                // first. Its non-empty stable file is equivalent; otherwise
-                // preserve the real rename error.
+                // first. Generic downloads accept its non-empty stable file;
+                // video downloads must validate those bytes as well.
                 if !std::fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() > 0) {
                     return Err(err.into());
+                }
+                if require_video {
+                    let mut prefix = [0_u8; 32];
+                    let mut existing = tokio::fs::File::open(&path).await?;
+                    let size = existing.read(&mut prefix).await?;
+                    validate_video(&prefix[..size])?;
                 }
                 let _ = tokio::fs::remove_file(&part_path).await;
             }

@@ -62,7 +62,7 @@ export function renderResearchBoard(task: AgentTaskView): string {
       if (name.includes("weixin")) platform = "weixin";
       else if (name.includes("podcast")) platform = "podcast";
       else if (name === "github_request") platform = "github";
-      else if (["search", "author_scan", "get_notes", "explore"].includes(name)) platform = "xhs";
+      else if (["search", "search_suggestions", "author_scan", "get_notes", "explore"].includes(name)) platform = "xhs";
     }
     if (!platform) continue;
     operations.push({platform, tool:name, detail: typeof args.query === "string" ? args.query : "", failed:event.kind === "tool_error" || event.ok === false, at:event.created_at});

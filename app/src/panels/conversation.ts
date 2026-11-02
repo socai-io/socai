@@ -19,6 +19,7 @@
 import type { AgentArtifact, AgentTaskEventPayload, AgentTaskSnapshot, NoteData, Status } from "../main";
 import { sourcesNeedBrowser } from "../lib/platforms";
 import { esc } from "../lib/html";
+import { renderTaskExamples } from "../lib/task-examples";
 import { platformIcon, platformLabel, RESEARCH_PLATFORMS } from "../lib/platforms";
 import {
   formatStepCount,
@@ -167,6 +168,7 @@ export function renderComposePane(composer: ComposerProps): string {
           </div>
           ${gated ? renderConnectOverlay(composer) : ""}
         </div>
+        ${renderTaskExamples()}
       </div>
     </div>
   `;
@@ -623,7 +625,11 @@ export function renderEventRow(ev: AgentTaskEventPayload): string {
   const progressKey = ev.kind === "tool_progress" ? `${ev.id ?? ""}:${ev.phase ?? ""}` : "";
   const progressAttr = progressKey ? ` data-tool-progress="${esc(progressKey)}"` : "";
   if (ev.kind === "api_error") return renderTaskApiErrorEvent(ev);
-  const text = ev.kind === "tool_progress"
+  const args = ev.args && typeof ev.args === "object" ? ev.args as Record<string, unknown> : {};
+  const skillName = ev.kind === "tool_call" && /(?:^|[._])read_skill$/.test(ev.name ?? "")
+    && typeof args.name === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(args.name)
+    ? args.name : null;
+  const text = skillName ? `read ${skillName} skill` : ev.kind === "tool_progress"
     ? toolProgressText(ev)
     : ev.kind === "model_connection" ? t(ev.text === "waiting_for_network" ? "task.waitingForNetwork" : "task.retryingModel")
     : formatTaskInterruptionMessage(ev.text);

@@ -52,6 +52,7 @@ use crate::sites::xhs::publish;
 use crate::sites::xhs::{
     ReadNoteOptions, XhsAuthorProfile, XhsHistoryStore, XhsNoteCard, XhsPageRuntime, XHS_HOME_URL,
 };
+use crate::util::execution_clock::ExecutionDeadline;
 
 /// Default number of notes `search` reads when the caller doesn't specify.
 const DEFAULT_NUM_NOTES: i64 = 10;
@@ -152,6 +153,7 @@ pub fn xhs_tools_with_llm_provider(
         Arc::new(WaitForLoginTool { page: page.clone() }),
         Arc::new(WaitForRateLimitTool),
         Arc::new(PageStateTool { page: page.clone() }),
+        Arc::new(SearchSuggestionsTool { page: page.clone() }),
     ];
     add_research_readers(&mut tools, page, llm_provider, history);
     tools
@@ -206,6 +208,7 @@ pub fn xhs_macro_tools_with_ocr_policy(
         Arc::new(WaitForLoginTool { page: page.clone() }),
         Arc::new(WaitForRateLimitTool),
     ];
+    tools.push(Arc::new(SearchSuggestionsTool { page: page.clone() }));
     add_research_readers(&mut tools, page, llm_provider, history);
     tools
 }
@@ -230,6 +233,7 @@ pub(crate) fn exploration_tools(
     history: Arc<XhsHistoryStore>,
 ) -> Vec<Arc<dyn Tool>> {
     vec![
+        Arc::new(SearchSuggestionsTool { page: page.clone() }),
         Arc::new(SearchTool {
             page: page.clone(),
             llm_provider: Some(backend.clone()),
@@ -293,6 +297,19 @@ pub static XHS_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
     agent_instructions: xhs_agent_instructions,
     default_agent_instructions: Some(xhs_agent_instructions),
     commands: &[
+        SiteCommand {
+            name: "search-suggestions",
+            tool_name: "search_suggestions",
+            about: "Read visible search-box suggestions without submitting; restore the original input.",
+            args: &[
+                CommandArg { key: "query", long: None, value_name: "QUERY",
+                    help: "Seed query, 1–80 characters; no control characters.", required: true, kind: ArgKind::Str },
+                CommandArg { key: "limit", long: Some("limit"), value_name: "N",
+                    help: "Maximum visible suggestions to return (1–20, default 10).", required: false, kind: ArgKind::Int },
+            ],
+            slow: SlowWhen::Always,
+            run: run_search_suggestions,
+        },
         SiteCommand {
             name: "get-notes",
             tool_name: "get_notes",
@@ -771,6 +788,30 @@ fn run_get_notes(
 /// `search` dispatches on `--preview`: default opens each result (full scan —
 /// body + top comments); `--preview` returns result cards only (titles/likes/
 /// covers) without opening any note.
+fn run_search_suggestions(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
+    Box::pin(async move {
+        run_xhs_tool_command(
+            page,
+            XhsCommandSpec {
+                command_name: "search-suggestions",
+                tool_name: "search_suggestions",
+                before: CommandPageAction::None,
+                after: CommandPageAction::None,
+                include_run_metadata: false,
+            },
+            args,
+            debug_snapshot,
+            progress,
+        )
+        .await
+    })
+}
+
 fn run_search(
     page: Arc<PageSession>,
     args: Value,
@@ -4600,6 +4641,48 @@ impl Tool for ExtractCommentsTool {
     }
 }
 
+/// Fixed, non-submitting search-box action; unlike browser_script it cannot
+/// execute caller-provided code or publish platform content.
+pub struct SearchSuggestionsTool {
+    page: Arc<PageSession>,
+}
+
+#[async_trait]
+impl Tool for SearchSuggestionsTool {
+    fn name(&self) -> &str {
+        "search_suggestions"
+    }
+    fn description(&self) -> &str {
+        "Read real Xiaohongshu search-box dropdown suggestions for one seed query. \
+         Types without submitting or opening posts, waits for fresh visible labels, \
+         and restores the original input. Returns source URL and observation time. \
+         Not search results, popularity or search-volume estimates. A missing dropdown \
+         is a failure, never replace it with model-generated keywords."
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type":"object","additionalProperties":false,"properties":{
+            "query":{"type":"string","minLength":1,"maxLength":80},
+            "limit":{"type":"integer","minimum":1,"maximum":20,"default":10}
+        },"required":["query"]})
+    }
+    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let query = required_string(&input, "query")?;
+        let limit = input
+            .get("limit")
+            .map(|v| {
+                v.as_u64()
+                    .ok_or_else(|| anyhow::anyhow!("limit must be an integer from 1–20"))
+            })
+            .transpose()?
+            .unwrap_or(10);
+        anyhow::ensure!((1..=20).contains(&limit), "limit must be 1–20");
+        let value = XhsPageRuntime::new(&self.page)
+            .search_suggestions(&query, limit as usize)
+            .await?;
+        Ok(json_result(&value))
+    }
+}
+
 /// page_state() -> {site, location, signed_in, modal_open, ...}
 pub struct PageStateTool {
     page: Arc<PageSession>,
@@ -4692,7 +4775,7 @@ impl Tool for WaitForLoginTool {
 
         let timeout = get_i64(&input, "timeout_seconds", WAIT_FOR_LOGIN_DEFAULT_SECS)
             .clamp(10, WAIT_FOR_LOGIN_MAX_SECS);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout as u64);
+        let deadline = ExecutionDeadline::after(Duration::from_secs(timeout as u64));
         let mut human_ready = login_resume_receiver(&ctx.run_id);
         loop {
             if xhs.is_logged_in().await.unwrap_or(false) {
@@ -4714,7 +4797,7 @@ impl Tool for WaitForLoginTool {
                     "message": "Login confirmed from the live browser. Re-run the original tool.",
                 })));
             }
-            if std::time::Instant::now() >= deadline {
+            if deadline.is_elapsed() {
                 return Ok(json_result(&json!({
                     "logged_in": false,
                     "timed_out": true,
@@ -5521,13 +5604,13 @@ impl Tool for SearchTool {
         let mut resumed_scan = false;
         let mut consecutive_note_failures = 0usize;
         let scan_deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(SEARCH_SCAN_TIMEOUT_SECONDS);
+            ExecutionDeadline::after(Duration::from_secs(SEARCH_SCAN_TIMEOUT_SECONDS));
 
         while notes.len() < want {
-            if std::time::Instant::now() >= scan_deadline {
+            if scan_deadline.is_elapsed() {
                 stop_reason = "search_timeout".to_string();
                 page_error = Some(format!(
-                    "search browse phase exceeded {SEARCH_SCAN_TIMEOUT_SECONDS}s"
+                    "search browse phase exceeded {SEARCH_SCAN_TIMEOUT_SECONDS}s of active execution"
                 ));
                 append_search_debug_event(
                     ctx,

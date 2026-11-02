@@ -133,6 +133,11 @@ impl MediaProcessor {
         if !result.is_object() {
             result = crate::media::common::empty_object();
         }
+        // An earlier failed or malformed cache must not survive a fresh
+        // download failure as a seemingly successful playable local path.
+        if let Some(map) = result.as_object_mut() {
+            map.remove("local_path");
+        }
         let label = if !note_id.trim().is_empty() {
             note_id
         } else if !title.trim().is_empty() {
@@ -145,7 +150,7 @@ impl MediaProcessor {
             insert_string(
                 &mut result,
                 "download_error",
-                "downloadable video URL not found (blob: URLs cannot be downloaded)",
+                "supported direct video URL not found (blob, playlists and non-video resources cannot be downloaded as a video)",
             );
             return result;
         }
@@ -154,7 +159,7 @@ impl MediaProcessor {
         let filename = format!("video{suffix}");
         let t_file = Instant::now();
         match self
-            .download_named_file_streaming_with_timeout(
+            .download_named_video_streaming_with_timeout(
                 &source,
                 referer,
                 label,
@@ -167,6 +172,7 @@ impl MediaProcessor {
                 if let Some(map) = result.as_object_mut() {
                     map.remove("download_error");
                 }
+                insert_string(&mut result, "resolved_url", &source);
                 insert_string(&mut result, "local_path", path.to_string_lossy());
             }
             Err(err) => insert_string(&mut result, "download_error", format!("{err:#}")),
@@ -324,13 +330,40 @@ impl MediaProcessor {
 fn downloadable_video_url(video: &Value) -> String {
     fn clean(value: &str) -> Option<String> {
         let trimmed = value.trim();
-        if (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
-            && !trimmed.starts_with("blob:")
-        {
-            Some(trimmed.to_string())
-        } else {
-            None
+        let parsed = reqwest::Url::parse(trimmed).ok()?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return None;
         }
+        let suffix = std::path::Path::new(parsed.path())
+            .extension()
+            .and_then(|v| v.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if matches!(
+            suffix.as_str(),
+            "json"
+                | "js"
+                | "css"
+                | "map"
+                | "html"
+                | "htm"
+                | "txt"
+                | "svg"
+                | "webmanifest"
+                | "m3u8"
+                | "mpd"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "webp"
+                | "gif"
+                | "avif"
+                | "ico"
+                | "wasm"
+        ) {
+            return None;
+        }
+        Some(trimmed.to_string())
     }
 
     for key in ["resolved_url", "master_url", "url"] {
@@ -374,7 +407,8 @@ mod tests {
 
     #[tokio::test]
     async fn video_download_writes_part_file_before_response_finishes() {
-        let first = vec![b'a'; 128 * 1024];
+        let mut first = vec![b'a'; 128 * 1024];
+        first[..12].copy_from_slice(b"\x00\x00\x00\x18ftypmp42");
         let second = vec![b'b'; 128 * 1024];
         let expected = [first.clone(), second.clone()].concat();
         let (first_sent_tx, first_sent_rx) = oneshot::channel();
@@ -459,5 +493,68 @@ mod tests {
             "video.mp4"
         );
         assert!(!part.exists());
+
+        // Updating this existing download contract: HTTP 200 JSON must never
+        // become a successful cached video, even when named .mp4 upstream.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer).await.unwrap();
+            let body = b"{\n  \"icons\": []\n}";
+            stream.write_all(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()).as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        let result = processor
+            .download_video(
+                &json!({"url": format!("http://{address}/clip.mp4"),
+                "resolved_url": "https://fe-video-qc.xhscdn.com/player-icons.json"}),
+                "invalid-note",
+                "",
+                "",
+            )
+            .await;
+        server.await.unwrap();
+        assert!(
+            result.get("local_path").is_none(),
+            "JSON was incorrectly saved as video: {result}"
+        );
+        assert!(result["download_error"].as_str().unwrap().contains("video"));
+        let invalid_dir = directory.path().join("site_media/invalid-note");
+        assert!(!invalid_dir.join("video.mp4").exists());
+        assert!(!std::fs::read_dir(invalid_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "part")));
+
+        // Old evidence may supply a non-empty local_path even after a failed
+        // read. It cannot be reported as successful without a checked file.
+        let cached = directory.path().join("site_media/cached-note");
+        std::fs::create_dir_all(&cached).unwrap();
+        std::fs::write(cached.join("video.mp4"), b"{\"icons\":[]}").unwrap();
+        let result = processor
+            .download_video_file(
+                &json!({
+                    "url": "https://sns-video-zl.xhscdn.com/clip.mp4",
+                    "local_path": cached.join("video.mp4"),
+                }),
+                "cached-note",
+                "",
+                "",
+            )
+            .await;
+        assert!(
+            result.get("local_path").is_none(),
+            "invalid cached local_path survived"
+        );
+        assert!(result["download_error"].as_str().unwrap().contains("video"));
+        assert!(
+            cached.join("video.mp4").exists(),
+            "preserve the old file, don't delete user data"
+        );
     }
 }
