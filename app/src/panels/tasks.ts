@@ -333,22 +333,48 @@ export namespace agentPanel {
 
   // Fetch a task's note archive (notes.json) and re-render when it changed the
   // currently-selected task. Best-effort: a run simply may have no notes.
-  export async function loadTaskNotes(taskId: string, shell: ShellState): Promise<void> {
-    try {
-      const [notes, stats] = await Promise.all([
-        invoke<NoteData[]>("agent_task_notes", { taskId }),
-        invoke<ReadingStats[]>("agent_task_reading_stats", { taskId }).catch((e) => {
-          console.error("agent_task_reading_stats failed:", e);
-          return [] as ReadingStats[];
-        }),
-      ]);
-      const task = tasks.find((item) => item.task_id === taskId);
-      if (task) task.readingStats = stats;
-      const selected = setTaskNotes(taskId, notes);
-      if (selected || task?.task_id === selectedTask()?.task_id) shell.rerender();
-    } catch (e) {
-      console.error("agent_task_notes failed:", e);
-    }
+  const noteLoads = new Map<string, Promise<void>>();
+  const noteReads = new Map<string, Promise<NoteData[]>>();
+
+  function readTaskNotes(taskId: string, runDir: string | null): Promise<NoteData[]> {
+    const key = JSON.stringify([taskId, runDir]);
+    const existing = noteReads.get(key);
+    if (existing) return existing;
+    const request = invoke<NoteData[]>("agent_task_notes", { taskId })
+      .finally(() => { noteReads.delete(key); });
+    noteReads.set(key, request);
+    return request;
+  }
+
+  export function loadTaskNotes(taskId: string, shell: ShellState): Promise<void> {
+    const task = tasks.find((item) => item.task_id === taskId);
+    if (!task) return Promise.resolve();
+    const runDir = task.run_dir;
+    const key = JSON.stringify([taskId, runDir]);
+    const existing = noteLoads.get(key);
+    if (existing) return existing;
+    const request = (async () => {
+      try {
+        const [notes, stats] = await Promise.all([
+          readTaskNotes(taskId, runDir),
+          invoke<ReadingStats[]>("agent_task_reading_stats", { taskId }).catch((e) => {
+            console.error("agent_task_reading_stats failed:", e);
+            return task.readingStats ?? [];
+          }),
+        ]);
+        const current = tasks.find((item) => item.task_id === taskId);
+        if (!current || current.run_dir !== runDir) return;
+        const changed = JSON.stringify([current.notes ?? [], current.readingStats ?? []])
+          !== JSON.stringify([notes, stats]);
+        current.notes = notes;
+        current.readingStats = stats;
+        if (changed && selectedTask()?.task_id === taskId) shell.rerender();
+      } catch (e) {
+        console.error("agent_task_notes failed:", e);
+      }
+    })().finally(() => { noteLoads.delete(key); });
+    noteLoads.set(key, request);
+    return request;
   }
 
   export function loadSelectedTaskNotes(shell: ShellState): void {
@@ -459,16 +485,30 @@ export namespace agentPanel {
     }
   }
 
+  let notesPollInFlight = false;
+
   async function pollLiveNotes(shell: ShellState): Promise<void> {
+    if (notesPollInFlight) return;
+    notesPollInFlight = true;
+    try {
+      await refreshLiveNotes(shell);
+    } finally {
+      notesPollInFlight = false;
+    }
+  }
+
+  async function refreshLiveNotes(shell: ShellState): Promise<void> {
     const task = selectedTask();
     if (!task || (task.status !== "running" && task.status !== "queued")) {
       syncNotesPolling(shell);
       return;
     }
+    const runDir = task.run_dir;
     if (!statsPolling && Date.now() - lastStatsPoll > 6000) {
       statsPolling = true;
       lastStatsPoll = Date.now();
       void invoke<ReadingStats[]>("agent_task_reading_stats", {taskId: task.task_id}).then(stats => {
+        if (tasks.find(item => item.task_id === task.task_id)?.run_dir !== runDir) return;
         task.readingStats = stats;
         if (selectedTask()?.task_id === task.task_id) {
           const board = document.querySelector<HTMLElement>("[data-research-board]");
@@ -481,7 +521,9 @@ export namespace agentPanel {
     // state fresh so the running activity summary and eventual answer meta
     // show the current run's own figures without replacing earlier turns.
     try {
-      upsertTask(await invoke<AgentTaskSnapshot>("agent_task_get", { taskId: task.task_id }));
+      const snapshot = await invoke<AgentTaskSnapshot>("agent_task_get", { taskId: task.task_id });
+      if (tasks.find(item => item.task_id === task.task_id)?.run_dir !== runDir) return;
+      upsertTask(snapshot);
       if (selectedTask()?.task_id !== task.task_id) return;
       updateLiveTaskMetrics(task);
       const board = document.querySelector<HTMLElement>("[data-research-board]");
@@ -490,7 +532,9 @@ export namespace agentPanel {
       console.error("agent_task_get poll failed:", e);
     }
     try {
-      const notes = await invoke<NoteData[]>("agent_task_notes", { taskId: task.task_id });
+      if (task.run_dir !== runDir) return;
+      const notes = await readTaskNotes(task.task_id, runDir);
+      if (tasks.find(item => item.task_id === task.task_id)?.run_dir !== runDir) return;
       // A detail or comment read enriches an existing card without increasing
       // the archive length, so compare content as well as count.
       if (JSON.stringify(notes) === JSON.stringify(task.notes ?? [])) return;
