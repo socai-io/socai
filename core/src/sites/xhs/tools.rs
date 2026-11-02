@@ -1370,6 +1370,9 @@ fn comment_load_metadata(payload: &Value) -> Value {
         "platform_total": payload.get("platform_total").and_then(Value::as_i64).unwrap_or(0),
         "loaded_primary": payload.get("loaded_primary").and_then(Value::as_i64).unwrap_or(0),
         "loaded_total": payload.get("loaded_total").and_then(Value::as_i64).unwrap_or(0),
+        "count_basis": "primary_plus_replies",
+        "returned_primary": payload.get("returned_primary"),
+        "returned_replies": payload.get("returned_replies"),
         "returned_total": payload.get("returned_total").and_then(Value::as_i64).unwrap_or(0),
         "rounds": payload.get("rounds").and_then(Value::as_i64).unwrap_or(0),
         "stop_reason": payload.get("stop_reason").and_then(Value::as_str).unwrap_or(""),
@@ -1408,6 +1411,9 @@ fn attach_comment_load_result(note: &mut Value, result: anyhow::Result<Value>) {
                     "platform_total": null,
                     "loaded_primary": null,
                     "loaded_total": null,
+                    "count_basis": "primary_plus_replies",
+                    "returned_primary": null,
+                    "returned_replies": null,
                     "returned_total": null,
                     "rounds": null,
                     "stop_reason": if changed { "note_changed" } else { "read_failed" },
@@ -3639,7 +3645,7 @@ impl Tool for GetNotesTool {
                 },
                 "num_comments": {
                     "type": "integer",
-                    "description": "Comments to load per note; replies count toward the total. 0 skips comments.",
+                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. top_comments_wait reports returned_primary, returned_replies and returned_total separately; loaded counts describe the pre-trim observation, not the returned sample. 0 skips comments.",
                     "default": TOP_COMMENTS_PER_NOTE,
                     "minimum": 0
                 },
@@ -5276,7 +5282,7 @@ impl Tool for SearchTool {
                 },
                 "num_comments": {
                     "type": "integer",
-                    "description": "Comments to load per note. Scrolls the comment area and expands reply threads to reach this many; replies count toward the total. Higher values add latency per note. Ignored in preview mode.",
+                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. top_comments_wait reports returned_primary, returned_replies and returned_total; loaded counts are pre-trim observations. May stop below this budget; higher values add latency. Ignored in preview mode.",
                     "default": AGENT_TOP_COMMENTS_PER_NOTE,
                     "minimum": 0
                 },
@@ -6152,7 +6158,7 @@ impl Tool for AuthorScanTool {
                 },
                 "num_comments": {
                     "type": "integer",
-                    "description": "Comments to load per note. Scrolls the comment area and expands reply threads to reach this many; replies count toward the total. Higher values add latency per note. Ignored in preview mode.",
+                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. top_comments_wait reports returned_primary, returned_replies and returned_total; loaded counts are pre-trim observations. May stop below this budget; higher values add latency. Ignored in preview mode.",
                     "default": AGENT_TOP_COMMENTS_PER_NOTE,
                     "minimum": 0
                 },
