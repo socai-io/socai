@@ -3,6 +3,7 @@
 //! `conversation.ts`.
 
 import { esc } from "../lib/html";
+import { renderResourceLoading, renderResourceError } from "../lib/loading";
 import { formatTaskCount, formatTaskTimestamp, taskStatusLabel, t } from "../lib/i18n";
 import type { AgentTaskView } from "./tasks";
 
@@ -11,6 +12,8 @@ export interface SidebarProps {
   selectedTaskId: string | null;
   /** True while the compose view is showing — no row should read as selected. */
   composing: boolean;
+  loading?: boolean;
+  loadError?: boolean;
 }
 
 export function renderSidebar(props: SidebarProps): string {
@@ -45,6 +48,8 @@ export function renderSidebar(props: SidebarProps): string {
 // dialog — nothing is destroyed until confirmed.
 function renderTaskRows(props: SidebarProps): string {
   if (props.tasks.length === 0) {
+    if (props.loading) return renderResourceLoading(t('task.loadingConversation'), 'list');
+    if (props.loadError) return renderResourceError(t('task.loadConversationFailed'), '', t('task.retryLoading'));
     return `<p class="t-small placeholder task-list-empty">${esc(t("task.noTasks"))}</p>`;
   }
   return [...props.tasks]

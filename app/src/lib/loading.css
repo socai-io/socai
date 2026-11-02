@@ -1,0 +1,15 @@
+.resource-loading { width:100%; padding:32px clamp(20px,5vw,64px); min-height:220px; }
+.resource-loading__shape { max-width:760px; margin:0 auto; display:grid; gap:18px; }
+.resource-loading__shape i { display:block; height:14px; border-radius:6px; background:linear-gradient(100deg,var(--surface-2,var(--ink-7,#ececec)) 20%,var(--line,#ddd) 45%,var(--surface-2,var(--ink-7,#ececec)) 70%); background-size:240% 100%; animation:resource-loading-shimmer 1.6s ease-in-out infinite; }
+.resource-loading__shape i:nth-child(1) { width:42%; height:20px; margin-bottom:26px; }
+.resource-loading__shape i:nth-child(2) { width:62%; height:54px; justify-self:end; margin-bottom:22px; }
+.resource-loading__shape i:nth-child(4) { width:88%; }
+.resource-loading__shape i:nth-child(5) { width:68%; }
+.resource-loading--list { padding:14px; min-height:120px; }
+.resource-loading--list .resource-loading__shape { gap:14px; }
+.resource-loading--list .resource-loading__shape i { height:28px; width:100%; margin:0; }
+.resource-loading--content .resource-loading__shape i:nth-child(2) { height:14px; justify-self:start; }
+.resource-load-error { padding:24px; color:var(--fg-muted,var(--ink-4,#666)); }
+.resource-load-error p { margin:0 0 12px; }
+@keyframes resource-loading-shimmer { to { background-position:-140% 0; } }
+@media(prefers-reduced-motion:reduce) { .resource-loading__shape i { animation:none; } }

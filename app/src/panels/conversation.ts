@@ -19,6 +19,7 @@
 import type { AgentArtifact, AgentTaskEventPayload, AgentTaskSnapshot, NoteData, Status } from "../main";
 import { sourcesNeedBrowser } from "../lib/platforms";
 import { esc } from "../lib/html";
+import { renderResourceError } from "../lib/loading";
 import { renderTaskExamples } from "../lib/task-examples";
 import { platformIcon, platformLabel, RESEARCH_PLATFORMS } from "../lib/platforms";
 import {
@@ -80,6 +81,7 @@ export interface ComposerProps {
 }
 
 export interface ConversationProps {
+  historyLoadError?: boolean;
   task: AgentTaskView;
   running: boolean;
   /** Resolves a turn's activity fold state (tasks.ts owns the toggles). */
@@ -134,6 +136,7 @@ export function renderConversation(props: ConversationProps): string {
       ${renderHead(task, running)}
       <div class="thread" data-agent-events="${esc(task.task_id)}">
         <div class="thread-inner">
+          ${props.historyLoadError ? renderResourceError(t('task.loadConversationFailed'), task.task_id, t('task.retryLoading')) : ''}
           ${renderThread(
             task,
             running,

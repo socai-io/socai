@@ -20,6 +20,7 @@ import type {
   ShellState,
 } from "../main";
 import { esc } from "../lib/html";
+import { renderResourceLoading, renderResourceError } from "../lib/loading";
 import { t } from "../lib/i18n";
 import { isSendShortcut } from "../lib/shortcuts";
 import { voiceInput } from "../lib/voice-input";
@@ -108,6 +109,10 @@ export namespace agentPanel {
   const cancellationErrors = new Map<string, string>();
   let disposeComposerAutosize: (() => void) | undefined;
   let tasks: AgentTaskView[] = [];
+  let historyLoading = true;
+  let historyLoadFailed = false;
+  const detailLoads = new Map<string, 'loading' | 'ready' | 'error'>();
+  const detailRequests = new Map<string, Promise<void>>();
   let pendingEvents = new Map<string, AgentTaskEventPayload[]>();
   let selectedTaskId: string | null = null;
   // Full shell renders replace the sidebar DOM. Keep its viewport stable when
@@ -230,6 +235,8 @@ export namespace agentPanel {
   }
 
   export function setTasks(snapshots: AgentTaskSnapshot[]): void {
+    historyLoading = false;
+    historyLoadFailed = false;
     const existingById = new Map(tasks.map((task) => [task.task_id, task]));
     const snapshotIds = new Set(snapshots.map((snapshot) => snapshot.task_id));
     const hydrated = snapshots.map((snapshot) => {
@@ -260,24 +267,46 @@ export namespace agentPanel {
     if (downloadsChanged) persistArtifactDownloads();
   }
 
-  let detailRequest = 0;
   export async function loadSelectedTaskDetail(shell: ShellState): Promise<void> {
     if (view !== "detail" || !selectedTaskId) return;
     const taskId = selectedTaskId;
-    const request = ++detailRequest;
-    try {
-      const [snapshot, events] = await Promise.all([
-        invoke<AgentTaskSnapshot>("agent_task_get", { taskId }),
-        invoke<AgentTaskEventPayload[]>("agent_task_events", { taskId }),
-      ]);
-      const task = tasks.find((item) => item.task_id === taskId);
-      if (request !== detailRequest || !task || task.run_dir !== snapshot.run_dir) return;
-      upsertTask(snapshot);
-      task.events = mergeEvents(task.events, events);
-      if (selectedTaskId === taskId && view === "detail") shell.rerender();
-    } catch (e) {
-      console.error("load task detail failed:", e);
-    }
+    const existingRequest = detailRequests.get(taskId);
+    if (existingRequest) return existingRequest;
+    const runDir = tasks.find(item => item.task_id === taskId)?.run_dir;
+    if (!runDir) return;
+    detailLoads.set(taskId, 'loading');
+    shell.rerender();
+    const pending = (async () => {
+      try {
+        const [snapshotResult, eventsResult] = await Promise.allSettled([
+          invoke<AgentTaskSnapshot>("agent_task_get", { taskId }),
+          invoke<AgentTaskEventPayload[]>("agent_task_events", { taskId }),
+        ]);
+        const task = tasks.find(item => item.task_id === taskId);
+        if (!task || task.run_dir !== runDir) return;
+        if (snapshotResult.status === 'fulfilled') {
+          if (snapshotResult.value.run_dir !== runDir) return;
+          upsertTask(snapshotResult.value);
+        } else console.error('agent_task_get failed:', snapshotResult.reason);
+        if (eventsResult.status === 'fulfilled') task.events = mergeEvents(task.events, eventsResult.value);
+        else console.error('agent_task_events failed:', eventsResult.reason);
+        detailLoads.set(taskId, snapshotResult.status === 'fulfilled' && eventsResult.status === 'fulfilled' ? 'ready' : 'error');
+      } catch (error) {
+        detailLoads.set(taskId, 'error');
+        console.error('load task detail failed:', error);
+      } finally {
+        detailRequests.delete(taskId);
+        if (detailLoads.get(taskId) === 'loading') detailLoads.delete(taskId);
+        if (selectedTaskId === taskId && view === 'detail') shell.rerender();
+      }
+    })();
+    detailRequests.set(taskId, pending);
+    return pending;
+  }
+
+  export function finishHistoryLoading(): void {
+    historyLoading = false;
+    historyLoadFailed = true;
   }
 
   export function setTaskNotes(taskId: string, notes: NoteData[]): boolean {
@@ -781,6 +810,8 @@ export namespace agentPanel {
       tasks,
       selectedTaskId,
       composing: view === "compose",
+      loading: historyLoading,
+      loadError: historyLoadFailed,
     });
   }
 
@@ -790,6 +821,11 @@ export namespace agentPanel {
   export function renderWorkspace(shell: ShellState): string {
     const task = view === "compose" ? null : selectedTask() ?? null;
     if (!task) return renderComposePane(newComposer(shell));
+    const loadState = detailLoads.get(task.task_id);
+    if (!task.events.length && !task.final_text) {
+      if (loadState === 'loading') return renderResourceLoading(t('task.loadingConversation'));
+      if (loadState === 'error') return renderResourceError(t('task.loadConversationFailed'), task.task_id, t('task.retryLoading'));
+    }
     // Point the note UI at this task's archive; the thread's card groups and
     // answer citations resolve refs against it, and so does the viewer.
     setNoteRegistry(task.notes, task.run_dir);
@@ -797,6 +833,7 @@ export namespace agentPanel {
     const conversation = renderConversation({
       task,
       running,
+      historyLoadError: loadState === 'error',
       isActivityOpen: (turnIndex, defaultOpen) => isActivityOpen(task.task_id, turnIndex, defaultOpen),
       isIntermediateOpen: (turnIndex) => intermediateOpen.get(`${task.task_id}#${turnIndex}`) ?? false,
       artifactDownloadState: (path) => artifactDownloads.get(artifactDownloadKey(task.task_id, path)),
@@ -994,6 +1031,23 @@ export namespace agentPanel {
   }
 
   function bindTaskSelection(shell: ShellState): void {
+    document.querySelectorAll<HTMLButtonElement>('[data-task-detail-retry]').forEach(button => button.addEventListener('click', async event => {
+      const taskId = (event.currentTarget as HTMLButtonElement).dataset.taskDetailRetry;
+      if (taskId) {
+        if (taskId !== selectedTaskId) return;
+        await loadSelectedTaskDetail(shell);
+        return;
+      }
+      if (historyLoading) return;
+      historyLoading = true; historyLoadFailed = false; shell.rerender();
+      try {
+        setTasks(await invoke<AgentTaskSnapshot[]>('agent_task_list'));
+        await loadSelectedTaskDetail(shell);
+      } catch (error) {
+        finishHistoryLoading();
+        console.error('Session history retry failed:', error);
+      } finally { shell.rerender(); }
+    }));
     document.querySelectorAll<HTMLButtonElement>("[data-task-id]").forEach((button) => {
       const select = (): void => {
         const taskId = button.dataset.taskId;

@@ -803,9 +803,12 @@ async function loadLocalTaskHistory(): Promise<void> {
     render();
   } catch (e) {
     console.error("agent_task_list failed:", e);
+    agentPanel.finishHistoryLoading();
+    render();
     return;
   }
 
+  void agentPanel.loadSelectedTaskDetail(shell());
   try {
     await invoke("agent_task_recover_billing");
     void agentPanel.loadSelectedTaskDetail(shell());
