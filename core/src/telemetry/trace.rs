@@ -105,6 +105,7 @@ pub struct RunTraceBuilder {
     /// follow-up rather than a fresh task.
     seed_messages: usize,
     started_ns: u64,
+    start_clock: Option<crate::util::suspend_clock::SuspendClock>,
     spans: Vec<Value>,
     dropped_spans: u64,
     /// Running figures for the drop guard; `finish` overwrites them with the
@@ -150,6 +151,7 @@ impl RunTraceBuilder {
             session_id: session_id.map(ToOwned::to_owned),
             seed_messages,
             started_ns: now_ns(),
+            start_clock: crate::util::suspend_clock::SuspendClock::sample(),
             spans: Vec::new(),
             dropped_spans: 0,
             steps_seen: 0,
@@ -213,6 +215,34 @@ impl RunTraceBuilder {
             duration_ms,
             attrs,
             Some(error),
+        );
+    }
+
+    /// The event upload may fail during the outage. Keep the same transition
+    /// in the run trace, which the desktop already stages for later upload.
+    pub(crate) fn record_model_connection(
+        &mut self,
+        step: u32,
+        attempt: usize,
+        state: &str,
+        reason: &str,
+        timing: Option<crate::util::suspend_clock::ClockInterval>,
+    ) {
+        let mut attrs = vec![
+            attr_int("socai.step", step as i64),
+            attr_int("socai.attempt", attempt as i64),
+            attr_str("socai.outcome", state),
+            attr_str("socai.reason", reason),
+        ];
+        if let Some(timing) = timing {
+            push_clock_interval(&mut attrs, timing);
+        }
+        self.push_span(
+            "model_connection".into(),
+            SPAN_KIND_INTERNAL,
+            0,
+            attrs,
+            None,
         );
     }
 
@@ -334,6 +364,9 @@ impl RunTraceBuilder {
             attr_str("socai.status", status),
             attr_int("socai.steps", steps as i64),
         ];
+        if let Some(timing) = self.start_clock.and_then(|start| start.elapsed()) {
+            push_clock_interval(&mut attrs, timing);
+        }
         push_usage_attrs(&mut attrs, usage);
         if let Some(session_id) = &self.session_id {
             // Desktop session ids embed the first task's slug (conversation
@@ -519,6 +552,14 @@ fn otlp_attr(key: &str, value: &Value) -> Option<Value> {
 
 fn attr_str(key: &str, value: &str) -> Value {
     json!({ "key": key, "value": { "stringValue": value } })
+}
+
+fn push_clock_interval(attrs: &mut Vec<Value>, timing: crate::util::suspend_clock::ClockInterval) {
+    attrs.extend([
+        attr_int("socai.elapsed_ms", timing.elapsed_ms as i64),
+        attr_int("socai.awake_ms", timing.awake_ms as i64),
+        attr_int("socai.suspend_ms", timing.suspend_ms as i64),
+    ]);
 }
 
 fn attr_int(key: &str, value: i64) -> Value {

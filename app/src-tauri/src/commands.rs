@@ -1104,10 +1104,21 @@ impl ToolFailureRecovery for DesktopBrowserRecovery {
             }
             return ToolRecoveryOutcome::NotNeeded;
         };
+        let page = self.page.transport_diagnostic().await;
         socai_core::cdp::diagnostics::record(
             "task_recovery_requested",
+            json!({ "tool": tool_name, "retry": retry_number, "page": page }),
+        );
+        let (error_type, _) = browser_disconnect_details(&disconnect_reason);
+        self.telemetry.capture(
+            "socai_browser_task_recovery_start",
             json!({
-                "tool":tool_name,"retry":retry_number,"page":self.page.transport_diagnostic().await,
+                "task_id": self.task_id,
+                "tool_name": tool_name,
+                "retry_number": retry_number,
+                "error_type": error_type,
+                "page_timeout_method": page["health"]["page_timeout_method"],
+                "socket_closed": page["health"]["socket_closed"],
             }),
         );
         if retry_number > 0 {
@@ -3543,6 +3554,7 @@ async fn run_agent_task_on_session_page(
             background_media_generation,
             billing_task_id: Some(billing_id.to_owned()),
             tool_failure_recovery,
+            desktop_network_recovery: true,
             ..AgentRunConfig::default()
         };
         let outcome = run_agent_with_tools(task, llm_provider, tools, config, tx).await;
@@ -3596,8 +3608,53 @@ fn pump_agent_task_events(
         // The core run_id only surfaces on Started; remember it so each tool-call
         // event can correlate back to the run that produced it.
         let mut run_id: Option<String> = None;
-        while let Ok(event) = rx.recv().await {
+        use socai_core::util::suspend_clock::SuspendClock;
+        let mut previous = SuspendClock::sample();
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut current_step = 0;
+        loop {
+            let event = tokio::select! {
+                event = rx.recv() => match event {
+                    Ok(event) => Some(event),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                _ = tick.tick() => None,
+            };
+            let now = SuspendClock::sample();
+            if let Some(gap) = previous
+                .zip(now)
+                .and_then(|(before, after)| after.since(before))
+                .filter(|gap| gap.slept())
+            {
+                telemetry.capture("socai_task_system_wake", json!({
+                    "task_id": task_id, "run_id": run_id, "step": current_step,
+                    "elapsed_ms": gap.elapsed_ms, "awake_ms": gap.awake_ms, "suspend_ms": gap.suspend_ms,
+                }));
+            }
+            previous = now;
+            let Some(event) = event else { continue };
             match &event {
+                AgentEvent::Step { step } => current_step = *step,
+                AgentEvent::ModelConnection {
+                    step,
+                    attempt,
+                    provider,
+                    state,
+                    reason,
+                    timing,
+                } => {
+                    telemetry.capture("socai_model_connection", json!({
+                        "task_id": task_id, "run_id": run_id, "step": step, "attempt": attempt,
+                        "provider": provider, "outcome": state, "reason": reason,
+                        "elapsed_ms": timing.map(|t| t.elapsed_ms), "awake_ms": timing.map(|t| t.awake_ms),
+                        "suspend_ms": timing.map(|t| t.suspend_ms),
+                    }));
+                    if !matches!(*state, "waiting_for_network" | "retrying") {
+                        continue;
+                    }
+                }
                 AgentEvent::Started { run_id: id, .. } => {
                     run_id = Some(id.clone());
                     // Persist the core run_id so cancelled/interrupted terminal

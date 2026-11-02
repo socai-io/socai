@@ -275,6 +275,10 @@ impl Backend for AnthropicBackend {
         &self.model
     }
 
+    fn connectivity_probe(&self) -> Option<reqwest::RequestBuilder> {
+        Some(self.client.head(API_URL))
+    }
+
     fn request_payload(
         &self,
         system: &str,

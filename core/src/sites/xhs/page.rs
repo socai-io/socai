@@ -1019,7 +1019,7 @@ impl<'a> XhsPageRuntime<'a> {
             open = Some(opened);
         }
         let note = self
-            .extract_note_with_perf(wait_seconds, options.clone(), &mut perf)
+            .extract_note_with_perf(wait_seconds, options, note_id, &mut perf)
             .await?;
         if !note_id.is_empty() && !note.note_id.is_empty() && note.note_id != note_id {
             // Opened the wrong note. Do NOT fall back to a full-page navigate
@@ -1027,16 +1027,13 @@ impl<'a> XhsPageRuntime<'a> {
             // down the search grid + `__INITIAL_STATE__.search` state, which
             // breaks every subsequent open in a topic scan. Report a soft
             // failure; the caller closes the overlay and moves on intact.
-            let _ = options;
-            let mut result = json!({
+            return Ok(json!({
                 "ok": false,
-                "entity": note,
+                "entity": { "note_id": note_id },
                 "open": open,
                 "error": format!("stale_note: expected {note_id}, got {}", note.note_id),
                 "perf": perf,
-            });
-            self.attach_page_failure_diagnostic(&mut result).await;
-            return Ok(result);
+            }));
         }
         Ok(json!({ "ok": true, "entity": note, "open": open, "perf": perf }))
     }
@@ -2320,7 +2317,7 @@ impl<'a> XhsPageRuntime<'a> {
         options: ReadNoteOptions,
     ) -> Result<XhsNote> {
         let mut perf = Map::new();
-        self.extract_note_with_perf(wait_seconds, options, &mut perf)
+        self.extract_note_with_perf(wait_seconds, options, "", &mut perf)
             .await
     }
 
@@ -2332,11 +2329,12 @@ impl<'a> XhsPageRuntime<'a> {
         &self,
         wait_seconds: f64,
         options: ReadNoteOptions,
+        expected_id: &str,
         perf: &mut Map<String, Value>,
     ) -> Result<XhsNote> {
         let t_extract = Instant::now();
         let timeout_ms = (wait_seconds.max(0.5) * 1000.0) as i64;
-        let raw = self
+        let mut raw = self
             .run_script(
                 "noteWithWait",
                 Some(&json!({
@@ -2346,13 +2344,25 @@ impl<'a> XhsPageRuntime<'a> {
             )
             .await?;
 
-        let body = raw
-            .get("note")
-            .cloned()
-            .filter(Value::is_object)
-            .unwrap_or_else(|| Value::Object(Map::new()));
-
-        let mut note = parse_note(&body);
+        let mut note = parse_note(&raw["note"]);
+        if !expected_id.is_empty() && !note.note_id.is_empty() && note.note_id != expected_id {
+            // A card overlay can still expose the previous detail during hydration.
+            // Take one fresh reading before processing any comments or media.
+            sleep_ms(350).await;
+            raw = self
+                .run_script("noteWithWait", Some(&json!({ "timeout_ms": 500 })))
+                .await?;
+            let fresh = parse_note(&raw["note"]);
+            if fresh.note_id != expected_id {
+                // Keep the known mismatch if the second snapshot has no identity.
+                return Ok(if fresh.note_id.is_empty() {
+                    note
+                } else {
+                    fresh
+                });
+            }
+            note = fresh;
+        }
 
         if note.note_id.is_empty() && !options.note_id_fallback.trim().is_empty() {
             note.note_id = options.note_id_fallback.trim().to_string();

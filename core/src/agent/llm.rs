@@ -223,6 +223,12 @@ pub trait Backend: Send + Sync {
     fn provider(&self) -> &str;
     fn model(&self) -> &str;
 
+    /// A read-only, unauthenticated request using the same route as model calls.
+    /// Any HTTP response (including 401 or 405) proves the route is reachable.
+    fn connectivity_probe(&self) -> Option<reqwest::RequestBuilder> {
+        None
+    }
+
     /// JSON body sent to the provider, excluding authentication headers.
     /// Production backends override this with their wire-format payload.
     fn request_payload(

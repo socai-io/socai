@@ -17,6 +17,8 @@ export const SIGNUP_BONUS_POINTS = import.meta.env.VITE_SOCAI_DEMO === "true" ? 
 let activeTimezone: string | undefined = readInitialTimezone();
 
 const messages = {
+  "task.waitingForNetwork": { en: "Waiting for the model service to reconnect", zh: "等待连接模型服务，连接后自动继续" },
+  "task.retryingModel": { en: "Retrying this model step", zh: "正在重试当前模型步骤" },
   "language.switcherAria": { en: "language", zh: "语言" },
 
   "common.loading": { en: "loading…", zh: "加载中…" },

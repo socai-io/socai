@@ -46,7 +46,7 @@ oar-ocr-core = "=0.7.1"
 ort = "=2.0.0-rc.12"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

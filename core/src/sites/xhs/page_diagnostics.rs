@@ -53,7 +53,9 @@ pub(super) async fn attach(page: &PageSession, result: &mut Value) {
         return;
     }
     if result.get("url").is_none() {
-        if let Some(url) = current_url(page).await {
+        if let Ok(Some(url)) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), current_url(page)).await
+        {
             result["url"] = json!(url);
         }
     }
@@ -87,9 +89,19 @@ async fn capture(page: &PageSession) -> Value {
     let mut diagnostic = json!({
         "page_ocr_region": "center_70_percent",
     });
-    let screenshot = match page.screenshot_png(false).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
+    // Abandon a slow diagnostic before the regular CDP command deadline.
+    // Only a separate page command may mark the session unhealthy.
+    let budget = std::time::Duration::from_secs(3);
+    let screenshot = match tokio::time::timeout(budget, page.screenshot_png(false)).await {
+        Err(_) => {
+            diagnostic["page_ocr_error"] = json!("diagnostic screenshot exceeded 3s");
+            if let Err(error) = page.probe_responsive(budget).await {
+                diagnostic["page_error"] = json!(truncate(&format!("page probe failed: {error}")));
+            }
+            return diagnostic;
+        }
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(err)) => {
             diagnostic["page_ocr_error"] = json!(truncate(&format!("screenshot failed: {err}")));
             return diagnostic;
         }

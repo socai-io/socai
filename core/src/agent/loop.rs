@@ -96,6 +96,14 @@ pub enum AgentEvent {
         duration_ms: u64,
         error: Option<String>,
     },
+    ModelConnection {
+        step: u32,
+        attempt: usize,
+        provider: String,
+        state: &'static str,
+        reason: &'static str,
+        timing: Option<crate::util::suspend_clock::ClockInterval>,
+    },
     ApiError {
         step: u32,
         message: String,
@@ -145,6 +153,7 @@ pub struct AgentOptions {
     /// by tools. A recovered call is retried once; failed recovery switches
     /// the loop to bounded local delivery followed by a partial summary.
     pub tool_failure_recovery: Option<SharedToolFailureRecovery>,
+    pub desktop_network_recovery: bool,
     /// Read and update `~/.socai/memories` for this run. Hosted workers turn
     /// this off; their session home is not the durable local task store.
     pub local_memory: bool,
@@ -168,6 +177,7 @@ impl Default for AgentOptions {
             billing_task_id: None,
             remote_ocr: None,
             tool_failure_recovery: None,
+            desktop_network_recovery: false,
             local_memory: true,
         }
     }
@@ -500,13 +510,16 @@ pub async fn run_agent_with_events(
         run_recorder.record_llm_request(step, &request_payload)?;
 
         let llm_started = Instant::now();
-        let response: LLMResponse = match send_with_retry(
+        let response: LLMResponse = match send_chat(
             &backend,
             &system,
             &request_messages,
             &schemas,
             options.max_tokens,
             step,
+            options
+                .desktop_network_recovery
+                .then_some((&events, &mut run_trace)),
         )
         .await
         {
@@ -878,6 +891,12 @@ pub async fn run_agent_with_events(
                 let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
                 let tool_ctx = ctx
                     .clone()
+                    .with_call_recovery(
+                        options
+                            .tool_failure_recovery
+                            .clone()
+                            .filter(|_| degraded_reason.is_none()),
+                    )
                     .with_tool_dir(tool_recorder.dir())
                     .with_progress_sender(Some(progress_tx));
                 emit(
@@ -903,7 +922,6 @@ pub async fn run_agent_with_events(
                     let error = format!("tool skipped because recovery already failed: {reason}");
                     (ToolResult::text(format!("Error: {error}")), Some(error))
                 } else {
-                    let mut retry_number = 0u8;
                     loop {
                         let dispatch = dispatch_tool(&tools, name, &effective_input, &tool_ctx);
                         tokio::pin!(dispatch);
@@ -944,36 +962,15 @@ pub async fn run_agent_with_events(
                             degraded_reason = outcome.1.clone();
                             break outcome;
                         }
-                        let recovery = match &options.tool_failure_recovery {
-                            Some(recovery) if degraded_reason.is_none() => {
-                                recovery.recover_after_tool(name, retry_number).await
-                            }
-                            _ => ToolRecoveryOutcome::NotNeeded,
-                        };
-                        match recovery {
+                        match tool_ctx.recover_dependency().await {
                             ToolRecoveryOutcome::NotNeeded => break outcome,
-                            ToolRecoveryOutcome::Recovered if retry_number == 0 => {
-                                retry_number = 1;
+                            ToolRecoveryOutcome::Recovered => {
                                 info!(
                                     step,
                                     sequence,
                                     tool = name,
                                     "tool dependency recovered; retrying"
                                 );
-                            }
-                            ToolRecoveryOutcome::Recovered => {
-                                let reason = format!(
-                                    "{name} still requires recovery after its single retry"
-                                );
-                                degraded_reason = Some(reason.clone());
-                                let (mut result, _) = outcome;
-                                result.blocks.insert(
-                                0,
-                                ToolResultBlock::text(format!(
-                                    "[Tool execution stopped: {reason}. Use prior results for the final answer.]"
-                                )),
-                            );
-                                break (result, Some(reason));
                             }
                             ToolRecoveryOutcome::Degraded { reason } => {
                                 degraded_reason = Some(reason.clone());
@@ -1176,13 +1173,16 @@ pub async fn run_agent_with_events(
             )?;
             run_recorder.record_llm_request(summary_step, &request_payload)?;
             let llm_started = Instant::now();
-            match send_with_retry(
+            match send_chat(
                 &backend,
                 &last_system,
                 &request_messages,
                 &[],
                 options.max_tokens,
                 summary_step,
+                options
+                    .desktop_network_recovery
+                    .then_some((&events, &mut run_trace)),
             )
             .await
             {
@@ -1431,9 +1431,8 @@ pub async fn run_agent_with_events(
 
 // ---------- small private helpers (not core logic, kept here for locality) ----------
 
-/// Backoff schedule for transient chat failures. Two retries keeps the worst
-/// case bounded: a fully dead network adds at most two extra request
-/// timeouts before the run fails.
+/// Two ordinary resubmissions. A detected suspend on the last desktop
+/// transport attempt grants one further attempt after the route responds.
 const CHAT_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(6)];
 
 /// `backend.send` with retries for transient failures (network transport
@@ -1448,28 +1447,93 @@ pub(crate) async fn send_with_retry(
     max_tokens: u32,
     step: u32,
 ) -> anyhow::Result<LLMResponse> {
-    let mut attempt = 0usize;
+    send_chat(backend, system, messages, schemas, max_tokens, step, None).await
+}
+
+async fn send_chat(
+    backend: &Arc<dyn Backend>,
+    system: &str,
+    messages: &[Message],
+    schemas: &[ToolSchema],
+    max_tokens: u32,
+    step: u32,
+    mut recovery: Option<(&broadcast::Sender<AgentEvent>, &mut RunTraceBuilder)>,
+) -> anyhow::Result<LLMResponse> {
+    use crate::util::suspend_clock::SuspendClock;
+    let mut attempt = 0;
     loop {
-        match backend.send(system, messages, schemas, max_tokens).await {
-            Ok(response) => return Ok(response),
-            Err(error) => {
-                let Some(delay) = CHAT_RETRY_DELAYS.get(attempt).copied() else {
-                    return Err(error);
-                };
-                if !is_transient_api_error(&error) {
-                    return Err(error);
-                }
-                attempt += 1;
-                warn!(
-                    step,
-                    attempt,
-                    delay_secs = delay.as_secs(),
-                    error = %format!("{error:#}"),
-                    "transient LLM error; retrying"
+        attempt += 1;
+        let start = recovery.as_ref().and_then(|_| SuspendClock::sample());
+        let result = backend.send(system, messages, schemas, max_tokens).await;
+        let timing = start.and_then(SuspendClock::elapsed);
+        let monitor_connection = recovery.is_some();
+        let mut notify = |state, reason| {
+            if let Some((events, trace)) = recovery.as_mut() {
+                trace.record_model_connection(step, attempt, state, reason, timing);
+                emit(
+                    events,
+                    AgentEvent::ModelConnection {
+                        step,
+                        attempt,
+                        provider: backend.provider().to_owned(),
+                        state,
+                        reason,
+                        timing,
+                    },
                 );
-                tokio::time::sleep(delay).await;
+            }
+        };
+        let error = match result {
+            Ok(response) => {
+                if attempt > 1 || timing.is_some_and(|t| t.slept()) {
+                    notify("completed", "response_received");
+                }
+                return Ok(response);
+            }
+            Err(error) => error,
+        };
+        if !is_transient_api_error(&error) {
+            return Err(error);
+        }
+        let transport = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<reqwest::Error>());
+        let reason = match transport {
+            Some(e) if e.is_connect() => "connect_failed",
+            Some(e) if e.is_timeout() => "timeout",
+            Some(_) => "transport_error",
+            None => "provider_error",
+        };
+        let delay = if let Some(delay) = CHAT_RETRY_DELAYS.get(attempt - 1) {
+            *delay
+        } else if attempt == CHAT_RETRY_DELAYS.len() + 1
+            && transport.is_some()
+            && timing.is_some_and(|t| t.slept())
+        {
+            // Even the final normal attempt can be interrupted by closing the lid.
+            Duration::from_secs(2)
+        } else {
+            notify("exhausted", reason);
+            return Err(error);
+        };
+        notify("retry_scheduled", reason);
+        warn!(step, attempt, delay_secs = delay.as_secs(), error = %format!("{error:#}"), "transient LLM error; retrying");
+        tokio::time::sleep(delay).await;
+        if monitor_connection && transport.is_some() {
+            let mut wait = Duration::from_secs(2);
+            while let Some(probe) = backend.connectivity_probe() {
+                if probe.timeout(Duration::from_secs(5)).send().await.is_ok() {
+                    break;
+                }
+                if wait == Duration::from_secs(2) {
+                    notify("waiting_for_network", reason);
+                }
+                // The task remains cancellable. Waiting does not spend a model attempt.
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(30));
             }
         }
+        notify("retrying", reason);
     }
 }
 

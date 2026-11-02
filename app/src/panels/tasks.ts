@@ -473,9 +473,15 @@ export namespace agentPanel {
     }
   }
 
+  function lastConversationTurn(stream: HTMLDivElement): HTMLDivElement | undefined {
+    // The conversation-level materials panel follows the last turn.
+    const turns = stream.querySelectorAll<HTMLDivElement>(".thread-inner > .turn");
+    return turns[turns.length - 1];
+  }
+
   function updateLiveTaskMetrics(task: AgentTaskView): void {
     const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${task.task_id}"]`);
-    const metrics = stream?.querySelector<HTMLElement>(".thread-inner > .turn:last-child [data-turn-metrics]");
+    const metrics = stream && lastConversationTurn(stream)?.querySelector<HTMLElement>("[data-turn-metrics]");
     if (metrics) metrics.textContent = liveActivityMetricsText(task);
   }
 
@@ -1894,7 +1900,13 @@ export namespace agentPanel {
     if (!stream) return;
 
     const pinned = isPinnedToBottom(stream);
-    const turn = stream.querySelector<HTMLDivElement>(".thread-inner > .turn:last-child");
+    const turn = lastConversationTurn(stream);
+    if (payload.kind === "model_connection") {
+      const label = t(payload.text === "waiting_for_network" ? "task.waitingForNetwork" : "task.working");
+      for (const el of turn?.querySelectorAll(".activity-toggle__label, .act-row--working .act-row__text") ?? []) {
+        el.textContent = label;
+      }
+    }
     const activity = turn?.querySelector<HTMLDivElement>(".activity");
     if (activity) {
       if (payload.kind === "tool_progress") {

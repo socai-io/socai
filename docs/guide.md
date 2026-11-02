@@ -118,6 +118,10 @@ All three interfaces share the same browser connection, site capabilities, and r
 ## Desktop workflow
 
 The desktop app keeps task history and artifacts for each research task.
+If a model request loses its connection, leave the app open. The activity log
+shows when Socai is waiting for the model service. Once the service responds,
+Socai retries the current step with the tool results it already collected.
+You can stop the task while it is waiting.
 
 ### Research sources
 

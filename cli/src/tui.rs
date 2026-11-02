@@ -851,6 +851,7 @@ fn print_agent_event(event: &AgentEvent) {
                 println!("  ← {name} ({duration_ms}ms): {first}");
             }
         }
+        AgentEvent::ModelConnection { .. } => {}
         AgentEvent::ApiError { step, message } => {
             println!("  ✗ API error on step {step}: {message}");
         }

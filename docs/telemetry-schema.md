@@ -278,6 +278,7 @@ and model in use are captured on `socai_agent_task_start`.
 | Event | Emitted when | Event-specific fields |
 | --- | --- | --- |
 | `socai_browser_connect` | Chrome connection requested, completes, fails, or disconnects | `outcome`, `browser_profile`, `browser_source`, hosted-session `remote_timeout_seconds` / `remote_remaining_seconds`, `error` |
+| `socai_browser_task_recovery_start` | A browser tool detects an unhealthy connection, including a second loss after recovery | `task_id`, `tool_name`, `retry_number` (0 on first loss, 1 on recurrence), `error_type`, `page_timeout_method` when known, `socket_closed` |
 | `socai_browser_task_recovery` | A running browser tool detects CDP loss and recovery completes, fails, or falls back after the one allowed retry | `task_id`, `outcome`, `duration_ms`, `error` |
 | `socai_auth_sms_requested` | User requests an SMS code | `account_phone`, `outcome`, `error` |
 | `socai_auth_login` / `socai_auth_logout` | A login attempt completes or the user logs out | `account_phone`, `account_device_id` on successful login, `outcome`, `error` |
@@ -286,6 +287,8 @@ and model in use are captured on `socai_agent_task_start`.
 | `socai_subscription_checkout` | A WeChat Pay or Alipay order is created or fails | `provider`, `plan_id`, `outcome`, `order_id`, `amount_fen`, `points`, `duration_days`, `error` |
 | `socai_subscription_paid` | Polling first observes a paid subscription order | `order_id`, `amount_fen`, `added_points`, `duration_days`, `pro_active_until` |
 | `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
+| `socai_task_system_wake` | Desktop agent run observed at least 2 seconds of system suspend between samples | `task_id`, `run_id`, `step`, `elapsed_ms` (includes suspend), `awake_ms`, `suspend_ms` |
+| `socai_model_connection` | A desktop model attempt schedules a retry, waits for reachability, retries, exhausts its budget, or succeeds after recovery/suspend | `task_id`, `run_id`, `step`, `attempt` (1-based, the attempt whose result triggered the event), `provider`, `outcome`, `reason`, `elapsed_ms`, `awake_ms`, `suspend_ms` for that attempt (null when unavailable) |
 | `socai_gateway_request_error` | A desktop hosted model HTTP attempt fails during transport or response decoding | `gateway_request_id` (same UUID as gateway logs), `billing_turn_id`, `stage` (connect, send, response_body), `duration_ms`, `timed_out`, `os_error` when available, bounded redacted `error` |
 | `socai_agent_task_end` | A task reaches a terminal state | `task_id`, `run_id`, `provider`, `model`, `outcome`, `steps`, token/cache usage, estimated cost breakdown, authoritative `points_used` when settlement completes, `partial`, `degraded_reason`, `duration_ms`, `error` |
 | `socai_tool_call` | Each tool call completes | `task_id`, `run_id`, `tool_name`, `turn`, `sequence`, `duration_ms`, `ok`, `error`, query/result summaries, and bounded unexpected-page diagnostics when present |
@@ -444,6 +447,11 @@ pipeline for reading what an agent actually did:
   writes, plus estimated input/output/cache cost components, total, currency,
   and pricing source. The root values aggregate the run; `chat` values describe
   one provider call.
+- `model_connection` spans preserve desktop retry and reachability transitions when
+  the event endpoint is offline. Their timestamps mark transitions. Clock fields
+  describe the model attempt that triggered them. The root span also records
+  `socai.elapsed_ms`, `socai.awake_ms`, and `socai.suspend_ms` across the whole
+  run on platforms with both suspend-inclusive and awake-only clocks.
 - root span — `socai.task_text` (capped at 8,000 chars) plus run status and step
   count. Partial completions also carry `socai.partial=true` and a bounded
   `socai.degraded_reason`.

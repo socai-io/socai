@@ -113,6 +113,10 @@ pub(crate) enum AgentTaskEventKind {
         result_file: Option<String>,
         text: String,
     },
+    ModelConnection {
+        step: u32,
+        text: String,
+    },
     ApiError {
         step: u32,
         message: String,
@@ -199,6 +203,7 @@ impl AgentTaskEventKind {
             Self::ToolProgress { .. } => "tool_progress",
             Self::ToolResult { .. } => "tool_result",
             Self::ToolError { .. } => "tool_error",
+            Self::ModelConnection { .. } => "model_connection",
             Self::ApiError { .. } => "api_error",
             Self::Done { .. } => "done",
             Self::Completed { .. } => "completed",
@@ -516,6 +521,10 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
             content,
             None,
         ),
+        AgentEvent::ModelConnection { step, state, .. } => AgentTaskEventKind::ModelConnection {
+            step: *step,
+            text: (*state).to_owned(),
+        },
         AgentEvent::ApiError { step, message } => AgentTaskEventKind::ApiError {
             step: *step,
             message: message.clone(),

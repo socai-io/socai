@@ -261,7 +261,7 @@ impl PageSession {
 
     pub async fn transport_diagnostic(&self) -> Value {
         let c = self.connection.read().await;
-        json!({"target_id":c.target_id,"session_id":c.session_id,"health":c.client.health_diagnostic()})
+        json!({"target_id":c.target_id,"session_id":c.session_id,"health":c.client.health_diagnostic(c.session_id.as_deref())})
     }
 
     /// Rebind this stable page handle to a freshly-created target. All tools
@@ -619,6 +619,13 @@ impl PageSession {
     /// Full accessibility tree for the document as JSON (`{ "nodes": [...] }`).
     pub(crate) async fn ax_tree_json(&self) -> anyhow::Result<Value> {
         self.execute("Accessibility.getFullAXTree", json!({})).await
+    }
+
+    /// Probe the renderer without requesting another diagnostic screenshot.
+    pub(crate) async fn probe_responsive(&self, timeout: Duration) -> anyhow::Result<()> {
+        self.execute_with_timeout("Runtime.evaluate", json!({"expression": "1"}), timeout)
+            .await?;
+        Ok(())
     }
 
     pub async fn page_info(&self) -> anyhow::Result<Value> {

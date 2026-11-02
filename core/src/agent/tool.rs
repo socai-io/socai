@@ -188,6 +188,12 @@ pub trait ToolFailureRecovery: std::fmt::Debug + Send + Sync {
 
 pub type SharedToolFailureRecovery = Arc<dyn ToolFailureRecovery>;
 
+// A composite tool may recover in place. Its caller shares the same retry budget.
+struct CallRecovery {
+    hook: SharedToolFailureRecovery,
+    last: tokio::sync::Mutex<ToolRecoveryOutcome>,
+}
+
 /// Per-run shared context. Counters, dedup tables, and the run-state handle
 /// live in `Arc<Mutex>` so tools can clone the context and still cooperate.
 #[derive(Clone)]
@@ -203,6 +209,7 @@ pub struct ToolContext {
     /// Desktop task identifier used to aggregate paid cloud tools with the
     /// same turn's hosted LLM usage. Other entrypoints leave this unset.
     pub billing_task_id: Option<String>,
+    call_recovery: Option<Arc<CallRecovery>>,
     remote_ocr: Option<RemoteOcrConfig>,
     pub run_state: Option<Arc<RunState>>,
     auxiliary_usage: Arc<Mutex<crate::agent::TokenUsage>>,
@@ -326,6 +333,7 @@ impl ToolContext {
             active_tool_name: String::new(),
             background_media_generation: None,
             billing_task_id: None,
+            call_recovery: None,
             remote_ocr: None,
             run_state: None,
             auxiliary_usage: Arc::new(Mutex::new(crate::agent::TokenUsage::default())),
@@ -341,6 +349,49 @@ impl ToolContext {
             loaded_skills: Arc::new(Mutex::new(BTreeMap::new())),
             recovery_evidence: Arc::new(Mutex::new(RecoveryEvidenceState::default())),
         }
+    }
+
+    pub(crate) fn with_call_recovery(mut self, hook: Option<SharedToolFailureRecovery>) -> Self {
+        self.call_recovery = hook.map(|hook| {
+            Arc::new(CallRecovery {
+                hook,
+                last: tokio::sync::Mutex::new(ToolRecoveryOutcome::NotNeeded),
+            })
+        });
+        self
+    }
+
+    pub(crate) fn can_resume_tool(&self, name: &str) -> bool {
+        self.call_recovery.is_some() && self.active_tool_name == name
+    }
+
+    pub(crate) async fn recover_dependency(&self) -> ToolRecoveryOutcome {
+        let Some(recovery) = &self.call_recovery else {
+            return ToolRecoveryOutcome::NotNeeded;
+        };
+        let mut last = recovery.last.lock().await;
+        let retry = match &*last {
+            ToolRecoveryOutcome::NotNeeded => 0,
+            ToolRecoveryOutcome::Recovered => 1,
+            ToolRecoveryOutcome::Degraded { .. } => return last.clone(),
+        };
+        let outcome = recovery
+            .hook
+            .recover_after_tool(&self.active_tool_name, retry)
+            .await;
+        let outcome = match outcome {
+            ToolRecoveryOutcome::Recovered if retry > 0 => ToolRecoveryOutcome::Degraded {
+                reason: format!(
+                    "{} still requires recovery after its single retry",
+                    self.active_tool_name
+                ),
+            },
+            outcome => outcome,
+        };
+        if outcome != ToolRecoveryOutcome::NotNeeded {
+            *last = outcome.clone();
+        }
+        outcome
     }
 
     pub fn with_progress_sender(mut self, progress: Option<ToolProgressSender>) -> Self {

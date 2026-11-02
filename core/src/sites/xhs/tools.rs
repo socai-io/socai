@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use crate::agent::compaction::truncate;
 use crate::agent::tool::{
     ToolProgressEvent, ToolProgressPhase, ToolProgressSender, ToolProgressStatus,
+    ToolRecoveryOutcome,
 };
 use crate::agent::{make_run_dir, Backend as LlmProvider, Tool, ToolContext, ToolResult};
 use crate::cdp::{with_snapshot_recording, PageSession};
@@ -1715,10 +1716,9 @@ async fn scan_card_note(
         }
     };
 
-    // A rate-limit/login page is a session-level blocker, not a missing note.
-    // Avoid loading comments or touching history; the outer scan loop will stop
-    // after preserving this entry for the agent and telemetry.
-    if recovery_blocker(&entry).is_some() {
+    // Comments and history must belong to a successfully identified note.
+    if entry.get("ok").and_then(Value::as_bool) == Some(false) || recovery_blocker(&entry).is_some()
+    {
         if let Some(map) = entry.as_object_mut() {
             map.insert("scan_perf".into(), Value::Object(scan_perf));
         }
@@ -5518,6 +5518,7 @@ impl Tool for SearchTool {
         let mut stop_reason = String::new();
         let mut page_error: Option<String> = None;
         let mut recovery_attempted = false;
+        let mut resumed_scan = false;
         let mut consecutive_note_failures = 0usize;
         let scan_deadline =
             std::time::Instant::now() + std::time::Duration::from_secs(SEARCH_SCAN_TIMEOUT_SECONDS);
@@ -5543,22 +5544,12 @@ impl Tool for SearchTool {
             // The incident showed homepage cards matching the search-card
             // extractor after history.back() left the results page.
             let loop_url = xhs.current_url().await.unwrap_or_default();
-            if !loop_url.contains("/search_result") {
-                stop_reason = "search_route_lost".to_string();
-                page_error = Some("search left the results page".to_string());
-                append_search_debug_event(
-                    ctx,
-                    json!({
-                        "event": "search_route_lost",
-                        "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
-                        "url": loop_url,
-                        "notes_preserved": notes.len(),
-                    }),
-                );
-                break;
-            }
-
-            let cards = match xhs.extract_search_cards().await {
+            let cards = if loop_url.contains("/search_result") {
+                xhs.extract_search_cards().await
+            } else {
+                Err(anyhow::anyhow!("search left the results page"))
+            };
+            let cards = match cards {
                 Ok(cards) => cards,
                 Err(err) => {
                     let error = format!("{err:#}");
@@ -5574,15 +5565,31 @@ impl Tool for SearchTool {
                         }),
                     );
 
-                    if url == "about:blank" && !recovery_attempted {
-                        recovery_attempted = true;
+                    let resume_reason =
+                        if ctx.can_resume_tool("search") && self.page.transport_closed().await {
+                            match ctx.recover_dependency().await {
+                                ToolRecoveryOutcome::Recovered => Some("cdp_reconnected"),
+                                ToolRecoveryOutcome::Degraded { reason } => {
+                                    stop_reason = "page_recovery_failed".to_string();
+                                    page_error = Some(reason);
+                                    break;
+                                }
+                                ToolRecoveryOutcome::NotNeeded => None,
+                            }
+                        } else if url == "about:blank" && !recovery_attempted {
+                            recovery_attempted = true;
+                            Some("about_blank")
+                        } else {
+                            None
+                        };
+                    if let Some(resume_reason) = resume_reason {
                         let recovery_t0 = std::time::Instant::now();
                         append_search_debug_event(
                             ctx,
                             json!({
                                 "event": "search_recovery_started",
                                 "elapsed_ms": browse_t0.elapsed().as_millis() as u64,
-                                "reason": "about_blank",
+                                "reason": resume_reason,
                             }),
                         );
                         let recovery_error = match xhs
@@ -5602,6 +5609,8 @@ impl Tool for SearchTool {
                                 search = recovered;
                                 cursor = 0;
                                 stalls = 0;
+                                consecutive_note_failures = 0;
+                                resumed_scan = true;
                                 append_search_debug_event(
                                     ctx,
                                     json!({
@@ -5637,6 +5646,8 @@ impl Tool for SearchTool {
                     } else {
                         stop_reason = if url == "about:blank" {
                             "page_lost"
+                        } else if !loop_url.contains("/search_result") {
+                            "search_route_lost"
                         } else {
                             "search_page_read_failed"
                         }
@@ -5670,6 +5681,10 @@ impl Tool for SearchTool {
                     }
                     break;
                 }
+                if resumed_scan {
+                    // Skipping previously read cards does not scroll them into view.
+                    let _ = xhs.scroll_feed(stalls == 1).await;
+                }
                 stalls += 1;
                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 continue;
@@ -5684,13 +5699,12 @@ impl Tool for SearchTool {
             } else {
                 format!("pos:{}", card.position)
             };
-            if !seen.insert(dedup) {
+            if seen.contains(&dedup) {
                 continue;
             }
             if !card.note_id.is_empty() {
                 ctx.add_search_note_ids(std::slice::from_ref(&card.note_id));
             }
-            selected.push(card.clone());
             let item_index = notes.len() + 1;
             let title = progress_title(&card);
             scan_progress.reading_started(item_index, title.clone());
@@ -5727,6 +5741,15 @@ impl Tool for SearchTool {
                 ocr,
             )
             .await;
+            if entry.get("ok") == Some(&Value::Bool(false))
+                && ctx.can_resume_tool("search")
+                && self.page.transport_closed().await
+            {
+                // Leave this card eligible after rebinding. Earlier notes and their
+                // pending media work stay in this invocation.
+                continue;
+            }
+            seen.insert(dedup);
             let blocker = recovery_blocker(&entry);
             if entry.get("ok").and_then(Value::as_bool) == Some(true)
                 || entry.get("skipped").is_some()
@@ -5743,6 +5766,22 @@ impl Tool for SearchTool {
                     "{consecutive_note_failures} consecutive notes failed to open or read"
                 ));
             }
+            if entry["error"]
+                .as_str()
+                .is_some_and(|error| error.starts_with("stale_note:"))
+                && !failure_limit_reached
+            {
+                // Do not count a confirmed mismatch toward the requested sample.
+                let _ = xhs.close_note(0.6).await;
+                append_search_debug_event(
+                    ctx,
+                    json!({
+                        "event": "stale_note_skipped", "note_id": card.note_id, "error": entry["error"],
+                    }),
+                );
+                continue;
+            }
+            selected.push(card.clone());
             notes.push(entry);
             let idx = notes.len() - 1;
             if ocr {
@@ -5962,6 +6001,14 @@ impl Tool for SearchTool {
         // agent/CLI output stays small, then point at the artifact for the rest.
         lean_scan_payload(&mut payload);
         attach_artifact_pointer(&mut payload, artifact_path, ARTIFACT_EXTRA_NOTE_PROPERTIES);
+        // The scan already owns a deliverable. If its last close or background
+        // work overlapped a disconnect, repair for the next tool without replaying it.
+        if !selected.is_empty()
+            && ctx.can_resume_tool("search")
+            && self.page.transport_closed().await
+        {
+            ctx.recover_dependency().await;
+        }
         attach_hosted_agent_skip_note(&mut payload, asr_skipped);
         Ok(json_result(&payload))
     }

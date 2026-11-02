@@ -1000,6 +1000,14 @@ impl Backend for OpenAICompatBackend {
         &self.model
     }
 
+    fn connectivity_probe(&self) -> Option<reqwest::RequestBuilder> {
+        Some(self.client.head(if self.provider == Provider::OpenAI {
+            self.responses_url()
+        } else {
+            self.url()
+        }))
+    }
+
     fn request_payload(
         &self,
         system: &str,

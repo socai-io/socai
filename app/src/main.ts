@@ -192,6 +192,7 @@ export interface AgentTaskEventPayload {
     | "tool_progress"
     | "tool_result"
     | "tool_error"
+    | "model_connection"
     | "api_error"
     | "done"
     | "completed"

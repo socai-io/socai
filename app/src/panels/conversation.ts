@@ -593,8 +593,10 @@ function renderActivity(
   const dot = showWorking
     ? `<span class="activity-toggle__dot"><i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i></span>`
     : "";
+  const last = body.at(-1);
+  const workingLabel = t(last?.kind === "model_connection" && last.text === "waiting_for_network" ? "task.waitingForNetwork" : "task.working");
   const workingRow = showWorking
-    ? `<div class="act-row act-row--working"><span class="act-row__glyph"><i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i></span><span class="act-row__text">${esc(t("task.working"))}</span></div>`
+    ? `<div class="act-row act-row--working"><span class="act-row__glyph"><i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i></span><span class="act-row__text">${esc(workingLabel)}</span></div>`
     : "";
 
   return `
@@ -607,7 +609,7 @@ function renderActivity(
       >
         <span class="activity-toggle__chev" aria-hidden="true">${open ? "▾" : "▸"}</span>
         ${dot}
-        <span class="activity-toggle__label">${esc(showWorking ? t("task.working") : t("task.activityLabel"))}</span>
+        <span class="activity-toggle__label">${esc(showWorking ? workingLabel : t("task.activityLabel"))}</span>
       </button>
       ${open ? `<div class="activity activity--transcript">${body.map(renderEventRow).join("")}${workingRow}</div>` : ""}
       <div class="research-live-metrics">${meta}</div>
@@ -623,6 +625,7 @@ export function renderEventRow(ev: AgentTaskEventPayload): string {
   if (ev.kind === "api_error") return renderTaskApiErrorEvent(ev);
   const text = ev.kind === "tool_progress"
     ? toolProgressText(ev)
+    : ev.kind === "model_connection" ? t(ev.text === "waiting_for_network" ? "task.waitingForNetwork" : "task.retryingModel")
     : formatTaskInterruptionMessage(ev.text);
   return `<div class="act-row act-row--${esc(ev.kind)}"${progressAttr}><span class="act-row__glyph" aria-hidden="true">${eventGlyph(ev.kind)}</span><span class="act-row__text">${esc(text)}</span></div>`;
 }
@@ -1048,6 +1051,7 @@ function eventGlyph(kind: AgentTaskEventPayload["kind"]): string {
     case "tool_progress": return "·";
     case "tool_result": return "←";
     case "tool_error": return "✗";
+    case "model_connection": return "↻";
     case "api_error": return "✗";
     case "done": return "✓";
     case "completed": return "✓";

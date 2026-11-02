@@ -27,7 +27,7 @@ pub struct RawCdpClient {
     tx: mpsc::Sender<CommandRequest>,
     unhealthy: Arc<AtomicBool>,
     document_responses: broadcast::Sender<(Option<String>, Value)>,
-    unhealthy_sessions: Arc<Mutex<std::collections::HashSet<String>>>,
+    unhealthy_sessions: Arc<Mutex<HashMap<String, String>>>,
     diagnostic: Arc<ConnectionDiagnostic>,
 }
 
@@ -107,7 +107,7 @@ impl RawCdpClient {
             tx,
             document_responses,
             unhealthy: Arc::new(AtomicBool::new(false)),
-            unhealthy_sessions: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            unhealthy_sessions: Arc::new(Mutex::new(HashMap::new())),
             diagnostic,
         })
     }
@@ -133,7 +133,7 @@ impl RawCdpClient {
                 self.unhealthy_sessions
                     .lock()
                     .expect("poisoned")
-                    .contains(id)
+                    .contains_key(id)
             })
     }
 
@@ -143,9 +143,10 @@ impl RawCdpClient {
         }
     }
 
-    pub(crate) fn health_diagnostic(&self) -> Value {
+    pub(crate) fn health_diagnostic(&self, session: Option<&str>) -> Value {
         serde_json::json!({"connection_id":self.diagnostic.id,"socket_closed":self.tx.is_closed(),
             "marked_unhealthy":self.unhealthy.load(Ordering::Acquire),
+            "page_timeout_method":session.and_then(|id| self.unhealthy_sessions.lock().ok()?.get(id).cloned()),
             "unhealthy_session_count":self.unhealthy_sessions.lock().map(|s| s.len()).unwrap_or_default(),
             "first_failure":self.diagnostic.first_failure.lock().ok().and_then(|v| v.clone())})
     }
@@ -198,7 +199,7 @@ impl RawCdpClient {
                     self.unhealthy_sessions
                         .lock()
                         .expect("poisoned")
-                        .insert(session.into());
+                        .insert(session.into(), method.clone());
                 } else {
                     self.unhealthy.store(true, Ordering::Release);
                 }
