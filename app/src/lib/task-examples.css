@@ -1,13 +1,67 @@
+/* Workset layout referenced against Manus' live homepage, 2026-11-02.
+   Platform marks retain their own identity; action SVGs are locally bundled. */
 .task-examples { width: 100%; color: var(--fg); }
-.task-examples > p { margin: 0 0 10px; }
-.task-examples details { border-top: 1px solid var(--line); }
-.task-examples summary { display: flex; align-items: center; gap: 10px; padding: 12px 4px; cursor: pointer; font-size: 14px; list-style: none; }
-.task-examples summary::-webkit-details-marker { display: none; }
-.task-examples summary::before { content: "›"; display: inline-block; transition: transform 120ms; }
-.task-examples details[open] > summary::before { transform: rotate(90deg); }
-.task-examples summary:focus-visible, .task-examples button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
-.task-examples__count { margin-left: auto; opacity: .55; font-size: 12px; }
-.task-examples__list { padding: 0 8px 8px 18px; }
-.task-examples__prompts { display: grid; gap: 6px; padding: 0 0 12px 18px; }
-.task-examples__prompts button { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 13px; line-height: 1.6; cursor: pointer; }
-.task-examples__prompts button:hover { background: color-mix(in srgb, currentColor 4%, transparent); }
+.task-worksets { display: flex; justify-content: center; flex-wrap: wrap; gap: 9px; }
+.task-worksets > button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 14px; color: var(--fg-muted); background: transparent; border: 1px solid var(--line); border-radius: 999px; font: inherit; font-size: 13px; line-height: 20px; cursor: pointer; transition: background 160ms, border-color 160ms; }
+.task-worksets > button:hover, .task-worksets > button[aria-expanded="true"] { border-color: var(--line-strong); background: var(--surface); }
+.task-worksets .platform-icon, .task-worksets .platform-icon img { display: block; width: 17px; height: 17px; object-fit: contain; border-radius: 3px; }
+.task-examples button:focus-visible, .task-workset__search input:focus-visible { outline: 2px solid var(--focus-ring, var(--fg)); outline-offset: 3px; }
+.task-workset { box-sizing: border-box; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 0; width: min(860px, calc(100vw - 48px)); max-height: min(780px, calc(100dvh - 64px)); overflow: hidden; box-shadow: var(--shadow-pop); }
+.task-workset[open] { display: flex; flex-direction: column; animation: workset-enter 220ms cubic-bezier(.2,.8,.2,1) both; }
+.task-workset::backdrop { background: rgb(30 29 26 / 14%); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); animation: workset-backdrop 220ms ease both; }
+.task-workset__header { flex: none; display: flex; align-items: center; gap: 14px; padding: 26px 28px 22px; }
+.task-workset__brand { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 13px; background: var(--canvas); }
+.task-workset__brand .platform-icon, .task-workset__brand img { display: block; width: 24px; height: 24px; object-fit: contain; border-radius: 4px; }
+.task-workset__header h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.025em; line-height: 1.4; }
+.task-workset__close { flex: none; margin-left: auto; align-self: flex-start; display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; color: var(--fg-soft); cursor: pointer; }
+.task-workset__close:hover { background: var(--surface-2); color: var(--fg); }
+.task-workset__close svg { width: 18px; height: 18px; }
+.task-workset__toolbar { flex: none; display: flex; align-items: center; gap: 16px; padding: 0 28px 18px; }
+.task-workset__search { display: block; flex: 1; min-width: 0; }
+.task-workset__search input { box-sizing: border-box; width: 100%; min-width: 0; height: 38px; padding: 8px 12px; border: 1px solid transparent; border-radius: 9px; background: var(--canvas); color: var(--fg); font: inherit; font-size: 12px; }
+.task-workset__search input::placeholder { color: var(--fg-soft); }
+.task-workset__search input:focus { border-color: var(--line-strong); }
+.task-workset__body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 10px; padding: 0 28px 24px; overflow: auto; overscroll-behavior: contain; min-height: 0; }
+.task-workset__card { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); transition: border-color 160ms, background 160ms; }
+.task-workset__card[hidden] { display: none; }
+.task-workset__card:hover, .task-workset__card:focus-within { border-color: var(--line-strong); background: var(--canvas); }
+.task-workset__card > button:first-child { display: block; flex: 1; padding: 16px 16px 8px; border: 0; border-radius: 12px; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.task-workset__card-title { display: flex; align-items: center; gap: 9px; font-size: 14px; line-height: 24px; }
+.task-workset__card-title strong { font-size: inherit; font-weight: 550; }
+.task-workset__icon { display: inline-flex; color: var(--fg-soft); }
+.task-workset__icon svg { width: 18px; height: 18px; stroke-width: 1.6; }
+.task-workset__choose { margin-left: auto; display: inline-flex; color: var(--fg-faint); }
+.task-workset__choose svg { width: 14px; height: 14px; }
+.task-workset__description { display: block; font-size: 12px; line-height: 1.8; color: var(--fg-soft); margin-top: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-workset__alternate { align-self: flex-start; display: inline-flex; align-items: center; gap: 5px; margin: 0 12px 11px; padding: 4px; color: var(--fg-soft); border: 0; border-radius: 5px; background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
+.task-workset__alternate svg { width: 12px; height: 12px; stroke-width: 1.5; }
+.task-workset__alternate:hover { color: var(--fg); background: var(--surface-2); }
+.task-workset__empty { margin: 0; padding: 48px 24px; color: var(--fg-soft); text-align: center; font-size: 13px; }
+.task-workset__empty[hidden] { display: none; }
+.task-workset__confirmation { flex: none; padding: 14px 28px; margin-bottom: 14px; border-block: 1px solid var(--line); background: var(--canvas); }
+.task-workset__confirmation[hidden] { display: none; }
+.task-workset__confirmation p { margin: 0 0 10px; font-size: 13px; }
+.task-workset__confirmation > div { display: flex; gap: 8px; }
+.task-workset__confirmation button { padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; }
+.task-workset__confirmation [data-replace-draft] { color: var(--canvas); background: var(--fg); border-color: var(--fg); }
+.prompt-template { position: relative; flex: 1; width: 100%; min-width: 0; }
+.prompt-template > .composer__input { position: relative; z-index: 1; display: block; box-sizing: border-box; width: 100%; background: transparent; }
+.prompt-template__mirror { position: absolute; top: 0; left: 0; box-sizing: border-box; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; color: transparent; pointer-events: none; }
+.prompt-template__mirror mark { color: transparent; background: color-mix(in srgb, var(--fg) 9%, transparent); border-radius: 4px; }
+.prompt-template__fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 3px 2px; color: var(--fg-soft); font-size: 11px; }
+.prompt-template__fields[hidden], .prompt-template__mirror[hidden] { display: none; }
+.prompt-template__fields > button { padding: 4px 8px; color: var(--fg-muted); border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); cursor: pointer; font: inherit; }
+@keyframes workset-enter { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes workset-backdrop { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 600px) {
+  .task-worksets { gap: 7px; }
+  .task-worksets > button { min-height: 36px; padding: 7px 11px; font-size: 12px; }
+  .task-workset { max-height: calc(100dvh - 24px); width: calc(100vw - 24px); border-radius: 16px; }
+  .task-workset__body { grid-template-columns: 1fr; padding: 0 16px 16px; }
+  .task-workset__header { gap: 10px; padding: 20px 16px 18px; }
+  .task-workset__brand { width: 38px; height: 38px; border-radius: 11px; }
+  .task-workset__header h2 { font-size: 18px; }
+  .task-workset__toolbar { padding: 0 16px 14px; gap: 12px; }
+  .task-workset__confirmation { padding: 12px 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .task-workset[open], .task-workset::backdrop { animation: none; } .task-worksets > button, .task-workset__card { transition: none; } }

@@ -23,6 +23,7 @@
     "dev:stripe": "bash scripts/dev-stripe-sandbox.sh"
   },
   "dependencies": {
+    "opencc-js": "1.4.2",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "dompurify": "^3.4.8",

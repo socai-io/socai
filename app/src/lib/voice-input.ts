@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import { t } from "./i18n";
+import { getLanguage, t } from "./i18n";
+import { normalizeVoiceTranscript, prepareVoiceTranscript } from "./voice-transcript";
 
 export type VoicePhase = "idle" | "requesting" | "recording" | "transcribing";
 export type VoiceRoute = "cloud" | "local";
@@ -148,6 +149,7 @@ export namespace voiceInput {
   }
 
   async function startRecording(): Promise<void> {
+    prepareVoiceTranscript(getLanguage());
     const generation = captureGeneration + 1;
     captureGeneration = generation;
     phase = "requesting";
@@ -220,7 +222,7 @@ export namespace voiceInput {
       const result = await invoke<VoiceTranscript>("voice_input_transcribe", {
         audioBase64: bytesToBase64(wav),
       });
-      const text = result.text.trim();
+      const text = await normalizeVoiceTranscript(result.text, getLanguage());
       if (!text) throw new Error(t("voice.error.noSpeech"));
       void refresh();
       return text;
