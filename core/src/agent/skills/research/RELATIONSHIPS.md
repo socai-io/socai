@@ -32,6 +32,13 @@ If kind and uncertain conflict, the tool conservatively stores an uncertain
 hypothesis and reports the normalized edge ids. Review the missing evidence;
 do not treat normalization as verification. A submitted comparison still needs
 sources for both endpoints, and malformed updates are rejected before persistence.
+Every source lead_id must exactly equal that edge's from or to id, not a third
+related record. Updates are atomic: if any validation fails, none of that update's
+leads, relations, summary or platform changes are saved. Correct the identified
+error and resubmit the complete rejected batch (including its leads), or save the
+leads successfully first and then submit the relations. Do not retry relationships
+alone after a failed batch that introduced their endpoints. Never remove evidence
+requirements or invent nodes to make an update pass.
 When useful batches arrive, add meaningful connections alongside isolated leads.
 At synthesis the parent compares across platforms and checks duplicate identities;
 workers only connect records in their assigned scope. Reuse known edge ids.
