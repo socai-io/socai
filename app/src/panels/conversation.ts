@@ -12,12 +12,11 @@
 //! The same chat composer serves both faces: pinned under the thread in
 //! "reply" mode (disabled while that conversation runs), and centered with the
 //! hero in the new-task compose pane
-//! (renderComposePane), which the connect overlay masks until chrome is up.
+//! (renderComposePane).
 //!
 //! Rendering only; state and bindings live in tasks.ts.
 
 import type { AgentArtifact, AgentTaskEventPayload, AgentTaskSnapshot, NoteData, Status } from "../main";
-import { sourcesNeedBrowser } from "../lib/platforms";
 import { esc } from "../lib/html";
 import { renderTaskExamples } from "../lib/task-examples";
 import { platformIcon, platformLabel, RESEARCH_PLATFORMS } from "../lib/platforms";
@@ -66,13 +65,9 @@ export interface ComposerProps {
   replyModelOverride?: string;
   /** True while the shown task runs — the composer waits for the slot. */
   running: boolean;
-  /**
-   * Configured browser source is the remote hosted browser. Disconnected is
-   * routine there (hosted sessions expire between runs) and submitting a run
-   * reconnects on demand, so the connect overlay and send gating don't apply.
-   */
   remoteProfile: boolean;
   managedProfile: boolean;
+  chromeSetupOpen: boolean;
   chromeSetupState: ChromeSetupState;
   chromeSetupError: string;
   /** Cloud microphone availability and the current recording phase. */
@@ -82,6 +77,7 @@ export interface ComposerProps {
 export interface ConversationProps {
   task: AgentTaskView;
   running: boolean;
+  pendingPrompt: string | null;
   /** Resolves a turn's activity fold state (tasks.ts owns the toggles). */
   isActivityOpen: (turnIndex: number, defaultOpen: boolean) => boolean;
   /** Download/open progress survives the full-shell rerenders owned by tasks.ts. */
@@ -142,6 +138,7 @@ export function renderConversation(props: ConversationProps): string {
             props.artifactPreviewPath,
             props.isIntermediateOpen,
           )}
+          ${props.pendingPrompt ? renderUserPrompt(props.pendingPrompt) : ""}
         </div>
       </div>
       <div class="composer-dock">
@@ -152,10 +149,12 @@ export function renderConversation(props: ConversationProps): string {
 }
 
 // ── new-task compose (centered) ──────────────────────────────────────
-// A centered hero + the same chat composer. When chrome isn't connected the
-// form is masked behind the connect overlay.
-export function renderComposePane(composer: ComposerProps): string {
-  const gated = sourcesNeedBrowser(composer.sites, composer.researchMode) && !composer.remoteProfile && !composer.managedProfile && composer.status.state !== "connected";
+export function renderComposePane(composer: ComposerProps, pendingPrompt: string | null): string {
+  if (pendingPrompt) return `
+    <section class="conversation">
+      <div class="thread"><div class="thread-inner">${renderUserPrompt(pendingPrompt)}</div></div>
+      <div class="composer-dock">${renderComposer(composer)}</div>
+    </section>`;
   return `
     <div class="compose-pane">
       <div class="new-task-compose">
@@ -163,13 +162,7 @@ export function renderComposePane(composer: ComposerProps): string {
           <h2 class="t-h2">${esc(t("task.hero"))}</h2>
           <p class="t-small subtle">${esc(t("task.lede"))}</p>
         </div>
-        ${gated ? renderSourcePicker(composer, false) : ""}
-        <div class="compose-form-stack ${gated ? "is-masked" : ""}">
-          <div class="compose-form-inner" aria-hidden="${gated ? "true" : "false"}">
-            ${renderComposer(composer, gated)}
-          </div>
-          ${gated ? renderConnectOverlay(composer) : ""}
-        </div>
+        ${renderComposer(composer)}
         ${renderTaskExamples()}
       </div>
     </div>
@@ -178,19 +171,10 @@ export function renderComposePane(composer: ComposerProps): string {
 
 function renderConnectOverlay(composer: ComposerProps): string {
   const connecting = composer.status.state === "connecting";
-  if (composer.managedProfile) return `
-    <div class="connect-overlay" role="dialog" aria-label="${esc(t("chrome.requiredAria"))}">
-      <h3 class="connect-overlay-head">${esc(t("chrome.managedTitle"))}</h3>
-      <p class="t-small subtle">${esc(t("chrome.managedHelp"))}</p>
-      <button id="overlay-chrome-connect" type="button" class="btn-primary connect-setup-action" ${connecting ? "disabled" : ""}>
-        ${esc(t(connecting ? "chrome.connectingCta" : "chrome.connectCta"))}
-      </button>
-      ${composer.chromeSetupError ? `<p class="t-small" role="alert">${esc(composer.chromeSetupError)}</p>` : ""}
-    </div>`;
   const ready = composer.chromeSetupState === "ready";
   const permissionRequired = composer.chromeSetupState === "permission_required";
   return `
-    <div class="connect-overlay" role="dialog" aria-label="${esc(t("chrome.requiredAria"))}">
+    <div class="connect-overlay" role="region" aria-label="${esc(t("chrome.requiredAria"))}">
       <h3 class="connect-overlay-head">${esc(t("chrome.setupTitle"))}</h3>
       <div class="connect-overlay-steps">
         <section class="connect-setup-step ${ready ? "is-complete" : "is-active"}">
@@ -315,8 +299,9 @@ function buildTurn(
 ): { userText: string; userAt: number | null; body: AgentTaskEventPayload[]; answerText: string | null; answerAt: number | null } {
   const startedIndex = events.findIndex((ev) => ev.kind === "started");
   const started = startedIndex >= 0 ? events[startedIndex] : null;
-  const userText = started ? started.task ?? "" : isFirst ? task.task : "";
-  const userAt = started ? started.created_at : isFirst ? task.created_at : null;
+  const queued = events.find(event => event.kind === "queued");
+  const userText = started?.task ?? queued?.snapshot?.current_message ?? (isFirst ? task.task : "");
+  const userAt = started?.created_at ?? queued?.created_at ?? (isFirst ? task.created_at : null);
   let body = events.filter((_, index) => index !== startedIndex);
 
   let answerText: string | null = null;
@@ -336,6 +321,14 @@ function buildTurn(
   );
   body = body.filter((event) => event.kind !== "failed" || !apiErrors.has(event.text.trim()));
   return { userText, userAt, body, answerText, answerAt };
+}
+
+function renderUserPrompt(text: string, at?: number | null): string {
+  const label = at ? `${t("task.you")} · ${formatTaskTimestamp(at)}` : t("task.you");
+  return `<div class="conv-user">
+    <span class="conv-user__label">${esc(label)}</span>
+    <p class="conv-user__bubble">${esc(text)}</p>
+  </div>`;
 }
 
 function renderTurn(
@@ -383,7 +376,7 @@ function renderTurn(
     } else if (task.error) {
       const error = task.status === "interrupted"
         ? formatTaskInterruptionMessage(task.error)
-        : task.error;
+        : task.error === "guest_login_required" ? t("auth.trialUsed") : task.error;
       answer = `<pre class="conv-error">${esc(error)}</pre>`;
       if (finishedAt) metaBits.push(finishedAt);
     }
@@ -417,17 +410,9 @@ function renderTurn(
       </div>`
     : "";
 
-  const userLabel = userAt ? `${t("task.you")} · ${formatTaskTimestamp(userAt)}` : t("task.you");
-  const user = userText
-    ? `<div class="conv-user">
-        <span class="conv-user__label">${esc(userLabel)}</span>
-        <p class="conv-user__bubble">${esc(userText)}</p>
-      </div>`
-    : "";
-
   return `
     <div class="turn">
-      ${user}
+      ${userText ? renderUserPrompt(userText, userAt) : ""}
       ${renderActivity(task, body, index, showWorking, metrics, isActivityOpen)}
       ${isLast ? `<div data-research-board>${renderResearchBoard(task)}</div>` : ""}
       ${answer}
@@ -784,16 +769,10 @@ function renderConvMeta(bits: string[]): string {
 }
 
 // ── composer (pinned) — starts a new task OR continues the thread ────
-function renderComposer(c: ComposerProps, hideSources = false): string {
-  const connected = c.status.state === "connected";
-  const connecting = c.status.state === "connecting";
+function renderComposer(c: ComposerProps): string {
   const disabled = c.submitting || c.running;
-  // A remote profile submits while disconnected: the run reconnects (minting
-  // a fresh hosted session) on demand.
-  const needsConnection = sourcesNeedBrowser(c.sites, c.researchMode) && !connected && !c.remoteProfile && !c.managedProfile;
   const sendDisabled = disabled
     || !c.value.trim()
-    || needsConnection
     || !c.modelReady
     || c.voice.phase !== "idle";
   const voiceDisabled = c.voice.phase === "recording"
@@ -840,21 +819,11 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
     : c.voice.phase === "requesting" || c.voice.phase === "transcribing"
       ? `<span class="composer__send-dot" aria-hidden="true"></span>`
       : `<svg class="composer__voice-glyph" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0"></path><path d="M12 17v4"></path><path d="M9 21h6"></path></svg>`;
-  const connectHint = connected || !sourcesNeedBrowser(c.sites, c.researchMode)
-    ? ""
-    : c.remoteProfile
-      ? `<p class="composer__hint">${esc(t("chrome.remoteAutoReconnect"))}</p>`
-      : c.managedProfile
-        ? ""
-      : `
-      <p class="composer__hint">
-        ${esc(t(c.mode === "new" ? "chrome.connectToStart" : "task.replyConnectHint"))}
-        <button id="composer-connect" type="button" class="btn-ghost btn-compact" ${connecting ? "disabled" : ""}>
-          ${esc(connecting ? t("chrome.connectingCta") : t("chrome.connectCta"))}
-        </button>
-      </p>`;
-  const keyHint =
-    (connected || !sourcesNeedBrowser(c.sites, c.researchMode)) && !c.modelReady ? `<p class="composer__hint">${esc(t("task.addKeyHint"))}</p>` : "";
+  const chromeHelp = c.status.state !== "connected" && !c.remoteProfile && !c.managedProfile
+    ? `<button type="button" id="composer-chrome-help" class="btn-ghost btn-compact" aria-expanded="${c.chromeSetupOpen}">
+        ${esc(t("chrome.setupTitle"))}
+      </button>${c.chromeSetupOpen ? renderConnectOverlay(c) : ""}` : "";
+  const keyHint = !c.modelReady ? `<p class="composer__hint">${esc(t("task.addKeyHint"))}</p>` : "";
   return `
     <div class="composer">
       <form id="composer-form" class="composer__form">
@@ -879,7 +848,7 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
           ${action}
         </div>
         <div class="composer__options">
-          ${hideSources ? "" : renderSourcePicker(c, disabled)}
+          ${renderSourcePicker(c, disabled)}
           <button type="button" id="composer-workflow" class="composer__workflow t-small" aria-haspopup="dialog" ${disabled ? "disabled" : ""}>
             ${workflowIcon(c.workflow)}<span class="composer__expert-label">${getLanguage() === "zh" ? "专家模式" : "Expert mode"}</span><span>${esc(workflowLabel(c.workflow, c.customWorkflow))}</span>
           </button>
@@ -896,7 +865,7 @@ function renderComposer(c: ComposerProps, hideSources = false): string {
       ${c.replyModelOverride ? `<p class="composer__hint" role="status">${esc(t("task.replyManagedPending", {model: c.replyModelOverride}))}
         <button id="composer-restore-model" type="button" class="btn-ghost btn-compact" ${disabled ? "disabled" : ""}>${esc(t("task.replyRestoreModel"))}</button></p>`
         : c.hostedReplyRecovery ? `<p class="composer__hint"><button id="composer-recover-model" type="button" class="btn-ghost btn-compact" ${disabled ? "disabled" : ""}>${esc(t("task.replyUseManaged"))}</button></p>` : ""}
-      ${connectHint}
+      ${chromeHelp}
       ${keyHint}
       ${c.voice.error ? `<pre class="composer__error" role="alert" aria-live="assertive" aria-atomic="true">${esc(c.voice.error)}</pre>` : ""}
       ${c.error ? `<pre class="composer__error" role="alert" aria-live="assertive" aria-atomic="true">${esc(c.error)}</pre>` : ""}

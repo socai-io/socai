@@ -402,7 +402,7 @@ struct SiteAuthorityGuard {
 
 impl SiteAuthorityGuard {
     async fn arm(page: &Arc<PageSession>, site: &str) -> Result<Self> {
-        let javascript_session = page.javascript_session().await;
+        let javascript_session = page.javascript_session().await?;
         let fallback_url = javascript_session.top_frame_url().await?;
         if !site_url_allowed(site, &fallback_url) {
             anyhow::bail!(
@@ -762,7 +762,7 @@ impl BrowserScriptRuntime {
         }
         self.ensure_site_authority(false).await?;
         let expression = bounded_page_expression(script, input)?;
-        let javascript_session = self.page.javascript_session().await;
+        let javascript_session = self.page.javascript_session().await?;
         let mut cancellation = TargetEvaluationGuard::new(javascript_session.clone());
         let value = javascript_session
             .evaluate_json_in_isolated_world_with_timeout(&expression, timeout)

@@ -60,8 +60,3 @@ export function platformLabel(site: string): string {
     default: return site;
   }
 }
-
-/** Deep mode's implicit web worker needs Chrome even for HTTP-only sources. */
-export function sourcesNeedBrowser(sites: readonly string[], deep = false): boolean {
-  return deep || sites.length === 0 || sites.some((site) => site !== "podcast" && site !== "github");
-}

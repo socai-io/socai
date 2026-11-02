@@ -608,10 +608,11 @@ socai supports four Chrome profile modes:
 
 These settings are stored in `~/.socai/config.json`; the CLI and desktop app read the same configuration.
 
-The app connects managed Chrome automatically at startup; runs also reconnect
-it on demand. The existing-browser mode retains its remote-debugging and Allow
-flow. The managed composer remains usable while Chrome is connecting, since the
-run's browser admission performs the same connection and reports failures.
+The desktop app displays each message immediately and checks the account in the
+background. The first tool that needs a browser page connects Chrome and opens
+or reuses the conversation's tab. Replies can use prior messages, saved evidence
+and HTTP tools while Chrome is disconnected. Existing-browser mode retains its
+remote-debugging setup and Chrome’s Allow prompt.
 
 Switch to an isolated profile:
 
@@ -908,8 +909,7 @@ updating a host's pinned dependency.
 ### HTTP-only site adapters
 
 Native adapters expose `browserless_tools(task, language)` to skip page acquisition
-in desktop, worker and TUI; CLI uses `runtime_command`. Keep frontend
-`sourcesNeedBrowser` aligned with the registry. GitHub's client, extractors and
+in desktop, worker and TUI; CLI uses `runtime_command`. GitHub's client, extractors and
 manifest live in `core/src/sites/github/`; discovery guidance lives in `knowledge.md`.
 Check core/CLI/worker and desktop builds, then verify live API/HTML reads,
 pagination, explicit failures and a GitHub-only run without Chrome.

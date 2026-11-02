@@ -61,10 +61,10 @@ const TAURI_CITATION_RULES: &str = "\n\n## Citing sources in the final answer (r
     - If only a search snippet was available, say so; do not present it as a full article read.";
 
 const TAURI_SITE_ROUTING_RULES: &str = "\n\n## Browser routing\n\
-    Browser-enabled conversations start on a blank tab; light GitHub/podcast-only tasks have no browser. Deep research uses a separate web worker tab for supplementary public-web search. Do not navigate to Xiaohongshu or \
+    Answer directly when the conversation or saved evidence suffices. Chrome opens on the first operation that needs a page. Deep research uses a separate web worker tab for supplementary public-web search. Do not navigate to Xiaohongshu or \
     any other site until the user's request requires that platform. For LinkedIn, \
     Instagram, Douyin, or TikTok, use navigate_site, read the returned site skill, \
-    and follow that platform's tools and workflow. The Xiaohongshu playbook applies \
+    and follow that platform's tools and workflow. When an Instagram task needs live data, check loginState on the site and follow the current login state. The Xiaohongshu playbook applies \
     only when the requested page is Xiaohongshu. Browser-tool JSON is internal \
     evidence: never paste raw JSON into the final answer. Present concise findings \
     with source URL citations; the desktop enriches matching archived posts. JSON \
@@ -714,7 +714,6 @@ pub async fn agent_task_start(
     } else {
         model
     };
-    let guest_trial = run_task_preflight(provider.as_deref(), model.as_deref()).await?;
 
     // One conversation = one folder under the runs root, named after the
     // first task; each turn's run dir nests inside it (turn-01_…, turn-02_…).
@@ -745,11 +744,6 @@ pub async fn agent_task_start(
         .await;
     let task_id = snapshot.task_id.clone();
     let billing_id = snapshot.billing_id().to_owned();
-    if let Some(trial) = &guest_trial {
-        trial.bind_task(&billing_id).map_err(|e| e.to_string())?;
-    } else {
-        socai_core::cloud::prepare_account_task(&billing_id).map_err(|e| e.to_string())?;
-    }
     socai_core::media::cancel_all_background_media();
     let background_media_generation = socai_core::media::begin_background_media_generation();
     let runtime = runtime.inner().clone();
@@ -764,9 +758,10 @@ pub async fn agent_task_start(
         }
         run_agent_task_background(
             app_for_task,
-            registry_for_task.clone(),
+            registry_for_task,
             runtime,
-            task_id_for_spawn.clone(),
+            task_id_for_spawn,
+            anonymous,
             billing_id,
             None,
             task_text,
@@ -778,15 +773,6 @@ pub async fn agent_task_start(
             language,
         )
         .await;
-        if let Some(trial) = guest_trial {
-            let completed = registry_for_task
-                .get(&task_id_for_spawn)
-                .await
-                .is_some_and(|snapshot| snapshot.status == "completed");
-            if let Err(error) = trial.finish(completed) {
-                eprintln!("failed to persist guest trial completion: {error:#}");
-            }
-        }
     });
     if let Some(handle) = tasks.set_abort_handle(&task_id, join.abort_handle()).await {
         handle.abort();
@@ -865,8 +851,6 @@ pub async fn agent_task_reply(
     } else {
         model
     };
-    let guest_trial = run_task_preflight(provider.as_deref(), model.as_deref()).await?;
-    socai_core::media::cancel_all_background_media();
 
     // This turn's run dir nests inside the conversation dir. Tasks created
     // before nesting have their session dir under ~/.socai/sessions; their
@@ -875,46 +859,58 @@ pub async fn agent_task_reply(
     let conversation = Conversation::load(session_dir)
         .map_err(|err| format!("failed to load conversation for task: {err}"))?;
     let run_dir = conversation.next_turn_dir(&message_text);
-    let _ = std::fs::create_dir_all(&run_dir);
 
     let snapshot = registry
-        .update(&task_id, |snapshot| {
-            snapshot.status = "queued".into();
-            snapshot.billing_turn_id = Some(crate::tasks::new_billing_turn_id());
-            snapshot.provider = provider.clone();
-            snapshot.model = model.clone();
-            snapshot.sites = sites.clone();
-            snapshot.started_at = None;
-            snapshot.finished_at = None;
-            snapshot.run_id = None;
-            snapshot.run_dir = Some(run_dir.display().to_string());
-            snapshot.final_text = None;
-            snapshot.error = None;
-            snapshot.steps = None;
-            snapshot.input_tokens = None;
-            snapshot.output_tokens = None;
-            snapshot.cached_input_tokens = None;
-            snapshot.cache_creation_input_tokens = None;
-            snapshot.estimated_cost = None;
-            snapshot.cost_currency = None;
-            snapshot.partial = false;
-            snapshot.degraded_reason = None;
-            snapshot.points_used = None;
-            snapshot.current_message = Some(message_text.clone());
-            snapshot.research_mode = research_mode.unwrap_or(existing.research_mode);
-            snapshot.workflow = workflow.unwrap_or(existing.workflow);
-            snapshot.custom_workflow = if snapshot.workflow == TaskWorkflow::Custom { custom_workflow.clone().or_else(|| existing.custom_workflow.clone()) } else { None };
-            snapshot.research_board = None;
-        })
+        .update_if(
+            &task_id,
+            |task| {
+                task.billing_id() == existing.billing_id()
+                    && !matches!(task.status.as_str(), "queued" | "running")
+            },
+            |snapshot| {
+                snapshot.status = "queued".into();
+                // The runtime can reuse the conversation tab, but this turn only
+                // becomes dependent on it when its own browser tool binds it.
+                snapshot.target_id = None;
+                snapshot.page_url = None;
+                snapshot.page_title_marker = None;
+                snapshot.billing_turn_id = Some(crate::tasks::new_billing_turn_id());
+                snapshot.provider = provider.clone();
+                snapshot.model = model.clone();
+                snapshot.sites = sites.clone();
+                snapshot.started_at = None;
+                snapshot.finished_at = None;
+                snapshot.run_id = None;
+                snapshot.run_dir = Some(run_dir.display().to_string());
+                snapshot.final_text = None;
+                snapshot.error = None;
+                snapshot.steps = None;
+                snapshot.input_tokens = None;
+                snapshot.output_tokens = None;
+                snapshot.cached_input_tokens = None;
+                snapshot.cache_creation_input_tokens = None;
+                snapshot.estimated_cost = None;
+                snapshot.cost_currency = None;
+                snapshot.partial = false;
+                snapshot.degraded_reason = None;
+                snapshot.points_used = None;
+                snapshot.current_message = Some(message_text.clone());
+                snapshot.research_mode = research_mode.unwrap_or(existing.research_mode);
+                snapshot.workflow = workflow.unwrap_or(existing.workflow);
+                snapshot.custom_workflow = if snapshot.workflow == TaskWorkflow::Custom {
+                    custom_workflow
+                        .clone()
+                        .or_else(|| existing.custom_workflow.clone())
+                } else {
+                    None
+                };
+                snapshot.research_board = None;
+            },
+        )
         .await
-        .ok_or_else(|| format!("unknown task: {task_id}"))?;
+        .ok_or_else(|| "conversation changed before the reply could be queued".to_string())?;
 
     let billing_id = snapshot.billing_id().to_owned();
-    if let Some(trial) = &guest_trial {
-        trial.bind_task(&billing_id).map_err(|e| e.to_string())?;
-    } else {
-        socai_core::cloud::prepare_account_task(&billing_id).map_err(|e| e.to_string())?;
-    }
     socai_core::media::cancel_all_background_media();
     let background_media_generation = socai_core::media::begin_background_media_generation();
     let runtime = runtime.inner().clone();
@@ -939,9 +935,10 @@ pub async fn agent_task_reply(
         };
         run_agent_task_background(
             app_for_task,
-            registry_for_task.clone(),
+            registry_for_task,
             runtime,
-            task_id_for_spawn.clone(),
+            task_id_for_spawn,
+            anonymous,
             billing_id,
             predecessor,
             message_text,
@@ -953,15 +950,6 @@ pub async fn agent_task_reply(
             language,
         )
         .await;
-        if let Some(trial) = guest_trial {
-            let completed = registry_for_task
-                .get(&task_id_for_spawn)
-                .await
-                .is_some_and(|snapshot| snapshot.status == "completed");
-            if let Err(error) = trial.finish(completed) {
-                eprintln!("failed to persist guest trial completion: {error:#}");
-            }
-        }
     });
     if let Some(handle) = tasks.set_abort_handle(&task_id, join.abort_handle()).await {
         handle.abort();
@@ -1001,17 +989,19 @@ fn reply_model_choice(
 }
 
 async fn run_task_preflight(
+    anonymous: bool,
+    billing_id: &str,
     provider: Option<&str>,
     model: Option<&str>,
 ) -> Result<Option<socai_core::cloud::GuestTrialGuard>, String> {
-    if !socai_core::cloud::auth_session()
-        .map_err(|e| e.to_string())?
-        .logged_in
-    {
-        return socai_core::cloud::prepare_guest_trial()
+    if anonymous {
+        let trial = socai_core::cloud::prepare_guest_trial()
             .await
-            .map(Some)
-            .map_err(|error| format!("{error:#}"));
+            .map_err(|error| format!("{error:#}"))?;
+        trial
+            .bind_task(billing_id)
+            .map_err(|error| error.to_string())?;
+        return Ok(Some(trial));
     }
     let resolved_provider = ensure_llm_provider_configured_for(provider, model)
         .map_err(|error| task_preflight_error("preflight_model_config", format!("{error:#}")))?;
@@ -1028,41 +1018,86 @@ async fn run_task_preflight(
         validate_preflight_balance(wallet.balance_points)?;
     }
 
+    socai_core::cloud::prepare_account_task(billing_id).map_err(|error| error.to_string())?;
     Ok(None)
 }
 
-struct DesktopBrowserRecovery {
+// Owned by the agent turn. Tools may outlive the turn for background media,
+// so their deferred page holds only a weak reference to this admission state.
+struct TurnBrowser {
     app: AppHandle,
     registry: AgentTaskRegistry,
     telemetry: DesktopTelemetry,
     runtime: SocaiRuntime,
-    lease: Arc<BrowserLease>,
-    page: Arc<RuntimePageSession>,
     task_id: String,
     session_id: String,
-    site_id: &'static str,
+    title: String,
     home_url: &'static str,
-    browser_options: ChromeConnectOptions,
-    browser_tools: HashSet<String>,
-    last_page_url: tokio::sync::RwLock<String>,
+    admitted: tokio::sync::OnceCell<Result<AdmittedBrowser, String>>,
 }
 
-impl std::fmt::Debug for DesktopBrowserRecovery {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("DesktopBrowserRecovery")
-            .field("task_id", &self.task_id)
-            .field("session_id", &self.session_id)
-            .field("site_id", &self.site_id)
-            .field("browser_options", &self.browser_options)
-            .field("browser_tools", &self.browser_tools)
-            .finish_non_exhaustive()
+impl TurnBrowser {
+    async fn page(&self) -> Result<Arc<RuntimePageSession>> {
+        self.admitted
+            .get_or_init(|| self.admit())
+            .await
+            .as_ref()
+            .map(|browser| browser.page.clone())
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    async fn admit(&self) -> Result<AdmittedBrowser, String> {
+        let mut attempts = 0;
+        loop {
+            match self.try_admit().await {
+                Ok(browser) => return Ok(browser),
+                Err(PageAdmission::Failed(error)) => return Err(error),
+                Err(PageAdmission::Busy(busy)) => {
+                    if !wait_out_browser_busy(&busy, &mut attempts).await {
+                        return Err(browser_preflight_error(busy.reason));
+                    }
+                }
+            }
+        }
     }
 }
 
-impl DesktopBrowserRecovery {
-    async fn disconnect_reason(&self) -> Option<String> {
-        let transport_closed = self.page.transport_closed().await;
+struct TurnBrowserRecovery {
+    browser: Arc<TurnBrowser>,
+    tools: HashSet<String>,
+}
+
+impl std::fmt::Debug for TurnBrowserRecovery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnBrowserRecovery")
+            .field("task_id", &self.browser.task_id)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl ToolFailureRecovery for TurnBrowserRecovery {
+    async fn recover_after_tool(&self, tool_name: &str, retry_number: u8) -> ToolRecoveryOutcome {
+        if self.tools.contains(tool_name) {
+            if let Some(Ok(browser)) = self.browser.admitted.get() {
+                return self.browser.recover(browser, tool_name, retry_number).await;
+            }
+        }
+        ToolRecoveryOutcome::NotNeeded
+    }
+}
+
+struct AdmittedBrowser {
+    page: Arc<RuntimePageSession>,
+    lease: BrowserLease,
+    browser_options: ChromeConnectOptions,
+    _activity: socai_core::runtime::ActivityGuard,
+    last_page_url: tokio::sync::RwLock<String>,
+}
+
+impl TurnBrowser {
+    async fn disconnect_reason(&self, page: &RuntimePageSession) -> Option<String> {
+        let transport_closed = page.transport_closed().await;
         match self.runtime.browser_status().await {
             BrowserStatus::Disconnected { reason } if reason != "not_yet_connected" => Some(reason),
             BrowserStatus::Connected { .. } if transport_closed => {
@@ -1114,23 +1149,21 @@ impl DesktopBrowserRecovery {
             })
             .await;
     }
-}
-
-#[async_trait]
-impl ToolFailureRecovery for DesktopBrowserRecovery {
-    async fn recover_after_tool(&self, tool_name: &str, retry_number: u8) -> ToolRecoveryOutcome {
-        if !self.browser_tools.contains(tool_name) {
-            return ToolRecoveryOutcome::NotNeeded;
-        }
-        let Some(disconnect_reason) = self.disconnect_reason().await else {
-            if let Ok(info) = self.page.page_info().await {
+    async fn recover(
+        &self,
+        browser: &AdmittedBrowser,
+        tool_name: &str,
+        retry_number: u8,
+    ) -> ToolRecoveryOutcome {
+        let Some(disconnect_reason) = self.disconnect_reason(&browser.page).await else {
+            if let Ok(info) = browser.page.page_info().await {
                 if let Some(url) = info.get("url").and_then(Value::as_str) {
-                    *self.last_page_url.write().await = url.to_string();
+                    *browser.last_page_url.write().await = url.to_string();
                 }
             }
             return ToolRecoveryOutcome::NotNeeded;
         };
-        let page = self.page.transport_diagnostic().await;
+        let page = browser.page.transport_diagnostic().await;
         socai_core::cdp::diagnostics::record(
             "task_recovery_requested",
             json!({ "tool": tool_name, "retry": retry_number, "page": page }),
@@ -1179,7 +1212,9 @@ impl ToolFailureRecovery for DesktopBrowserRecovery {
         .await;
         let started = std::time::Instant::now();
         let recovery_url = match tool_name {
-            "read_site_skills" | "run_site_browser_tool" => self.last_page_url.read().await.clone(),
+            "read_site_skills" | "run_site_browser_tool" => {
+                browser.last_page_url.read().await.clone()
+            }
             "navigate_site" => self.home_url.to_string(),
             // The other browser tools are the optional native XHS toolset.
             _ => socai_core::sites::xhs::XHS_HOME_URL.to_string(),
@@ -1204,12 +1239,12 @@ impl ToolFailureRecovery for DesktopBrowserRecovery {
         let replacement_guard = self
             .runtime
             .recover_session_site_page_with_browser_options(
-                &self.lease,
+                &browser.lease,
                 &self.session_id,
-                self.site_id,
+                APP_SITE_ID,
                 &recovery_url,
-                self.browser_options.clone(),
-                &self.page,
+                browser.browser_options.clone(),
+                &browser.page,
             )
             .await
             .map_err(|error| format!("{error:#}"));
@@ -1219,10 +1254,11 @@ impl ToolFailureRecovery for DesktopBrowserRecovery {
                     &self.app,
                     &self.registry,
                     &self.task_id,
-                    &self.page,
+                    &browser.page,
                     "recovered task",
                 )
                 .await
+                .is_some()
                 {
                     replacement_guard.commit();
                     Ok(())
@@ -1291,7 +1327,7 @@ fn validate_preflight_balance(balance_points: i64) -> Result<(), String> {
 const MAX_BROWSER_CONNECT_ATTEMPTS: u32 = 3;
 
 /// Outcome of bringing up a run's Chrome tab. `Busy` means "ask again in a
-/// moment" and keeps the task queued; `Failed` carries a coded preflight error
+/// moment" and keeps the tool waiting; `Failed` carries a coded preflight error
 /// the UI translates.
 enum PageAdmission {
     Busy(BrowserBusy),
@@ -1327,51 +1363,49 @@ fn remote_browser_selected() -> bool {
         .unwrap_or(false)
 }
 
-/// Bring up this conversation's Chrome tab under the run's browser lease.
-/// Called from the admission loop so a refusal parks the task in the queue
-/// rather than failing it.
-async fn acquire_session_page(
-    runtime: &SocaiRuntime,
-    lease: &BrowserLease,
-    session_id: &str,
-) -> Result<
-    (
-        Arc<RuntimePageSession>,
-        UnboundPageGuard,
-        ChromeConnectOptions,
-    ),
-    PageAdmission,
-> {
-    let site = app_site().map_err(|error| {
-        PageAdmission::Failed(task_preflight_error("preflight_site", format!("{error:#}")))
-    })?;
-    let options = desktop_browser_options().map_err(|error| {
-        PageAdmission::Failed(task_preflight_error(
-            "preflight_browser_config",
-            format!("{error:#}"),
-        ))
-    })?;
-    // Each conversation owns one site tab. Separate tasks run in parallel
-    // without navigating or closing another session's target; replies keep the
-    // same target while the configured browser connection stays available.
-    let page = runtime
-        .ensure_session_site_page_with_browser_options(
-            lease,
-            session_id,
-            site.id,
-            APP_INITIAL_URL,
-            options.clone(),
-        )
-        .await
-        .map_err(|error| match BrowserBusy::find(&error) {
-            Some(busy) => PageAdmission::Busy(busy.clone()),
-            None => PageAdmission::Failed(browser_preflight_error(format!("{error:#}"))),
+impl TurnBrowser {
+    async fn try_admit(&self) -> Result<AdmittedBrowser, PageAdmission> {
+        let lease = self
+            .runtime
+            .try_acquire_browser_lease()
+            .map_err(PageAdmission::Busy)?;
+        let activity = self.runtime.begin_activity().await;
+        let options = desktop_browser_options().map_err(|error| {
+            PageAdmission::Failed(task_preflight_error(
+                "preflight_browser_config",
+                format!("{error:#}"),
+            ))
         })?;
-    let guard = UnboundPageGuard {
-        runtime: runtime.clone(),
-        target_id: Some(page.target_id().await),
-    };
-    Ok((page, guard, options))
+        let page = self
+            .runtime
+            .ensure_session_site_page_with_browser_options(
+                &lease,
+                &self.session_id,
+                APP_SITE_ID,
+                APP_INITIAL_URL,
+                options.clone(),
+            )
+            .await
+            .map_err(|error| match BrowserBusy::find(&error) {
+                Some(busy) => PageAdmission::Busy(busy.clone()),
+                None => PageAdmission::Failed(browser_preflight_error(format!("{error:#}"))),
+            })?;
+        let mut guard = UnboundPageGuard {
+            runtime: self.runtime.clone(),
+            target_id: Some(page.target_id().await),
+        };
+        let url = bind_task_page(&self.app, &self.registry, &self.task_id, &page, &self.title)
+            .await
+            .ok_or_else(|| PageAdmission::Failed("task is no longer active".into()))?;
+        guard.disarm();
+        Ok(AdmittedBrowser {
+            page,
+            lease,
+            _activity: activity,
+            browser_options: options,
+            last_page_url: tokio::sync::RwLock::new(url),
+        })
+    }
 }
 
 /// Associate a tab with its task as soon as browser admission succeeds. The
@@ -1383,7 +1417,7 @@ async fn bind_task_page(
     task_id: &str,
     page: &RuntimePageSession,
     title_label: &str,
-) -> bool {
+) -> Option<String> {
     let target_id = page.target_id().await;
     let page_url = page
         .evaluate_json("location.href")
@@ -1391,12 +1425,10 @@ async fn bind_task_page(
         .ok()
         .and_then(|value| value.as_str().map(str::to_string));
     let page_title_marker = format!("task:{task_id}");
-    let Some((snapshot, target_changed)) = registry
+    let (snapshot, target_changed) = registry
         .bind_target_if_active(task_id, target_id, page_url, page_title_marker.clone())
-        .await
-    else {
-        return false;
-    };
+        .await?;
+    let url = snapshot.page_url.clone().unwrap_or_default();
     label_controlled_page(page, &format!("{page_title_marker} · {title_label}")).await;
     if target_changed {
         emit_task_event(
@@ -1409,7 +1441,7 @@ async fn bind_task_page(
         )
         .await;
     }
-    true
+    Some(url)
 }
 
 fn browser_preflight_error(detail: String) -> String {
@@ -1446,16 +1478,6 @@ async fn wait_out_browser_busy(busy: &BrowserBusy, connect_attempts: &mut u32) -
     }
     tokio::time::sleep(busy.retry_after).await;
     true
-}
-
-/// The conversation session a task belongs to, which is also its Chrome tab's
-/// identity. Tasks created before conversations were introduced have none.
-async fn task_session_id(registry: &AgentTaskRegistry, task_id: &str) -> Option<String> {
-    let session_dir = registry
-        .get(task_id)
-        .await
-        .and_then(|task| task.session_dir)?;
-    Conversation::load(&session_dir).ok().map(|c| c.id)
 }
 
 #[tauri::command]
@@ -2846,8 +2868,22 @@ pub async fn agent_task_delete(
     task_id: String,
 ) -> Result<(), String> {
     let snapshot = tasks.delete(&task_id).await?;
-    if let Some(target_id) = snapshot.target_id.as_deref() {
-        let _ = runtime.close_target(target_id).await;
+    let session = snapshot
+        .session_dir
+        .as_deref()
+        .and_then(|dir| Conversation::load(dir).ok());
+    let closed_cached_page = if let Some(session) = &session {
+        runtime
+            .close_session_site_page(&session.id, APP_SITE_ID)
+            .await
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    if !closed_cached_page {
+        if let Some(target_id) = snapshot.target_id.as_deref() {
+            let _ = runtime.close_target(target_id).await;
+        }
     }
     if let Some(run_dir) = snapshot.run_dir.as_deref() {
         socai_core::media::cancel_background_media_for_run(run_dir);
@@ -2914,6 +2950,7 @@ async fn run_agent_task_background(
     registry: AgentTaskRegistry,
     runtime: SocaiRuntime,
     task_id: String,
+    anonymous: bool,
     billing_id: String,
     cancelled_predecessor: Option<String>,
     task: String,
@@ -2924,29 +2961,16 @@ async fn run_agent_task_background(
     telemetry: DesktopTelemetry,
     language: Option<String>,
 ) {
-    let Some(session_id) = task_session_id(&registry, &task_id).await else {
-        fail_task_before_run(
-            &app,
-            &registry,
-            &telemetry,
-            &task_id,
-            provider.as_deref(),
-            model.as_deref(),
-            task_preflight_error("preflight_site", "task has no conversation session"),
-        )
-        .await;
-        return;
-    };
-
-    // HTTP-only source sets require a run permit, but no browser lease/page.
-    let http_only = registry
-        .get(&task_id)
-        .await
-        .is_some_and(|snapshot| !snapshot.research_mode && !socai_core::sites::registry::sites_need_browser(&snapshot.sites));
-    let mut connect_attempts = 0u32;
-    let (_permit, browser, _activity) = loop {
-        let Some(permit) = registry.acquire_run_permit().await else {
-            let error = "task runner queue closed".to_string();
+    let guest_trial = match run_task_preflight(
+        anonymous,
+        &billing_id,
+        provider.as_deref(),
+        model.as_deref(),
+    )
+    .await
+    {
+        Ok(trial) => trial,
+        Err(error) => {
             fail_task_before_run(
                 &app,
                 &registry,
@@ -2958,96 +2982,31 @@ async fn run_agent_task_background(
             )
             .await;
             return;
-        };
-        if http_only {
-            break (permit, None, runtime.begin_activity().await);
         }
-        let lease = match runtime.try_acquire_browser_lease() {
-            Ok(lease) => lease,
-            Err(busy) => {
-                drop(permit);
-                if wait_out_browser_busy(&busy, &mut connect_attempts).await {
-                    continue;
-                }
-                fail_task_before_run(
-                    &app,
-                    &registry,
-                    &telemetry,
-                    &task_id,
-                    provider.as_deref(),
-                    model.as_deref(),
-                    browser_preflight_error(busy.reason),
-                )
-                .await;
-                return;
-            }
-        };
-        // Held for the whole task — LLM thinking pauses between tool calls
-        // included — so the remote idle reaper only fires between tasks.
-        let activity = runtime.begin_activity().await;
-        let (page, mut page_guard, browser_options) =
-            match acquire_session_page(&runtime, &lease, &session_id).await {
-                Ok(admitted) => admitted,
-                Err(PageAdmission::Busy(busy)) => {
-                    drop(activity);
-                    drop(lease);
-                    drop(permit);
-                    if wait_out_browser_busy(&busy, &mut connect_attempts).await {
-                        continue;
-                    }
-                    fail_task_before_run(
-                        &app,
-                        &registry,
-                        &telemetry,
-                        &task_id,
-                        provider.as_deref(),
-                        model.as_deref(),
-                        browser_preflight_error(busy.reason),
-                    )
-                    .await;
-                    return;
-                }
-                Err(PageAdmission::Failed(error)) => {
-                    drop(activity);
-                    drop(lease);
-                    drop(permit);
-                    fail_task_before_run(
-                        &app,
-                        &registry,
-                        &telemetry,
-                        &task_id,
-                        provider.as_deref(),
-                        model.as_deref(),
-                        error,
-                    )
-                    .await;
-                    return;
-                }
-            };
-        if !bind_task_page(
+    };
+    let Some(_permit) = registry.acquire_run_permit().await else {
+        fail_task_before_run(
             &app,
             &registry,
+            &telemetry,
             &task_id,
-            &page,
-            &format!("task · {}", title_safe(&task)),
+            provider.as_deref(),
+            model.as_deref(),
+            "task runner queue closed".into(),
         )
-        .await
-        {
-            return;
-        }
-        page_guard.disarm();
-        break (
-            permit,
-            Some((Arc::new(lease), browser_options, page)),
-            activity,
-        );
+        .await;
+        return;
     };
 
     if let Some(snapshot) = registry
-        .update(&task_id, |snapshot| {
-            snapshot.status = "running".into();
-            snapshot.started_at = Some(now_ms());
-        })
+        .update_if(
+            &task_id,
+            |task| task.status == "queued" && task.billing_id() == billing_id,
+            |snapshot| {
+                snapshot.status = "running".into();
+                snapshot.started_at = Some(now_ms());
+            },
+        )
         .await
     {
         emit_task_event(
@@ -3059,6 +3018,8 @@ async fn run_agent_task_background(
             Some(snapshot),
         )
         .await;
+    } else {
+        return;
     }
 
     telemetry.capture(
@@ -3072,19 +3033,18 @@ async fn run_agent_task_background(
         }),
     );
 
-    let result = run_agent_task_on_session_page(
+    let result = run_desktop_agent(
         app.clone(),
         task_id.clone(),
         &billing_id,
         cancelled_predecessor,
         runtime.clone(),
-        browser,
         &task,
         provider.as_deref(),
         model.as_deref(),
         Some(run_dir),
         Some(background_media_generation),
-        Some(registry.clone()),
+        registry.clone(),
         telemetry.clone(),
         language.as_deref(),
     )
@@ -3131,6 +3091,11 @@ async fn run_agent_task_background(
                 })
                 .await
             {
+                if let Some(trial) = guest_trial {
+                    if let Err(error) = trial.finish(true) {
+                        eprintln!("failed to persist guest trial completion: {error:#}");
+                    }
+                }
                 persist_run_points_used(snapshot.run_dir.as_deref(), snapshot.points_used);
                 record_desktop_session(&snapshot, &outcome.final_text, "completed");
                 telemetry.capture(
@@ -3327,23 +3292,18 @@ fn record_desktop_session(snapshot: &AgentTaskSnapshot, assistant: &str, status:
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_agent_task_on_session_page(
+async fn run_desktop_agent(
     app: AppHandle,
     task_id: String,
     billing_id: &str,
     cancelled_predecessor: Option<String>,
     runtime: SocaiRuntime,
-    browser: Option<(
-        Arc<BrowserLease>,
-        ChromeConnectOptions,
-        Arc<RuntimePageSession>,
-    )>,
     task: &str,
     provider: Option<&str>,
     model: Option<&str>,
     run_dir: Option<PathBuf>,
     background_media_generation: Option<u64>,
-    registry: Option<AgentTaskRegistry>,
+    registry: AgentTaskRegistry,
     telemetry: DesktopTelemetry,
     language: Option<&str>,
 ) -> Result<AgentRunOutcome> {
@@ -3351,50 +3311,28 @@ async fn run_agent_task_on_session_page(
     if task.is_empty() {
         anyhow::bail!("task is empty");
     }
-    let session_dir = if let Some(registry) = &registry {
-        registry
-            .get(&task_id)
-            .await
-            .and_then(|snapshot| snapshot.session_dir)
-    } else {
-        None
-    };
+    let selection = registry
+        .get(&task_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("task not found"))?;
+    let session_dir = selection
+        .session_dir
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("task has no conversation session"))?;
     // Prior runs in this conversation, so a reply can continue it — empty for
     // a brand-new conversation's first run.
-    let conversation = session_dir
-        .as_deref()
-        .and_then(|dir| Conversation::load(dir).ok());
-    let seed_messages = conversation
-        .as_ref()
-        .map(|c| c.chat_messages())
-        .unwrap_or_default();
-    let session_id = conversation.as_ref().map(|c| c.id.clone());
-    let context_note = conversation
-        .as_ref()
-        .map(|c| c.context_note())
-        .unwrap_or_default();
-    let selection = match &registry {
-        Some(registry) => registry.get(&task_id).await,
-        None => None,
-    };
-    let research_mode = selection.as_ref().is_some_and(|task| task.research_mode);
-    let workflow = selection
-        .as_ref()
-        .map(|task| task.workflow)
-        .unwrap_or_default();
+    let conversation = Conversation::load(session_dir)?;
+    let seed_messages = conversation.chat_messages();
+    let context_note = conversation.context_note();
+    let session_id = conversation.id;
+    let research_mode = selection.research_mode;
+    let workflow = selection.workflow;
 
     ensure_llm_provider_configured_for(provider, model)?;
     let llm_provider = create_llm_provider_for_task_with_gateway_context(
         provider, model, billing_id, telemetry.shared(), cancelled_predecessor,
     )?;
-    let sites = registry
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("task registry unavailable"))?
-        .get(&task_id)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("task not found"))?
-        .sites;
-    let sites = validate_task_sites(sites).map_err(anyhow::Error::msg)?;
+    let sites = validate_task_sites(selection.sites).map_err(anyhow::Error::msg)?;
     let auto_sources = sites[0] == "auto";
     let available_sites = if auto_sources {
         socai_core::sites::all_native_site_adapters()
@@ -3412,12 +3350,31 @@ async fn run_agent_task_on_session_page(
             .expect("validated site")
             .home_url
     };
-    let session_id =
-        session_id.ok_or_else(|| anyhow::anyhow!("task has no conversation session"))?;
     let outcome = async {
         let mut tools = Vec::new();
-        let mut instagram_login_note = String::new();
-        let tool_failure_recovery = if let Some((lease, browser_options, page)) = &browser {
+        let browser_needed = research_mode || socai_core::sites::registry::sites_need_browser(&sites);
+        let turn_browser = Arc::new(TurnBrowser {
+            app: app.clone(),
+            registry: registry.clone(),
+            telemetry: telemetry.clone(),
+            runtime,
+            task_id: task_id.clone(),
+            session_id: session_id.clone(),
+            title: format!("task · {}", title_safe(task)),
+            home_url: recovery_home_url,
+            admitted: Default::default(),
+        });
+        let page = browser_needed.then(|| {
+            let browser = Arc::downgrade(&turn_browser);
+            Arc::new(RuntimePageSession::deferred(remote_browser_selected(), move || {
+                let browser = browser.clone();
+                async move {
+                    let browser = browser.upgrade().ok_or_else(|| anyhow::anyhow!("task finished"))?;
+                    browser.page().await
+                }
+            }))
+        });
+        if let Some(page) = &page {
             if available_sites.iter().any(|id| id == "xhs") {
                 let xhs = app_site()?;
                 let agent_tools = xhs.default_agent_tools.unwrap_or(xhs.agent_tools);
@@ -3427,30 +3384,6 @@ async fn run_agent_task_on_session_page(
                 tools.push(socai_core::sites::instagram::instagram_wait_for_login_tool(
                     page.clone(),
                 ));
-                if !auto_sources {
-                    let login = match socai_core::sites::instagram::probe_instagram_login(&page).await {
-                        Ok(login) => login,
-                        Err(error) => {
-                            eprintln!("instagram login probe failed: {error:#}");
-                            "unknown".to_string()
-                        }
-                    };
-                    if login == "out" {
-                        if let Some(registry) = &registry {
-                            emit_task_event(
-                                &app,
-                                registry,
-                                &task_id,
-                                "assistant",
-                                "instagram_login_required".into(),
-                                None,
-                            )
-                            .await;
-                        }
-                    }
-                    instagram_login_note =
-                        socai_core::sites::instagram::instagram_login_agent_note(&login);
-                }
             }
             if available_sites.iter().any(|id| id == "tiktok") {
                 tools.push(socai_core::sites::tiktok::tiktok_wait_for_login_tool(
@@ -3474,33 +3407,12 @@ async fn run_agent_task_on_session_page(
                 tools.extend(socai_core::sites::weixin::weixin_tools(page.clone()));
             }
             tools.extend(scoped_site_learning_tools(page.clone(), &available_sites));
-            let browser_tools = tools.iter().filter(|tool| tool.name() != "read_saved_notes").map(|tool| tool.name().to_string()).collect();
-            let last_page_url = page
-                .page_info()
-                .await
-                .ok()
-                .and_then(|info| info.get("url").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_default();
-            registry.clone().map(|registry| {
-                Arc::new(DesktopBrowserRecovery {
-                    app: app.clone(),
-                    registry,
-                    telemetry: telemetry.clone(),
-                    runtime: runtime.clone(),
-                    lease: lease.clone(),
-                    page: page.clone(),
-                    task_id: task_id.clone(),
-                    session_id: session_id.clone(),
-                    site_id: APP_SITE_ID,
-                    home_url: recovery_home_url,
-                    browser_options: browser_options.clone(),
-                    browser_tools,
-                    last_page_url: tokio::sync::RwLock::new(last_page_url),
-                }) as SharedToolFailureRecovery
-            })
-        } else {
-            None
-        };
+        }
+        let tool_failure_recovery = page.as_ref().map(|_| {
+            let browser_tools = tools.iter().filter(|tool| tool.name() != "read_saved_notes")
+                .map(|tool| tool.name().to_owned()).collect();
+            Arc::new(TurnBrowserRecovery { browser: turn_browser, tools: browser_tools }) as SharedToolFailureRecovery
+        });
         for site in available_sites.iter().filter_map(|id| find_native_site_adapter(id)) {
             if let Some(factory) = site.browserless_tools {
                 tools.extend(factory(task, language));
@@ -3509,20 +3421,20 @@ async fn run_agent_task_on_session_page(
         let research = socai_core::agent::research_options::ResearchOptions {
             deep: research_mode,
             workflow: match workflow { TaskWorkflow::Vc => "vc", TaskWorkflow::Custom => "custom", _ => "general" }.into(),
-            custom_instructions: selection.as_ref().and_then(|s| s.custom_workflow.as_ref()).map(|s| s.instructions.clone()).unwrap_or_default(),
+            custom_instructions: selection.custom_workflow.as_ref().map(|s| s.instructions.clone()).unwrap_or_default(),
             automatic_sources: auto_sources,
             web_search: research_mode,
         };
         research.validate()?;
-        tools.extend(research.tools(llm_provider.clone(), browser.as_ref().map(|(_, _, p)| p.clone()), available_sites.clone(), language.map(str::to_string), String::new()));
+        tools.extend(research.tools(llm_provider.clone(), page, available_sites.clone(), language.map(str::to_string), String::new()));
         tools.extend(desktop_agent_tools());
         tools.push(Arc::new(PublishArtifactTool::new(
-            session_dir.as_deref().map(PathBuf::from),
+            Some(PathBuf::from(session_dir)),
         )));
         let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
         let pump = pump_agent_task_events(
             app,
-            registry.clone(),
+            Some(registry.clone()),
             task_id.clone(),
             telemetry.clone(),
             rx,
@@ -3539,7 +3451,7 @@ async fn run_agent_task_on_session_page(
             format!(
                 "\n\n## Sources: automatic\nThe user asked you to choose the platform(s) that fit this request. \
                  Available platforms: {}. Choose based on the actual question; use one or several \
-                 only when the research needs them. Begin on the blank tab, navigate to the chosen \
+                 only when the research needs them. When a browser source is needed, navigate to the chosen \
                  site's home URL with navigate_site, read the returned skill and use its tools. \
                  For GitHub, call github_request directly without navigation. For podcasts, call search_podcast_shows or search_podcast_episodes directly without navigation. For WeChat, call search_weixin_articles directly; only article reads need Chrome. For the VC workflow, unspecified or broad sourcing defaults to xhs, x, weixin, podcast and github; other workflows choose only useful sources. Use explore_platforms early for independent multi-platform work, synthesize findings, then delegate focused follow-up rounds as needed. Explain any access failure or coverage gap. \
                  Cite evidence from the sites actually used; do not claim coverage of unused sites.",
@@ -3568,9 +3480,9 @@ async fn run_agent_task_on_session_page(
         let config = AgentRunConfig {
             max_steps: research.max_steps(),
             extra_instructions: format!(
-                "{}{}{}{}{}{}\n\n{}\n\n{}",
+                "{}{}{}{}{}\n\n{}\n\n{}",
                 instructions, TAURI_SITE_ROUTING_RULES, TAURI_CITATION_RULES, TAURI_ARTIFACT_RULES,
-                source_instructions, instagram_login_note, http_instructions, research.instructions()
+                source_instructions, http_instructions, research.instructions()
             ),
             enabled_sites: available_sites,
             initial_skills: research.initial_skills(),

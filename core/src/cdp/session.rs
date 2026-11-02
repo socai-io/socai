@@ -24,16 +24,33 @@ use super::snapshot::SnapshotRecorder;
 /// first lets the recorder capture a DOM/a11y/screenshot bundle if the page
 /// changed since the last capture. See [`SnapshotRecorder`].
 pub struct PageSession {
+    binding: PageBinding,
+    recorder: StdMutex<Option<Arc<SnapshotRecorder>>>,
+    /// Background control tabs are owned by this handle and must be closed if
+    /// a cancelled browser script drops the handle before explicit cleanup.
+    close_on_drop: AtomicBool,
+}
+
+struct PageTransport {
     owner: Cdp,
     connection: tokio::sync::RwLock<PageConnection>,
     /// Whether the browser backing the current connection is a remote hosted
     /// one. Updated together with the connection during recovery: asking the
     /// shared `Cdp` later could report a different browser during a swap.
     remote_browser: AtomicBool,
-    recorder: StdMutex<Option<Arc<SnapshotRecorder>>>,
-    /// Background control tabs are owned by this handle and must be closed if
-    /// a cancelled browser script drops the handle before explicit cleanup.
-    close_on_drop: AtomicBool,
+}
+
+enum PageBinding {
+    Attached(PageTransport),
+    Deferred {
+        remote: bool,
+        open: Box<
+            dyn Fn() -> futures::future::BoxFuture<'static, anyhow::Result<Arc<PageSession>>>
+                + Send
+                + Sync,
+        >,
+        page: tokio::sync::OnceCell<Arc<PageSession>>,
+    },
 }
 
 struct PageConnection {
@@ -178,20 +195,67 @@ impl PageSession {
         close_on_drop: bool,
     ) -> Self {
         Self {
-            owner,
-            connection: tokio::sync::RwLock::new(PageConnection {
-                target_id,
-                client,
-                session_id: Some(session_id),
+            binding: PageBinding::Attached(PageTransport {
+                owner,
+                connection: tokio::sync::RwLock::new(PageConnection {
+                    target_id,
+                    client,
+                    session_id: Some(session_id),
+                }),
+                remote_browser: AtomicBool::new(remote_browser),
             }),
-            remote_browser: AtomicBool::new(remote_browser),
             recorder: StdMutex::new(None),
             close_on_drop: AtomicBool::new(close_on_drop),
         }
     }
 
+    /// Register tools up front while admitting their shared tab on the first CDP operation.
+    pub fn deferred<F, Fut>(remote: bool, open: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<Arc<PageSession>>> + Send + 'static,
+    {
+        Self {
+            binding: PageBinding::Deferred {
+                remote,
+                open: Box::new(move || Box::pin(open())),
+                page: tokio::sync::OnceCell::new(),
+            },
+            recorder: StdMutex::new(None),
+            close_on_drop: AtomicBool::new(false),
+        }
+    }
+
+    fn attached_transport(&self) -> Option<&PageTransport> {
+        match &self.binding {
+            PageBinding::Attached(transport) => Some(transport),
+            PageBinding::Deferred { .. } => None,
+        }
+    }
+
+    fn ready_transport(&self) -> Option<&PageTransport> {
+        match &self.binding {
+            PageBinding::Attached(transport) => Some(transport),
+            PageBinding::Deferred { page, .. } => page.get()?.attached_transport(),
+        }
+    }
+
+    async fn transport(&self) -> anyhow::Result<&PageTransport> {
+        match &self.binding {
+            PageBinding::Attached(transport) => Ok(transport),
+            PageBinding::Deferred { page, open, .. } => page
+                .get_or_try_init(open)
+                .await?
+                .attached_transport()
+                .context("page opener returned an unattached session"),
+        }
+    }
+
     pub async fn target_id(&self) -> String {
-        self.connection.read().await.target_id.clone()
+        let Some(transport) = self.ready_transport() else {
+            return String::new();
+        };
+        transport.connection.read().await.target_id.clone()
     }
 
     /// Observe response status for this owned tab without fetching article HTML.
@@ -202,7 +266,7 @@ impl PageSession {
         tokio::sync::broadcast::Receiver<(Option<String>, Value)>,
         String,
     )> {
-        let connection = self.connection.read().await;
+        let connection = self.transport().await?.connection.read().await;
         let receiver = connection.client.document_responses();
         let session = connection.session_id.clone();
         drop(connection);
@@ -220,7 +284,7 @@ impl PageSession {
     /// closes only that target, including when a branch is cancelled.
     pub async fn new_sibling(&self) -> anyhow::Result<super::pages::OwnedPage> {
         let page = super::pages::OwnedPage::new(
-            super::pages::PageSessionManager::new(self.owner.clone())
+            super::pages::PageSessionManager::new(self.transport().await?.owner.clone())
                 .create_page("about:blank")
                 .await?,
         );
@@ -246,21 +310,30 @@ impl PageSession {
     /// True when this page was created in a remote hosted browser (socai pro
     /// `chrome.profile remote`) rather than any local chrome.
     pub fn is_remote_browser(&self) -> bool {
-        self.remote_browser.load(Ordering::Acquire)
+        self.ready_transport().map_or_else(
+            || matches!(self.binding, PageBinding::Deferred { remote: true, .. }),
+            |transport| transport.remote_browser.load(Ordering::Acquire),
+        )
     }
 
     /// True once the websocket command loop backing this page has ended.
     /// Target closure keeps the browser websocket alive and therefore remains
     /// distinguishable from a recoverable whole-CDP transport loss.
     pub async fn transport_closed(&self) -> bool {
-        let connection = self.connection.read().await;
+        let Some(transport) = self.ready_transport() else {
+            return false;
+        };
+        let connection = transport.connection.read().await;
         connection
             .client
             .is_session_closed(connection.session_id.as_deref())
     }
 
     pub async fn transport_diagnostic(&self) -> Value {
-        let c = self.connection.read().await;
+        let Some(transport) = self.ready_transport() else {
+            return json!({"attached":false});
+        };
+        let c = transport.connection.read().await;
         json!({"target_id":c.target_id,"session_id":c.session_id,"health":c.client.health_diagnostic(c.session_id.as_deref())})
     }
 
@@ -268,10 +341,16 @@ impl PageSession {
     /// for a running agent hold the outer `Arc<PageSession>`; swapping only
     /// the connection lets a retried tool transparently use the new browser
     /// without rebuilding the tool registry or losing the agent transcript.
-    pub(crate) async fn replace_connection(&self, replacement: PageSession) {
-        let replacement_remote = replacement.remote_browser.load(Ordering::Acquire);
+    pub(crate) async fn replace_connection(&self, replacement: PageSession) -> anyhow::Result<()> {
+        let current = self
+            .ready_transport()
+            .context("recovery requires an attached page")?;
+        let fresh = replacement
+            .attached_transport()
+            .context("replacement page is not attached")?;
+        let replacement_remote = fresh.remote_browser.load(Ordering::Acquire);
         let replacement_connection = {
-            let connection = replacement.connection.read().await;
+            let connection = fresh.connection.read().await;
             PageConnection {
                 target_id: connection.target_id.clone(),
                 client: connection.client.clone(),
@@ -280,18 +359,20 @@ impl PageSession {
         };
         replacement.close_on_drop.store(false, Ordering::Release);
         let old_target_id = {
-            let mut connection = self.connection.write().await;
+            let mut connection = current.connection.write().await;
             let old_target_id = connection.target_id.clone();
             *connection = replacement_connection;
             old_target_id
         };
-        self.remote_browser
+        current
+            .remote_browser
             .store(replacement_remote, Ordering::Release);
         super::diagnostics::record(
             "page_rebound",
             json!({"old_target_id":old_target_id,"replacement":self.transport_diagnostic().await}),
         );
-        self.owner.unregister_owned_target(&old_target_id).await;
+        current.owner.unregister_owned_target(&old_target_id).await;
+        Ok(())
     }
 
     /// Attach a debug snapshot recorder. Captures begin on the next
@@ -314,7 +395,7 @@ impl PageSession {
 
     async fn execute(&self, method: &str, params: Value) -> anyhow::Result<Value> {
         let (client, session_id) = {
-            let connection = self.connection.read().await;
+            let connection = self.transport().await?.connection.read().await;
             (connection.client.clone(), connection.session_id.clone())
         };
         client
@@ -329,7 +410,7 @@ impl PageSession {
         timeout: Duration,
     ) -> anyhow::Result<Value> {
         let (client, session_id) = {
-            let connection = self.connection.read().await;
+            let connection = self.transport().await?.connection.read().await;
             (connection.client.clone(), connection.session_id.clone())
         };
         client
@@ -347,7 +428,7 @@ impl PageSession {
     async fn begin_action(&self) -> anyhow::Result<BrowserAction> {
         // Read the committed URL through CDP, including across redirects and SPA
         // history changes, without relying on page-owned JavaScript globals.
-        let connection = self.connection.read().await;
+        let connection = self.transport().await?.connection.read().await;
         let session = PageJavascriptSession {
             client: connection.client.clone(),
             session_id: connection.session_id.clone(),
@@ -468,7 +549,7 @@ impl PageSession {
         let action = self.begin_action().await?;
         let (min, max) = action.speed.bounds_ms();
         let body = wrap_expression(expression);
-        let session = self.javascript_session().await;
+        let session = self.javascript_session().await?;
         let key = format!("__socaiAction_{}", uuid::Uuid::new_v4().simple());
         let mut cancellation = ActionScriptCancellation {
             session: Some(session.clone()),
@@ -533,24 +614,27 @@ impl PageSession {
         timeout: Duration,
     ) -> anyhow::Result<Value> {
         self.javascript_session()
-            .await
+            .await?
             .evaluate_json_in_isolated_world_with_timeout(expression, timeout)
             .await
     }
 
-    pub(crate) async fn javascript_session(&self) -> PageJavascriptSession {
+    pub(crate) async fn javascript_session(&self) -> anyhow::Result<PageJavascriptSession> {
         self.snapshot_before().await;
-        let connection = self.connection.read().await;
-        PageJavascriptSession {
+        let connection = self.transport().await?.connection.read().await;
+        Ok(PageJavascriptSession {
             client: connection.client.clone(),
             session_id: connection.session_id.clone(),
-        }
+        })
     }
 
     /// Stop JavaScript currently running in this target. Used by the local
     /// browser-script escape hatch when its own shorter timeout expires, so a
     /// runaway loop cannot leave the controlled tab permanently frozen.
     pub async fn terminate_javascript(&self) -> anyhow::Result<()> {
+        if self.ready_transport().is_none() {
+            return Ok(());
+        }
         self.execute("Runtime.terminateExecution", json!({}))
             .await?;
         Ok(())
@@ -560,14 +644,14 @@ impl PageSession {
     /// programs use a short-lived blank sibling as their stable JavaScript
     /// control context, so the program survives navigation in the site tab.
     pub async fn create_sibling(&self, start_url: &str) -> anyhow::Result<PageSession> {
-        super::pages::PageSessionManager::new(self.owner.clone())
+        super::pages::PageSessionManager::new(self.transport().await?.owner.clone())
             .create_page(start_url)
             .await
     }
 
     /// Create a sibling target without focusing it.
     pub async fn create_background_sibling(&self, start_url: &str) -> anyhow::Result<PageSession> {
-        super::pages::PageSessionManager::new(self.owner.clone())
+        super::pages::PageSessionManager::new(self.transport().await?.owner.clone())
             .create_background_page(start_url)
             .await
     }
@@ -595,7 +679,7 @@ impl PageSession {
         context_id: Option<i64>,
     ) -> anyhow::Result<Value> {
         let (client, session_id) = {
-            let connection = self.connection.read().await;
+            let connection = self.transport().await?.connection.read().await;
             (connection.client.clone(), connection.session_id.clone())
         };
         evaluate_json_on_session(
@@ -851,6 +935,9 @@ return (async () => {{
     /// Abort in-page media fetches started by [`Self::fetch_file_with_browser`].
     /// Preview downloads call this when a newer user question needs the link.
     pub async fn cancel_browser_resource_fetches(&self) {
+        if self.ready_transport().is_none() {
+            return;
+        }
         let _ = self
             .evaluate_json_raw_with_timeout(
                 r#"
@@ -925,7 +1012,7 @@ return (async () => {
     /// share the same browser websocket.
     pub async fn browser_context_id(&self) -> anyhow::Result<String> {
         let (target_id, client) = {
-            let connection = self.connection.read().await;
+            let connection = self.transport().await?.connection.read().await;
             (connection.target_id.clone(), connection.client.clone())
         };
         let result = client
@@ -1368,8 +1455,11 @@ return (async () => {
     }
 
     pub(crate) async fn close_target(&self) -> anyhow::Result<()> {
+        let Some(transport) = self.ready_transport() else {
+            return Ok(());
+        };
         let (target_id, session_id, client) = {
-            let connection = self.connection.read().await;
+            let connection = transport.connection.read().await;
             (
                 connection.target_id.clone(),
                 connection.session_id.clone(),
@@ -1386,7 +1476,7 @@ return (async () => {
             client.execute("Target.closeTarget", json!({ "targetId": target_id })),
         )
         .await;
-        self.owner.unregister_owned_target(&target_id).await;
+        transport.owner.unregister_owned_target(&target_id).await;
         client.forget_session(session_id.as_deref());
         self.close_on_drop.store(false, Ordering::Release);
         result.context("Closing target timed out")?.map(|_| ())
@@ -1398,7 +1488,10 @@ impl Drop for PageSession {
         if !self.close_on_drop.load(Ordering::Acquire) {
             return;
         }
-        let Ok(connection) = self.connection.try_read() else {
+        let Some(transport) = self.attached_transport() else {
+            return;
+        };
+        let Ok(connection) = transport.connection.try_read() else {
             // The owner still tracks this target; an explicit disconnect can
             // sweep it if cancellation races a connection replacement.
             return;
@@ -1408,7 +1501,7 @@ impl Drop for PageSession {
             return;
         }
         let client = connection.client.clone();
-        let owner = self.owner.clone();
+        let owner = transport.owner.clone();
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             // The owner still tracks this target; an explicit disconnect can
             // sweep it even when no async runtime is available during drop.

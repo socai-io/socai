@@ -687,7 +687,7 @@ impl SocaiRuntime {
         if should_navigate_start_url(start_url) {
             replacement.navigate_with_timeout(start_url, 60.0).await?;
         }
-        page.replace_connection(replacement).await;
+        page.replace_connection(replacement).await?;
         let page_key = format!("session:{session_id}:{site_id}");
         self.site_pages.lock().await.insert(page_key, page.clone());
         self.admission.clear_cooldown();
@@ -831,6 +831,17 @@ impl SocaiRuntime {
                 pages.remove(&key);
             }
         }
+    }
+
+    /// Close the conversation's cached tab even if its last turn never used it.
+    pub async fn close_session_site_page(&self, session_id: &str, site_id: &str) -> Result<bool> {
+        let key = format!("session:{session_id}:{site_id}");
+        let page = self.site_pages.lock().await.remove(&key);
+        if let Some(page) = page {
+            page.close_target().await?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub async fn close_site_session(&self, site_id: &str) -> Result<bool> {

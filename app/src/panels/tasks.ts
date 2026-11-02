@@ -7,7 +7,6 @@ import { hostedReplyRecovery, type ReplyModelChoice } from "../lib/reply-model-r
 //! task event intake, and bindings. The sidebar (history list) + delete dialog
 //! live in `task_history.ts`; the conversation view lives in `conversation.ts`.
 
-import { sourcesNeedBrowser } from "../lib/platforms";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentArtifact,
@@ -98,10 +97,10 @@ export namespace agentPanel {
   let model = "";
   let modelProvider = "";
   let modelByProvider = new Map<string, string>();
-  let submittingTask = false;
+  let pendingTask: string | null = null;
   let submitError = "";
   let replyDraft = "";
-  let submittingReply = false;
+  let pendingReply: { taskId: string; text: string; previousRunDir: string | null } | null = null;
   let replyError = "";
   const cancellingTaskIds = new Set<string>();
   const cancellationErrors = new Map<string, string>();
@@ -117,6 +116,7 @@ export namespace agentPanel {
   let deleteRequestTaskId: string | null = null;
   let modelsCache: ModelInfo[] = [];
   let chromeSetupState: ChromeSetupState = "waiting";
+  let chromeSetupOpen = false;
   let chromeSetupError = "";
   let chromeSetupDetectionError = "";
   let chromeSetupPollTimer: number | null = null;
@@ -614,7 +614,7 @@ export namespace agentPanel {
   function renderConfigContent(): string {
     const selected = selectedModel();
     if (!selected || selected.provider === "socai") return "";
-    const disabled = savingKey || submittingTask || switchingKeyMode;
+    const disabled = savingKey || !!pendingTask || switchingKeyMode;
     const activeProvider = modelProvider || selected?.provider || providerSummaries()[0]?.provider || "";
     const activeModel = selected?.provider === activeProvider ? selected : preferredModelForProvider(activeProvider);
     const selectedModelId = modelId(activeModel);
@@ -783,12 +783,11 @@ export namespace agentPanel {
     });
   }
 
-  // The main pane: the centered new-task compose (hero + chat composer,
-  // masked by the connect overlay while chrome is down), or the selected
+  // The main pane: the centered new-task compose (hero + chat composer), or the selected
   // task's conversation with the same composer in "reply" mode.
   export function renderWorkspace(shell: ShellState): string {
     const task = view === "compose" ? null : selectedTask() ?? null;
-    if (!task) return renderComposePane(newComposer(shell));
+    if (!task) return renderComposePane(newComposer(shell), pendingTask);
     // Point the note UI at this task's archive; the thread's card groups and
     // answer citations resolve refs against it, and so does the viewer.
     setNoteRegistry(task.notes, task.run_dir);
@@ -796,6 +795,7 @@ export namespace agentPanel {
     const conversation = renderConversation({
       task,
       running,
+      pendingPrompt: pendingReply?.taskId === task.task_id && pendingReply.previousRunDir === task.run_dir ? pendingReply.text : null,
       isActivityOpen: (turnIndex, defaultOpen) => isActivityOpen(task.task_id, turnIndex, defaultOpen),
       isIntermediateOpen: (turnIndex) => intermediateOpen.get(`${task.task_id}#${turnIndex}`) ?? false,
       artifactDownloadState: (path) => artifactDownloads.get(artifactDownloadKey(task.task_id, path)),
@@ -829,11 +829,11 @@ export namespace agentPanel {
       mode: "new",
       sites: draftSites,
       sourcesExpanded,
-      value: draft,
+      value: pendingTask ? "" : draft,
       researchMode,
       workflow,
       customWorkflow,
-      submitting: submittingTask,
+      submitting: !!pendingTask,
       cancelling: false,
       error: submitError,
       status: shell.status,
@@ -841,6 +841,7 @@ export namespace agentPanel {
       running: false,
       remoteProfile: settingsMenu.isRemoteProfile(),
       managedProfile: settingsMenu.isManagedProfile(),
+      chromeSetupOpen,
       chromeSetupState,
       chromeSetupError: chromeSetupError || chromeSetupDetectionError,
       voice: voiceInput.composerState(),
@@ -857,11 +858,11 @@ export namespace agentPanel {
       sites: taskSites(taskId),
       sourcesExpanded,
       taskId,
-      value: replyDraft,
+      value: pendingReply?.taskId === taskId ? "" : replyDraft,
       researchMode: replyResearchModes.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.research_mode ?? false,
       workflow: replyWorkflows.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.custom_workflow?.id ?? tasks.find((task) => task.task_id === taskId)?.workflow ?? "general",
       customWorkflow: replyCustomWorkflows.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.custom_workflow,
-      submitting: submittingReply,
+      submitting: !!pendingReply,
       cancelling: cancellingTaskIds.has(taskId),
       error: cancellationErrors.get(taskId) ?? replyError,
       status: shell.status,
@@ -871,6 +872,7 @@ export namespace agentPanel {
       running,
       remoteProfile: settingsMenu.isRemoteProfile(),
       managedProfile: settingsMenu.isManagedProfile(),
+      chromeSetupOpen,
       chromeSetupState,
       chromeSetupError: chromeSetupError || chromeSetupDetectionError,
       voice: voiceInput.composerState(),
@@ -1371,12 +1373,12 @@ export namespace agentPanel {
     document.getElementById("composer-recover-model")?.addEventListener("click", () => {
       if (!composerTask) return;
       const choice = hostedReplyRecovery(composerTask, modelsCache, authMenu.isLoggedIn());
-      if (!choice || submittingReply) return;
+      if (!choice || pendingReply) return;
       replyModelOverrides.set(composerTask.task_id, choice);
       shell.rerender();
     });
     document.getElementById("composer-restore-model")?.addEventListener("click", () => {
-      if (!composerTask || submittingReply) return;
+      if (!composerTask || pendingReply) return;
       replyModelOverrides.delete(composerTask.task_id);
       shell.rerender();
     });
@@ -1395,7 +1397,7 @@ export namespace agentPanel {
       document.getElementById("composer-input")?.focus();
     });
     disposeComposerAutosize = input ? bindTextareaAutosize(input) : undefined;
-    updateComposerButton(shell);
+    updateComposerButton();
     document.getElementById("composer-workflow")?.addEventListener("click", () => { openWorkflows(); shell.rerender(); });
     bindWorkflows(() => shell.rerender(), (id, skill) => {
       if (composerTask) {
@@ -1423,7 +1425,7 @@ export namespace agentPanel {
     input?.addEventListener("input", () => {
       if (composerTask) replyDraft = input.value;
       else draft = input.value;
-      updateComposerButton(shell);
+      updateComposerButton();
     });
     const syncSourceOptions = (): void => {
       const toggle = document.getElementById("composer-sources-toggle");
@@ -1470,7 +1472,7 @@ export namespace agentPanel {
       });
     });
     // Enter sends; routed through the button so its disabled state (empty
-    // draft, disconnected, no model key, task running) keeps gating submission.
+    // draft, no model key, task running) keeps gating submission.
     input?.addEventListener("keydown", (e) => {
       if (!isSendShortcut(e)) return;
       e.preventDefault();
@@ -1500,8 +1502,9 @@ export namespace agentPanel {
       const transcript = await voiceInput.toggle(applyTranscript);
       if (transcript) applyTranscript(transcript);
     });
-    document.getElementById("composer-connect")?.addEventListener("click", () => {
-      invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
+    document.getElementById("composer-chrome-help")?.addEventListener("click", () => {
+      chromeSetupOpen = !chromeSetupOpen;
+      shell.rerender();
     });
     document.getElementById("overlay-chrome-connect")?.addEventListener("click", () => {
       invoke("cdp_connect").catch((e) => console.error("cdp_connect failed:", e));
@@ -1538,6 +1541,7 @@ export namespace agentPanel {
     if (!overlayVisible || shell.status.state === "connected" || settingsMenu.isRemoteProfile() || settingsMenu.isManagedProfile()) {
       stopChromeSetupPolling();
       if (shell.status.state === "connected") {
+        chromeSetupOpen = false;
         chromeSetupState = "ready";
         chromeSetupError = "";
         chromeSetupDetectionError = "";
@@ -1580,23 +1584,18 @@ export namespace agentPanel {
   // Toggling `disabled` on every keystroke via a full shell.rerender() would
   // rebuild the whole pane (losing focus and cursor position mid-type), so
   // this pokes the send button directly instead.
-  function updateComposerButton(shell: ShellState): void {
+  function updateComposerButton(): void {
     const button = document.getElementById("composer-send") as HTMLButtonElement | null;
     if (!button) return;
     const task = view === "compose" ? undefined : selectedTask();
     const value = task ? replyDraft : draft;
-    const submitting = task ? submittingReply : submittingTask;
+    const submitting = task ? !!pendingReply : !!pendingTask;
     const running = !!task && (task.status === "running" || task.status === "queued");
-    // Remote profiles submit while disconnected; the run reconnects on demand.
-    const needsConnection =
-      sourcesNeedBrowser(task ? taskSites(task.task_id) : draftSites, task ? (replyResearchModes.get(task.task_id) ?? task.research_mode ?? false) : researchMode) &&
-      shell.status.state !== "connected" && !settingsMenu.isRemoteProfile() && !settingsMenu.isManagedProfile();
     const selected = selectedModel();
     const modelReady = task ? true : !!selected && selected.has_key;
     const disabled = submitting
       || running
       || !value.trim()
-      || needsConnection
       || !modelReady
       || voiceInput.isBusy();
     if (button.disabled !== disabled) button.disabled = disabled;
@@ -1615,9 +1614,9 @@ export namespace agentPanel {
 
   async function startAgentTask(shell: ShellState): Promise<void> {
     const value = draft.trim();
-    if (!value || submittingTask) return;
+    if (!value || pendingTask) return;
     sourcesExpanded = false;
-    submittingTask = true;
+    pendingTask = value;
     submitError = "";
     shell.rerender();
     try {
@@ -1633,15 +1632,17 @@ export namespace agentPanel {
         customWorkflow,
       });
       upsertTask(snapshot);
-      selectedTaskId = snapshot.task_id;
-      view = "detail";
+      if (view === "compose") {
+        selectedTaskId = snapshot.task_id;
+        view = "detail";
+      }
       draft = "";
       researchMode = false;
     } catch (err) {
       console.error("agent_task_start failed:", err);
       submitError = handleLoginRequired(err, shell) || shell.notifyTaskCommandError(err) ? "" : `${err}`;
     } finally {
-      submittingTask = false;
+      pendingTask = null;
       shell.rerender();
     }
   }
@@ -1650,14 +1651,14 @@ export namespace agentPanel {
   // run dir for this turn. Mirrors startAgentTask but hits agent_task_reply.
   async function submitReply(shell: ShellState, taskId: string): Promise<void> {
     const value = replyDraft.trim();
-    if (!value || submittingReply) return;
+    if (!value || pendingReply) return;
     await submitReplyValue(shell, taskId, value);
   }
 
   async function submitReplyValue(shell: ShellState, taskId: string, value: string): Promise<void> {
-    if (!value.trim() || submittingReply) return;
+    if (!value.trim() || pendingReply) return;
     sourcesExpanded = false;
-    submittingReply = true;
+    pendingReply = { taskId, text: value, previousRunDir: tasks.find(task => task.task_id === taskId)?.run_dir ?? null };
     replyError = "";
     // Sending snaps the thread back to the newest content (and re-arms
     // auto-follow), even if the user had scrolled up to read.
@@ -1677,14 +1678,14 @@ export namespace agentPanel {
       replySites.delete(taskId);
       upsertTask(snapshot);
       replyModelOverrides.delete(taskId);
-      replyDraft = "";
+      if (view === "detail" && selectedTaskId === taskId) replyDraft = "";
       replyResearchModes.delete(taskId);
       replyWorkflows.delete(taskId);
     } catch (err) {
       console.error("agent_task_reply failed:", err);
       replyError = handleLoginRequired(err, shell) || shell.notifyTaskCommandError(err) ? "" : `${err}`;
     } finally {
-      submittingReply = false;
+      pendingReply = null;
       shell.rerender();
     }
   }

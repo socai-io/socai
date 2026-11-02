@@ -165,13 +165,6 @@ pub fn run() {
                 }
 
                 let mut rx = runtime.subscribe_browser_events();
-                // Managed Chrome is owned by socai, so no Chrome Allow step or
-                // explicit Connect click is needed at app startup.
-                if socai_core::cdp::ChromeConnectOptions::from_config()
-                    .is_ok_and(|options| options.profile == socai_core::cdp::ChromeProfile::Managed)
-                {
-                    runtime.connect_browser_once();
-                }
                 let mut latest_disconnect_reason: Option<String> = None;
                 let mut recoverable_disconnect = false;
                 while let Ok(event) = rx.recv().await {

@@ -61,6 +61,7 @@ export interface AgentTaskSnapshot {
   sites?: string[];
   task_id: string;
   task: string;
+  current_message?: string | null;
   provider: string | null;
   model: string | null;
   research_mode?: boolean;
@@ -657,8 +658,7 @@ function eventPathHasClass(event: Event, className: string): boolean {
 async function main(): Promise<void> {
   applyLanguageToDocument();
   // Authentication includes remote wallet reads. Show the local workspace
-  // before awaiting any IPC/network work; task submission still uses the
-  // unchanged native authentication and model/browser readiness checks.
+  // before awaiting IPC or network work.
   render();
   bindGlobalDismiss();
   bindExternalLinks();
@@ -688,6 +688,9 @@ async function main(): Promise<void> {
   // run boundaries ask for a full render so the task list and conversation
   // turns update; normal stream rows append in place to preserve scroll.
   await listen<AgentTaskEventPayload>("agent_task:event", (event) => {
+    if (event.payload.kind === "failed" && event.payload.text === "guest_login_required") {
+      authMenu.requireSignIn(shell());
+    }
     const showRuntimeError = captureRuntimeErrorNotice(event.payload);
     if (agentPanel.appendTaskEvent(event.payload) || showRuntimeError) render();
     if (event.payload.kind === "tool_result") {

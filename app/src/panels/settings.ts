@@ -90,8 +90,6 @@ export namespace settingsMenu {
   }
 
   /// Whether the configured browser source is socai's remote hosted browser.
-  /// The composer consults this: remote sessions are minted on demand at run
-  /// start, so a disconnected status is routine there, not a setup problem.
   export function isRemoteProfile(): boolean {
     return (draft?.chrome_source ?? config?.chrome_source) === "remote" && authMenu.hasProAccess();
   }
@@ -372,13 +370,8 @@ export namespace settingsMenu {
       await invoke("config_set", { key: "chrome.profile", value });
       await loadConfig();
       seedDraft();
-      const reconnectManaged = value === "managed" && !shell.hasActiveTask()
-        && (shell.status.state !== "connected" || !shell.status.managed);
-      if (reconnectManaged && shell.status.state === "connected") {
+      if (value === "managed" && !shell.hasActiveTask() && shell.status.state === "connected" && !shell.status.managed) {
         await invoke("cdp_disconnect");
-      }
-      if (reconnectManaged) {
-        await invoke("cdp_connect");
       }
       flashSaved(shell);
     } catch (err) {

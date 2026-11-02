@@ -91,8 +91,8 @@ pub struct AgentTaskSnapshot {
     /// Server-authoritative LLM + paid cloud-tool charge for the latest turn.
     pub(crate) points_used: Option<i64>,
     // The text driving the in-flight/most recent run — distinct from `task`,
-    // which stays the thread's original title across replies. It is process-
-    // local; interrupted startup recovery reads the canonical run.json task.
+    // which stays the thread's original title across replies. Persist it so a
+    // restart during preflight can recover a turn before run.json exists.
     pub(crate) current_message: Option<String>,
 }
 
@@ -522,15 +522,25 @@ impl AgentTaskRegistry {
     where
         F: FnOnce(&mut AgentTaskSnapshot),
     {
+        self.update_if(task_id, |_| true, f).await
+    }
+
+    pub(crate) async fn update_if(
+        &self,
+        task_id: &str,
+        condition: impl FnOnce(&AgentTaskSnapshot) -> bool,
+        update: impl FnOnce(&mut AgentTaskSnapshot),
+    ) -> Option<AgentTaskSnapshot> {
         let mut guard = self.inner.lock().await;
-        let snapshot = {
-            let task = guard
-                .tasks
-                .iter_mut()
-                .find(|task| task.task_id == task_id)?;
-            f(task);
-            task.clone()
-        };
+        let task = guard
+            .tasks
+            .iter_mut()
+            .find(|task| task.task_id == task_id)?;
+        if !condition(task) {
+            return None;
+        }
+        update(task);
+        let snapshot = task.clone();
         persist_task_index(&guard.tasks);
         Some(hydrate_task_snapshot(snapshot))
     }
@@ -548,18 +558,12 @@ impl AgentTaskRegistry {
     where
         F: FnOnce(&mut AgentTaskSnapshot),
     {
-        let mut guard = self.inner.lock().await;
-        let task = guard
-            .tasks
-            .iter_mut()
-            .find(|task| task.task_id == task_id)?;
-        if !matches!(task.status.as_str(), "queued" | "running") {
-            return None;
-        }
-        f(task);
-        let snapshot = task.clone();
-        persist_task_index(&guard.tasks);
-        Some(hydrate_task_snapshot(snapshot))
+        self.update_if(
+            task_id,
+            |task| matches!(task.status.as_str(), "queued" | "running"),
+            f,
+        )
+        .await
     }
 }
 
@@ -674,7 +678,7 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // Keep tasks.json as an app index only. Run id, result, error, token usage,
+    // Keep tasks.json as an app index only. Run id, result, token usage,
     // and target state are hydrated from the run or are process-local. Hosted
     // points are persisted because only the server can authoritatively settle
     // them; they cannot be reconstructed from the local run's estimated cost.
@@ -685,6 +689,8 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
                 "task_id": &task.task_id,
                 "billing_turn_id": &task.billing_turn_id,
                 "task": &task.task,
+                "current_message": &task.current_message,
+                "error": &task.error,
                 "sites": &task.sites,
                 "research_mode": task.research_mode,
                 "workflow": task.workflow,
