@@ -386,12 +386,18 @@ Only `read` or `search --read` connects Chrome to read articles. Anonymous Sogou
 search cookies are kept only in process memory, reused for up to one hour, and passed to Chrome
 when reading a returned link, preserving its search session without opening a
 search tab. Read links in the same daemon/session; restarting it loses this cache.
-Each article opens in a fresh owned tab,
-waits for a stable nonempty `#js_content`, and closes afterward. Article HTML is
+Articles reuse the platform-owned Chrome tab within the daemon or conversation,
+waiting for a stable nonempty `#js_content` before returning. Article HTML is
 never fetched by an HTTP client. `--num` accepts 1–30 (default 10), `--page` selects
 the starting result page, and each call reads at most three search-result pages.
 The result includes `last_page` and `has_more` for continuing pagination.
 `--wait-seconds` controls the content wait per attempt (default 30, maximum 120).
+When an old article shows WeChat's publisher-migration notice, the reader follows
+the visible **访问文章 / Visit article** button's actual destination over HTTPS
+in the same owned tab. Only `mp.weixin.qq.com/s` article URLs are accepted; at
+most three distinct migration destinations are followed. Results retain the
+requested URL and migration chain. A migration notice is not article text, and
+verification gates and deleted articles are still reported as failures.
 Verification pages, HTTP 429 and Retry-After responses are retried at most three
 times, waiting 1, 2, then 3 minutes. A longer server Retry-After (seconds or HTTP
 date) takes precedence. Other failures are not retried. When access remains blocked,
