@@ -337,12 +337,8 @@ function render(): void {
     },
   );
   subscriptionMenu.bind(state, async () => {
-    const alreadyHadPro = authMenu.hasProAccess();
     await authMenu.refreshWallet();
     await voiceInput.refresh();
-    if (!alreadyHadPro && authMenu.hasProAccess()) {
-      await settingsMenu.selectRemoteForNewPro(state);
-    }
   });
   settingsMenu.bind(
     state,

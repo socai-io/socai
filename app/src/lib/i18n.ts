@@ -658,8 +658,8 @@ const messages = {
     zh: "socai 无法准备 chrome 浏览器。请检查设置中的浏览器来源，保持 chrome 运行并重新连接。",
   },
   "task.preflightBrowserRemote": {
-    en: "socai could not connect to the hosted browser. check your network and socai account, then try again.",
-    zh: "socai 无法连接云端浏览器。请检查网络和 socai 账号状态，然后重试。",
+    en: "The former Browserbase Pro browser has been retired. Update Desktop and use local Chrome, or continue in Socai Web.",
+    zh: "旧版 Pro 的 Browserbase 浏览器已下线。请更新桌面版并使用本地 Chrome，或在 Socai Web 中继续。",
   },
   "task.preflightBrowserRemoteQuota": {
     en: "this device has used up today's hosted browser time. try again tomorrow, or switch the browser source to a local chrome in settings.",

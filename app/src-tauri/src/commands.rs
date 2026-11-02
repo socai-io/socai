@@ -109,6 +109,11 @@ fn validate_task_sites(sites: Vec<String>) -> Result<Vec<String>, String> {
 /// Desktop defaults to an isolated persistent profile; explicit user choices win.
 fn desktop_browser_options() -> Result<ChromeConnectOptions> {
     let mut config = socai_core::config::load_config()?;
+    if config.chrome.profile == Some(ChromeProfile::Remote) {
+        // Retired Browserbase Pro sessions must not block old installations.
+        // Preserve explicit existing/local choices; only the retired mode falls back.
+        config.chrome.profile = Some(ChromeProfile::Managed);
+    }
     config.chrome.profile.get_or_insert(ChromeProfile::Managed);
     Ok(config.chrome_connect_options())
 }
@@ -3796,12 +3801,10 @@ pub struct DesktopConfig {
 pub fn config_get() -> Result<DesktopConfig, String> {
     let config = socai_core::config::load_config().map_err(|err| format!("{err:#}"))?;
     Ok(DesktopConfig {
-        chrome_source: config
-            .chrome
-            .profile
-            .unwrap_or(ChromeProfile::Managed)
-            .as_str()
-            .to_string(),
+        chrome_source: match config.chrome.profile {
+            None | Some(ChromeProfile::Remote) => ChromeProfile::Managed,
+            Some(profile) => profile,
+        }.as_str().to_string(),
         chrome_profile_dir: config.chrome.profile_dir.unwrap_or_default(),
         chrome_profile_dir_default: default_managed_profile_dir(),
         output_dir: config.runs.dir.unwrap_or_default(),

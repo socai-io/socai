@@ -89,11 +89,9 @@ export namespace settingsMenu {
     }
   }
 
-  /// Whether the configured browser source is socai's remote hosted browser.
-  /// The composer consults this: remote sessions are minted on demand at run
-  /// start, so a disconnected status is routine there, not a setup problem.
+  /// Browserbase Pro sessions have been retired; Desktop uses local Chrome.
   export function isRemoteProfile(): boolean {
-    return (draft?.chrome_source ?? config?.chrome_source) === "remote" && authMenu.hasProAccess();
+    return false;
   }
 
   export function isManagedProfile(): boolean {
@@ -101,21 +99,11 @@ export namespace settingsMenu {
   }
 
   export function isRemoteSelected(): boolean {
-    return (draft?.chrome_source ?? config?.chrome_source) === "remote";
+    return false;
   }
 
   export function isSaving(): boolean {
     return status === "saving";
-  }
-
-  /** Select the hosted browser after a user first gains Pro. This is called
-   *  only for the purchase transition; later refreshes preserve any local
-   *  browser choice the user makes. */
-  export async function selectRemoteForNewPro(shell: ShellState): Promise<void> {
-    if (!authMenu.hasProAccess()) return;
-    if (!config) await loadConfig();
-    if (!draft) seedDraft();
-    await persistSource("remote", shell);
   }
 
   export function renderChromeManager(): string {
@@ -124,14 +112,11 @@ export namespace settingsMenu {
     if (!config || !draft) return `<p class="t-small subtle">${esc(t("common.loading"))}</p>`;
 
     const managed = draft.chrome_source === "managed";
-    const remote = draft.chrome_source === "remote";
-    const hasPro = authMenu.hasProAccess();
     return `
       <div class="chrome-manager">
         <div class="seg-toggle chrome-manager-toggle" role="group" aria-label="${esc(t("settings.source"))}">
-          <button type="button" class="seg-toggle__button" data-settings-source="existing" aria-pressed="${!managed && !remote ? "true" : "false"}" ${status === "saving" ? "disabled" : ""}>${esc(t("settings.sourceExisting"))}</button>
+          <button type="button" class="seg-toggle__button" data-settings-source="existing" aria-pressed="${!managed ? "true" : "false"}" ${status === "saving" ? "disabled" : ""}>${esc(t("settings.sourceExisting"))}</button>
           <button type="button" class="seg-toggle__button" data-settings-source="managed" aria-pressed="${managed ? "true" : "false"}" ${status === "saving" ? "disabled" : ""}>${esc(t("settings.sourceManaged"))}</button>
-          <button type="button" class="seg-toggle__button" data-settings-source="remote" aria-pressed="${remote ? "true" : "false"}" ${hasPro && status !== "saving" ? "" : "disabled"}>${esc(t("settings.sourceRemotePro"))}</button>
         </div>
       </div>
     `;
@@ -363,7 +348,7 @@ export namespace settingsMenu {
   }
 
   async function persistSource(value: string, shell: ShellState): Promise<void> {
-    if (value === "remote" && !authMenu.hasProAccess()) return;
+    if (!["existing", "managed"].includes(value)) return;
     if (!draft || draft.chrome_source === value) return;
     draft.chrome_source = value; // optimistic — toggle + sub-field update immediately
     status = "saving";
