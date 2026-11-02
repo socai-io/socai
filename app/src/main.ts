@@ -1,6 +1,7 @@
 //! Tauri desktop entry — header status/configuration plus tools / agent panels.
 
 import "./lib/polyfills";
+import { deferDraftRender, preserveDraftFocus } from "./lib/draft-focus";
 
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
@@ -284,6 +285,8 @@ function shell(): ShellState {
 function render(): void {
   const root = document.getElementById("app");
   if (!root) return;
+  if (deferDraftRender(render)) return;
+  const restoreDraftFocus = preserveDraftFocus(root);
   const state = shell();
   root.innerHTML = `
     <div class="shell">
@@ -350,6 +353,7 @@ function render(): void {
   );
   agentPanel.bind(state);
   growthPanel.bind(state);
+  restoreDraftFocus();
 }
 
 function renderRuntimeErrorNotice(): string {
