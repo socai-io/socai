@@ -9,7 +9,7 @@
 .task-examples button:focus-visible, .task-workset__search input:focus-visible { outline: 2px solid var(--focus-ring, var(--fg)); outline-offset: 3px; }
 .task-workset { box-sizing: border-box; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 0; width: min(860px, calc(100vw - 48px)); max-height: min(780px, calc(100dvh - 64px)); overflow: hidden; box-shadow: var(--shadow-pop); }
 .task-workset[open] { display: flex; flex-direction: column; animation: workset-enter 220ms cubic-bezier(.2,.8,.2,1) both; }
-.task-workset::backdrop { background: rgb(30 29 26 / 14%); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); animation: workset-backdrop 220ms ease both; }
+.task-workset::backdrop { background: rgb(30 29 26 / 14%); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); animation: workset-backdrop 220ms ease both; }
 .task-workset__header { flex: none; display: flex; align-items: center; gap: 14px; padding: 26px 28px 22px; }
 .task-workset__brand { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 13px; background: var(--canvas); }
 .task-workset__brand .platform-icon, .task-workset__brand img { display: block; width: 24px; height: 24px; object-fit: contain; border-radius: 4px; }
