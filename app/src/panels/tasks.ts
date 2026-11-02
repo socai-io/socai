@@ -257,16 +257,24 @@ export namespace agentPanel {
     if (downloadsChanged) persistArtifactDownloads();
   }
 
-  export function setTaskEvents(taskId: string, events: AgentTaskEventPayload[]): boolean {
-    if (events.length === 0) return false;
-    const task = tasks.find((item) => item.task_id === taskId);
-    if (!task) {
-      pendingEvents.set(taskId, mergeEvents(pendingEvents.get(taskId) ?? [], events));
-      return false;
+  let detailRequest = 0;
+  export async function loadSelectedTaskDetail(shell: ShellState): Promise<void> {
+    if (view !== "detail" || !selectedTaskId) return;
+    const taskId = selectedTaskId;
+    const request = ++detailRequest;
+    try {
+      const [snapshot, events] = await Promise.all([
+        invoke<AgentTaskSnapshot>("agent_task_get", { taskId }),
+        invoke<AgentTaskEventPayload[]>("agent_task_events", { taskId }),
+      ]);
+      const task = tasks.find((item) => item.task_id === taskId);
+      if (request !== detailRequest || !task || task.run_dir !== snapshot.run_dir) return;
+      upsertTask(snapshot);
+      task.events = mergeEvents(task.events, events);
+      if (selectedTaskId === taskId && view === "detail") shell.rerender();
+    } catch (e) {
+      console.error("load task detail failed:", e);
     }
-    const before = task.events.length;
-    task.events = mergeEvents(task.events, events);
-    return task.events.length !== before && taskId === selectedTaskId;
   }
 
   export function setTaskNotes(taskId: string, notes: NoteData[]): boolean {
@@ -983,6 +991,7 @@ export namespace agentPanel {
         replyDraft = "";
         replyError = "";
         shell.rerender();
+        void loadSelectedTaskDetail(shell);
         void loadTaskNotes(taskId, shell);
         void loadTaskArtifacts(taskId, shell);
       };
@@ -1698,6 +1707,7 @@ export namespace agentPanel {
       try {
         await invoke("agent_task_delete", { taskId });
         removeTask(taskId);
+        void loadSelectedTaskDetail(shell);
         loadSelectedTaskNotes(shell);
         loadSelectedTaskArtifacts(shell);
       } catch (err) {

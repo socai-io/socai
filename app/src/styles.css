@@ -2,9 +2,6 @@
    Vercel/Geist-style: pure black on near-white, generous space, no chroma.
    Source: design system v1 (colors_and_type.css). */
 
-@import url('https://api.fontshare.com/v2/css?f[]=general-sans@200,300,400,500,600,700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap');
-
 :root {
   /* ── Ink scale ────────────────────────────────────────────────── */
   --ink-0:   #000000;        /* true black — display headlines, primary CTA fill */

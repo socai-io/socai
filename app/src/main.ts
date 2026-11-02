@@ -713,9 +713,9 @@ async function main(): Promise<void> {
     voiceInput.setTranscriptionRoute(event.payload);
   });
 
+  void loadLocalTaskHistory();
   await Promise.all([settingsMenu.loadConfig(), authMenu.loadSession()]);
   render();
-  let initialTasks: AgentTaskSnapshot[] = [];
   try {
     status = await invoke<Status>("cdp_status");
   } catch (e) {
@@ -726,12 +726,6 @@ async function main(): Promise<void> {
     agentPanel.setModels(models);
   } catch (e) {
     console.error("agent_list_models failed:", e);
-  }
-  try {
-    initialTasks = await invoke<AgentTaskSnapshot[]>("agent_task_list");
-    agentPanel.setTasks(initialTasks);
-  } catch (e) {
-    console.error("agent_task_list failed:", e);
   }
   try {
     currentVersion = await getVersion();
@@ -748,9 +742,6 @@ async function main(): Promise<void> {
   // the first check. Keep that work off the initial-render critical path.
   void voiceInput.initialize(() => render());
   installUpdatePreviewHook();
-  void hydrateTaskEvents(initialTasks);
-  void agentPanel.loadSelectedTaskNotes(shell());
-  void agentPanel.loadSelectedTaskArtifacts(shell());
   void maybeCheckForUpdate();
 
   const refresh = (): void => {
@@ -806,19 +797,21 @@ function installUpdatePreviewHook(): void {
   };
 }
 
-async function hydrateTaskEvents(tasks: AgentTaskSnapshot[]): Promise<void> {
-  let changed = false;
-  await Promise.all(
-    tasks.map(async (task) => {
-      try {
-        const events = await invoke<AgentTaskEventPayload[]>("agent_task_events", { taskId: task.task_id });
-        if (agentPanel.setTaskEvents(task.task_id, events)) changed = true;
-      } catch (e) {
-        console.error("agent_task_events failed:", e);
-      }
-    }),
-  );
-  if (changed) render();
+async function loadLocalTaskHistory(): Promise<void> {
+  try {
+    agentPanel.setTasks(await invoke<AgentTaskSnapshot[]>("agent_task_list"));
+    render();
+  } catch (e) {
+    console.error("agent_task_list failed:", e);
+    return;
+  }
+
+  try {
+    await invoke("agent_task_recover_billing");
+    void agentPanel.loadSelectedTaskDetail(shell());
+  } catch (e) {
+    console.error("agent_task_recover_billing failed:", e);
+  }
 }
 
 main();

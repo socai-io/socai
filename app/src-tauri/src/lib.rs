@@ -155,7 +155,7 @@ pub fn run() {
                 // A graceful app shutdown marks active tasks interrupted in
                 // tasks.json before this process starts. If its trace drop
                 // guard finished during shutdown, recover and upload it now.
-                for snapshot in tasks.list().await {
+                for snapshot in tasks.index().await {
                     if snapshot.status == "interrupted" {
                         if let Some(run_dir) = snapshot.run_dir.as_deref() {
                             commands::upload_terminal_run_trace(run_dir, "interrupted", &telemetry)
@@ -357,6 +357,7 @@ pub fn run() {
             commands::agent_task_start,
             commands::agent_task_reply,
             commands::agent_task_list,
+            commands::agent_task_recover_billing,
             commands::agent_task_get,
             commands::agent_task_events,
             commands::agent_task_notes,

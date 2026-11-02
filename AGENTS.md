@@ -104,7 +104,7 @@ Gotchas:
   `/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -kill -r -domain local -domain system -domain user`.
 - Fonts (General Sans, Geist Mono) load via Fontshare / Google Fonts CDNs at
   runtime. For offline-capable production builds, bundle `.woff2` and replace
-  the two `@import` rules at the top of `app/src/styles.css`.
+  the two external font stylesheet links in `app/index.html`.
 - The Vite dev server ignores `src-tauri/**` (see `vite.config.ts`) so Rust
   file changes don't cause spurious frontend reloads. Rust edits trigger a
   full Tauri shell restart instead.

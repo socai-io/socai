@@ -1408,16 +1408,22 @@ async fn task_session_id(registry: &AgentTaskRegistry, task_id: &str) -> Option<
 pub async fn agent_task_list(
     tasks: State<'_, AgentTaskRegistry>,
 ) -> Result<Vec<AgentTaskSnapshot>, String> {
+    Ok(tasks.index().await)
+}
+
+#[tauri::command]
+pub async fn agent_task_recover_billing(
+    tasks: State<'_, AgentTaskRegistry>,
+) -> Result<(), String> {
     // Older cloud-usage tasks predate persisted settlement results. Replaying the
     // idempotent settlement once on launch lets those tasks show the exact
     // server charge instead of deriving points from the desktop cost estimate.
-    let snapshots = tasks.list().await;
+    let snapshots = tasks.index().await;
     recover_run_points_from_local_telemetry(&snapshots);
-    let snapshots = tasks.list().await;
     let has_cloud_session = socai_core::cloud::pro_activated();
     for snapshot in snapshots {
-        if (!has_cloud_session && !socai_core::cloud::is_guest_task(&snapshot.task_id))
-            || snapshot.points_used.is_some()
+        if snapshot.points_used.is_some()
+            || (!has_cloud_session && !socai_core::cloud::is_guest_task(&snapshot.task_id))
             || !matches!(
                 snapshot.status.as_str(),
                 "completed" | "failed" | "cancelled" | "interrupted"
@@ -1425,16 +1431,29 @@ pub async fn agent_task_list(
         {
             continue;
         }
+        // The run file can already contain points recovered from local telemetry.
+        let Some(current) = tasks.get(&snapshot.task_id).await else {
+            continue;
+        };
+        if current.points_used.is_some()
+            || current.run_dir != snapshot.run_dir
+            || current.status != snapshot.status
+        {
+            continue;
+        }
         match socai_core::cloud::settle_llm_task(&snapshot.task_id, &snapshot.status).await {
             Ok(settlement) => {
-                if let Some(updated) = tasks
-                    .update(&snapshot.task_id, |task| {
-                        task.points_used =
-                            visible_billed_points(task.provider.as_deref(), &settlement);
-                    })
-                    .await
-                {
-                    persist_run_points_used(updated.run_dir.as_deref(), updated.points_used);
+                let points = visible_billed_points(snapshot.provider.as_deref(), &settlement);
+                if let Some(points) = points {
+                    // The user may have replied or deleted this task while the request ran.
+                    persist_run_points_used(snapshot.run_dir.as_deref(), Some(points));
+                    tasks
+                        .update(&snapshot.task_id, |task| {
+                            if task.run_dir == snapshot.run_dir && task.status == snapshot.status {
+                                task.points_used = Some(points);
+                            }
+                        })
+                        .await;
                 }
             }
             Err(err) => eprintln!(
@@ -1443,7 +1462,7 @@ pub async fn agent_task_list(
             ),
         }
     }
-    Ok(tasks.list().await)
+    Ok(())
 }
 
 #[tauri::command]

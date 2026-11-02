@@ -419,12 +419,13 @@ impl AgentTaskRegistry {
         rebound
     }
 
+    pub(crate) async fn index(&self) -> Vec<AgentTaskSnapshot> {
+        self.inner.lock().await.tasks.clone()
+    }
+
     pub(crate) async fn list(&self) -> Vec<AgentTaskSnapshot> {
-        self.inner
-            .lock()
+        self.index()
             .await
-            .tasks
-            .clone()
             .into_iter()
             .map(hydrate_task_snapshot)
             .collect()
