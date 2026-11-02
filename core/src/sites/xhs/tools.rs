@@ -104,8 +104,8 @@ pub fn xhs_tools_with_llm_provider(
             page: page.clone(),
             llm_provider: llm_provider.clone(),
             history: history.clone(),
-            always_download_media: false,
-            always_ocr: false,
+            default_download_media: false,
+            default_ocr: false,
             asr_enabled,
         }) as Arc<dyn Tool>,
         Arc::new(ExtractSearchCardsTool {
@@ -137,15 +137,15 @@ pub fn xhs_tools_with_llm_provider(
             page: page.clone(),
             llm_provider: llm_provider.clone(),
             history: history.clone(),
-            always_download_media: false,
-            always_ocr: false,
+            default_download_media: false,
+            default_ocr: false,
             asr_enabled,
         }),
         Arc::new(AuthorScanTool {
             page: page.clone(),
             history: history.clone(),
-            always_download_media: false,
-            always_ocr: false,
+            default_download_media: false,
+            default_ocr: false,
             asr_enabled,
         }),
         Arc::new(AlbumTool { page: page.clone() }),
@@ -166,40 +166,39 @@ pub fn xhs_macro_tools_with_llm_provider(
     xhs_macro_tools_with_ocr_policy(page, llm_provider, true)
 }
 
-/// Preserve desktop's local OCR default, while hosted remote OCR is explicit
-/// per call. Media capture remains enabled in either case for source previews.
+/// Preserve desktop's local OCR and media defaults, while explicit per-call
+/// opt-outs remain effective. Hosted remote OCR is opt-in.
 pub fn xhs_macro_tools_with_ocr_policy(
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
-    always_ocr: bool,
+    default_ocr: bool,
 ) -> Vec<Arc<dyn Tool>> {
     let history = Arc::new(XhsHistoryStore::open_default());
     let asr_enabled = true;
-    // The app/TUI agent interface always downloads note media so the offline
-    // files are on hand for deeper analysis, and always OCRs every image; the
-    // CLI keeps its --download-media / --ocr opt-ins via the full tool set above.
+    // App/TUI defaults retain offline media and local OCR. Calls doing only
+    // text research can explicitly disable both; the CLI defaults stay opt-in.
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(GetNotesTool {
             page: page.clone(),
             llm_provider: llm_provider.clone(),
             history: history.clone(),
-            always_download_media: true,
-            always_ocr,
+            default_download_media: true,
+            default_ocr,
             asr_enabled,
         }) as Arc<dyn Tool>,
         Arc::new(SearchTool {
             page: page.clone(),
             llm_provider: llm_provider.clone(),
             history: history.clone(),
-            always_download_media: true,
-            always_ocr,
+            default_download_media: true,
+            default_ocr,
             asr_enabled,
         }) as Arc<dyn Tool>,
         Arc::new(AuthorScanTool {
             page: page.clone(),
             history: history.clone(),
-            always_download_media: true,
-            always_ocr,
+            default_download_media: true,
+            default_ocr,
             asr_enabled,
         }),
         Arc::new(AlbumTool { page: page.clone() }),
@@ -238,23 +237,23 @@ pub(crate) fn exploration_tools(
             page: page.clone(),
             llm_provider: Some(backend.clone()),
             history: history.clone(),
-            always_download_media: false,
-            always_ocr: false,
+            default_download_media: false,
+            default_ocr: false,
             asr_enabled: false,
         }),
         Arc::new(AuthorScanTool {
             page: page.clone(),
             history: history.clone(),
-            always_download_media: false,
-            always_ocr: false,
+            default_download_media: false,
+            default_ocr: false,
             asr_enabled: false,
         }),
         Arc::new(GetNotesTool {
             page,
             llm_provider: Some(backend),
             history,
-            always_download_media: false,
-            always_ocr: true,
+            default_download_media: false,
+            default_ocr: true,
             asr_enabled: false,
         }),
     ]
@@ -3600,8 +3599,8 @@ pub struct GetNotesTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
     history: Arc<XhsHistoryStore>,
-    always_download_media: bool,
-    always_ocr: bool,
+    default_download_media: bool,
+    default_ocr: bool,
     asr_enabled: bool,
 }
 
@@ -3646,13 +3645,13 @@ impl Tool for GetNotesTool {
                 },
                 "download_media": {
                     "type": "boolean",
-                    "description": "Download note images/videos into the run dir and include local paths.",
-                    "default": false
+                    "description": "Download note images/videos into the run dir and include local paths. Set false for text-only research; an explicit false overrides the app default. Audio transcription still downloads the required video.",
+                    "default": self.default_download_media
                 },
                 "ocr": {
                     "type": "boolean",
-                    "description": "Run local OCR on every carousel image, or a video note's cover.",
-                    "default": false
+                    "description": "Run OCR on every carousel image, or a video note's cover. Set false when only body text/comments are needed; this overrides the app default.",
+                    "default": self.default_ocr
                 },
                 "transcribe_audio": {
                     "type": "boolean",
@@ -3670,7 +3669,7 @@ impl Tool for GetNotesTool {
     }
 
     fn effective_input(&self, input: &Value) -> Value {
-        effective_macro_input(input, None, self.always_download_media, self.always_ocr)
+        effective_macro_input(input, None, self.default_download_media, self.default_ocr)
     }
 
     async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
@@ -3701,13 +3700,12 @@ impl Tool for GetNotesTool {
         }
 
         let comment_count = get_i64(&input, "num_comments", TOP_COMMENTS_PER_NOTE).max(0);
-        let ocr = self.always_ocr || get_bool(&input, "ocr", false);
+        let ocr = get_bool(&input, "ocr", self.default_ocr);
         let transcribe_audio = get_bool(&input, "transcribe_audio", false);
-        let download_media_requested = self.always_download_media
-            || get_bool(&input, "download_media", false)
-            || transcribe_audio;
+        let download_media_requested =
+            get_bool(&input, "download_media", self.default_download_media) || transcribe_audio;
         let download_media = ocr || download_media_requested;
-        let background_video_downloads = self.always_download_media
+        let background_video_downloads = self.default_download_media
             && ctx.background_media_generation.is_some()
             && download_media_requested
             && !transcribe_audio;
@@ -5193,13 +5191,10 @@ pub struct SearchTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
     history: Arc<XhsHistoryStore>,
-    /// Force media download regardless of the `download_media` input. Set by the
-    /// app/TUI macro factory; the CLI/full set leaves the input in control.
-    always_download_media: bool,
-    /// Force OCR (and therefore download) of every note image regardless of the
-    /// `ocr` input. Set by the app/TUI macro factory so the desktop agent always
-    /// gets OCR; the CLI/full set leaves it to the `--ocr` flag.
-    always_ocr: bool,
+    /// Media default when the call omits `download_media`; explicit false wins.
+    default_download_media: bool,
+    /// OCR default when the call omits `ocr`; explicit false wins.
+    default_ocr: bool,
     /// See [`ReadNoteTool::asr_enabled`].
     asr_enabled: bool,
 }
@@ -5207,8 +5202,8 @@ pub struct SearchTool {
 fn effective_macro_input(
     input: &Value,
     default_num_notes: Option<i64>,
-    always_download_media: bool,
-    always_ocr: bool,
+    default_download_media: bool,
+    default_ocr: bool,
 ) -> Value {
     let mut effective = input.clone();
     let preview = get_bool(&effective, "preview", false);
@@ -5217,7 +5212,7 @@ fn effective_macro_input(
             effective["num_notes"] = json!(default);
         }
     }
-    let ocr = always_ocr || get_bool(&effective, "ocr", false);
+    let ocr = get_bool(&effective, "ocr", default_ocr);
     if ocr {
         effective["ocr"] = json!(true);
     }
@@ -5226,8 +5221,7 @@ fn effective_macro_input(
             object.remove("download_media");
             object.remove("transcribe_audio");
         }
-    } else if always_download_media
-        || get_bool(&effective, "download_media", false)
+    } else if get_bool(&effective, "download_media", default_download_media)
         || get_bool(&effective, "transcribe_audio", false)
     {
         // Explicit downloads only — OCR alone downloads just what it reads
@@ -5288,13 +5282,13 @@ impl Tool for SearchTool {
                 },
                 "download_media": {
                     "type": "boolean",
-                    "description": "Download note images/videos into the command run_dir, include local_path fields in returned notes, and write a stable media_manifest.json surfaced by media_manifest_path. Ignored in preview mode.",
-                    "default": false
+                    "description": "Download note images/videos into the command run_dir, include local_path fields, and write media_manifest_path. Set false for text-only research to override the app default. Ignored in preview mode; transcription still downloads its required video.",
+                    "default": self.default_download_media
                 },
                 "ocr": {
                     "type": "boolean",
                     "description": "Run local OCR (PP-OCRv6 small). Full scan: OCR each opened note — every carousel image, or a video note's cover — downloading what it reads (video files still require download_media); returned notes expose OCR for at most their first two cover-first images. Preview: OCR each card's cover image and attach its ocr_text. Full per-image ocr_text/ocr_ms and OCR diagnostics are kept in the artifact.",
-                    "default": false
+                    "default": self.default_ocr
                 },
                 "transcribe_audio": {
                     "type": "boolean",
@@ -5319,8 +5313,8 @@ impl Tool for SearchTool {
         effective_macro_input(
             input,
             Some(DEFAULT_NUM_NOTES),
-            self.always_download_media,
-            self.always_ocr,
+            self.default_download_media,
+            self.default_ocr,
         )
     }
 
@@ -5344,7 +5338,7 @@ impl Tool for SearchTool {
             let num_notes = Some(get_i64(&input, "num_notes", DEFAULT_NUM_NOTES).max(1) as usize);
             // Warm the OCR engine off the critical path so cover OCR doesn't pay
             // model-load latency; overlaps the search + card collection below.
-            let ocr = self.always_ocr || get_bool(&input, "ocr", false);
+            let ocr = get_bool(&input, "ocr", self.default_ocr);
             if ocr && !ctx.has_remote_ocr() {
                 tokio::task::spawn_blocking(ocr_warm_up);
             }
@@ -5466,16 +5460,15 @@ impl Tool for SearchTool {
         // and pull top comments. Per-note image vision is off (it's the one
         // genuinely expensive enrichment and not needed for topic research).
         let include_media = false;
-        let ocr = self.always_ocr || get_bool(&input, "ocr", false);
+        let ocr = get_bool(&input, "ocr", self.default_ocr);
         let transcribe_audio = get_bool(&input, "transcribe_audio", false);
         // Explicit request: download everything, video files included.
-        let download_media_requested = self.always_download_media
-            || get_bool(&input, "download_media", false)
-            || transcribe_audio;
+        let download_media_requested =
+            get_bool(&input, "download_media", self.default_download_media) || transcribe_audio;
         // OCR still implies downloading what it reads (carousel images, video
         // posters) — but only an explicit request fetches video files.
         let download_media = ocr || download_media_requested;
-        let background_video_downloads = self.always_download_media
+        let background_video_downloads = self.default_download_media
             && ctx.background_media_generation.is_some()
             && download_media_requested
             && !transcribe_audio;
@@ -6109,13 +6102,10 @@ impl Tool for SearchTool {
 pub struct AuthorScanTool {
     page: Arc<PageSession>,
     history: Arc<XhsHistoryStore>,
-    /// Force media download regardless of the `download_media` input. Set by the
-    /// app/TUI macro factory; the CLI/full set leaves the input in control.
-    always_download_media: bool,
-    /// Force OCR (and therefore download) of every note image regardless of the
-    /// `ocr` input. Set by the app/TUI macro factory; the CLI/full set leaves it
-    /// to the `--ocr` flag.
-    always_ocr: bool,
+    /// Media default when the call omits `download_media`; explicit false wins.
+    default_download_media: bool,
+    /// OCR default when the call omits `ocr`; explicit false wins.
+    default_ocr: bool,
     /// See [`ReadNoteTool::asr_enabled`].
     asr_enabled: bool,
 }
@@ -6173,13 +6163,13 @@ impl Tool for AuthorScanTool {
                 },
                 "download_media": {
                     "type": "boolean",
-                    "description": "Download each note's images/videos into the run dir, include local_path fields, and emit a stable media_manifest_path. Ignored in preview mode.",
-                    "default": false
+                    "description": "Download each note's images/videos into the run dir, include local_path fields, and emit media_manifest_path. Set false for text-only research to override the app default. Ignored in preview mode; transcription still downloads its required video.",
+                    "default": self.default_download_media
                 },
                 "ocr": {
                     "type": "boolean",
                     "description": "Run local OCR (PP-OCRv6 small) on each opened note — every carousel image, or a video note's cover — retaining per-image ocr_text in the artifact and returning at most the first two cover-first image texts per note. Downloads what it reads on its own; video files still require download_media. In preview mode, OCRs each note card's cover instead.",
-                    "default": false
+                    "default": self.default_ocr
                 },
                 "transcribe_audio": {
                     "type": "boolean",
@@ -6196,7 +6186,7 @@ impl Tool for AuthorScanTool {
     }
 
     fn effective_input(&self, input: &Value) -> Value {
-        effective_macro_input(input, None, self.always_download_media, self.always_ocr)
+        effective_macro_input(input, None, self.default_download_media, self.default_ocr)
     }
 
     async fn call(&self, mut input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
@@ -6212,17 +6202,16 @@ impl Tool for AuthorScanTool {
         // notes are opened, so gate it on a full scan — without this, a
         // `preview=true, download_media=true` call would still spin up the media
         // pipeline and emit media metadata even though no note is opened.
-        let ocr = self.always_ocr || get_bool(&input, "ocr", false);
+        let ocr = get_bool(&input, "ocr", self.default_ocr);
         let transcribe_audio = !preview && get_bool(&input, "transcribe_audio", false);
         // Explicit request: download everything, video files included. OCR
         // still implies downloading what it reads (carousel images, video
         // posters) — but only an explicit request fetches video files.
         let download_media_requested = !preview
-            && (self.always_download_media
-                || get_bool(&input, "download_media", false)
+            && (get_bool(&input, "download_media", self.default_download_media)
                 || transcribe_audio);
         let download_media = !preview && (ocr || download_media_requested);
-        let background_video_downloads = self.always_download_media
+        let background_video_downloads = self.default_download_media
             && ctx.background_media_generation.is_some()
             && download_media_requested
             && !transcribe_audio;
@@ -6597,7 +6586,39 @@ mod tests {
         let explicit = effective_macro_input(&json!({"ocr":true}), Some(3), true, false);
         assert_eq!(explicit["ocr"], json!(true));
         let desktop = effective_macro_input(&json!({"ocr":false}), Some(3), true, true);
-        assert_eq!(desktop["ocr"], json!(true));
+        assert_eq!(desktop["ocr"], json!(false));
+        // Explicit false must survive telemetry normalization AND execution.
+        for (default_download, default_ocr) in [(true, true), (true, false), (false, false)] {
+            let disabled = effective_macro_input(
+                &json!({"download_media":false,"ocr":false}),
+                Some(3),
+                default_download,
+                default_ocr,
+            );
+            assert_eq!(disabled["download_media"], json!(false));
+            assert_eq!(disabled["ocr"], json!(false));
+            assert!(!get_bool(&disabled, "download_media", default_download));
+            assert!(!get_bool(&disabled, "ocr", default_ocr));
+        }
+        let defaults = effective_macro_input(&json!({}), None, true, true);
+        assert_eq!(defaults["download_media"], json!(true));
+        assert_eq!(defaults["ocr"], json!(true));
+        let asr = effective_macro_input(
+            &json!({"download_media":false,"ocr":false,"transcribe_audio":true}),
+            None,
+            true,
+            true,
+        );
+        assert_eq!(asr["download_media"], json!(true));
+        let preview = effective_macro_input(
+            &json!({"preview":true,"download_media":true,"ocr":false,"transcribe_audio":true}),
+            None,
+            true,
+            true,
+        );
+        assert!(preview.get("download_media").is_none());
+        assert!(preview.get("transcribe_audio").is_none());
+        assert_eq!(preview["ocr"], json!(false));
     }
 
     #[test]
