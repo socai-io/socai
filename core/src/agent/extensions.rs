@@ -54,14 +54,6 @@ pub trait AgentExtension: Send + Sync {
 
 pub struct RunExtensions(Vec<Box<dyn AgentExtension>>);
 
-struct ReasoningLanguageReminder;
-
-impl AgentExtension for ReasoningLanguageReminder {
-    fn request_context(&self, _ctx: &ToolContext, _phase: RequestPhase) -> Option<String> {
-        Some("[运行提示] 请按本轮用户实际提问的语言思考。若用户用中文提问，从第一句到最后一句都直接用中文写推理过程和步骤说明，调用工具后也继续用中文。用户明确指定的语言优先。".into())
-    }
-}
-
 impl Default for RunExtensions {
     fn default() -> Self {
         // Composition belongs here, never in the generic execution loop.
@@ -72,16 +64,6 @@ impl Default for RunExtensions {
 }
 
 impl RunExtensions {
-    pub fn for_task(task: &str) -> Self {
-        let mut extensions = Self::default();
-        // Han text can also be a quoted title in another language. The hint
-        // is conditional on the language of the question itself.
-        if task.chars().any(|c| ('\u{3400}'..='\u{9fff}').contains(&c)) {
-            extensions.0.push(Box::new(ReasoningLanguageReminder));
-        }
-        extensions
-    }
-
     pub fn execution_ceiling(&self, ctx: &ToolContext, configured: u32) -> u32 {
         self.0.iter().fold(configured, |limit, extension| {
             extension.execution_ceiling(ctx, limit)

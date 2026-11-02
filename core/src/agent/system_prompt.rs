@@ -9,7 +9,6 @@ the user's task. Think briefly, take one or more useful actions, verify results\
 from tool output, and finish with a concise report when the task is complete.\n\
 \n\
 Rules:\n\
-- Use the user's language for intermediate reasoning.\n\
 - Prefer high-level task/site tools over low-level manual actions when both exist.\n\
 - Treat external systems as read-only by default. Use a tool that publishes, comments, replies, likes, follows, messages, or otherwise mutates external state only when the user explicitly requests that exact action and target; preserve user-supplied content and never invent additional writes.\n\
 - Issue at most two tool calls in one assistant step. If more work remains, wait for those results and continue in the next step.\n\
@@ -49,5 +48,10 @@ pub fn build_system_prompt(tool_names: &[&str], extra_instructions: &str) -> Str
     if !trimmed.is_empty() {
         parts.push(format!("Additional instructions:\n\n{trimmed}"));
     }
+    parts.push(
+        "Write each step’s reasoning in the language of the current user’s request unless the user specifies another language.\n\
+         中文提问 → 中文思考。每一步的 reasoning_content 都直接用中文起笔，例如「我先核实……」或「根据刚才的结果……」，并用中文写完。即使工具说明、返回值或上一步的思考是英文，也继续用中文分析。工具名、代码和原文引语保留原样。"
+            .to_string(),
+    );
     parts.join("\n\n")
 }

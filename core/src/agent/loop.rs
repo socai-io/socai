@@ -438,7 +438,7 @@ pub async fn run_agent_with_events(
     let mut terminal_error: Option<String> = None;
     let mut degraded_reason: Option<String> = None;
     let mut extension_stop_reason: Option<String> = None;
-    let mut extensions = RunExtensions::for_task(task);
+    let mut extensions = RunExtensions::default();
     let mut truncation_retries = 0u32;
     let mut invalid_delivery_retries = 0u32;
     let mut delivery_steps_left: Option<u32> = None;
