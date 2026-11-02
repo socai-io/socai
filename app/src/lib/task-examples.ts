@@ -1,6 +1,7 @@
 import { esc } from "./html";
 import { getLanguage } from "./i18n";
 import { platformIcon, platformLabel } from "./platforms";
+import { worksetIcon, WORKSET_STACK_ICON, WORKSET_CLOSE_ICON, WORKSET_CHEVRON_ICON, WORKSET_REFRESH_ICON } from "./workset-icons";
 import "./task-examples.css";
 
 const platforms = ["xhs", "dy", "x", "instagram", "tiktok", "linkedin", "github", "podcast", "weixin"] as const;
@@ -115,13 +116,15 @@ function editablePrompt(prompt: string, key: string, index: number, chinese: boo
 export function renderTaskExamples(): string {
   const chinese = getLanguage() === "zh";
   return `<section class="task-examples" data-task-examples aria-label="${chinese ? "任务示例" : "Task examples"}">
-    <p class="t-small subtle">${chinese ? "选择工作集，从一个问题开始" : "Choose a workset. Make the question yours."}</p>
-    <div class="task-worksets">${platforms.map(platform => `<button type="button" data-workset-trigger="${platform}" aria-haspopup="dialog" aria-controls="task-workset-dialog" aria-expanded="false">${platformIcon(platform)}<span>${esc(platformLabel(platform))}${chinese ? "工作集" : " workset"}</span><span class="task-worksets__arrow" aria-hidden="true">↗</span></button>`).join("")}</div>
+    <div class="task-worksets">${platforms.map(platform => `<button type="button" data-workset-trigger="${platform}" aria-haspopup="dialog" aria-controls="task-workset-dialog" aria-expanded="false">${platformIcon(platform)}<span>${esc(platformLabel(platform))}${chinese ? "工作集" : " workset"}</span></button>`).join("")}</div>
+    <p class="task-worksets__hint">${chinese ? "选一个工作集，让想法有个起点" : "A little inspiration to get you started"}</p>
     <dialog id="task-workset-dialog" class="task-workset" aria-labelledby="task-workset-title" aria-describedby="task-workset-hint">
-      <div class="task-workset__header"><div><p class="t-eyebrow">${chinese ? "从灵感到有来源的结果" : "From a question to sourced results"}</p><h2 class="t-h2" id="task-workset-title"></h2><p class="t-small subtle" id="task-workset-hint">${chinese ? "选一个问题，填写高亮内容后再发送" : "Choose a question, fill the highlighted fields, then send"}</p></div><button type="button" class="task-workset__close" data-workset-close aria-label="${chinese ? "关闭工作集" : "Close workset"}">×</button></div>
+      <div class="task-workset__header"><span class="task-workset__brand" data-workset-brand aria-hidden="true">${WORKSET_STACK_ICON}</span><div><h2 class="t-h2" id="task-workset-title"></h2><p class="t-small subtle" id="task-workset-hint">${chinese ? "从一个好问题开始，下一步由你决定。" : "Start with a good question. Make it your own."}</p></div><button type="button" class="task-workset__close" data-workset-close aria-label="${chinese ? "关闭工作集" : "Close workset"}">${WORKSET_CLOSE_ICON}</button></div>
+      <div class="task-workset__toolbar"><label class="task-workset__search"><span class="sr-only">${chinese ? "搜索工作集问题" : "Search workset questions"}</span><input type="search" data-workset-search placeholder="${chinese ? "搜索关键词、采集、内容创作…" : "Search keywords, collection, content…"}" autocomplete="off" /></label><span data-workset-count class="t-small subtle" aria-live="polite"></span></div>
       <div class="task-workset__confirmation" data-workset-confirm hidden role="alert"><p>${chinese ? "输入框里已有草稿。要替换为这个问题吗？" : "You already have a draft. Replace it with this question?"}</p><div><button type="button" data-keep-draft>${chinese ? "保留草稿" : "Keep draft"}</button><button type="button" data-replace-draft>${chinese ? "替换草稿" : "Replace draft"}</button></div></div>
       <div class="task-workset__body" data-workset-body></div>
-      <p class="task-workset__footer t-small subtle">${chinese ? "仅填入草稿 · 不会自动发送 · Tab 切换待填内容" : "Draft only · Never sends automatically · Tab moves between fields"}</p>
+      <p class="task-workset__empty" data-workset-empty hidden>${chinese ? "没有找到相关问题，换个词试试。" : "No matches. Try another word."}</p>
+      <p class="task-workset__footer t-small subtle"><span>${chinese ? "选择问题后，填入高亮内容即可开始" : "Choose a question, then fill in the highlighted fields"}</span><span><kbd>Tab</kbd> ${chinese ? "切换填写" : "next field"}</span></p>
     </dialog>
   </section>`;
 }
@@ -135,6 +138,17 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
   let trigger: HTMLButtonElement | undefined;
   let pending: { platform: Platform; prompt: string; draft: string } | undefined;
   const confirmation = dialog.querySelector<HTMLElement>("[data-workset-confirm]")!;
+  const search = dialog.querySelector<HTMLInputElement>("[data-workset-search]")!;
+  const count = dialog.querySelector<HTMLElement>("[data-workset-count]")!;
+  const filter = (): void => {
+    const query = search.value.trim().toLocaleLowerCase();
+    const cards = Array.from(body.querySelectorAll<HTMLElement>(".task-workset__card"));
+    for (const card of cards) card.hidden = !!query && !card.textContent?.toLocaleLowerCase().includes(query);
+    const visible = cards.filter(card => !card.hidden).length;
+    count.textContent = chinese ? `${visible} 个问题` : `${visible} questions`;
+    dialog.querySelector<HTMLElement>("[data-workset-empty]")!.hidden = visible > 0;
+  };
+  search.addEventListener("input", filter);
   const apply = (platform: Platform, prompt: string): void => {
     pending = undefined;
     dialog.close("selected");
@@ -148,7 +162,11 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
       confirmation.hidden = true;
       pending = undefined;
       dialog.querySelector("#task-workset-title")!.textContent = platformLabel(platform) + (chinese ? "工作集" : " workset");
-      body.innerHTML = taskExamples(platform).map(example => `<article class="task-workset__card"><button type="button" data-task-example="${example.id}" data-example-platform="${platform}" data-example-index="0"><span class="task-workset__card-title">${esc(example.title.replace(platformLabel(platform) + " ", ""))}<span aria-hidden="true">↗</span></span><span class="task-workset__description">${esc(example.prompts[0])}</span></button><button type="button" class="task-workset__alternate" data-example-alternate="${example.id}">${chinese ? "换个例子" : "Another example"}<span aria-hidden="true">↻</span></button></article>`).join("");
+      dialog.querySelector("[data-workset-brand]")!.innerHTML = platformIcon(platform);
+      body.innerHTML = taskExamples(platform).map(example => `<article class="task-workset__card"><button type="button" data-task-example="${example.id}" data-example-platform="${platform}" data-example-index="0"><span class="task-workset__card-title"><span class="task-workset__icon">${worksetIcon(example.id)}</span><strong>${esc(example.title.replace(platformLabel(platform) + " ", ""))}</strong><span class="task-workset__choose">${WORKSET_CHEVRON_ICON}</span></span><span class="task-workset__description">${esc(example.prompts[0])}</span></button><button type="button" class="task-workset__alternate" data-example-alternate="${example.id}">${WORKSET_REFRESH_ICON}<span>${chinese ? "换一种问法" : "Another way to ask"}</span></button></article>`).join("");
+      search.value = "";
+      filter();
+      body.scrollTop = 0;
       button.setAttribute("aria-expanded", "true");
       dialog.showModal();
     });
@@ -171,6 +189,7 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
       const index = (Number(button.dataset.exampleIndex) + 1) % example.prompts.length;
       button.dataset.exampleIndex = String(index);
       button.querySelector(".task-workset__description")!.textContent = example.prompts[index];
+      filter();
       return;
     }
     const prompt = example.prompts[Number(button.dataset.exampleIndex)];
