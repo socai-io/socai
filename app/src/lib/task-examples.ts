@@ -129,6 +129,44 @@ export function renderTaskExamples(): string {
   </section>`;
 }
 
+const restoreWorksets = new WeakMap<HTMLElement, (state: WorksetState) => void>();
+interface WorksetState {
+  platform: Platform;
+  query: string;
+  indices: Record<string, number>;
+  scroll: number;
+  pending?: { platform: Platform; prompt: string; draft: string };
+  focus?: string;
+  selection?: [number, number];
+}
+
+// The shell replaces its DOM when background history/status reads settle.
+// Carry only the open UI state across that render; never persist it across
+// navigation, change a draft, or reuse event handlers bound to detached input.
+export function preserveTaskWorkset(): () => void {
+  const section = document.querySelector<HTMLElement>("[data-task-examples]");
+  const dialog = section?.querySelector<HTMLDialogElement>("dialog");
+  const trigger = section?.querySelector<HTMLElement>('[data-workset-trigger][aria-expanded="true"]');
+  if (!section || !dialog?.open || !trigger) return () => {};
+  const query = dialog.querySelector<HTMLInputElement>("[data-workset-search]")!;
+  const active = document.activeElement as HTMLElement | null;
+  const state: WorksetState = {
+    platform: trigger.dataset.worksetTrigger as Platform,
+    query: query.value,
+    indices: Object.fromEntries([...dialog.querySelectorAll<HTMLElement>("[data-task-example]")].map(n => [n.dataset.taskExample!, Number(n.dataset.exampleIndex)])),
+    scroll: dialog.querySelector<HTMLElement>("[data-workset-body]")!.scrollTop,
+    focus: active === query ? "[data-workset-search]" : active?.dataset.taskExample ? `[data-task-example="${active.dataset.taskExample}"]` : active?.dataset.exampleAlternate ? `[data-example-alternate="${active.dataset.exampleAlternate}"]` : active?.hasAttribute("data-keep-draft") ? "[data-keep-draft]" : active?.hasAttribute("data-replace-draft") ? "[data-replace-draft]" : undefined,
+    selection: active === query ? [query.selectionStart ?? 0, query.selectionEnd ?? 0] : undefined,
+  };
+  // The binding owns the pending draft snapshot; copy it without exposing or
+  // accepting replacement until the existing draft guard runs again.
+  section.dispatchEvent(new CustomEvent("workset:capture", { detail: state }));
+  return () => {
+    const next = document.querySelector<HTMLElement>("[data-task-examples]");
+    if (next) restoreWorksets.get(next)?.(state);
+  };
+}
+
 export function bindTaskExamples(select: (example: { platform: Platform; prompt: string }) => void): void {
   const section = document.querySelector<HTMLElement>("[data-task-examples]");
   const dialog = section?.querySelector<HTMLDialogElement>("dialog");
@@ -140,6 +178,9 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
   const confirmation = dialog.querySelector<HTMLElement>("[data-workset-confirm]")!;
   const search = dialog.querySelector<HTMLInputElement>("[data-workset-search]")!;
   const count = dialog.querySelector<HTMLElement>("[data-workset-count]")!;
+  section.addEventListener("workset:capture", event => {
+    (event as CustomEvent<WorksetState>).detail.pending = pending ? { ...pending } : undefined;
+  });
   const filter = (): void => {
     const query = search.value.trim().toLocaleLowerCase();
     const cards = Array.from(body.querySelectorAll<HTMLElement>(".task-workset__card"));
@@ -172,7 +213,7 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
     });
   });
   dialog.querySelector("[data-workset-close]")?.addEventListener("click", () => dialog.close());
-  dialog.addEventListener("close", () => { trigger?.setAttribute("aria-expanded", "false"); if (dialog.returnValue !== "selected") trigger?.focus(); });
+  dialog.addEventListener("close", () => { if (!dialog.isConnected || dialog.open) return; trigger?.setAttribute("aria-expanded", "false"); if (dialog.returnValue !== "selected") trigger?.focus(); });
   dialog.addEventListener("click", event => {
     if (event.target !== dialog) return;
     const box = dialog.getBoundingClientRect();
@@ -208,5 +249,25 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
     const input = document.querySelector<HTMLTextAreaElement>("#composer-input");
     if (!pending || !input || input.disabled || input.value !== pending.draft) { pending = undefined; dialog.close(); return; }
     apply(pending.platform, pending.prompt);
+  });
+  restoreWorksets.set(section, state => {
+    section.querySelector<HTMLButtonElement>(`[data-workset-trigger="${state.platform}"]`)?.click();
+    if (!dialog.open) return;
+    for (const button of body.querySelectorAll<HTMLButtonElement>("[data-task-example]")) {
+      const example = taskExamples(state.platform).find(item => item.id === button.dataset.taskExample);
+      const index = state.indices[button.dataset.taskExample!];
+      if (example && Number.isInteger(index) && example.prompts[index]) {
+        button.dataset.exampleIndex = String(index);
+        button.querySelector(".task-workset__description")!.textContent = example.prompts[index];
+      }
+    }
+    search.value = state.query;
+    filter();
+    pending = state.pending;
+    confirmation.hidden = !pending;
+    const focus = state.focus ? dialog.querySelector<HTMLElement>(state.focus) : undefined;
+    focus?.focus({ preventScroll: true });
+    if (focus === search && state.selection) search.setSelectionRange(...state.selection);
+    body.scrollTop = state.scroll;
   });
 }

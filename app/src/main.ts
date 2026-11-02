@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { voiceInput, type VoiceRoute } from "./lib/voice-input";
+import { preserveTaskWorkset } from "./lib/task-examples";
 import { bindExternalLinks } from "./lib/external-links";
 
 import {
@@ -284,6 +285,7 @@ function shell(): ShellState {
 function render(): void {
   const root = document.getElementById("app");
   if (!root) return;
+  const restoreWorkset = preserveTaskWorkset();
   const state = shell();
   root.innerHTML = `
     <div class="shell">
@@ -350,6 +352,7 @@ function render(): void {
   );
   agentPanel.bind(state);
   growthPanel.bind(state);
+  restoreWorkset();
 }
 
 function renderRuntimeErrorNotice(): string {

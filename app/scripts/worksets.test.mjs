@@ -48,6 +48,15 @@ test('template binding preserves native input, guards drafts and blocks unresolv
   assert.doesNotMatch(examples, /composer-send.*click/);
 });
 
+test('background shell redraw captures and restores open workset state after rebinding', async () => {
+  const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const examples = await readFile(new URL('../src/lib/task-examples.ts', import.meta.url), 'utf8');
+  assert.ok(main.indexOf('const restoreWorkset = preserveTaskWorkset()') < main.indexOf('root.innerHTML ='));
+  assert.ok(main.indexOf('restoreWorkset();') > main.indexOf('agentPanel.bind(state)'));
+  for (const state of ['state.query', 'state.indices', 'state.pending', 'state.selection', 'state.scroll']) assert.ok(examples.includes(state));
+  assert.match(examples, /!dialog.isConnected \|\| dialog.open/);
+});
+
 test('all 44 social templates keep both choices, editable fields and source/safety instructions', async () => {
   const {transpileModule, ScriptTarget, ModuleKind} = createRequire(import.meta.url)('typescript');
   const source = await readFile(new URL('../src/lib/task-examples.ts', import.meta.url), 'utf8');
