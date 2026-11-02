@@ -117,14 +117,12 @@ export function renderTaskExamples(): string {
   const chinese = getLanguage() === "zh";
   return `<section class="task-examples" data-task-examples aria-label="${chinese ? "任务示例" : "Task examples"}">
     <div class="task-worksets">${platforms.map(platform => `<button type="button" data-workset-trigger="${platform}" aria-haspopup="dialog" aria-controls="task-workset-dialog" aria-expanded="false">${platformIcon(platform)}<span>${esc(platformLabel(platform))}${chinese ? "工作集" : " workset"}</span></button>`).join("")}</div>
-    <p class="task-worksets__hint">${chinese ? "选一个工作集，让想法有个起点" : "A little inspiration to get you started"}</p>
-    <dialog id="task-workset-dialog" class="task-workset" aria-labelledby="task-workset-title" aria-describedby="task-workset-hint">
-      <div class="task-workset__header"><span class="task-workset__brand" data-workset-brand aria-hidden="true">${WORKSET_STACK_ICON}</span><div><h2 class="t-h2" id="task-workset-title"></h2><p class="t-small subtle" id="task-workset-hint">${chinese ? "从一个好问题开始，下一步由你决定。" : "Start with a good question. Make it your own."}</p></div><button type="button" class="task-workset__close" data-workset-close aria-label="${chinese ? "关闭工作集" : "Close workset"}">${WORKSET_CLOSE_ICON}</button></div>
-      <div class="task-workset__toolbar"><label class="task-workset__search"><span class="sr-only">${chinese ? "搜索工作集问题" : "Search workset questions"}</span><input type="search" data-workset-search placeholder="${chinese ? "搜索关键词、采集、内容创作…" : "Search keywords, collection, content…"}" autocomplete="off" /></label><span data-workset-count class="t-small subtle" aria-live="polite"></span></div>
+    <dialog id="task-workset-dialog" class="task-workset" aria-labelledby="task-workset-title">
+      <div class="task-workset__header"><span class="task-workset__brand" data-workset-brand aria-hidden="true">${WORKSET_STACK_ICON}</span><div><h2 class="t-h2" id="task-workset-title"></h2></div><button type="button" class="task-workset__close" data-workset-close aria-label="${chinese ? "关闭工作集" : "Close workset"}">${WORKSET_CLOSE_ICON}</button></div>
+      <div class="task-workset__toolbar"><label class="task-workset__search"><span class="sr-only">${chinese ? "搜索工作集问题" : "Search workset questions"}</span><input type="search" data-workset-search placeholder="${chinese ? "搜索关键词、采集、内容创作…" : "Search keywords, collection, content…"}" autocomplete="off" /></label></div>
       <div class="task-workset__confirmation" data-workset-confirm hidden role="alert"><p>${chinese ? "输入框里已有草稿。要替换为这个问题吗？" : "You already have a draft. Replace it with this question?"}</p><div><button type="button" data-keep-draft>${chinese ? "保留草稿" : "Keep draft"}</button><button type="button" data-replace-draft>${chinese ? "替换草稿" : "Replace draft"}</button></div></div>
       <div class="task-workset__body" data-workset-body></div>
-      <p class="task-workset__empty" data-workset-empty hidden>${chinese ? "没有找到相关问题，换个词试试。" : "No matches. Try another word."}</p>
-      <p class="task-workset__footer t-small subtle"><span>${chinese ? "选择问题后，填入高亮内容即可开始" : "Choose a question, then fill in the highlighted fields"}</span><span><kbd>Tab</kbd> ${chinese ? "切换填写" : "next field"}</span></p>
+      <p class="task-workset__empty" data-workset-empty hidden role="status">${chinese ? "没有找到相关问题，换个词试试。" : "No matches. Try another word."}</p>
     </dialog>
   </section>`;
 }
@@ -172,12 +170,10 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
   const dialog = section?.querySelector<HTMLDialogElement>("dialog");
   const body = section?.querySelector<HTMLElement>("[data-workset-body]");
   if (!section || !dialog || !body) return;
-  const chinese = getLanguage() === "zh";
   let trigger: HTMLButtonElement | undefined;
   let pending: { platform: Platform; prompt: string; draft: string } | undefined;
   const confirmation = dialog.querySelector<HTMLElement>("[data-workset-confirm]")!;
   const search = dialog.querySelector<HTMLInputElement>("[data-workset-search]")!;
-  const count = dialog.querySelector<HTMLElement>("[data-workset-count]")!;
   section.addEventListener("workset:capture", event => {
     (event as CustomEvent<WorksetState>).detail.pending = pending ? { ...pending } : undefined;
   });
@@ -186,7 +182,6 @@ export function bindTaskExamples(select: (example: { platform: Platform; prompt:
     const cards = Array.from(body.querySelectorAll<HTMLElement>(".task-workset__card"));
     for (const card of cards) card.hidden = !!query && !card.textContent?.toLocaleLowerCase().includes(query);
     const visible = cards.filter(card => !card.hidden).length;
-    count.textContent = chinese ? `${visible} 个问题` : `${visible} questions`;
     dialog.querySelector<HTMLElement>("[data-workset-empty]")!.hidden = visible > 0;
   };
   search.addEventListener("input", filter);
