@@ -1,6 +1,6 @@
 ---
 name: xhs-content-workflow
-description: 小红书 内容工作流. Turn collected posts into evidence-backed analysis, topic choices and an editable draft.
+description: 小红书 内容工作流. Start from a short topic or reference post, collect evidence, offer topic choices, then draft after selection.
 ---
 
 # 小红书内容工作流

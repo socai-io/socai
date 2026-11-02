@@ -1,6 +1,6 @@
 ---
 name: dy-content-workflow
-description: 抖音 内容工作流. Turn collected posts into evidence-backed analysis, topic choices and an editable draft.
+description: 抖音 内容工作流. Start from a short topic or reference post, collect evidence, offer topic choices, then draft after selection.
 ---
 
 # 抖音内容工作流
