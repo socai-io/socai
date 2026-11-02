@@ -27,6 +27,7 @@ import {
   formatTaskInterruptionMessage,
   formatTaskTimestamp,
   isTaskApiError,
+  isTabClosedInterruption,
   t,
   taskStatusLabel,
   getLanguage,
@@ -343,6 +344,10 @@ function renderTurn(
 ): string {
   const { userText, userAt, body, answerText, answerAt } = buildTurn(events, index === 0, isLast, task);
   const showWorking = isLast && running;
+  const tabClosed = (!isLast || task.status === "interrupted") && (
+    (isLast && isTabClosedInterruption(task.error))
+    || events.some(event => event.kind === "interrupted" && isTabClosedInterruption(event.text))
+  );
   const hosted = task.provider === "socai";
   const metrics = turnMetrics(task, events, isLast);
 
@@ -373,7 +378,7 @@ function renderTurn(
       if (metrics.pointsUsed !== null && (hosted || metrics.pointsUsed > 0)) {
         metaBits.push(t("billing.pointsUsed", { points: metrics.pointsUsed }));
       }
-    } else if (task.error) {
+    } else if (task.error && !tabClosed) {
       const error = task.status === "interrupted"
         ? formatTaskInterruptionMessage(task.error)
         : task.error === "guest_login_required" ? t("auth.trialUsed") : task.error;
@@ -416,6 +421,8 @@ function renderTurn(
       ${renderActivity(task, body, index, showWorking, metrics, isActivityOpen)}
       ${isLast ? `<div data-research-board>${renderResearchBoard(task)}</div>` : ""}
       ${answer}
+      ${tabClosed ? `<p class="conv-answer" role="status">${esc(t("task.interruptedTabClosed"))}${isLast
+        ? ` ${esc(t("task.resumeFromProgress", { action: t("task.resume") }))}` : ""}</p>` : ""}
       ${artifactCards}
       ${exportAction}
       ${meta}

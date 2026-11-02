@@ -606,6 +606,14 @@ const messages = {
     en: "the app was closed before this task finished.",
     zh: "应用在任务完成前已关闭。",
   },
+  "task.interruptedTabClosed": {
+    en: "The task stopped because its browser tab closed.",
+    zh: "任务使用的浏览器标签页已关闭，本轮任务已中断。",
+  },
+  "task.resumeFromProgress": {
+    en: "Select “{action}” to pick up from your saved progress.",
+    zh: "点击「{action}」可从已保存的进度继续。",
+  },
   "task.searchLabel": { en: "search", zh: "搜索" },
   "task.progressReading": { en: "reading", zh: "读取笔记" },
   "task.progressOcr": { en: "reading images", zh: "识别图片文字" },
@@ -1408,10 +1416,16 @@ export function taskStatusLabel(status: TaskStatusKey): string {
   return taskStatusLabels[status][currentLanguage];
 }
 
+export function isTabClosedInterruption(message?: string | null): boolean {
+  const reason = message?.trim().toLowerCase().replace(/^\[task interrupted: (.*)\]$/, "$1");
+  return reason === "chrome tab was closed" || reason === "chrome tab was closed by user";
+}
+
 export function formatTaskInterruptionMessage(message: string): string {
   const appClosed = "app was closed before this task finished";
   const normalized = message.trim().toLowerCase();
   if (normalized === "instagram_login_required") return t("task.instagramLogin");
+  if (isTabClosedInterruption(normalized)) return t("task.interruptedTabClosed");
   if (normalized === appClosed || normalized === `[task interrupted: ${appClosed}]`) {
     return t("task.interruptedAppClosed");
   }

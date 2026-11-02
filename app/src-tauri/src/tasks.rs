@@ -593,7 +593,13 @@ fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
         if let Ok(text) = std::fs::read_to_string(PathBuf::from(run_dir).join("run.json")) {
             if let Ok(run) = serde_json::from_str::<Value>(&text) {
                 snapshot.run_id = run.get("id").and_then(Value::as_str).map(str::to_string);
-                snapshot.error = run.get("error").and_then(Value::as_str).map(str::to_string);
+                // The registry may already have the tab-close reason while the
+                // agent is still finalizing run.json.
+                snapshot.error = run
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or(snapshot.error);
                 // Pre-rename runs (< #190) recorded the step count as "turns".
                 snapshot.steps = run
                     .get("steps")
