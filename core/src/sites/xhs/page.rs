@@ -1331,21 +1331,25 @@ impl<'a> XhsPageRuntime<'a> {
                 })
                 .sum::<i64>();
         let comments = trim_comments_to_budget(all, max_total);
-        let returned_total: i64 = comments.len() as i64
-            + comments
-                .iter()
-                .map(|c| {
-                    c.get("sub_comments")
-                        .and_then(Value::as_array)
-                        .map_or(0, Vec::len) as i64
-                })
-                .sum::<i64>();
+        let returned_primary = comments.len() as i64;
+        let returned_replies: i64 = comments
+            .iter()
+            .map(|c| {
+                c.get("sub_comments")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len) as i64
+            })
+            .sum();
+        let returned_total = returned_primary + returned_replies;
 
         Ok(json!({
             "ok": true,
             "comments": comments,
             "loaded_primary": loaded_primary,
             "loaded_total": loaded_total,
+            "count_basis": "primary_plus_replies",
+            "returned_primary": returned_primary,
+            "returned_replies": returned_replies,
             "returned_total": returned_total,
             "rounds": rounds,
             "stop_reason": stop_reason,
