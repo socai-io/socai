@@ -303,10 +303,11 @@ export namespace growthPanel {
       body = `<p class="growth-error" role="alert">${esc(t("promotion.loadFailed"))}</p><button type="button" class="btn-ghost" data-promotion-retry>${esc(t("promotion.retry"))}</button>`;
     } else if (!promotionLoading && promotionValue) {
       const value = promotionValue;
+      const signup = Date.now() < Date.parse(value.cutoff) ? value.signup_credits : value.regular_signup_credits;
       const invites = value.invites.length
         ? `<ol class="growth-invite-list">${value.invites.map((invite, index) => `<li><div><strong>${esc(t("promotion.invitation", { number: index + 1 }))}</strong><span class="growth-invite-state" data-state="${esc(invite.status)}">${esc(t(`promotion.status.${invite.status}`))}</span><small>${esc(t("promotion.expires", { date: new Date(invite.expires_at).toLocaleDateString() }))}</small></div><button type="button" class="btn-ghost btn-compact" data-copy-invite="${index}" ${invite.status !== "available" ? "disabled" : ""}>${esc(copiedInvite === index ? t("promotion.copied") : t("promotion.copy"))}</button></li>`).join("")}</ol><p class="growth-dialog-terms">${esc(t("promotion.singleUse"))}</p>`
         : `<button type="button" class="btn-primary growth-dialog-primary" data-promotion-generate>${esc(t("promotion.generate"))}</button>`;
-      body = `<p>${esc(t("promotion.reward", { credits: value.reward_credits }))}</p><p class="growth-dialog-terms">${esc(t("promotion.terms", { credits: value.signup_credits, tasks: value.daily_tasks, cutoff: new Date(value.cutoff).toLocaleString() }))}</p>${invites}`;
+      body = `<p>${esc(t("promotion.reward", { credits: value.reward_credits }))}</p><p class="growth-dialog-terms">${esc(t("promotion.terms", { credits: signup, tasks: value.daily_tasks, cutoff: new Date(value.cutoff).toLocaleString() }))}</p>${invites}`;
     }
     return `<div class="modal-scrim" data-growth-dismiss><section class="growth-dialog-card" role="dialog" aria-modal="true" aria-labelledby="promotion-title"><button type="button" class="icon-button growth-dialog-close" data-promotion-close aria-label="${esc(t("promotion.close"))}">${CLOSE_ICON}</button><div class="growth-dialog-symbol">${INVITE_ICON}</div><h2 id="promotion-title">${esc(t("promotion.action"))}</h2><div class="growth-dialog-body" aria-live="polite">${body}</div></section></div>`;
   }

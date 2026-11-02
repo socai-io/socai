@@ -6,7 +6,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import googleLogo from "../assets/google-logo.jpg";
 import type { ShellState } from "../main";
 import { esc } from "../lib/html";
-import { setAccountSignedIn, t } from "../lib/i18n";
+import { getLocale, getTimezone, setAccountSignedIn, t } from "../lib/i18n";
 
 interface AuthSession {
   logged_in: boolean;
@@ -25,6 +25,9 @@ interface SmsChallenge {
 
 interface WalletBalance {
   balance_points: number;
+  expiring_points?: number | null;
+  gift_expires_at?: string | null;
+  paid_batches?: { points: number; expires_at: string }[];
   points_per_cny: number;
   starter_points: number;
   active_until: string | null;
@@ -211,20 +214,24 @@ export namespace authMenu {
     const activeUntil = activeUntilDate();
     return `
       <div class="auth-balance-summary">
-        <span class="t-small subtle">${esc(t("billing.remaining"))}</span>
+        <span class="auth-balance-label t-small subtle">${esc(t("billing.balance"))}
+          ${activeUntil ? '<span class="badge">Pro</span>' : ""}
+        </span>
         <span class="t-h2 auth-wallet-points">${wallet
           ? esc(t("billing.points", { points: wallet.balance_points }))
           : esc(sessionRejected ? t("auth.sessionExpired") : walletUnavailable ? t("billing.unavailable") : t("common.loading"))}</span>
+        ${wallet?.gift_expires_at && wallet.expiring_points != null ? `<div class="auth-balance-details t-small">
+          <span>${esc(t("billing.monthlyGift", { points: wallet.balance_points - wallet.expiring_points, date: formatDate(new Date(wallet.gift_expires_at)) }))}</span>
+          ${(wallet.paid_batches ?? []).map(batch => `<span>${esc(t("billing.purchased", { points: batch.points, date: formatDate(new Date(batch.expires_at)) }))}</span>`).join("")}
+          <span class="subtle">${esc(t("billing.monthlyRenewal"))}</span>
+        </div>` : ""}
+        ${activeUntil ? `<span class="auth-balance-expiry t-small subtle">${esc(t("billing.proEnds", { date: formatDate(activeUntil) }))}</span>` : ""}
       </div>
       ${walletUnavailable && !sessionRejected ? `<button id="auth-wallet-retry" type="button" class="auth-text-button">${esc(t("billing.retry"))}</button>` : ""}
       <section class="auth-model-picker">${modelConfigContent}</section>
       ${sessionRejected ? `
         <button id="auth-sign-in-again" type="button" class="btn-primary auth-full-button" ${phase !== "idle" ? "disabled" : ""}>${esc(t("auth.signInAgain"))}</button>
       ` : activeUntil ? `
-        <div class="auth-pro-status">
-          <span class="badge"><i class="badge-dot badge-dot-ink" aria-hidden="true"></i>Pro</span>
-          <span class="t-small subtle">${esc(t("billing.activeUntil", { date: formatDate(activeUntil) }))}</span>
-        </div>
         <button id="auth-upgrade" type="button" class="btn-primary auth-full-button" aria-expanded="${upgradeExpanded ? "true" : "false"}">${esc(t("subscription.manage"))}</button>
       ` : `
         <button id="auth-upgrade" type="button" class="btn-primary auth-full-button" aria-expanded="${upgradeExpanded ? "true" : "false"}">${esc(t("subscription.upgradePro"))}</button>
@@ -530,10 +537,12 @@ export namespace authMenu {
 
   function scheduleExpiryRefresh(): void {
     stopExpiryTimer();
-    const activeUntil = activeUntilDate();
-    if (!activeUntil) return;
-    const remaining = activeUntil.getTime() - Date.now();
-    if (remaining <= 0) return;
+    if (!wallet) return;
+    const now = Date.now();
+    const deadlines = [wallet.gift_expires_at, wallet.active_until, ...(wallet.paid_batches ?? []).map(b => b.expires_at)]
+      .map(value => Date.parse(value ?? "")).filter(value => value > now);
+    if (!deadlines.length) return;
+    const remaining = Math.min(...deadlines) - now;
     const delay = Math.min(remaining + 250, 2_147_483_647);
     expiryTimer = window.setTimeout(() => {
       expiryTimer = null;
@@ -554,10 +563,15 @@ export namespace authMenu {
   }
 
   function formatDate(value: Date): string {
-    return new Intl.DateTimeFormat(undefined, {
+    const zone = getTimezone();
+    return new Intl.DateTimeFormat(getLocale(), {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: zone === "system" ? undefined : zone,
+      timeZoneName: "short",
     }).format(value);
   }
 

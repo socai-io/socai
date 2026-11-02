@@ -483,12 +483,18 @@ body.has-paper > #app { position: relative; z-index: 1; }
   border-bottom: var(--hairline);
 }
 .auth-balance-summary {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-2);
   padding: var(--sp-3);
   border: var(--hairline);
   border-radius: var(--r-3);
   background: var(--canvas);
 }
 .auth-balance-summary .auth-wallet-points { margin: 0; }
+.auth-balance-details,
+.auth-balance-expiry { grid-column: 1 / -1; }
+.auth-balance-details { display: grid; gap: var(--sp-1); }
 .auth-pro-benefits {
   display: flex;
   flex-direction: column;
@@ -498,12 +504,7 @@ body.has-paper > #app { position: relative; z-index: 1; }
   color: var(--fg-muted);
   line-height: 1.45;
 }
-.auth-pro-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-}
+.auth-balance-label { display: flex; align-items: center; gap: var(--sp-2); }
 .auth-upgrade-panel {
   display: flex;
   flex-direction: column;

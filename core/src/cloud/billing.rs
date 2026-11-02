@@ -8,8 +8,18 @@ use super::auth::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaidCreditBatch {
+    pub points: i64,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletBalance {
     pub balance_points: i64,
+    pub expiring_points: Option<i64>,
+    pub gift_expires_at: Option<String>,
+    #[serde(default)]
+    pub paid_batches: Vec<PaidCreditBatch>,
     pub points_per_cny: i64,
     pub starter_points: i64,
     pub active_until: Option<String>,

@@ -3,7 +3,7 @@ import QRCode from "qrcode";
 
 import type { ShellState } from "../main";
 import { esc } from "../lib/html";
-import { getLanguage, t } from "../lib/i18n";
+import { getLanguage, getLocale, t } from "../lib/i18n";
 
 interface StripePlan {
   plan_id: string;
@@ -124,18 +124,18 @@ export namespace subscriptionMenu {
       <div class="subscription-payment-options subscription-payment-choice">
         ${plan.wechat_enabled ? `<button id="subscription-buy-wechat" type="button" class="btn-primary subscription-option" ${phase === "creating" ? "disabled" : ""}>
           <span>${esc(t("subscription.wechatPay"))}</span>
-          <span class="t-small">${esc(t("subscription.pointCount", { points: plan.points }))}</span>
-          <span class="t-small">${esc(formatCny(plan.amount_fen))}</span>
+          <span class="t-small">${esc(t("subscription.monthlyPoints", { points: plan.points }))}</span>
+          <span class="t-small">${esc(monthlyPrice(plan.amount_fen, "CNY"))}</span>
         </button>` : ""}
         ${plan.alipay_enabled ? `<button id="subscription-buy-alipay" type="button" class="btn-primary subscription-option" ${phase === "creating" ? "disabled" : ""}>
           <span>${esc(t("subscription.alipay"))}</span>
-          <span class="t-small">${esc(t("subscription.pointCount", { points: plan.points }))}</span>
-          <span class="t-small">${esc(formatCny(plan.amount_fen))}</span>
+          <span class="t-small">${esc(t("subscription.monthlyPoints", { points: plan.points }))}</span>
+          <span class="t-small">${esc(monthlyPrice(plan.amount_fen, "CNY"))}</span>
         </button>` : ""}
         ${plan.stripe && !plan.stripe.subscription_status ? `<button id="subscription-buy-stripe" type="button" class="btn-primary subscription-option" ${phase === "creating" ? "disabled" : ""}>
           <span>${esc(t("subscription.stripePayment"))}</span>
-          <span class="t-small">${esc(t("subscription.pointCount", { points: plan.stripe.points }))}</span>
-          <span class="t-small">${esc(formatMoney(plan.stripe.amount_minor, plan.stripe.currency))}${esc(t("subscription.perMonth"))}</span>
+          <span class="t-small">${esc(t("subscription.monthlyPoints", { points: plan.stripe.points }))}</span>
+          <span class="t-small">${esc(monthlyPrice(plan.stripe.amount_minor, plan.stripe.currency))}</span>
         </button>` : ""}
       </div>
       ${plan.stripe ? renderStripeStatus(plan.stripe) : ""}
@@ -154,7 +154,7 @@ export namespace subscriptionMenu {
     return `
       <div class="subscription-plan-head">
         <p class="t-h2 subscription-plan-name">socai pro</p>
-        <p class="t-h2 subscription-price">${esc(formatMoney(stripe.amount_minor, stripe.currency))}${esc(t("subscription.perMonth"))}</p>
+        <p class="t-h2 subscription-price">${esc(monthlyPrice(stripe.amount_minor, stripe.currency))}</p>
       </div>
       <p class="t-small subtle subscription-copy">${esc(t("subscription.monthlyPoints", { points: stripe.points }))}</p>
       ${renderStripeStatus(stripe)}
@@ -170,7 +170,8 @@ export namespace subscriptionMenu {
       <div class="subscription-checkout-head">
         <div>
           <p class="t-eyebrow">${esc(t(isStripe ? "subscription.stripe" : browserPayment ? "subscription.alipay" : "subscription.wechatPay"))}</p>
-          <p class="t-h2 subscription-price">${esc(formatMoney(value.amount_minor ?? value.amount_fen, value.currency ?? "CNY"))}</p>
+          <p class="t-h2 subscription-price">${esc(monthlyPrice(value.amount_minor ?? value.amount_fen, value.currency ?? "CNY"))}</p>
+          <p class="t-small subtle subscription-copy">${esc(t("subscription.monthlyPoints", { points: value.points }))}</p>
         </div>
       </div>
       ${browserPayment ? `
@@ -321,12 +322,12 @@ export namespace subscriptionMenu {
     pollTimer = null;
   }
 
-  function formatMoney(amount: number, currency: string): string {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amount / 100);
-  }
-
-  function formatCny(amountFen: number): string {
-    return `¥${(amountFen / 100).toFixed(amountFen % 100 === 0 ? 0 : 2)}`;
+  function monthlyPrice(amountMinor: number, currency: string): string {
+    const price = new Intl.NumberFormat(getLocale(), {
+      style: "currency", currency, minimumFractionDigits: amountMinor % 100 === 0 ? 0 : 2,
+    }).format(amountMinor / 100);
+    const label = getLanguage() === "zh" && currency === "CNY" ? price.replace("¥", "￥") : price;
+    return label + t("subscription.perMonth");
   }
 
   function formatDate(value: string | null): string {

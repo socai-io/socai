@@ -1053,6 +1053,12 @@ include the Google login implementation.
 
 ### Account balance and invalid sessions
 
+Registered accounts receive 50 free points each calendar month. Unused gifts,
+including signup, referral and feedback rewards, expire at midnight on the first
+day of the following month in Beijing time (UTC+8). Each new purchase is valid
+for 30 days from payment. Usage draws from the earliest expiry first. The
+account panel shows the remaining gift balance and each purchase with its expiry.
+
 A wallet response with HTTP 401 shows **sign-in expired** and a **sign in again**
 button. That action clears the saved login through the logout flow and opens
 the existing phone/Google login options. A network failure or other HTTP error

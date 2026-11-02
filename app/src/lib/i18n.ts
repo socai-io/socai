@@ -256,7 +256,10 @@ const messages = {
   "auth.sessionExpired": { en: "sign-in expired", zh: "登录已失效" },
   "auth.signInAgain": { en: "sign in again", zh: "重新登录" },
   "billing.retry": { en: "retry", zh: "重试" },
-  "billing.activeUntil": { en: "active until {date}", zh: "有效期至 {date}" },
+  "billing.monthlyGift": { en: "Gift credits left: {points} · expire {date}", zh: "本月赠送剩余 {points} 点 · {date} 到期" },
+  "billing.purchased": { en: "Purchased credits left: {points} · expire {date}", zh: "购买额度剩余 {points} 点 · {date} 到期" },
+  "billing.monthlyRenewal": { en: "50 free credits each month", zh: "每月赠送 50 点" },
+  "billing.proEnds": { en: "Pro until {date}", zh: "Pro 有效期至 {date}" },
   "billing.rechargeHint": {
     en: "mock recharge for the MVP; points are added immediately.",
     zh: "MVP 暂用 mock 充值，点击后点数立即到账。",
@@ -294,8 +297,7 @@ const messages = {
     zh: "包含免配置 API Key 的云端模型用量；你仍可在设置中使用自己的 API Key。",
   },
   "subscription.perMonth": { en: "/month", zh: "/月" },
-  "subscription.monthlyPoints": { en: "{points} points per month", zh: "每月{points}点数" },
-  "subscription.pointCount": { en: "{points} points", zh: "{points}点数" },
+  "subscription.monthlyPoints": { en: "{points} points/month", zh: "{points}点数/月" },
   "subscription.stripePayment": { en: "pay with Stripe", zh: "Stripe支付" },
   "subscription.autoRenew": { en: "Renews monthly until cancelled. Tax calculated at checkout.", zh: "每月自动续费，可取消；税费在结账时计算。" },
   "subscription.renewalCancelled": { en: "Renewal cancelled. Access continues until the paid period ends.", zh: "已取消续费，权益保留至已付款账期结束。" },
@@ -537,8 +539,8 @@ const messages = {
   "promotion.action": { en: "Invite friends", zh: "邀请好友" },
   "promotion.close": { en: "close invitations", zh: "关闭邀请活动" },
   "promotion.reward": {
-    en: "Earn {credits} Credits when a new user signs up with your invitation.",
-    zh: "每邀请一位新用户注册，可获得 {credits} Credits。",
+    en: "Earn {credits} credits when a new user signs up with your invitation. Rewards expire at the end of the month.",
+    zh: "每邀请一位新用户注册，可获得 {credits} 点，奖励在发放当月底到期。",
   },
   "promotion.terms": {
     en: "Sign up for {credits} free Credits. Register before {cutoff} for {tasks} tasks per day.",
