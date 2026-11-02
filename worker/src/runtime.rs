@@ -7,6 +7,7 @@ use crate::runner::{emit_event, execute_run, prepare_run, record_run, PreparedRu
 use crate::WorkerBuildInfo;
 use anyhow::{anyhow, Context, Result};
 use socai_core::runtime::SocaiRuntime;
+use socai_core::util::execution_clock::ExecutionClock;
 use socai_worker_protocol::{
     EventSequencer, ProtocolError, SessionBinding, WorkerCommand, WorkerOutput,
     CONTROL_PROTOCOL_VERSION, MAX_FRAME_BYTES,
@@ -364,16 +365,20 @@ async fn drive_run_with_controls<F>(
 ) where
     F: Future<Output = ()>,
 {
+    let clock = ExecutionClock::default();
+    let execution = clock.scope(execution);
     tokio::pin!(execution);
     loop {
         tokio::select! {
             () = &mut execution => break,
             command = controls.recv() => match command {
                 Some(RunControl::Pause(acknowledged)) => {
+                    clock.pause();
                     let _ = acknowledged.send(());
                     loop {
                         match controls.recv().await {
                             Some(RunControl::Resume(acknowledged)) => {
+                                clock.resume();
                                 let _ = acknowledged.send(());
                                 break;
                             }
@@ -565,8 +570,16 @@ mod tests {
 
     #[tokio::test]
     async fn pause_acknowledgement_stops_polling_until_resume() {
+        use socai_core::util::execution_clock::ExecutionDeadline;
+        use std::time::Duration;
+
+        let uncontrolled_budget = ExecutionDeadline::after(Duration::from_millis(100));
         let (progress, mut observed) = mpsc::unbounded_channel();
+        let (budget_tx, budget_rx) = oneshot::channel();
         let execution = async move {
+            budget_tx
+                .send(ExecutionDeadline::after(Duration::from_millis(100)))
+                .unwrap_or_else(|_| panic!("budget receiver"));
             for step in 1..=3 {
                 progress.send(step).expect("progress receiver");
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -583,13 +596,32 @@ mod tests {
             .send(RunControl::Pause(paused))
             .expect("pause command");
         pause_ack.await.expect("pause acknowledgement");
+        let budget = budget_rx.await.expect("execution budget");
+        let remaining_before = budget.remaining();
         while observed.try_recv().is_ok() {}
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), observed.recv(),)
+            tokio::time::timeout(Duration::from_millis(150), observed.recv(),)
                 .await
                 .is_err(),
             "the execution future advanced after pause was acknowledged"
         );
+        assert!(
+            !budget.is_elapsed(),
+            "manual takeover consumed the execution budget"
+        );
+        assert_eq!(budget.remaining(), remaining_before);
+        assert!(
+            uncontrolled_budget.is_elapsed(),
+            "pause leaked outside this run"
+        );
+        let (paused_again, pause_again_ack) = oneshot::channel();
+        control
+            .send(RunControl::Pause(paused_again))
+            .expect("duplicate pause command");
+        pause_again_ack
+            .await
+            .expect("duplicate pause acknowledgement");
+        assert_eq!(budget.remaining(), remaining_before);
 
         let (resumed, resume_ack) = oneshot::channel();
         control
@@ -603,6 +635,8 @@ mod tests {
                 .is_some()
         );
         task.await.expect("controlled execution task");
+        budget.clone().wait().await;
+        assert!(budget.is_elapsed(), "resume left the budget frozen forever");
     }
 
     #[tokio::test]

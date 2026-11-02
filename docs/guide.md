@@ -273,6 +273,19 @@ socai xhs search "content marketing ideas" \
 
 `search` opens result posts and reads their bodies and comments. Add `--preview` to return only result-card metadata such as titles, covers, and engagement counts without opening post details.
 
+To read actual visible dropdown suggestions without submitting a search:
+
+```bash
+socai xhs search-suggestions "咖啡机" --limit 10 --debug-snapshot --pretty
+```
+
+This types one seed query, waits for matching visible suggestions, and restores
+the original input. It returns the observed labels, source URL and timestamp,
+not search-volume estimates. Missing suggestions, login walls and verification
+gates are reported as failures rather than successful empty demand. The current
+extractor supports the verified home-page AI search composer; other page
+variants may return `suggestions_not_available`.
+
 #### Read an author and their posts
 
 ```bash
@@ -872,8 +885,13 @@ Browserless site adapters keep their browser-free execution path.
 
 Hosted operators can set `SOCAI_READ_TOOL_IDLE_SECONDS` (1–300) and
 `SOCAI_READ_TOOL_WALL_SECONDS` (1–3600, default 900) to bound selected read-only
-research calls. Only real tool progress renews the idle deadline; the wall-clock
-deadline never renews. On timeout the agent stops bulk retries and produces an
+research calls. Only real tool progress renews the idle deadline; the hard
+execution budget never renews. Acknowledged `run.pause` / `run.resume` takeover
+intervals do not consume either budget or XHS page/search polling budgets.
+Local entrypoints without pause controls retain ordinary elapsed-time limits.
+This does not freeze already issued HTTP/CDP requests or background media jobs;
+their transport deadlines and wall-clock telemetry remain independent.
+On timeout the agent stops bulk retries and produces an
 explicitly partial answer from saved evidence instead of losing the whole run
 to the host's outer inactivity timeout. This watchdog does not cancel external
 writes or shell commands and is disabled unless the idle setting is supplied.

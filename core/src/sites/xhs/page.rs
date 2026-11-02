@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::cdp::PageSession;
 use crate::media::MediaProcessor;
+use crate::util::execution_clock::{ExecutionClock, ExecutionDeadline};
 use anyhow::Result;
 use serde_json::{json, Map, Value};
 
@@ -296,7 +297,7 @@ impl<'a> XhsPageRuntime<'a> {
     /// polling. The timeout fallback is only reached if no sidebar ever renders.
     pub async fn login_gate(&self, navigate_if_needed: bool) -> Result<LoginGate> {
         self.ensure_xhs(navigate_if_needed).await?;
-        let deadline = Instant::now() + Duration::from_secs_f64(LOGIN_GATE_TIMEOUT_S);
+        let deadline = ExecutionDeadline::after(Duration::from_secs_f64(LOGIN_GATE_TIMEOUT_S));
         loop {
             let state = self.expect_object("loginState", None).await?;
             match state.get("login").and_then(Value::as_str) {
@@ -304,7 +305,7 @@ impl<'a> XhsPageRuntime<'a> {
                 Some("in") => return Ok(LoginGate::LoggedIn),
                 _ => {}
             }
-            if Instant::now() >= deadline {
+            if deadline.is_elapsed() {
                 return Ok(LoginGate::LoggedIn);
             }
             sleep_ms(200).await;
@@ -424,6 +425,99 @@ impl<'a> XhsPageRuntime<'a> {
             self.attach_page_failure_diagnostic(&mut result).await;
         }
         Ok(result)
+    }
+
+    /// Bounded search-box inspection: trusted typing, no submit, and restoration.
+    pub async fn search_suggestions(&self, query: &str, limit: usize) -> Result<Value> {
+        anyhow::ensure!(
+            !query.trim().is_empty()
+                && query.chars().count() <= 80
+                && !query.chars().any(char::is_control),
+            "query must be 1–80 characters without control characters"
+        );
+        anyhow::ensure!((1..=20).contains(&limit), "limit must be 1–20");
+        if self.login_gate(true).await? == LoginGate::Required {
+            return Ok(json!({"ok": false, "reason": "login_required"}));
+        }
+        let before_url = self.current_url().await?;
+        let location = self.expect_object("searchInput", None).await?;
+        if !script_ok(&location) {
+            return Ok(json!({"ok": false, "reason": "search_input_unavailable"}));
+        }
+        let input = &location["input"];
+        self.page
+            .click(number(input, "x"), number(input, "y"))
+            .await?;
+        let selected = self.expect_object("selectSearchInput", None).await?;
+        anyhow::ensure!(script_ok(&selected), "Search input selection failed");
+        let previous = selected
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let result = async {
+            self.page.type_chars(query).await?;
+            let deadline = ExecutionDeadline::after(Duration::from_secs(8));
+            let mut previous_terms = Value::Null;
+            let mut observations = 0;
+            loop {
+                let state = self.expect_object("searchState", None).await?;
+                if let Some(reason) = crate::sites::skill_cli::gate_reason(&state) {
+                    return Ok(json!({"ok": false, "reason": reason, "query": query}));
+                }
+                anyhow::ensure!(
+                    self.current_url().await? == before_url,
+                    "Page changed during suggestion capture; no further input sent"
+                );
+                let mut snapshot = self
+                    .expect_object("searchSuggestions", Some(&json!({"query": query})))
+                    .await?;
+                let terms = snapshot["suggestions"].clone();
+                observations += 1;
+                if terms.as_array().is_some_and(|items| !items.is_empty())
+                    && terms == previous_terms
+                {
+                    let items = snapshot["suggestions"].as_array_mut().unwrap();
+                    let visible_count = items.len();
+                    items.truncate(limit);
+                    snapshot["visible_count"] = json!(visible_count);
+                    snapshot["source"] = json!("visible_search_dropdown");
+                    return Ok::<Value, anyhow::Error>(snapshot);
+                }
+                // Debug snapshot recording itself can exceed eight seconds.
+                // A first fresh nonempty read still needs one confirmation;
+                // permit at most three reads past that observation budget.
+                let awaiting_confirmation =
+                    terms.as_array().is_some_and(|items| !items.is_empty()) && observations < 3;
+                previous_terms = terms;
+                if deadline.is_elapsed() && !awaiting_confirmation {
+                    return Ok(json!({"ok": false, "reason": "suggestions_not_available",
+                        "query": query, "snapshot": snapshot}));
+                }
+                sleep_ms(300).await;
+            }
+        }
+        .await;
+        // Never restore into a different page after a user navigation.
+        anyhow::ensure!(
+            self.current_url().await? == before_url,
+            "Page changed; original search input could not be restored"
+        );
+        let restored = self.expect_object("selectSearchInput", None).await?;
+        anyhow::ensure!(script_ok(&restored), "Cannot restore search input");
+        if previous.is_empty() {
+            self.page.press_key("Backspace").await?;
+        } else {
+            self.page.type_chars(previous).await?;
+        }
+        let state = self.expect_object("searchState", None).await?;
+        anyhow::ensure!(
+            state["input_keyword"].as_str().unwrap_or_default() == previous.trim(),
+            "Original search input was not restored"
+        );
+        self.page.press_key("Escape").await?;
+        let mut value = result?;
+        value["input_restored"] = json!(true);
+        Ok(value)
     }
 
     pub async fn submit_search(&self, query: &str, wait_seconds: f64) -> Result<Value> {
@@ -611,9 +705,9 @@ impl<'a> XhsPageRuntime<'a> {
     }
 
     pub async fn wait_for_search_transition(&self, query: &str, timeout_s: f64) -> Result<Value> {
-        let deadline = Instant::now() + Duration::from_secs_f64(timeout_s.max(0.2));
+        let deadline = ExecutionDeadline::after(Duration::from_secs_f64(timeout_s.max(0.2)));
         let mut latest = Value::Object(Map::new());
-        while Instant::now() < deadline {
+        while !deadline.is_elapsed() {
             latest = self.expect_object("searchState", None).await?;
             if search_blocker_reason(&latest).is_some() {
                 return Ok(latest);
@@ -660,11 +754,11 @@ impl<'a> XhsPageRuntime<'a> {
         timeout: Duration,
     ) -> Result<Vec<XhsNoteCard>> {
         const POLL: Duration = Duration::from_millis(400);
-        let deadline = Instant::now() + timeout;
+        let deadline = ExecutionDeadline::after(timeout);
         loop {
             sleep_ms(POLL.as_millis() as u64).await;
             let cards = self.extract_search_cards().await?;
-            if cards.len() > baseline || Instant::now() >= deadline {
+            if cards.len() > baseline || deadline.is_elapsed() {
                 return Ok(cards);
             }
         }
@@ -1076,7 +1170,7 @@ impl<'a> XhsPageRuntime<'a> {
     /// count does not exceed the budget.
     pub async fn load_comments(&self, max_total: i64, timeout_seconds: f64) -> Result<Value> {
         self.ensure_xhs(false).await?;
-        let deadline = Instant::now() + Duration::from_secs_f64(timeout_seconds.max(2.0));
+        let deadline = ExecutionDeadline::after(Duration::from_secs_f64(timeout_seconds.max(2.0)));
         let initial = self
             .expect_object(
                 "commentAreaState",
@@ -1164,7 +1258,7 @@ impl<'a> XhsPageRuntime<'a> {
                 stop_reason = "stalled";
                 break;
             }
-            if Instant::now() >= deadline {
+            if deadline.is_elapsed() {
                 stop_reason = "timeout";
                 break;
             }
@@ -1466,9 +1560,10 @@ impl<'a> XhsPageRuntime<'a> {
         self.page
             .mouse_move(number(&trigger, "x"), number(&trigger, "y"))
             .await?;
-        let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.clamp(0.2, 3.0));
+        let deadline =
+            ExecutionDeadline::after(Duration::from_secs_f64(wait_seconds.clamp(0.2, 3.0)));
         let mut latest = Value::Object(Map::new());
-        while Instant::now() < deadline {
+        while !deadline.is_elapsed() {
             latest = self.expect_object("searchFilters", None).await?;
             if script_ok(&latest) {
                 return Ok(latest);
@@ -1643,7 +1738,7 @@ impl<'a> XhsPageRuntime<'a> {
             return Ok(result);
         }
 
-        let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.max(1.0));
+        let deadline = ExecutionDeadline::after(Duration::from_secs_f64(wait_seconds.max(1.0)));
         let mut state = self.expect_object("pageState", None).await?;
         loop {
             let kind = state.get("state").and_then(Value::as_str).unwrap_or("");
@@ -1651,7 +1746,7 @@ impl<'a> XhsPageRuntime<'a> {
                 .get("login_required")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if kind == "note_detail" || login || Instant::now() >= deadline {
+            if kind == "note_detail" || login || deadline.is_elapsed() {
                 break;
             }
             sleep_ms(300).await;
@@ -1724,7 +1819,7 @@ impl<'a> XhsPageRuntime<'a> {
             return Ok(result);
         }
 
-        let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds.max(1.0));
+        let deadline = ExecutionDeadline::after(Duration::from_secs_f64(wait_seconds.max(1.0)));
         let mut state = self.expect_object("pageState", None).await?;
         loop {
             let kind = state.get("state").and_then(Value::as_str).unwrap_or("");
@@ -1732,7 +1827,7 @@ impl<'a> XhsPageRuntime<'a> {
                 .get("login_required")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if kind == "profile_page" || login || Instant::now() >= deadline {
+            if kind == "profile_page" || login || deadline.is_elapsed() {
                 break;
             }
             sleep_ms(300).await;
@@ -1820,12 +1915,12 @@ impl<'a> XhsPageRuntime<'a> {
         // is read from the header itself, not from the document-wide name
         // fallbacks that also match note-card authors.
         let mut info = self.expect_object("profileInfo", None).await?;
-        let deadline = Instant::now() + Duration::from_secs(6);
+        let deadline = ExecutionDeadline::after(Duration::from_secs(6));
         while !info
             .get("header_ready")
             .and_then(Value::as_bool)
             .unwrap_or(false)
-            && Instant::now() < deadline
+            && !deadline.is_elapsed()
         {
             sleep_ms(300).await;
             info = self.expect_object("profileInfo", None).await?;
@@ -2130,7 +2225,7 @@ impl<'a> XhsPageRuntime<'a> {
         arg: Option<&Value>,
         seconds: f64,
     ) -> Result<Option<Value>> {
-        let deadline = Instant::now() + Duration::from_secs_f64(seconds);
+        let deadline = ExecutionDeadline::after(Duration::from_secs_f64(seconds));
         let mut previous: Option<(i64, i64)> = None;
         loop {
             let value = self.expect_object(tool, arg).await?;
@@ -2146,7 +2241,7 @@ impl<'a> XhsPageRuntime<'a> {
             } else {
                 previous = None;
             }
-            if Instant::now() >= deadline {
+            if deadline.is_elapsed() {
                 return Ok(None);
             }
             sleep_ms(400).await;
@@ -2154,7 +2249,7 @@ impl<'a> XhsPageRuntime<'a> {
     }
 
     async fn stable_subtabs(&self, seconds: f64) -> Result<Option<Vec<Value>>> {
-        let deadline = Instant::now() + Duration::from_secs_f64(seconds);
+        let deadline = ExecutionDeadline::after(Duration::from_secs_f64(seconds));
         let mut previous = String::new();
         loop {
             let value = self.expect_object("profileSubtabs", None).await?;
@@ -2169,7 +2264,7 @@ impl<'a> XhsPageRuntime<'a> {
                 return Ok(Some(tabs));
             }
             previous = if ready { signature } else { String::new() };
-            if Instant::now() >= deadline {
+            if deadline.is_elapsed() {
                 return Ok(None);
             }
             sleep_ms(400).await;
@@ -2177,7 +2272,7 @@ impl<'a> XhsPageRuntime<'a> {
     }
 
     async fn stable_album_cards(&self, seconds: f64) -> Result<Vec<Value>> {
-        let deadline = Instant::now() + Duration::from_secs_f64(seconds);
+        let deadline = ExecutionDeadline::after(Duration::from_secs_f64(seconds));
         let mut previous = String::new();
         let mut latest;
         loop {
@@ -2190,7 +2285,7 @@ impl<'a> XhsPageRuntime<'a> {
                 return Ok(latest);
             }
             previous = if has_view { signature } else { String::new() };
-            if Instant::now() >= deadline {
+            if deadline.is_elapsed() {
                 return Ok(latest);
             }
             sleep_ms(400).await;
@@ -2212,13 +2307,13 @@ impl<'a> XhsPageRuntime<'a> {
     }
 
     async fn wait_for_url(&self, seconds: f64, pred: impl Fn(&str) -> bool) -> Result<bool> {
-        let deadline = Instant::now() + Duration::from_secs_f64(seconds.max(0.5));
+        let deadline = ExecutionDeadline::after(Duration::from_secs_f64(seconds.max(0.5)));
         loop {
             let url = self.current_url().await?;
             if pred(&url) {
                 return Ok(true);
             }
-            if Instant::now() >= deadline {
+            if deadline.is_elapsed() {
                 return Ok(false);
             }
             sleep_ms(300).await;
@@ -2227,8 +2322,9 @@ impl<'a> XhsPageRuntime<'a> {
 
     async fn collect_open_album_notes(&self, limit: usize) -> Result<Value> {
         const MAX_STALLS: usize = 3;
-        let started = Instant::now();
-        let deadline = started + Duration::from_secs(8);
+        let clock = ExecutionClock::current();
+        let started = clock.elapsed();
+        let deadline = clock.deadline_after(Duration::from_secs(8));
         let mut latest = self.expect_object("albumNotes", None).await?;
         loop {
             let count = latest
@@ -2245,8 +2341,8 @@ impl<'a> XhsPageRuntime<'a> {
                 .and_then(Value::as_str)
                 .is_some_and(|name| !name.is_empty());
             let ready_empty =
-                count == 0 && !has_more && named && started.elapsed().as_millis() > 1500;
-            if count > 0 || ready_empty || Instant::now() >= deadline {
+                count == 0 && !has_more && named && (clock.elapsed() - started).as_millis() > 1500;
+            if count > 0 || ready_empty || deadline.is_elapsed() {
                 break;
             }
             sleep_ms(300).await;
@@ -2789,9 +2885,9 @@ async fn wait_for_note_state(
     timeout_s: f64,
     want_open: bool,
 ) -> Result<Value> {
-    let deadline = Instant::now() + Duration::from_secs_f64(timeout_s.max(0.2));
+    let deadline = ExecutionDeadline::after(Duration::from_secs_f64(timeout_s.max(0.2)));
     let mut latest = Value::Object(Map::new());
-    while Instant::now() < deadline {
+    while !deadline.is_elapsed() {
         latest = runtime.expect_object("noteOpen", None).await?;
         if note_is_open(&latest) == want_open {
             return Ok(latest);
