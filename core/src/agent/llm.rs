@@ -217,6 +217,9 @@ pub struct ToolSchema {
     pub input_schema: Value,
 }
 
+/// Cumulative snapshots of the current visible answer and provider reasoning.
+pub type ModelPreview<'a> = dyn Fn(&str, &str) + Send + Sync + 'a;
+
 #[async_trait]
 pub trait Backend: Send + Sync {
     fn label(&self) -> String;
@@ -254,6 +257,17 @@ pub trait Backend: Send + Sync {
         tools: &[ToolSchema],
         max_tokens: u32,
     ) -> anyhow::Result<LLMResponse>;
+
+    async fn send_with_preview(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        max_tokens: u32,
+        _preview: &ModelPreview<'_>,
+    ) -> anyhow::Result<LLMResponse> {
+        self.send(system, messages, tools, max_tokens).await
+    }
 
     /// One recall note for a finished run, using this backend's model.
     async fn summarize_for_memory(&self, task: &str, report: &str) -> anyhow::Result<String> {

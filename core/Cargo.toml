@@ -12,6 +12,7 @@ serde_json.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true }
 futures.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }
 async-tungstenite.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true

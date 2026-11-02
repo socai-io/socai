@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 
 use crate::agent::api_errors::{format_api_error, format_http_error};
 use crate::agent::llm::{
-    Backend, Block, LLMResponse, Message, StopReason, TokenUsage, ToolCall, ToolResultContent,
+    Backend, Block, LLMResponse, Message, ModelPreview, StopReason, TokenUsage, ToolCall, ToolResultContent,
     ToolSchema,
 };
 use crate::agent::provider::{
@@ -836,6 +836,117 @@ struct WireFunction {
     arguments: Option<String>,
 }
 
+/// The gateway emits one data line per JSON chunk. Read complete UTF-8 lines
+/// across arbitrary HTTP packet boundaries, including for split tool arguments.
+async fn read_hosted_stream(
+    response: reqwest::Response,
+    preview: &ModelPreview<'_>,
+) -> anyhow::Result<WireResponse> {
+    use futures::TryStreamExt;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio_util::io::StreamReader;
+
+    let reader = StreamReader::new(response.bytes_stream().map_err(std::io::Error::other));
+    let mut lines = BufReader::new(reader).lines();
+    let mut content = String::new();
+    let mut reasoning = String::new();
+    let mut calls = std::collections::BTreeMap::<u64, WireToolCall>::new();
+    let mut finish_reason = None;
+    let mut usage = Value::Null;
+    let mut model = None;
+    let mut last_preview = None::<std::time::Instant>;
+    while let Some(line) = lines.next_line().await? {
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            continue;
+        };
+        if data == "[DONE]" {
+            anyhow::ensure!(
+                finish_reason.is_some() && usage.is_object(),
+                "incomplete hosted model stream"
+            );
+            // A token limit can cut the final argument in half. Let the
+            // agent's existing truncated-step recovery redo the entire turn.
+            if finish_reason.as_deref() == Some("length") {
+                calls.clear();
+            }
+            for call in calls.values() {
+                anyhow::ensure!(
+                    !call.id.is_empty() && !call.function.name.is_empty(),
+                    "incomplete streamed tool call"
+                );
+                serde_json::from_str::<Value>(call.function.arguments.as_deref().unwrap_or("{}"))
+                    .context("invalid streamed tool arguments")?;
+            }
+            return Ok(WireResponse {
+                model,
+                usage,
+                choices: vec![WireChoice {
+                    finish_reason,
+                    message: WireMessage {
+                        content: Some(content),
+                        reasoning_content: Some(reasoning),
+                        tool_calls: Some(calls.into_values().collect()),
+                    },
+                }],
+            });
+        }
+        let chunk: Value = serde_json::from_str(data)?;
+        if chunk.get("error").is_some() {
+            if let Some(status) = chunk["status"].as_u64().and_then(|s| u16::try_from(s).ok()) {
+                anyhow::bail!(format_http_error("socai", status, data));
+            }
+            anyhow::bail!(format_api_error("socai", &chunk));
+        }
+        if let Some(value) = chunk["model"].as_str() {
+            model = Some(value.to_owned());
+        }
+        if chunk["usage"].is_object() {
+            usage = chunk["usage"].clone();
+        }
+        let Some(choice) = chunk["choices"].get(0) else {
+            continue;
+        };
+        if let Some(value) = choice["finish_reason"].as_str() {
+            finish_reason = Some(value.to_owned());
+        }
+        let delta = &choice["delta"];
+        let text = delta["content"].as_str().unwrap_or_default();
+        let thinking = delta["reasoning_content"].as_str().unwrap_or_default();
+        let first_text = content.is_empty() && !text.is_empty();
+        content.push_str(text);
+        reasoning.push_str(thinking);
+        if (!text.is_empty() || !thinking.is_empty())
+            && (first_text || last_preview.is_none_or(|t| t.elapsed() >= Duration::from_millis(80)))
+        {
+            preview(&content, &reasoning);
+            last_preview = Some(std::time::Instant::now());
+        }
+        for part in delta["tool_calls"].as_array().into_iter().flatten() {
+            let index = part["index"]
+                .as_u64()
+                .context("streamed tool call missing index")?;
+            let call = calls.entry(index).or_insert_with(|| WireToolCall {
+                id: String::new(),
+                function: WireFunction {
+                    name: String::new(),
+                    arguments: None,
+                },
+            });
+            call.id.push_str(part["id"].as_str().unwrap_or_default());
+            call.function
+                .name
+                .push_str(part["function"]["name"].as_str().unwrap_or_default());
+            if let Some(args) = part["function"]["arguments"].as_str() {
+                call.function
+                    .arguments
+                    .get_or_insert_with(String::new)
+                    .push_str(args);
+            }
+        }
+    }
+    anyhow::bail!("hosted model stream ended before [DONE]")
+}
+
 fn parse_stop_reason(s: Option<&str>) -> StopReason {
     match s {
         Some("stop") => StopReason::EndTurn,
@@ -1045,7 +1156,22 @@ impl Backend for OpenAICompatBackend {
         }
 
         let body = self.build_chat_request(system, messages, tools, max_tokens);
-        self.post_chat(body).await
+        self.post_chat(body, None).await
+    }
+
+    async fn send_with_preview(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        max_tokens: u32,
+        preview: &ModelPreview<'_>,
+    ) -> anyhow::Result<LLMResponse> {
+        if self.provider != Provider::Socai {
+            return self.send(system, messages, tools, max_tokens).await;
+        }
+        let body = self.build_chat_request(system, messages, tools, max_tokens);
+        self.post_chat(body, Some(preview)).await
     }
 
     async fn summarize_for_memory(&self, task: &str, report: &str) -> anyhow::Result<String> {
@@ -1095,13 +1221,13 @@ impl OpenAICompatBackend {
             }
             _ => {}
         }
-        let response = self.post_chat(body).await?;
+        let response = self.post_chat(body, None).await?;
         Ok(response.text_blocks.join("\n"))
     }
 }
 
 impl OpenAICompatBackend {
-    async fn post_chat(&self, body: OutgoingRequest) -> anyhow::Result<LLMResponse> {
+    async fn post_chat(&self, body: OutgoingRequest, preview: Option<&ModelPreview<'_>>) -> anyhow::Result<LLMResponse> {
         let mut request = self.client.post(self.url()).bearer_auth(self.api_key()?);
         if self.provider == Provider::Socai {
             // Let the hosted gateway return its own 600s timeout and settle usage.
@@ -1118,6 +1244,9 @@ impl OpenAICompatBackend {
         }
         if let Some(task_id) = &self.task_id {
             request = request.header("X-Socai-Task-ID", task_id);
+        }
+        if preview.is_some() {
+            request = request.header(reqwest::header::ACCEPT, "text/event-stream, application/json");
         }
         let request_id = (self.provider == Provider::Socai).then(uuid::Uuid::new_v4);
         if let Some(id) = request_id {
@@ -1164,7 +1293,12 @@ impl OpenAICompatBackend {
         if self.cancelled_predecessor.is_some() {
             let _ = self.handoff_acknowledged.set(());
         }
-        let parsed: WireResponse = response.json().await.map_err(|e| report("response_body", e))?;
+        let streamed = response.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with("text/event-stream"));
+        let parsed: WireResponse = match preview {
+            Some(preview) if streamed => read_hosted_stream(response, preview).await?,
+            _ => response.json().await.map_err(|e| report("response_body", e))?,
+        };
         let provider_usage = parsed.usage.clone();
         let response_model = parsed.model.as_deref().unwrap_or(&self.model);
         let choice = parsed

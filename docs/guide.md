@@ -982,6 +982,13 @@ The local dev script captures the original `SOCAI_HOME/chrome-profile` (or
 `~/.socai/chrome-profile`) before setting the project-local `SOCAI_HOME`. Restart
 the dev command to apply this environment change; existing profiles are retained.
 
+To exercise hosted model streaming locally, point `SOCAI_PRO_BASE_URL` at a
+local Socai Agent Lab gateway and `SOCAI_CLOUD_AUTH_FILE` at a device login
+issued by that gateway. Set `SOCAI_CONFIG_PATH` to a separate local config
+file for the dev instance. With **Socai Agent** selected, the main run shows
+reasoning in the activity fold and answer text as it arrives. Gateways that
+return JSON still deliver a complete step.
+
 Runs and the task index land alongside the checkout:
 
 ```text

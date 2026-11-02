@@ -152,8 +152,10 @@ pub fn is_transient_api_error(error: &anyhow::Error) -> bool {
     {
         return true;
     }
-    // Codex SSE stream cut off server-side before the terminal event.
-    if signal.contains("stream ended without response.completed") {
+    // SSE stream cut off server-side before its terminal event.
+    if signal.contains("stream ended without response.completed")
+        || signal.contains("hosted model stream ended before [done]")
+    {
         return true;
     }
     matches!(parsed_status(&msg), Some(408 | 429 | 500..=599))

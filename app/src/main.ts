@@ -57,6 +57,14 @@ export interface ModelInfo {
 
 export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
+export interface AgentModelPreview {
+  task_id: string;
+  run_id: string;
+  text: string;
+  reasoning: string;
+  accepted?: boolean;
+}
+
 export interface AgentTaskSnapshot {
   sites?: string[];
   task_id: string;
@@ -687,6 +695,9 @@ async function main(): Promise<void> {
   // Stream task-scoped agent events incrementally. Snapshot/status events and
   // run boundaries ask for a full render so the task list and conversation
   // turns update; normal stream rows append in place to preserve scroll.
+  await listen<AgentModelPreview>("agent_task:preview", ({ payload }) => {
+    if (agentPanel.updateModelPreview(payload)) render();
+  });
   await listen<AgentTaskEventPayload>("agent_task:event", (event) => {
     if (event.payload.kind === "failed" && event.payload.text === "guest_login_required") {
       authMenu.requireSignIn(shell());

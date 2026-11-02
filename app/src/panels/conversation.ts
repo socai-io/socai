@@ -378,6 +378,8 @@ function renderTurn(
       if (metrics.pointsUsed !== null && (hosted || metrics.pointsUsed > 0)) {
         metaBits.push(t("billing.pointsUsed", { points: metrics.pointsUsed }));
       }
+    } else if (showWorking && task.preview?.accepted) {
+      answer = `<div class="conv-answer result-md note-answer">${renderNoteAnswer(task.preview.text)}</div>`;
     } else if (task.error && !tabClosed) {
       const error = task.status === "interrupted"
         ? formatTaskInterruptionMessage(task.error)
@@ -420,6 +422,7 @@ function renderTurn(
       ${userText ? renderUserPrompt(userText, userAt) : ""}
       ${renderActivity(task, body, index, showWorking, metrics, isActivityOpen)}
       ${isLast ? `<div data-research-board>${renderResearchBoard(task)}</div>` : ""}
+      ${showWorking && hosted && !task.preview?.accepted ? `<div class="conv-answer" data-preview-answer>${esc(task.preview?.text ?? "")}</div>` : ""}
       ${answer}
       ${tabClosed ? `<p class="conv-answer" role="status">${esc(t("task.interruptedTabClosed"))}${isLast
         ? ` ${esc(t("task.resumeFromProgress", { action: t("task.resume") }))}` : ""}</p>` : ""}
@@ -591,6 +594,8 @@ function renderActivity(
     : "";
   const last = body.at(-1);
   const workingLabel = t(last?.kind === "model_connection" && last.text === "waiting_for_network" ? "task.waitingForNetwork" : "task.working");
+  const reasoningPreview = showWorking && task.provider === "socai"
+    ? `<div class="act-row act-row--reasoning" data-preview-row><span class="act-row__glyph">·</span><span class="act-row__text" data-preview-reasoning>${esc(task.preview?.reasoning ?? "")}</span></div>` : "";
   const workingRow = showWorking
     ? `<div class="act-row act-row--working"><span class="act-row__glyph"><i class="badge-dot badge-dot-ink badge-dot-pulse" aria-hidden="true"></i></span><span class="act-row__text">${esc(workingLabel)}</span></div>`
     : "";
@@ -607,7 +612,7 @@ function renderActivity(
         ${dot}
         <span class="activity-toggle__label">${esc(showWorking ? workingLabel : t("task.activityLabel"))}</span>
       </button>
-      ${open ? `<div class="activity activity--transcript">${body.map(renderEventRow).join("")}${workingRow}</div>` : ""}
+      ${open ? `<div class="activity activity--transcript">${body.map(renderEventRow).join("")}${reasoningPreview}${workingRow}</div>` : ""}
       <div class="research-live-metrics">${meta}</div>
     </div>
   `;
@@ -906,7 +911,7 @@ function startsNewRunGroup(
 // so commentary before a failure stays readable. While a task runs,
 // final_text is unset and the answer streams into the activity in full.
 function finalAnswerEventIndex(task: AgentTaskView): number {
-  const finalText = task.final_text?.trim();
+  const finalText = (task.final_text || (task.preview?.accepted ? task.preview.text : ""))?.trim();
   if (!finalText) return -1;
   for (let index = task.events.length - 1; index >= 0; index -= 1) {
     const ev = task.events[index];

@@ -10,6 +10,7 @@ import { hostedReplyRecovery, type ReplyModelChoice } from "../lib/reply-model-r
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentArtifact,
+  AgentModelPreview,
   AgentTaskEventPayload,
   AgentTaskSnapshot,
   AgentTaskStatus,
@@ -50,6 +51,7 @@ import {
 // the same composer in reply mode. The sidebar history list is always present.
 type WorkspaceView = "compose" | "detail";
 export type AgentTaskView = AgentTaskSnapshot & {
+  preview?: AgentModelPreview;
   events: AgentTaskEventPayload[];
   notes?: NoteData[];
   artifacts?: AgentArtifact[];
@@ -238,6 +240,7 @@ export namespace agentPanel {
       const merged = existing ? mergeSnapshot(existing, snapshot) : snapshot;
       return {
         ...merged,
+        preview: merged.status === "running" && merged.run_id === existing?.preview?.run_id ? existing?.preview : undefined,
         artifacts: existing?.artifacts,
         readingStats: existing?.readingStats,
         events: mergeEvents(existing?.events ?? [], pending),
@@ -741,6 +744,23 @@ export namespace agentPanel {
     return modelsCache.find((m) => sameModel(m, modelProvider, model));
   }
 
+  export function updateModelPreview(preview: AgentModelPreview): boolean {
+    const task = tasks.find((item) => item.task_id === preview.task_id);
+    if (!task || task.status !== "running" || task.run_id !== preview.run_id) return false;
+    task.preview = preview.text || preview.reasoning ? preview : undefined;
+    if (selectedTaskId !== task.task_id) return false;
+    if (preview.accepted) return true;
+    const stream = document.querySelector<HTMLDivElement>(`[data-agent-events="${task.task_id}"]`);
+    if (!stream) return false;
+    const pinned = isPinnedToBottom(stream);
+    const answer = stream.querySelector<HTMLElement>("[data-preview-answer]");
+    const reasoning = stream.querySelector<HTMLElement>("[data-preview-reasoning]");
+    if (answer && answer.textContent !== preview.text) answer.textContent = preview.text;
+    if (reasoning && reasoning.textContent !== preview.reasoning) reasoning.textContent = preview.reasoning;
+    if (pinned) stream.scrollTop = stream.scrollHeight;
+    return false;
+  }
+
   // Append a streamed event and update state. Returns true when the shell
   // should re-render: a snapshot/status changed, or the event opens a run
   // boundary ("queued"/"started" start a new conversation turn — rebuilt by a
@@ -755,6 +775,8 @@ export namespace agentPanel {
       return !!payload.snapshot;
     }
 
+    if (boundary) task.preview = undefined;
+    if (payload.kind === "started" && payload.run_id) task.run_id = payload.run_id;
     const failedFromApiError = payload.kind === "api_error"
       && (task.status === "queued" || task.status === "running");
     if (failedFromApiError) {
@@ -1698,6 +1720,7 @@ export namespace agentPanel {
       const wasActive = statusRank(existing.status) < 2;
       const merged = mergeSnapshot(existing, snapshot);
       Object.assign(existing, merged, { events: mergeEvents(existing.events, pending) });
+      if (existing.preview?.run_id !== merged.run_id || statusRank(merged.status) >= 2) delete existing.preview;
       if (statusRank(existing.status) >= 2) {
         cancellingTaskIds.delete(snapshot.task_id);
         cancellationErrors.delete(snapshot.task_id);

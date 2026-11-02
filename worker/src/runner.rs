@@ -1348,7 +1348,7 @@ fn map_agent_event(sequencer: &mut EventSequencer, event: AgentEvent) -> Option<
             step,
             message: truncate(&message, 4_096),
         },
-        AgentEvent::ModelConnection { .. } => return None,
+        AgentEvent::ModelPreview { .. } | AgentEvent::ModelConnection { .. } => return None,
         // Core emits Done before returning AgentOutcome. The Worker emits one
         // terminal event after it can attach normalized usage.
         AgentEvent::Done { .. } => return None,

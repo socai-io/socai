@@ -1711,6 +1711,8 @@ body.has-paper > #app { position: relative; z-index: 1; }
   font-size: 14px;
   color: var(--ink-1);
 }
+[data-preview-answer] { white-space: pre-wrap; overflow-wrap: anywhere; }
+[data-preview-answer]:empty, [data-preview-row]:has([data-preview-reasoning]:empty) { display: none; }
 .conv-answer.result-md p { margin: 0 0 var(--sp-3) 0; }
 /* citation pills need to sit comfortably in the larger prose */
 .conv-answer .note-cite { font-size: 0.82em; }

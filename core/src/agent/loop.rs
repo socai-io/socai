@@ -63,6 +63,11 @@ pub enum AgentEvent {
     Step {
         step: u32,
     },
+    /// Transient generation preview. Empty strings clear the current attempt.
+    ModelPreview {
+        text: String,
+        reasoning: String,
+    },
     AssistantText {
         step: u32,
         text: String,
@@ -1465,7 +1470,22 @@ async fn send_chat(
     loop {
         attempt += 1;
         let start = recovery.as_ref().and_then(|_| SuspendClock::sample());
-        let result = backend.send(system, messages, schemas, max_tokens).await;
+        let desktop_events = recovery.as_ref().map(|(events, _)| *events);
+        let result = if let Some(events) = desktop_events.filter(|_| backend.provider() == "socai") {
+            let preview = |text: &str, reasoning: &str| {
+                emit(events, AgentEvent::ModelPreview {
+                    text: text.to_owned(),
+                    reasoning: reasoning.to_owned(),
+                });
+            };
+            let result = backend
+                .send_with_preview(system, messages, schemas, max_tokens, &preview)
+                .await;
+            preview("", "");
+            result
+        } else {
+            backend.send(system, messages, schemas, max_tokens).await
+        };
         let timing = start.and_then(SuspendClock::elapsed);
         let monitor_connection = recovery.is_some();
         let mut notify = |state, reason| {

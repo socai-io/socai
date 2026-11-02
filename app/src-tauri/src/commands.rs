@@ -3551,6 +3551,7 @@ fn pump_agent_task_events(
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut current_step = 0;
+        let mut streamed = false;
         loop {
             let event = tokio::select! {
                 event = rx.recv() => match event {
@@ -3574,6 +3575,20 @@ fn pump_agent_task_events(
             previous = now;
             let Some(event) = event else { continue };
             match &event {
+                AgentEvent::ModelPreview { text, reasoning } => {
+                    streamed |= !text.is_empty() || !reasoning.is_empty();
+                    let _ = app.emit("agent_task:preview", json!({
+                        "task_id": task_id, "run_id": run_id, "text": text, "reasoning": reasoning,
+                    }));
+                    continue;
+                }
+                // Keep the accepted answer on screen while memory and billing finish.
+                AgentEvent::Done { final_text, .. } if streamed => {
+                    let _ = app.emit("agent_task:preview", json!({
+                        "task_id": task_id, "run_id": run_id, "text": final_text,
+                        "reasoning": "", "accepted": true,
+                    }));
+                }
                 AgentEvent::Step { step } => current_step = *step,
                 AgentEvent::ModelConnection {
                     step,
@@ -3646,7 +3661,7 @@ fn pump_agent_task_events(
                 }
                 _ => {}
             }
-            let payload = agent_event_to_timeline(&event);
+            let Some(payload) = agent_event_to_timeline(&event) else { continue };
             emit_timeline_payload(&app, registry.as_ref(), &task_id, payload, None).await;
         }
     })

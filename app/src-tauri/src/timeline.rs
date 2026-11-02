@@ -431,8 +431,9 @@ fn run_status_marker(status: &str) -> Option<AgentTaskEventKind> {
     }
 }
 
-pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind {
-    match event {
+pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> Option<AgentTaskEventKind> {
+    Some(match event {
+        AgentEvent::ModelPreview { .. } => return None,
         AgentEvent::Started {
             run_id,
             task,
@@ -551,7 +552,7 @@ pub(crate) fn agent_event_to_timeline(event: &AgentEvent) -> AgentTaskEventKind 
             degraded_reason: degraded_reason.clone(),
             text: "done".to_string(),
         },
-    }
+    })
 }
 
 /// Human-readable label for a current tool name.
