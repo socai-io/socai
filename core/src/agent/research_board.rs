@@ -57,7 +57,7 @@ impl Tool for ResearchBoardTool {
         "update_research_board"
     }
     fn description(&self) -> &str {
-        "Update the user's live research workbench as useful discoveries arrive. Upsert concise leads and sourced relationships by stable id; do not repeat the full board. Include early/uncertain findings, not just verified candidates. Record platform focus and next steps. This is a progress surface, not a gate or final report. Only record observed work; never invent sources or completion."
+        "Update the user's live research workbench as useful discoveries arrive. Upsert concise leads and sourced relationships by stable id; do not repeat the full board. Each update is atomic: if it fails, NONE of its supplied leads or relationships are saved. Correct the error and resubmit the full rejected update, including its leads, not only its relationships. Relation endpoints must be saved lead ids or leads in the same update; every sources[].lead_id must exactly match that relation's from or to. Include early/uncertain findings, not just verified candidates. Record platform focus and next steps. This is a progress surface, not a gate or final report. Only record observed work; never invent sources or completion."
     }
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{
@@ -83,7 +83,7 @@ impl Tool for ResearchBoardTool {
                 "kind":{"type":"string","enum":["fact","comparison","hypothesis"],"description":"fact: a source explicitly states the connection; comparison: attributes of both endpoints support the comparison; hypothesis: decisive evidence is missing (uncertain=true)."},
                 "basis":{"type":"string","description":"Concrete connection or comparison; preserve source uncertainty. Never infer partnership from similarity."},
                 "sources":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"object","properties":{
-                    "lead_id":{"type":"string"},"url":{"type":"string"},"excerpt":{"type":"string","description":"Optional literal source excerpt, not a paraphrase"}
+                    "lead_id":{"type":"string","description":"Must exactly match this relation's from or to lead id, not another related record. A comparison needs a source for each endpoint."},"url":{"type":"string"},"excerpt":{"type":"string","description":"Optional literal source excerpt, not a paraphrase"}
                 },"required":["lead_id","url"]}}
             },"required":["id","from","to","label","url","uncertain","dimension","kind","basis","sources"]}}
         }})
@@ -138,7 +138,9 @@ impl Tool for ResearchBoardTool {
                 let sources = edge["sources"].as_array().context("Relationship sources required")?;
                 anyhow::ensure!(!sources.is_empty() && sources.len() <= 6, "Provide 1-6 relationship sources");
                 for source in sources {
-                    anyhow::ensure!(source["lead_id"] == edge["from"] || source["lead_id"] == edge["to"], "Source must reference an endpoint");
+                    anyhow::ensure!(source["lead_id"] == edge["from"] || source["lead_id"] == edge["to"],
+                        "Relation {}: source lead_id {} must match from {} or to {}. This entire update was rejected; none of its supplied leads or relationships were saved. Correct the source reference and resubmit the full update, including its leads. Do not substitute a different source or invent evidence.",
+                        edge["id"], source["lead_id"], edge["from"], edge["to"]);
                     let url = reqwest::Url::parse(source["url"].as_str().context("Invalid relationship source")?)?;
                     anyhow::ensure!(matches!(url.scheme(), "http" | "https"), "Source must be HTTP(S)");
                     if let Some(excerpt) = source.get("excerpt") { anyhow::ensure!(excerpt.as_str().is_some_and(|s| s.len() <= 4000), "Invalid source excerpt"); }
@@ -209,7 +211,9 @@ impl Tool for ResearchBoardTool {
         for edge in input["relations"].as_array().into_iter().flatten() {
             anyhow::ensure!(edge["from"] != edge["to"], "A relationship needs two distinct endpoints");
             for endpoint in ["from", "to"] {
-                anyhow::ensure!(board["leads"].as_array().is_some_and(|rows| rows.iter().any(|r| r["id"] == edge[endpoint])), "Unknown relationship endpoint");
+                anyhow::ensure!(board["leads"].as_array().is_some_and(|rows| rows.iter().any(|r| r["id"] == edge[endpoint])),
+                    "Relation {}: unknown {endpoint} lead id {}. This entire update was rejected; none of its supplied leads or relationships were saved. Include the missing lead with its observed source in the same update, or save that lead successfully before adding this relation. If a previous update failed, its leads must be resubmitted too. Never invent a lead to satisfy this check.",
+                    edge["id"], edge[endpoint]);
             }
         }
         board["updated_at"] = json!(chrono::Utc::now().timestamp_millis());
