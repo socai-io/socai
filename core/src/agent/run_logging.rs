@@ -228,23 +228,6 @@ impl AgentRunRecorder {
         write_json_atomic(&path, &value)
     }
 
-    pub(crate) fn replace_llm_response_with_visible_text(
-        &self,
-        step: u32,
-        text: &str,
-    ) -> std::io::Result<()> {
-        let path = self.run_dir.join(format!("llm/{step:03}.response.json"));
-        let mut value: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)
-            .map_err(std::io::Error::other)?;
-        value["text_blocks"] = json!([text]);
-        value["tool_calls"] = json!([]);
-        value["reasoning_content"] = json!("");
-        value["thinking_blocks"] = json!([]);
-        value["reasoning_items"] = json!([]);
-        value["user_visible"] = json!(true);
-        write_json_atomic(&path, &value)
-    }
-
     /// Persist nested model usage as it arrives, including when the parent
     /// tool is later cancelled. Finalization overwrites with the same total.
     pub(crate) fn record_auxiliary_usage(&self, delta: &TokenUsage) -> std::io::Result<()> {

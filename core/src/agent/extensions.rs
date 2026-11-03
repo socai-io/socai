@@ -7,6 +7,7 @@ use super::tool::{ToolContext, ToolResult};
 pub enum RequestPhase {
     Action { step: u32, max_steps: u32 },
     Summary,
+    /// Finish using collected material. The runtime controls which tools are exposed.
     LocalDelivery,
 }
 

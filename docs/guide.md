@@ -155,11 +155,13 @@ are produced when requested; selecting VC does not contact people or start a
 monitor. The first skill is intentionally concise and lives at
 [`vc-research/SKILL.md`](../core/src/agent/skills/vc-research/SKILL.md).
 
-Light research makes an initial pass (30 action steps); deep research permits
-more complementary exploration and selective depth (120). These are ceilings,
-not quotas or guarantees of candidate count. Loading a skill does not raise the
-budget. Workflow, depth and selected sources persist with each conversation and
-can be changed before a follow-up. Existing tasks default to General and Light.
+Light research allows up to 50 regular steps and deep research up to 120.
+After that, the agent has up to five more steps with the same tools. It is
+asked to stop searching, finish the requested work and publish any requested
+files. If it uses all five steps, it gets a final text-only turn to summarize
+the result. Loading a skill does not raise the budget. Workflow, depth and
+selected sources persist with each conversation and can be changed before a
+follow-up. Existing tasks default to General and Light.
 
 In deep mode, reading a post on a platform with comments (such as Xiaohongshu,
 X or Douyin) also includes a lightweight look at the first few available comments,

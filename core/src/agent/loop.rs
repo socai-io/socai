@@ -1,7 +1,7 @@
 //! Agent loop — the heart of the agent runtime.
 //!
 //! ```text
-//!   while step < max_steps:
+//!   while normal or wrap-up steps remain:
 //!     response = backend.send(system, messages, tool_schemas)
 //!     append assistant
 //!     if no tool calls: break
@@ -123,7 +123,8 @@ pub enum AgentEvent {
     },
 }
 
-pub const DEFAULT_MAX_STEPS: u32 = 30;
+pub const DEFAULT_MAX_STEPS: u32 = 50;
+const WRAP_UP_STEPS: u32 = 5;
 
 #[derive(Debug, Clone)]
 pub struct AgentOptions {
@@ -131,6 +132,7 @@ pub struct AgentOptions {
     /// record use this to keep interactive signals and Core tool contexts on
     /// the same identity; local entrypoints keep the generated default.
     pub run_id: Option<String>,
+    /// Normal tool-using budget. A nonzero budget also allows five wrap-up steps.
     pub max_steps: u32,
     pub max_tokens: u32,
     pub extra_instructions: String,
@@ -475,19 +477,23 @@ pub async fn run_agent_with_events(
     let mut extension_stop_reason: Option<String> = None;
     let mut extensions = RunExtensions::default();
     let mut truncation_retries = 0u32;
-    let mut invalid_delivery_retries = 0u32;
+    let mut invalid_tool_retries = 0u32;
     let mut delivery_steps_left: Option<u32> = None;
     let mut last_system: String = build_system_prompt(&[], &extra_instructions);
 
-    while delivery_steps_left.map_or_else(
-        || step < extensions.execution_ceiling(&ctx, options.max_steps),
-        |left| left > 0,
-    ) {
+    loop {
+        let max_steps = extensions.execution_ceiling(&ctx, options.max_steps);
+        let wrap_up_limit = max_steps.saturating_add(WRAP_UP_STEPS);
         let local_delivery = delivery_steps_left.is_some();
         if let Some(left) = delivery_steps_left.as_mut() {
+            if *left == 0 {
+                break;
+            }
             *left -= 1;
+        } else if max_steps == 0 || step >= wrap_up_limit {
+            break;
         }
-        let max_steps = extensions.execution_ceiling(&ctx, options.max_steps);
+        let wrapping_up = !local_delivery && step >= max_steps;
         step += 1;
         ctx.step = step;
         if step != 1 || initial_tool_count == 0 {
@@ -524,13 +530,21 @@ pub async fn run_agent_with_events(
         let mut request_messages = messages.clone();
         for context in extensions.request_context(
             &ctx,
-            if local_delivery {
+            if local_delivery || wrapping_up {
                 RequestPhase::LocalDelivery
             } else {
                 RequestPhase::Action { step, max_steps }
             },
         ) {
             request_messages.push(Message::user(context));
+        }
+        if wrapping_up {
+            let remaining = wrap_up_limit - step + 1;
+            request_messages.push(Message::user(format!(
+                "Wrap up now. Tool-using steps remaining (including this one): {remaining}. \
+                 Stop searching and collecting new material. Use the available tools to finish \
+                 the requested work and publish any requested files. Answer as soon as you are ready."
+            )));
         }
         let request_payload =
             backend.request_payload(&system, &request_messages, &schemas, options.max_tokens)?;
@@ -652,31 +666,15 @@ pub async fn run_agent_with_events(
         }
         truncation_retries = 0;
 
-        if response.tool_calls.is_empty() {
-            let visible = visible_texts.join("\n\n");
-            let invalid = contains_pseudo_tool_call(&visible)
-                || (local_delivery
-                    && matches!(
-                        forced_summary_disposition(
-                            task,
-                            &response,
-                            &visible,
-                            run_state.as_ref(),
-                            tools.iter().any(|tool| tool.name() == "publish_artifact"),
-                            ForcedSummaryKind::RecoveryPartial,
-                        ),
-                        ForcedSummaryDisposition::Reject { .. }
-                    ));
-            if invalid {
-                run_recorder.mark_llm_response_hidden(step)?;
-                invalid_delivery_retries += 1;
-                if invalid_delivery_retries > 2 {
-                    extension_stop_reason = Some("Repeated invalid tool-call text; summarize available progress without claiming unexecuted actions.".into());
-                    break;
-                }
-                messages.push(Message::user("That response did not execute a real tool call or claimed unpublished files. Use the actual exposed tool API, never XML/DSML text. Read saved material, write the requested files, then publish them. If delivery cannot be completed, give an honest partial answer."));
-                continue;
+        if response.tool_calls.is_empty() && contains_pseudo_tool_call(&visible_texts.join("\n\n")) {
+            run_recorder.mark_llm_response_hidden(step)?;
+            invalid_tool_retries += 1;
+            if invalid_tool_retries > 2 {
+                extension_stop_reason = Some("Repeated invalid tool-call text; summarize available progress without claiming unexecuted actions.".into());
+                break;
             }
+            messages.push(Message::user("Use the actual exposed tool API instead of XML/DSML markup, or answer directly using the available results."));
+            continue;
         }
 
         // Build the assistant block list manually instead of using
@@ -690,8 +688,8 @@ pub async fn run_agent_with_events(
         // gen_ai.output.messages; don't repeat it in the next input delta.
         traced_len = messages.len();
 
-        if response.tool_calls.is_empty() && !local_delivery {
-            match extensions.before_finish(&ctx, max_steps.saturating_sub(step)) {
+        if response.tool_calls.is_empty() && !local_delivery && !wrapping_up {
+            match extensions.before_finish(&ctx, wrap_up_limit.saturating_sub(step)) {
                 FinishDecision::Allow => {}
                 FinishDecision::Continue(instruction) => {
                     run_recorder.mark_llm_response_hidden(step)?;
@@ -713,7 +711,9 @@ pub async fn run_agent_with_events(
                     text: text.clone(),
                 },
             );
-            final_text = text.clone();
+        }
+        if !visible_texts.is_empty() {
+            final_text = visible_texts.join("\n\n");
         }
 
         let tool_call_summary: Vec<Value> = response
@@ -1109,14 +1109,6 @@ pub async fn run_agent_with_events(
             }
         }
         usage += &ctx.take_auxiliary_usage();
-        if max_steps.saturating_sub(step) == 5 {
-            tool_result_blocks.push(Block::Text {
-                text: "[Execution budget: 5 tool-using steps remain. Prioritize completing the \
-                       user's requested deliverable now. If the task requests a file, create, \
-                       validate, and publish it before doing optional follow-up work.]"
-                    .to_string(),
-            });
-        }
         messages.push(Message::user_blocks(tool_result_blocks));
         if extension_stop_reason.is_some() {
             break;
@@ -1128,10 +1120,15 @@ pub async fn run_agent_with_events(
             {
                 break;
             }
-            delivery_steps_left = Some(8);
-            messages.push(Message::user(
-                "External dependency recovery failed. Acquisition is over; the result remains partial. You now have up to 8 local-only steps to read existing material, create requested deliverables with write_file, and publish them. Only exposed local tools may be called; no shell, browser, new searches or external services. Use real tool calls, not XML/DSML markup. Do not claim a file is attached before publish_artifact succeeds. Then give a useful partial answer explaining the interruption."
-            ));
+            let remaining = if step >= max_steps {
+                wrap_up_limit - step
+            } else {
+                8
+            };
+            delivery_steps_left = Some(remaining);
+            messages.push(Message::user(format!(
+                "External dependency recovery failed. Acquisition is over; the result remains partial. You now have up to {remaining} local-only steps to read existing material, create requested deliverables with write_file, and publish them. Only exposed local tools may be called; no shell, browser, new searches or external services. Use real tool calls, not XML/DSML markup. Do not claim a file is attached before publish_artifact succeeds. Then give a useful partial answer explaining the interruption."
+            )));
         }
     }
 
@@ -1168,7 +1165,7 @@ pub async fn run_agent_with_events(
                      possible final answer for the user now in the same language as the \
                      original task. If information is incomplete, state what is known, \
                      what is missing, and give your best-effort conclusion.",
-                    max_steps
+                    step
                 )
             })
         });
@@ -1215,9 +1212,7 @@ pub async fn run_agent_with_events(
             {
                 Ok(response) => {
                     let duration_ms = llm_started.elapsed().as_millis() as u64;
-                    // Forced-summary attempts stay hidden from timeline replay until validation
-                    // accepts them. This prevents a rejected artifact claim from reappearing
-                    // after the user reloads the task.
+                    // Incomplete summary attempts stay hidden from timeline replay.
                     run_recorder.record_llm_response_with_visibility(
                         summary_step,
                         &response,
@@ -1235,7 +1230,6 @@ pub async fn run_agent_with_events(
                     usage += &response.usage;
                     let (visible_texts, _) = split_thinking(&response.text_blocks);
                     let visible_text = visible_texts.join("\n\n");
-                    let mut user_visible_texts = visible_texts.clone();
                     let invalid_summary = response.stop_reason == StopReason::MaxTokens
                         || visible_texts.is_empty()
                         || !response.tool_calls.is_empty()
@@ -1269,83 +1263,8 @@ pub async fn run_agent_with_events(
                         terminal_error = Some(msg);
                         break;
                     }
-                    match forced_summary_disposition(
-                        task,
-                        &response,
-                        &visible_text,
-                        run_state.as_ref(),
-                        tools.iter().any(|tool| tool.name() == "publish_artifact"),
-                        if degraded_reason.is_some() {
-                            ForcedSummaryKind::RecoveryPartial
-                        } else {
-                            ForcedSummaryKind::ExecutionLimit
-                        },
-                    ) {
-                        ForcedSummaryDisposition::Accept => {
-                            run_recorder.mark_llm_response_visible(summary_step)?;
-                        }
-                        ForcedSummaryDisposition::Partial { reason } => {
-                            run_recorder.mark_llm_response_visible(summary_step)?;
-                            warn!(
-                                step = summary_step,
-                                reason, "forced summary preserved as a partial result"
-                            );
-                            degraded_reason = Some(reason);
-                        }
-                        ForcedSummaryDisposition::Reject {
-                            message,
-                            retry_without_claim,
-                        } => {
-                            warn!(
-                                step = summary_step,
-                                "forced summary did not finish the task"
-                            );
-                            if retry_without_claim && summary_attempt == 0 {
-                                forced_summary_prompt =
-                                    "Respond once with a concise, tool-free partial answer based \
-                                     only on evidence already gathered. Do not claim that any file \
-                                     was created, saved, exported, published, or is available for \
-                                     download unless an earlier successful publish_artifact result \
-                                     proves it. If the requested file was not published, say that \
-                                     clearly and put the useful summary directly in this response."
-                                        .to_string();
-                                continue;
-                            }
-                            if retry_without_claim {
-                                let fallback = artifact_claim_free_fallback(task, &visible_text);
-                                run_recorder.replace_llm_response_with_visible_text(
-                                    summary_step,
-                                    &fallback,
-                                )?;
-                                let reason = if task
-                                    .chars()
-                                    .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
-                                {
-                                    "请求的交付文件未经过验证并成功发布；已保留下方基于现有数据的部分结果。"
-                                } else {
-                                    "The requested deliverable was not verified and published; the evidence-based partial result is preserved below."
-                                };
-                                warn!(
-                                    step = summary_step,
-                                    "replaced an unverified artifact claim with a partial result"
-                                );
-                                degraded_reason = Some(reason.to_string());
-                                user_visible_texts = vec![fallback];
-                            } else {
-                                final_text = message.clone();
-                                emit(
-                                    &events,
-                                    AgentEvent::ApiError {
-                                        step: summary_step,
-                                        message: message.clone(),
-                                    },
-                                );
-                                terminal_error = Some(message);
-                                break;
-                            }
-                        }
-                    }
-                    for text in &user_visible_texts {
+                    run_recorder.mark_llm_response_visible(summary_step)?;
+                    for text in &visible_texts {
                         emit(
                             &events,
                             AgentEvent::AssistantText {
@@ -1353,8 +1272,8 @@ pub async fn run_agent_with_events(
                                 text: text.clone(),
                             },
                         );
-                        final_text = text.clone();
                     }
+                    final_text = visible_text;
                     break;
                 }
                 Err(e) => {
@@ -1947,151 +1866,6 @@ fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
     (visible, thinking)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ForcedSummaryKind {
-    ExecutionLimit,
-    RecoveryPartial,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ForcedSummaryDisposition {
-    Accept,
-    Partial {
-        reason: String,
-    },
-    Reject {
-        message: String,
-        retry_without_claim: bool,
-    },
-}
-
-fn forced_summary_disposition(
-    task: &str,
-    response: &LLMResponse,
-    visible_text: &str,
-    run_state: &RunState,
-    publish_required: bool,
-    summary_kind: ForcedSummaryKind,
-) -> ForcedSummaryDisposition {
-    let tried_unavailable_tool =
-        !response.tool_calls.is_empty() || contains_pseudo_tool_call(visible_text);
-    let published = run_state
-        .artifact_records()
-        .into_iter()
-        .filter(|artifact| {
-            artifact.source_tool == "publish_artifact"
-                && artifact.metadata.get("category").and_then(Value::as_str) == Some("deliverable")
-        })
-        .collect::<Vec<_>>();
-    let mut requested_kinds = if summary_kind == ForcedSummaryKind::ExecutionLimit {
-        requested_artifact_kinds(task)
-    } else {
-        Vec::new()
-    };
-    requested_kinds.sort_by_key(|kind| *kind == "generic");
-    let mut claimed_kinds = claimed_artifact_kinds(visible_text);
-    claimed_kinds.sort_by_key(|kind| *kind == "generic");
-
-    let missing_deliverable = |required_kinds: &[&str]| {
-        let mut matched_artifacts = vec![false; published.len()];
-        required_kinds.iter().any(|kind| {
-            if *kind == "generic" {
-                return published.is_empty();
-            }
-            let matching_index = published.iter().enumerate().position(|(index, artifact)| {
-                !matched_artifacts[index] && artifact_matches_kind(&artifact.path, kind)
-            });
-            if let Some(index) = matching_index {
-                matched_artifacts[index] = true;
-                false
-            } else {
-                true
-            }
-        })
-    };
-    let missing_claimed_deliverable = publish_required && missing_deliverable(&claimed_kinds);
-    let missing_requested_deliverable = publish_required && missing_deliverable(&requested_kinds);
-    if !tried_unavailable_tool && !missing_claimed_deliverable && !missing_requested_deliverable {
-        return ForcedSummaryDisposition::Accept;
-    }
-
-    let chinese = task
-        .chars()
-        .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch));
-    if tried_unavailable_tool {
-        let message = if chinese {
-            "任务在达到最大执行步数后仍试图调用工具，但该操作没有实际执行。已有过程记录已保留，请重试。"
-        } else {
-            "The task reached its execution limit while still attempting a tool call, so that operation was not executed. Progress was preserved; please retry."
-        };
-        return ForcedSummaryDisposition::Reject {
-            message: message.to_string(),
-            retry_without_claim: false,
-        };
-    }
-    if missing_claimed_deliverable {
-        let message = if chinese {
-            "最终总结声称已生成交付文件，但没有找到经过验证并成功发布的对应文件。已有过程记录已保留，请重试。"
-        } else {
-            "The final summary claimed a deliverable that was not verified and published. Progress was preserved; please retry."
-        };
-        return ForcedSummaryDisposition::Reject {
-            message: message.to_string(),
-            retry_without_claim: true,
-        };
-    }
-    if missing_requested_deliverable {
-        let reason = if chinese {
-            "任务已达到最大执行步数；请求的交付文件尚未经过验证并成功发布，以下保留已完成的部分结果。"
-        } else {
-            "The task reached its execution limit before the requested deliverable was verified and published; the completed partial result is preserved below."
-        };
-        ForcedSummaryDisposition::Partial {
-            reason: reason.to_string(),
-        }
-    } else {
-        ForcedSummaryDisposition::Accept
-    }
-}
-
-fn artifact_claim_free_fallback(task: &str, visible_text: &str) -> String {
-    let mut safe_text = String::with_capacity(visible_text.len());
-    let mut sentence = String::new();
-    let mut chars = visible_text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        sentence.push(ch);
-        let sentence_boundary = matches!(ch, '!' | '?' | ';' | '\n' | '。' | '！' | '？' | '；')
-            || (ch == '.' && chars.peek().is_none_or(|next| next.is_whitespace()));
-        if sentence_boundary {
-            if claimed_artifact_kinds(&sentence).is_empty() {
-                safe_text.push_str(&sentence);
-            }
-            sentence.clear();
-        }
-    }
-    if claimed_artifact_kinds(&sentence).is_empty() {
-        safe_text.push_str(&sentence);
-    }
-    if !claimed_artifact_kinds(&safe_text).is_empty() {
-        safe_text.clear();
-    }
-
-    let chinese = task
-        .chars()
-        .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch));
-    let notice = if chinese {
-        "交付文件尚未完成验证，当前没有可用下载文件。以下为基于已有数据整理的部分结果："
-    } else {
-        "No verified deliverable is available. The partial findings below are based on the evidence already gathered:"
-    };
-    let safe_text = safe_text.trim();
-    if safe_text.is_empty() {
-        notice.to_string()
-    } else {
-        format!("{notice}\n\n{safe_text}")
-    }
-}
-
 fn contains_pseudo_tool_call(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
@@ -2108,347 +1882,6 @@ fn contains_pseudo_tool_call(text: &str) -> bool {
     ]
     .iter()
     .any(|marker| lower.contains(marker))
-}
-
-fn requested_artifact_kinds(task: &str) -> Vec<&'static str> {
-    let lower = task.to_ascii_lowercase();
-    let creation_markers = [
-        "create",
-        "generate",
-        "export",
-        "produce",
-        "write",
-        "save",
-        "build",
-        "make",
-        "downloadable",
-        "生成",
-        "创建",
-        "制作",
-        "导出",
-        "保存",
-        "写入",
-        "做成",
-        "整理成",
-        "放到",
-    ];
-    let source_markers = [
-        " from ",
-        " using ",
-        " based on ",
-        " source ",
-        " input ",
-        " after ",
-        " for ",
-        " of ",
-        " about ",
-        "根据",
-        "基于",
-        "关于",
-        "输入",
-        "从",
-    ];
-    let mut kinds = Vec::new();
-    for creation_marker in &creation_markers {
-        for (offset, _) in lower.match_indices(*creation_marker) {
-            let target_start = offset + creation_marker.len();
-            let remaining = &lower[target_start..];
-            let target_end = source_markers
-                .iter()
-                .chain(creation_markers.iter())
-                .filter_map(|marker| remaining.find(marker))
-                .min()
-                .unwrap_or(remaining.len());
-            let target = &remaining[..target_end];
-            let target_kinds = artifact_kinds(target);
-            let has_typed_artifact = !target_kinds.is_empty();
-            for kind in target_kinds {
-                kinds.push(kind);
-            }
-            // A generic file noun must belong to the creation clause. In a
-            // browser/API question, a later instruction to read documentation
-            // is a source, not a request to export a document.
-            let generic_target = target
-                .split([',', ';', '.', '\n', '，', '；', '。', '、'])
-                .next()
-                .unwrap_or("")
-                .split(" and ")
-                .next()
-                .unwrap_or("");
-            if !has_typed_artifact
-                && ["file", "document", "文件", "文档"]
-                    .iter()
-                    .any(|marker| generic_target.contains(marker))
-                && !kinds.contains(&"generic")
-            {
-                kinds.push("generic");
-            }
-        }
-    }
-    kinds
-}
-
-fn claimed_artifact_kinds(text: &str) -> Vec<&'static str> {
-    let lower = text.to_ascii_lowercase();
-    let completion_markers = [
-        "generated",
-        "created",
-        "exported",
-        "saved",
-        "published",
-        "ready for download",
-        "available for download",
-        "downloadable",
-        "已生成",
-        "已创建",
-        "已导出",
-        "已保存",
-        "已发布",
-        "可下载",
-    ];
-    let claim_boundaries = [
-        " source ",
-        " input ",
-        " based on ",
-        " from ",
-        ". ",
-        "; ",
-        "\n",
-        "来源",
-        "输入",
-        "基于",
-        "根据",
-        "。",
-        "；",
-    ];
-    let sentence_boundaries = [". ", "; ", "\n", "。", "；"];
-    let mut kinds = Vec::new();
-    for completion_marker in &completion_markers {
-        for (offset, _) in lower.match_indices(*completion_marker) {
-            let before = &lower[..offset];
-            // Source phrases delimit the object after a completion verb, but they can
-            // legitimately modify a subject before it ("the PDF from the data was
-            // created"). Only sentence boundaries are safe for the prefix scan.
-            let sentence_start = sentence_boundaries
-                .iter()
-                .filter_map(|boundary| before.rfind(boundary).map(|index| index + boundary.len()))
-                .max()
-                .unwrap_or_default();
-            let claim_start = [", but ", " but "]
-                .iter()
-                .filter_map(|boundary| {
-                    let relative = lower[sentence_start..offset].rfind(boundary)?;
-                    let boundary_start = sentence_start + relative;
-                    let candidate = boundary_start + boundary.len();
-                    let prior_has_completion = completion_markers
-                        .iter()
-                        .any(|marker| lower[sentence_start..boundary_start].contains(marker));
-                    let candidate_mentions_artifact = !artifact_kinds(&lower[candidate..offset])
-                        .is_empty()
-                        || ["file", "document", "文件", "文档"]
-                            .iter()
-                            .any(|marker| lower[candidate..offset].contains(marker));
-                    (prior_has_completion && candidate_mentions_artifact).then_some(candidate)
-                })
-                .max()
-                .unwrap_or(sentence_start);
-            if completion_claim_is_negated(&lower[claim_start..offset], completion_marker) {
-                continue;
-            }
-            let after_start = offset + completion_marker.len();
-            let after = &lower[after_start..];
-            let claim_end = after_start
-                + claim_boundaries
-                    .iter()
-                    .chain(completion_markers.iter())
-                    .filter_map(|marker| after.find(marker))
-                    .min()
-                    .unwrap_or(after.len());
-            let claim = &lower[claim_start..claim_end];
-            let claim_kinds = artifact_kinds(claim);
-            let has_typed_artifact = !claim_kinds.is_empty();
-            for kind in claim_kinds {
-                if !kinds.contains(&kind) {
-                    kinds.push(kind);
-                }
-            }
-            if !has_typed_artifact
-                && ["file", "document", "文件", "文档", "下载"]
-                    .iter()
-                    .any(|marker| claim.contains(marker))
-                && !kinds.contains(&"generic")
-            {
-                kinds.push("generic");
-            }
-        }
-    }
-    kinds
-}
-
-fn completion_claim_is_negated(before: &str, completion_marker: &str) -> bool {
-    if completion_marker == "available for download"
-        && before
-            .chars()
-            .next_back()
-            .is_some_and(|ch| ch.is_ascii_alphanumeric())
-    {
-        return true;
-    }
-    if completion_marker == "可下载"
-        && ["不", "不是", "并非"]
-            .iter()
-            .any(|suffix| before.trim_end().ends_with(suffix))
-    {
-        return true;
-    }
-    let words = before
-        .split_whitespace()
-        .map(|word| word.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\''))
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>();
-    if words.first() == Some(&"no")
-        && !artifact_kinds(before).is_empty()
-        && !words.iter().any(|word| matches!(*word, "and" | "but"))
-    {
-        return true;
-    }
-    if let Some(negation) = words.iter().rposition(|word| {
-        matches!(*word, "not" | "never" | "no" | "neither" | "nor") || word.ends_with("n't")
-    }) {
-        const NEGATION_FILLERS: &[&str] = &[
-            "yet",
-            "been",
-            "be",
-            "successfully",
-            "actually",
-            "fully",
-            "really",
-        ];
-        if words[negation + 1..]
-            .iter()
-            .all(|word| NEGATION_FILLERS.contains(word))
-        {
-            return true;
-        }
-        if matches!(words[negation], "no" | "neither" | "nor")
-            && !artifact_kinds(before).is_empty()
-            && !words[negation + 1..]
-                .iter()
-                .any(|word| matches!(*word, "and" | "but"))
-        {
-            return true;
-        }
-    }
-    ["failed to be", "failed to get", "failed to become"]
-        .iter()
-        .any(|suffix| before.trim_end().ends_with(suffix))
-}
-
-fn artifact_kinds(text: &str) -> Vec<&'static str> {
-    let groups: [(&str, &[&str]); 8] = [
-        (
-            "excel",
-            &[
-                ".xlsx",
-                ".xlsm",
-                "excel",
-                "excel file",
-                "excel report",
-                "excel workbook",
-                "excel spreadsheet",
-                "excel 文件",
-                "excel 报告",
-                "excel 表格",
-                "电子表格",
-            ],
-        ),
-        ("csv", &[".csv", "csv", "csv 文件", "csv file", "csv 格式"]),
-        (
-            "spreadsheet",
-            &[
-                "spreadsheet",
-                "spreadsheet file",
-                "spreadsheet document",
-                "表格文件",
-            ],
-        ),
-        (
-            "word",
-            &[
-                ".docx",
-                ".docm",
-                "word document",
-                "word file",
-                "word 文档",
-                "word 文件",
-            ],
-        ),
-        (
-            "powerpoint",
-            &[
-                ".pptx",
-                ".pptm",
-                "powerpoint",
-                "ppt",
-                "powerpoint presentation",
-                "powerpoint file",
-                "ppt 文件",
-                "ppt 文档",
-                "幻灯片文件",
-            ],
-        ),
-        (
-            "pdf",
-            &[
-                ".pdf",
-                "pdf",
-                "pdf 文件",
-                "pdf file",
-                "pdf 文档",
-                "pdf document",
-                "pdf 报告",
-                "pdf report",
-            ],
-        ),
-        ("archive", &[".zip", "zip", "zip 文件", "zip file"]),
-        (
-            "subtitle",
-            &[".srt", ".vtt", "srt", "vtt", "字幕文件", "subtitle file"],
-        ),
-    ];
-    let mut kinds = Vec::new();
-    for (kind, markers) in groups {
-        let occurrences = markers
-            .iter()
-            .map(|marker| text.match_indices(marker).count())
-            .max()
-            .unwrap_or_default();
-        kinds.extend(std::iter::repeat_n(kind, occurrences));
-    }
-    if kinds.contains(&"excel") {
-        kinds.retain(|kind| *kind != "spreadsheet");
-    }
-    kinds
-}
-
-fn artifact_matches_kind(path: &str, kind: &str) -> bool {
-    let extension = Path::new(path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    match kind {
-        "excel" => matches!(extension.as_str(), "xlsx" | "xlsm"),
-        "csv" => extension == "csv",
-        "spreadsheet" => matches!(extension.as_str(), "xlsx" | "xlsm" | "csv"),
-        "word" => matches!(extension.as_str(), "docx" | "docm"),
-        "powerpoint" => matches!(extension.as_str(), "pptx" | "pptm"),
-        "pdf" => extension == "pdf",
-        "archive" => extension == "zip",
-        "subtitle" => matches!(extension.as_str(), "srt" | "vtt"),
-        "generic" => true,
-        _ => false,
-    }
 }
 
 /// Build the assistant message blocks for history. Truncates visible text to
@@ -2512,19 +1945,6 @@ mod tests {
     use crate::agent::file_bash_tools::ShellTool;
     use tempfile::tempdir;
 
-    fn summary_response(text: &str) -> LLMResponse {
-        LLMResponse {
-            text_blocks: vec![text.to_string()],
-            tool_calls: Vec::new(),
-            stop_reason: StopReason::EndTurn,
-            usage: TokenUsage::default(),
-            provider_usage: None,
-            reasoning_content: String::new(),
-            thinking_blocks: Vec::new(),
-            reasoning_items: Vec::new(),
-        }
-    }
-
     #[test]
     fn caller_owned_run_id_is_preserved_for_interactive_signals() {
         assert_eq!(
@@ -2532,139 +1952,6 @@ mod tests {
             "orchestrator-run-1"
         );
         assert!(!resolve_run_id(Some("  ".into())).trim().is_empty());
-    }
-
-    #[test]
-    fn recovery_partial_can_report_a_requested_deliverable_as_missing() {
-        let state = RunState::new("请根据搜索结果生成 PDF 报告");
-        assert_eq!(
-            claimed_artifact_kinds("There is no generated PDF, but the CSV was saved."),
-            vec!["csv"]
-        );
-        for text in [
-            "浏览器连接中断；已整理数据如下，PDF 尚未生成。",
-            "The PDF was not created; the useful findings follow.",
-            "The PDF is not available for download; the useful findings follow.",
-            "The PDF failed to be created; the useful findings follow.",
-            "There is no generated PDF; the useful findings follow.",
-            "The PDF was neither generated nor saved; the useful findings follow.",
-        ] {
-            let response = summary_response(text);
-            assert_eq!(
-                forced_summary_disposition(
-                    "请根据搜索结果生成 PDF 报告",
-                    &response,
-                    &response.text_blocks.join("\n\n"),
-                    &state,
-                    true,
-                    ForcedSummaryKind::RecoveryPartial,
-                ),
-                ForcedSummaryDisposition::Accept
-            );
-        }
-    }
-
-    #[test]
-    fn recovery_partial_rejects_an_unpublished_deliverable_claim() {
-        let state = RunState::new("请根据搜索结果生成 PDF 报告");
-        for text in [
-            "已生成 PDF 报告，可供下载。",
-            "The PDF was created.",
-            "The PDF report from the collected data was created.",
-            "The PDF report based on collected data was created.",
-            "report.pdf is available for download.",
-            "report.pdf has no errors and is available for download.",
-        ] {
-            let response = summary_response(text);
-            assert!(matches!(
-                forced_summary_disposition(
-                    "请根据搜索结果生成 PDF 报告",
-                    &response,
-                    &response.text_blocks.join("\n\n"),
-                    &state,
-                    true,
-                    ForcedSummaryKind::RecoveryPartial,
-                ),
-                ForcedSummaryDisposition::Reject { .. }
-            ));
-        }
-
-        let fallback = artifact_claim_free_fallback(
-            "请根据搜索结果生成 PDF 报告",
-            "已生成 PDF 报告，可供下载。\n\n## 核心洞察\n消费者更关注缓震和尺码。",
-        );
-        assert!(fallback.contains("核心洞察"));
-        assert!(!fallback.contains("已生成"));
-        assert!(!fallback.contains("可供下载"));
-        let response = summary_response(&fallback);
-        assert_eq!(
-            forced_summary_disposition(
-                "请根据搜索结果生成 PDF 报告",
-                &response,
-                &fallback,
-                &state,
-                true,
-                ForcedSummaryKind::RecoveryPartial,
-            ),
-            ForcedSummaryDisposition::Accept
-        );
-
-        let english_fallback = artifact_claim_free_fallback(
-            "Create a PDF report",
-            "The PDF was generated.\nFindings: The campaign generated 100 leads and saved $500.\nThe CSV was not created and is not downloadable.",
-        );
-        assert!(!english_fallback.contains("The PDF was generated"));
-        assert!(english_fallback.contains("The campaign generated 100 leads and saved $500"));
-        assert!(english_fallback.contains("The CSV was not created and is not downloadable"));
-        for claim in [
-            "report.xlsx was saved.",
-            "The PDF report (v1.2) was generated.",
-        ] {
-            let fallback = artifact_claim_free_fallback("Create a report", claim);
-            assert!(claimed_artifact_kinds(&fallback).is_empty());
-            assert!(!fallback.contains(claim));
-        }
-
-        let chinese_fallback = artifact_claim_free_fallback(
-            "生成 PDF 报告",
-            "已生成 PDF，可供下载。\n研究发现：品牌已发布三款新品。\nCSV 不可下载。",
-        );
-        assert!(!chinese_fallback.contains("已生成 PDF"));
-        assert!(chinese_fallback.contains("品牌已发布三款新品"));
-        assert!(chinese_fallback.contains("CSV 不可下载"));
-    }
-
-    #[test]
-    fn execution_limit_preserves_partial_result_without_requested_deliverable() {
-        for task in [
-            "核对 Kernel 官方文档中浏览器创建、截图和回放三项能力的接入方式，给出对应 API 路径、注意事项和官方来源链接。请实际打开官方文档核对，不要仅凭记忆回答。",
-            "Create a browser, then inspect the official documentation.",
-            "Create a browser and read the documentation.",
-        ] {
-            assert!(requested_artifact_kinds(task).is_empty(), "{task}");
-        }
-        assert_eq!(
-            requested_artifact_kinds("Create a document from these findings"),
-            vec!["generic"]
-        );
-        assert_eq!(
-            requested_artifact_kinds("请将结果整理成文件"),
-            vec!["generic"]
-        );
-        let response = summary_response("目前只完成了数据整理。");
-        let state = RunState::new("请根据搜索结果生成 PDF 报告");
-
-        assert!(matches!(
-            forced_summary_disposition(
-                "请根据搜索结果生成 PDF 报告",
-                &response,
-                &response.text_blocks.join("\n\n"),
-                &state,
-                true,
-                ForcedSummaryKind::ExecutionLimit,
-            ),
-            ForcedSummaryDisposition::Partial { .. }
-        ));
     }
 
     #[test]
