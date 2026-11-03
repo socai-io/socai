@@ -238,6 +238,10 @@ pub struct ToolContext {
     /// tools use this gate so the model cannot persist a procedure before
     /// reading the policy that constrains it.
     loaded_skills: Arc<Mutex<BTreeMap<String, u32>>>,
+    /// Human login waits are bounded per execution, independently of the
+    /// model's chosen timeout arguments. A confirmed follow-up creates a new
+    /// context; clones dispatched during this execution share the same gate.
+    login_waits: Arc<Mutex<BTreeSet<String>>>,
     /// Runtime-observed failure/recovery pairs. Only a later successful call
     /// to the same non-skill tool can verify a recovery; model text cannot set
     /// this state directly.
@@ -347,8 +351,16 @@ impl ToolContext {
             search_note_ids: Arc::new(Mutex::new(Vec::new())),
             notes_seen: Arc::new(Mutex::new(archived_notes)),
             loaded_skills: Arc::new(Mutex::new(BTreeMap::new())),
+            login_waits: Arc::new(Mutex::new(BTreeSet::new())),
             recovery_evidence: Arc::new(Mutex::new(RecoveryEvidenceState::default())),
         }
+    }
+
+    pub(crate) fn claim_login_wait(&self, site: &str) -> bool {
+        self.login_waits
+            .lock()
+            .map(|mut sites| sites.insert(site.to_owned()))
+            .unwrap_or(false)
     }
 
     pub(crate) fn with_call_recovery(mut self, hook: Option<SharedToolFailureRecovery>) -> Self {
