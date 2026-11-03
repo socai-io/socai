@@ -3480,6 +3480,7 @@ async fn run_desktop_agent(
             billing_task_id: Some(billing_id.to_owned()),
             tool_failure_recovery,
             desktop_network_recovery: true,
+            model_previews: llm_provider.provider() == "socai",
             ..AgentRunConfig::default()
         };
         let outcome = run_agent_with_tools(task, llm_provider, tools, config, tx).await;

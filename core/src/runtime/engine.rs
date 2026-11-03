@@ -1089,6 +1089,7 @@ pub struct AgentRunConfig {
     pub remote_ocr: Option<crate::media::RemoteOcrConfig>,
     pub tool_failure_recovery: Option<SharedToolFailureRecovery>,
     pub desktop_network_recovery: bool,
+    pub model_previews: bool,
     /// Read and update local cross-task memory. Hosted workers set this false.
     pub local_memory: bool,
 }
@@ -1115,6 +1116,7 @@ impl Default for AgentRunConfig {
             remote_ocr: None,
             tool_failure_recovery: None,
             desktop_network_recovery: false,
+            model_previews: false,
             local_memory: true,
         }
     }
@@ -1148,6 +1150,7 @@ pub async fn run_agent_task(
         remote_ocr: config.remote_ocr,
         tool_failure_recovery: config.tool_failure_recovery,
         desktop_network_recovery: config.desktop_network_recovery,
+        model_previews: config.model_previews,
         local_memory: config.local_memory,
     };
     run_agent_with_events(task, llm_provider, tools, options, events_tx).await

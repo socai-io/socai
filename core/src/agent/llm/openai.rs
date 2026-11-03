@@ -830,7 +830,8 @@ struct WireFunction {
 
 /// The gateway emits one data line per JSON chunk. Read complete UTF-8 lines
 /// across arbitrary HTTP packet boundaries, including for split tool arguments.
-async fn read_hosted_stream(
+async fn read_chat_stream(
+    provider: Provider,
     response: reqwest::Response,
     preview: &ModelPreview<'_>,
 ) -> anyhow::Result<WireResponse> {
@@ -846,6 +847,7 @@ async fn read_hosted_stream(
     let mut finish_reason = None;
     let mut usage = Value::Null;
     let mut model = None;
+    let interval = Duration::from_millis(if provider == Provider::Socai { 80 } else { 350 });
     let mut last_preview = None::<std::time::Instant>;
     while let Some(line) = lines.next_line().await? {
         let Some(data) = line.strip_prefix("data:").map(str::trim) else {
@@ -885,9 +887,9 @@ async fn read_hosted_stream(
         let chunk: Value = serde_json::from_str(data)?;
         if chunk.get("error").is_some() {
             if let Some(status) = chunk["status"].as_u64().and_then(|s| u16::try_from(s).ok()) {
-                anyhow::bail!(format_http_error("socai", status, data));
+                anyhow::bail!(format_http_error(provider.as_str(), status, data));
             }
-            anyhow::bail!(format_api_error("socai", &chunk));
+            anyhow::bail!(format_api_error(provider.as_str(), &chunk));
         }
         if let Some(value) = chunk["model"].as_str() {
             model = Some(value.to_owned());
@@ -903,12 +905,13 @@ async fn read_hosted_stream(
         }
         let delta = &choice["delta"];
         let text = delta["content"].as_str().unwrap_or_default();
-        let thinking = delta["reasoning_content"].as_str().unwrap_or_default();
+        let thinking = delta["reasoning_content"].as_str()
+            .or_else(|| delta["reasoning"].as_str()).unwrap_or_default();
         let first_text = content.is_empty() && !text.is_empty();
         content.push_str(text);
         reasoning.push_str(thinking);
         if (!text.is_empty() || !thinking.is_empty())
-            && (first_text || last_preview.is_none_or(|t| t.elapsed() >= Duration::from_millis(80)))
+            && (first_text || last_preview.is_none_or(|t| t.elapsed() >= interval))
         {
             preview(&content, &reasoning);
             last_preview = Some(std::time::Instant::now());
@@ -1159,10 +1162,17 @@ impl Backend for OpenAICompatBackend {
         max_tokens: u32,
         preview: &ModelPreview<'_>,
     ) -> anyhow::Result<LLMResponse> {
-        if self.provider != Provider::Socai {
+        if !matches!(self.provider, Provider::Socai | Provider::OpenRouter | Provider::DeepSeek) {
             return self.send(system, messages, tools, max_tokens).await;
         }
-        let body = self.build_chat_request(system, messages, tools, max_tokens);
+        if self.provider == Provider::DeepSeek {
+            validate_deepseek_tool_context(messages)?;
+        }
+        let mut body = self.build_chat_request(system, messages, tools, max_tokens);
+        if self.provider != Provider::Socai {
+            body.extra.insert("stream".into(), json!(true));
+            body.extra.insert("stream_options".into(), json!({"include_usage": true}));
+        }
         self.post_chat(body, Some(preview)).await
     }
 
@@ -1288,7 +1298,7 @@ impl OpenAICompatBackend {
         let streamed = response.headers().get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with("text/event-stream"));
         let parsed: WireResponse = match preview {
-            Some(preview) if streamed => read_hosted_stream(response, preview).await?,
+            Some(preview) if streamed => read_chat_stream(self.provider, response, preview).await?,
             _ => response.json().await.map_err(|e| report("response_body", e))?,
         };
         let provider_usage = parsed.usage.clone();

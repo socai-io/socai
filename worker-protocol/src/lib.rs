@@ -525,6 +525,14 @@ impl WorkerEventPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case")]
 pub enum WorkerOutput {
+    ModelPreview {
+        binding: SessionBinding,
+        run_id: String,
+        after_sequence: u64,
+        accepted: bool,
+        text: String,
+        reasoning: String,
+    },
     Ready {
         protocol_version: u32,
         worker_instance_id: String,
