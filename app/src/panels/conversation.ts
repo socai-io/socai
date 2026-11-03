@@ -879,6 +879,7 @@ function renderComposer(c: ComposerProps): string {
         : c.hostedReplyRecovery ? `<p class="composer__hint"><button id="composer-recover-model" type="button" class="btn-ghost btn-compact" ${disabled ? "disabled" : ""}>${esc(t("task.replyUseManaged"))}</button></p>` : ""}
       ${chromeHelp}
       ${keyHint}
+      ${c.voice.phase === "recording" ? `<div class="composer__voice-activity" role="status"><span class="composer__voice-meter" data-voice-meter aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span>${esc(t("voice.listening"))}</span></div>` : ""}
       ${c.voice.error ? `<pre class="composer__error" role="alert" aria-live="assertive" aria-atomic="true">${esc(c.voice.error)}</pre>` : ""}
       ${c.error ? `<pre class="composer__error" role="alert" aria-live="assertive" aria-atomic="true">${esc(c.error)}</pre>` : ""}
     </div>
