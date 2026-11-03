@@ -131,7 +131,7 @@ function mergeComments(current: NoteComment[] | undefined, incoming: NoteComment
   const merged = [...(current ?? [])];
   const keyOf = (comment: NoteComment): string => comment.comment_id
     ? `id:${comment.comment_id}`
-    : `content:${comment.author ?? ""}\n${comment.text}`;
+    : `content:${comment.author_id || comment.author_url || comment.author || ""}\n${comment.text}`;
   const indexes = new Map(merged.map((comment, index) => [keyOf(comment), index]));
   for (const comment of incoming) {
     const key = keyOf(comment);

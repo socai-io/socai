@@ -1035,7 +1035,7 @@ fn comment_key(comment: &Value) -> String {
     }
     format!(
         "content:{}|{}",
-        text_at(comment, &["author"]),
+        text_at(comment, &["author_id", "author_url", "author"]),
         text_at(comment, &["text"])
     )
 }

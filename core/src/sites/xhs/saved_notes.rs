@@ -170,6 +170,7 @@ pub(crate) fn render_note(id: &str, v: &Value, section: &str) -> String {
                     } else {
                         let author = item
                             .get("author")
+                            .or_else(|| item.get("username"))
                             .and_then(|a| {
                                 a.as_str().or_else(|| a.get("name").and_then(Value::as_str))
                             })
@@ -178,6 +179,12 @@ pub(crate) fn render_note(id: &str, v: &Value, section: &str) -> String {
                             "- {author}：{}\n",
                             field(item, &["text", "content"])
                         ));
+                        for key in ["comment_id", "author_id", "author_url"] {
+                            let value = field(item, &[key]);
+                            if !value.trim().is_empty() {
+                                out.push_str(&format!("  {key}: {value}\n"));
+                            }
+                        }
                         for key in ["replies", "sub_comments"] {
                             comments(&item[key], out);
                         }
