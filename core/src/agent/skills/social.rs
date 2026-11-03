@@ -118,6 +118,111 @@ pub(super) const SKILLS: &[SocialSkill] = &[
     },
 ];
 
+/// Preparation hints only: this never enables a site or proves source identity.
+/// Unrelated requests still use the ordinary on-demand catalogue.
+pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String> {
+    let text = task.to_ascii_lowercase();
+    let has = |words: &[&str]| words.iter().any(|word| text.contains(word));
+    let explicit_xhs = has(&["小红书", "xiaohongshu", "xhslink", "rednote", "xhs-"]);
+    let explicit_dy = has(&["抖音", "douyin", "dy-"]);
+    let explicit_platform = explicit_xhs || explicit_dy;
+    let archived = has(&[
+        "已归档",
+        "归档的",
+        "已采集",
+        "之前采集",
+        "上一轮",
+        "上次采集",
+    ]);
+    let social_intent = has(&["选题", "爆款", "笔记", "博主", "达人", "评论区", "账号监控"]);
+    let selected = |site: &str| enabled_sites.iter().any(|name| name == site);
+    let single_social_site = enabled_sites.len() == 1;
+    let xhs = if explicit_platform {
+        explicit_xhs
+    } else {
+        selected("xhs") && (single_social_site || archived || social_intent)
+    };
+    let dy = if explicit_platform {
+        explicit_dy
+    } else {
+        selected("douyin") && (single_social_site || archived || social_intent)
+    };
+    if !xhs && !dy {
+        return Vec::new();
+    }
+
+    let image_text = has(&["ocr", "图文文案提取", "图文提取", "图片文字"])
+        || (has(&["配图", "图片", "逐图", "图集"])
+            && has(&["提取", "识别", "文字", "extract", "recognize"]));
+    let transcript = has(&["逐字稿", "转录", "transcript", "视频文案提取"])
+        || (has(&["视频", "音频"]) && has(&["转写", "字幕", "转文字"]));
+    let comments = has(&["评论", "comments", "replies"]);
+    let leads = comments && has(&["截流", "意向", "获客", "线索", "触达", "引流"]);
+    let monitoring = has(&["监控", "monitor"])
+        || (has(&["账号", "博主", "达人", "主页"])
+            && has(&["定时", "每天", "追踪更新", "新增作品"]));
+    let media = has(&["下载", "download", "无水印"])
+        && has(&["配图", "图片", "图集", "视频", "素材", "原图", "media"]);
+    let account = has(&["账号", "博主", "达人", "主页", "account"])
+        && has(&["分析", "对标", "拆解", "定位", "analy"]);
+    let viral = has(&["爆款", "viral"]) && has(&["分析", "拆解", "研究", "analy"]);
+    let keyword = has(&["关键词", "搜索词", "下拉词", "联想词", "keyword"]);
+    // OCR/transcription wording can include 文案; that alone is not a new draft.
+    let keyword_only = has(&[
+        "只要关键词",
+        "仅关键词",
+        "只做关键词",
+        "keyword only",
+        "keyword-only",
+    ]);
+    let workflow = !keyword_only
+        && (has(&["内容工作流", "选题", "灵感"])
+            || (!has(&["不要写", "先不写", "不写稿", "暂不写"])
+                && (has(&["写稿", "初稿", "成稿", "创作"])
+                    || (!image_text && !transcript && has(&["文案", "写一篇", "写笔记"])))));
+    let collection = has(&["采集", "抓取", "收集", "导出", "保存", "整理", "collect"])
+        && has(&["帖子", "笔记", "作品", "视频", "链接", "posts"])
+        && !image_text
+        && !transcript
+        && !comments
+        && !monitoring;
+    let methods = [
+        (image_text, "image-text"),
+        (transcript, "video-transcript"),
+        (leads, "comment-leads"),
+        (monitoring, "account-monitoring"),
+        (comments && !leads, "comment-collection"),
+        (media, "media-download"),
+        (account && !monitoring, "account-analysis"),
+        (viral, "viral-analysis"),
+        (workflow, "content-workflow"),
+        (keyword, "keyword-insights"),
+        (collection, "collection"),
+    ];
+    let mut names = Vec::new();
+    for (active, prefix) in [(xhs, "xhs"), (dy, "dy")] {
+        if !active {
+            continue;
+        }
+        for (matching, method) in methods {
+            let suffix = if method == "collection" {
+                if prefix == "xhs" {
+                    "note-collection"
+                } else {
+                    "video-collection"
+                }
+            } else {
+                method
+            };
+            let name = format!("{prefix}-{suffix}");
+            if matching || text.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
 pub(super) fn catalog_prompt() -> String {
     let mut catalog = String::from("\nSocial content task skills (load the matching method with read_skill before the corresponding collection or analysis; the method does not enable unavailable tools):\n");
     for skill in SKILLS {

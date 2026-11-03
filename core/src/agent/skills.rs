@@ -654,22 +654,8 @@ pub struct ReadSkillTool {
     skills_root: PathBuf,
 }
 
-/// Load entrypoint-selected skills before the first model request, using the
-/// same activation path as read_skill without spending an agent step.
-pub(crate) async fn load_initial_skills(
-    names: &[String],
-    ctx: &ToolContext,
-) -> Result<Vec<String>> {
-    let tool = ReadSkillTool::new(default_skills_root());
-    let mut instructions = Vec::new();
-    for name in names {
-        let result = tool.call(json!({"name": name}), ctx).await?;
-        instructions.push(format!(
-            "User-selected skill, already loaded:\n{}",
-            result.flat_text()
-        ));
-    }
-    Ok(instructions)
+pub(crate) fn initial_social_skills(task: &str, enabled_sites: &[String]) -> Vec<String> {
+    social::initial_skills(task, enabled_sites)
 }
 
 impl ReadSkillTool {
