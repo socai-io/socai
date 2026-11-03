@@ -128,6 +128,7 @@ impl SocaiConfig {
         ChromeConnectOptions {
             profile,
             managed_user_data_dir,
+            allow_endpoint_override: true,
         }
     }
 

@@ -66,7 +66,6 @@ export interface ComposerProps {
   replyModelOverride?: string;
   /** True while the shown task runs — the composer waits for the slot. */
   running: boolean;
-  remoteProfile: boolean;
   managedProfile: boolean;
   chromeSetupOpen: boolean;
   chromeSetupState: ChromeSetupState;
@@ -831,7 +830,7 @@ function renderComposer(c: ComposerProps): string {
     : c.voice.phase === "requesting" || c.voice.phase === "transcribing"
       ? `<span class="composer__send-dot" aria-hidden="true"></span>`
       : `<svg class="composer__voice-glyph" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0"></path><path d="M12 17v4"></path><path d="M9 21h6"></path></svg>`;
-  const chromeHelp = c.status.state !== "connected" && !c.remoteProfile && !c.managedProfile
+  const chromeHelp = c.status.state !== "connected" && !c.managedProfile
     ? `<button type="button" id="composer-chrome-help" class="btn-ghost btn-compact" aria-expanded="${c.chromeSetupOpen}">
         ${esc(t("chrome.setupTitle"))}
       </button>${c.chromeSetupOpen ? renderConnectOverlay(c) : ""}` : "";

@@ -606,7 +606,7 @@ Use `socai linkedin --help` for company, relationship, post, comment, and diagno
 
 ## Browser and login modes
 
-socai supports four Chrome profile modes:
+The CLI recognizes four Chrome profile modes:
 
 | Mode | Best for | Login behavior |
 | --- | --- | --- |
@@ -615,7 +615,7 @@ socai supports four Chrome profile modes:
 | `auto` | Automatic connection selection | Tries the managed profile first, then falls back to existing Chrome |
 | `remote` | Testing a hosted cloud browser | Beta socai pro capability with session limits |
 
-These settings are stored in `~/.socai/config.json`; the CLI and desktop app read the same configuration.
+The desktop app uses local Chrome for every plan. Choose an existing browser or an isolated local profile in Settings. If the shared `~/.socai/config.json` still selects `remote`, the desktop app opens its isolated local profile.
 
 The desktop app displays each message immediately and checks the account in the
 background. The first tool that needs a browser page connects Chrome and opens
@@ -645,14 +645,14 @@ socai stop
 
 `socai stop` is only required when the background daemon is already running; it lets the new setting take effect at the next start.
 
-The hosted browser is currently in beta. Activate socai pro before selecting it:
+The legacy CLI hosted-browser mode requires a server configured for Browserbase:
 
 ```bash
 socai pro activate <invite_code>
 socai config set chrome.profile remote
 ```
 
-Advanced endpoint overrides remain available through `SOCAI_CDP_WS` and `SOCAI_CDP_URL`.
+CLI endpoint overrides remain available through `SOCAI_CDP_WS` and `SOCAI_CDP_URL`.
 
 ### Browser action speed
 

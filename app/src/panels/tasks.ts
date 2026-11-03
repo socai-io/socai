@@ -861,7 +861,6 @@ export namespace agentPanel {
       status: shell.status,
       modelReady: !!selected && selected.has_key,
       running: false,
-      remoteProfile: settingsMenu.isRemoteProfile(),
       managedProfile: settingsMenu.isManagedProfile(),
       chromeSetupOpen,
       chromeSetupState,
@@ -892,7 +891,6 @@ export namespace agentPanel {
       hostedReplyRecovery: recovery?.model,
       replyModelOverride: replyModelOverrides.get(taskId)?.model,
       running,
-      remoteProfile: settingsMenu.isRemoteProfile(),
       managedProfile: settingsMenu.isManagedProfile(),
       chromeSetupOpen,
       chromeSetupState,
@@ -1560,7 +1558,7 @@ export namespace agentPanel {
     chromeSetupStatus = shell.status;
 
     const overlayVisible = document.querySelector(".connect-overlay") !== null;
-    if (!overlayVisible || shell.status.state === "connected" || settingsMenu.isRemoteProfile() || settingsMenu.isManagedProfile()) {
+    if (!overlayVisible || shell.status.state === "connected" || settingsMenu.isManagedProfile()) {
       stopChromeSetupPolling();
       if (shell.status.state === "connected") {
         chromeSetupOpen = false;

@@ -106,11 +106,20 @@ fn validate_task_sites(sites: Vec<String>) -> Result<Vec<String>, String> {
     Ok(selected)
 }
 
-/// Desktop defaults to an isolated persistent profile; explicit user choices win.
+/// Old hosted profiles fall back to the desktop's local, persistent profile.
+fn desktop_profile(profile: Option<ChromeProfile>) -> ChromeProfile {
+    match profile {
+        None | Some(ChromeProfile::Remote) => ChromeProfile::Managed,
+        Some(local) => local,
+    }
+}
+
 fn desktop_browser_options() -> Result<ChromeConnectOptions> {
     let mut config = socai_core::config::load_config()?;
-    config.chrome.profile.get_or_insert(ChromeProfile::Managed);
-    Ok(config.chrome_connect_options())
+    config.chrome.profile = Some(desktop_profile(config.chrome.profile));
+    let mut options = config.chrome_connect_options();
+    options.allow_endpoint_override = false;
+    Ok(options)
 }
 
 // ── CDP connect tests (existing) ───────────────────────────────────────────
@@ -155,7 +164,7 @@ pub enum ChromeDebuggingStatus {
 
 #[tauri::command]
 pub async fn cdp_remote_debugging_status() -> Result<ChromeDebuggingStatus, String> {
-    let endpoint = match socai_core::cdp::discover_existing_chrome_endpoint().await {
+    let endpoint = match socai_core::cdp::endpoint::discover_running_chrome_endpoint().await {
         Ok(Some(endpoint)) => endpoint,
         Ok(None) => return Ok(ChromeDebuggingStatus::Waiting),
         Err(err) => {
@@ -1323,9 +1332,7 @@ fn validate_preflight_balance(balance_points: i64) -> Result<(), String> {
 
 /// How many times a run retries a browser that will not open before it gives
 /// up and reports the browser's own error. Capacity waits are unbounded — the
-/// runs ahead always finish — but a browser that fails to connect may be a
-/// server outage or a spent daily remote-browser quota, and a task that never
-/// stops queueing hides that from the user.
+/// runs ahead always finish — but a connection failure needs user attention.
 const MAX_BROWSER_CONNECT_ATTEMPTS: u32 = 3;
 
 /// Outcome of bringing up a run's Chrome tab. `Busy` means "ask again in a
@@ -1357,12 +1364,6 @@ impl Drop for UnboundPageGuard {
             let _ = runtime.close_target(&target_id).await;
         });
     }
-}
-
-fn remote_browser_selected() -> bool {
-    desktop_browser_options()
-        .map(|options| options.profile == ChromeProfile::Remote)
-        .unwrap_or(false)
 }
 
 impl TurnBrowser {
@@ -1447,23 +1448,7 @@ async fn bind_task_page(
 }
 
 fn browser_preflight_error(detail: String) -> String {
-    task_preflight_error(browser_preflight_code(&detail), detail)
-}
-
-/// Which browser failure the user is looking at. A spent daily allowance on the
-/// hosted browser is called out separately: unlike the other remote failures it
-/// is not fixed by retrying or by checking the network.
-fn browser_preflight_code(detail: &str) -> &'static str {
-    if !remote_browser_selected() {
-        return "preflight_browser";
-    }
-    if detail
-        .to_ascii_lowercase()
-        .contains("daily remote browser time limit")
-    {
-        return "preflight_browser_remote_quota";
-    }
-    "preflight_browser_remote"
+    task_preflight_error("preflight_browser", detail)
 }
 
 /// Wait out a browser refusal. Returns false once a run has spent its connect
@@ -3368,7 +3353,7 @@ async fn run_desktop_agent(
         });
         let page = browser_needed.then(|| {
             let browser = Arc::downgrade(&turn_browser);
-            Arc::new(RuntimePageSession::deferred(remote_browser_selected(), move || {
+            Arc::new(RuntimePageSession::deferred(false, move || {
                 let browser = browser.clone();
                 async move {
                     let browser = browser.upgrade().ok_or_else(|| anyhow::anyhow!("task finished"))?;
@@ -3708,8 +3693,7 @@ async fn emit_timeline_payload(
 
 #[derive(serde::Serialize)]
 pub struct DesktopConfig {
-    /// Chrome profile mode: "managed" | "existing" | "auto" | "remote". Falls
-    /// back to the product default ("existing") when the config key is unset.
+    /// Effective local Chrome profile used by desktop connections.
     chrome_source: String,
     /// Configured managed-profile directory, or "" when unset.
     chrome_profile_dir: String,
@@ -3725,12 +3709,7 @@ pub struct DesktopConfig {
 pub fn config_get() -> Result<DesktopConfig, String> {
     let config = socai_core::config::load_config().map_err(|err| format!("{err:#}"))?;
     Ok(DesktopConfig {
-        chrome_source: config
-            .chrome
-            .profile
-            .unwrap_or(ChromeProfile::Managed)
-            .as_str()
-            .to_string(),
+        chrome_source: desktop_profile(config.chrome.profile).as_str().to_string(),
         chrome_profile_dir: config.chrome.profile_dir.unwrap_or_default(),
         chrome_profile_dir_default: default_managed_profile_dir(),
         output_dir: config.runs.dir.unwrap_or_default(),
@@ -4146,6 +4125,9 @@ fn capture_subscription_checkout(
 
 #[tauri::command]
 pub fn config_set(key: String, value: String) -> Result<(), String> {
+    if key.trim() == "chrome.profile" && value.trim().eq_ignore_ascii_case("remote") {
+        return Err("Choose a local Chrome profile".into());
+    }
     socai_core::config::set_config_key(&key, &value)
         .map(|_| ())
         .map_err(|err| format!("{err:#}"))

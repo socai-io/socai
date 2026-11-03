@@ -96,7 +96,7 @@ pub async fn discover_existing_chrome_endpoint() -> anyhow::Result<Option<Endpoi
 /// [`discover_existing_chrome_endpoint`], this intentionally ignores explicit
 /// SOCAI_CDP_* overrides; callers that need explicit endpoints should resolve
 /// them first.
-pub(crate) async fn discover_running_chrome_endpoint() -> anyhow::Result<Option<Endpoint>> {
+pub async fn discover_running_chrome_endpoint() -> anyhow::Result<Option<Endpoint>> {
     let mut access_error = None;
     for profile in chrome_profile_roots() {
         match endpoint_from_active_port(&profile).await {

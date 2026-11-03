@@ -414,7 +414,7 @@ async fn open_endpoint(options: Option<ChromeConnectOptions>) -> anyhow::Result<
         None => ChromeConnectOptions::from_config()?,
     };
 
-    if !matches!(options.profile, ChromeProfile::Managed) {
+    if options.allow_endpoint_override && options.profile != ChromeProfile::Managed {
         if let Some(endpoint) = endpoint::resolve_explicit_endpoint(None, None).await? {
             // An explicit override may well point at a hosted browser, but
             // socai neither minted nor owns it: no release on drop, and it is
@@ -501,7 +501,7 @@ async fn open_existing_endpoint() -> anyhow::Result<OpenEndpoint> {
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "no running chrome with --remote-debugging-port found. \
-                 start chrome with the debug flag, set SOCAI_CDP_WS, \
+                 start chrome with the debug flag, \
                  or run `socai config set chrome.profile managed` to use socai's managed chrome profile."
             )
         })?;

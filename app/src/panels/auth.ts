@@ -136,10 +136,6 @@ export namespace authMenu {
     setAccountSignedIn(next.logged_in);
   }
 
-  export function hasProAccess(): boolean {
-    return activeUntilDate() !== null;
-  }
-
   export function closePopover(): boolean {
     if (!open) return false;
     open = false;

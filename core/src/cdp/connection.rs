@@ -59,6 +59,8 @@ impl Default for ChromeProfile {
 pub struct ChromeConnectOptions {
     pub profile: ChromeProfile,
     pub managed_user_data_dir: Option<PathBuf>,
+    /// Consult SOCAI_CDP_WS / SOCAI_CDP_URL before local discovery.
+    pub allow_endpoint_override: bool,
 }
 
 impl ChromeConnectOptions {
@@ -66,6 +68,7 @@ impl ChromeConnectOptions {
         Self {
             profile: ChromeProfile::Existing,
             managed_user_data_dir: None,
+            allow_endpoint_override: true,
         }
     }
 
@@ -73,6 +76,7 @@ impl ChromeConnectOptions {
         Self {
             profile: ChromeProfile::Managed,
             managed_user_data_dir: user_data_dir,
+            allow_endpoint_override: true,
         }
     }
 

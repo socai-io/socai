@@ -47,7 +47,6 @@ const messages = {
   "chrome.source": { en: "source", zh: "来源" },
   "chrome.sourceManaged": { en: "isolated profile", zh: "独立配置文件" },
   "chrome.sourceExisting": { en: "existing browser", zh: "现有浏览器" },
-  "chrome.sourceRemote": { en: "remote (beta)", zh: "远程（beta）" },
   "chrome.profile": { en: "profile", zh: "资料目录" },
   "chrome.disconnect": { en: "disconnect", zh: "断开连接" },
   "chrome.lookingForChrome": {
@@ -66,10 +65,6 @@ const messages = {
   },
   "chrome.connectCta": { en: "connect chrome →", zh: "连接 chrome →" },
   "chrome.connectingCta": { en: "connecting…", zh: "连接中…" },
-  "chrome.remoteAutoReconnect": {
-    en: "hosted browser not connected — it reconnects when you send.",
-    zh: "云端浏览器未连接 — 发送时会自动重连。",
-  },
   "chrome.managedAutoReconnect": {
     en: "chrome connects automatically when you send.",
     zh: "发送时会自动连接 chrome。",
@@ -271,7 +266,6 @@ const messages = {
   "subscription.upgradePro": { en: "upgrade to pro for more usage", zh: "升级到pro，获取更多额度" },
   "subscription.manage": { en: "manage subscription", zh: "管理订阅" },
   "subscription.proPoints": { en: "500 points", zh: "500 点数" },
-  "subscription.proXhs": { en: "use xiaohongshu without signing in", zh: "免登录小红书" },
   "subscription.active": { en: "subscribed", zh: "已订阅" },
   "subscription.inactive": { en: "not subscribed", zh: "未订阅" },
   "subscription.loginHint": {
@@ -434,19 +428,10 @@ const messages = {
   "settings.source": { en: "source", zh: "来源" },
   "settings.sourceManaged": { en: "isolated profile", zh: "独立配置文件" },
   "settings.sourceExisting": { en: "existing browser", zh: "现有浏览器" },
-  "settings.sourceRemote": { en: "remote (beta)", zh: "远程（beta）" },
-  "settings.sourceRemotePro": {
-    en: "remote (Pro, no local xiaohongshu connection)",
-    zh: "远程（Pro，无需本地连接小红书）",
-  },
   "settings.profileDir": { en: "profile directory", zh: "资料目录" },
   "settings.profileHint": {
     en: "socai launches a throwaway chrome with this profile.",
     zh: "socai 会用此资料目录启动临时 chrome。",
-  },
-  "settings.remoteHint": {
-    en: "beta — runs on socai's hosted browser; no local chrome, no xiaohongshu login needed. daily session limits apply.",
-    zh: "beta — 使用 socai 云端托管浏览器；无需本地 chrome，也无需登录小红书。每天有会话次数限制。",
   },
   "settings.endpoint": { en: "debugging endpoint", zh: "调试端点" },
   "settings.endpointHint": {
@@ -1090,7 +1075,8 @@ export function formatTaskApiError(error: string): TaskApiErrorPresentation {
   const provider = parsed.provider;
   const status = parsed.status;
   const signal = parsed.signal;
-  const explicitCode = parsed.code || parsed.type;
+  const providerRejection = parsed.providerSlug === "socai" && parsed.type.toLowerCase() === "upstream_error";
+  const explicitCode = (providerRejection && parsed.upstreamCode) || parsed.code || parsed.type;
   const entitlementCode = `${parsed.code} ${parsed.type}`.toLowerCase();
   const detail = parsed.message.toLowerCase();
   const modelNotActivated = (status === 403 || status === 404)
@@ -1104,7 +1090,7 @@ export function formatTaskApiError(error: string): TaskApiErrorPresentation {
   let messageKey: MessageKey;
   // The gateway preserves upstream HTTP status codes. Its provider's 401/402
   // is not evidence that the user's Socai login or wallet needs attention.
-  if (parsed.providerSlug === "socai" && parsed.type.toLowerCase() === "upstream_error") {
+  if (providerRejection) {
     titleKey = "task.apiErrorUpstreamTitle";
     messageKey = "task.apiErrorUpstream";
     fallbackCode = "upstream_error";
@@ -1174,7 +1160,9 @@ export function formatTaskApiError(error: string): TaskApiErrorPresentation {
   ].filter(Boolean).join(" · ");
   return {
     title: t(titleKey),
-    message: taskApiErrorMessage(messageKey, credential, provider),
+    message: providerRejection && parsed.message && !["LLM provider rejected the request", "LLM provider stream failed"].includes(parsed.message)
+      ? parsed.message
+      : taskApiErrorMessage(messageKey, credential, provider),
     meta,
     fingerprint: parsed.requestId || `${provider}:${parsed.statusText}:${errorCode}:${parsed.detail}`,
   };
@@ -1231,6 +1219,7 @@ interface ParsedTaskApiError {
   status: number | null;
   statusText: string;
   code: string;
+  upstreamCode: string;
   type: string;
   message: string;
   detail: string;
@@ -1266,6 +1255,7 @@ function parseTaskApiError(error: string): ParsedTaskApiError {
     status,
     statusText,
     code,
+    upstreamCode: fields.get("upstream_code") || embedded.upstream_code || "",
     type,
     message,
     detail,
@@ -1284,6 +1274,7 @@ function embeddedErrorFields(raw: string): Record<string, string> {
       if (detail) {
         return {
           code: stringValue(detail.code),
+          upstream_code: stringValue(detail.upstream_code),
           type: stringValue(detail.type),
           message: stringValue(detail.message),
           status: stringValue(response?.status ?? root.status),
@@ -1294,6 +1285,7 @@ function embeddedErrorFields(raw: string): Record<string, string> {
   }
   return {
     code: embeddedJsonString(raw, "code"),
+    upstream_code: embeddedJsonString(raw, "upstream_code"),
     type: embeddedJsonString(raw, "type"),
     message: embeddedJsonString(raw, "message"),
     request_id: embeddedJsonString(raw, "request_id"),

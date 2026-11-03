@@ -29,7 +29,7 @@ pub fn format_http_error(provider: &str, status: u16, body_text: &str) -> String
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_else(|| value.as_object().cloned().unwrap_or_default());
-        for key in ["message", "code", "type", "param"] {
+        for key in ["message", "code", "type", "param", "upstream_code"] {
             if let Some(v) = err_obj.get(key) {
                 let rendered = match v {
                     Value::String(s) => s.clone(),
@@ -78,7 +78,7 @@ pub fn format_api_error(provider: &str, value: &Value) -> String {
         .or_else(|| value.get("error"))
         .unwrap_or(value);
     let mut had_structured = false;
-    for key in ["message", "code", "type", "param"] {
+    for key in ["message", "code", "type", "param", "upstream_code"] {
         if let Some(field) = error.get(key) {
             let rendered = match field {
                 Value::String(text) => text.clone(),
