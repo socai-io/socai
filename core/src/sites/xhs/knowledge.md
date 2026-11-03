@@ -93,8 +93,13 @@ persistent sidebar, so a dismissed QR modal is never mistaken for a session).
 same wall. Instead: tell the user to scan the QR / sign in to Xiaohongshu in the
 browser, and call `wait_for_login` (which opens the login page and blocks until
 they're in). When it returns `logged_in:true`, re-run the original tool once and
-continue. If it returns `logged_in:false`, remind the user and call
-`wait_for_login` again.
+continue. If it returns `logged_in:false`, stop acquisition and report the login
+blocker with the real samples/results already obtained. Do not call
+`wait_for_login` again in the same run, change its timeout to evade the budget,
+or repeatedly retry search. Wait for a user-confirmed follow-up after login.
+The runtime permits one blocking login wait per run, capped at 180 seconds;
+an already verified live login can still return immediately. Never report
+successful research or invent samples when login prevented acquisition.
 
 **Exception — `remote_browser:true` on the result:** the session runs in socai's
 remote hosted browser and its login is operated by socai, not the user. Tell the

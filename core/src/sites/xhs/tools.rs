@@ -4752,7 +4752,7 @@ pub struct WaitForLoginTool {
 
 /// How long `wait_for_login` polls before giving up so the agent can re-prompt.
 const WAIT_FOR_LOGIN_DEFAULT_SECS: i64 = 180;
-const WAIT_FOR_LOGIN_MAX_SECS: i64 = 600;
+const WAIT_FOR_LOGIN_MAX_SECS: i64 = 180;
 
 #[async_trait]
 impl Tool for WaitForLoginTool {
@@ -4764,7 +4764,9 @@ impl Tool for WaitForLoginTool {
         "Recover from a login wall: after a tool returns `reason:login_required`, \
          call this (don't retry) to open the login page and block until the user \
          signs in. Returns `logged_in:true` when done, else `logged_in:false` on \
-         timeout. See the login protocol in the instructions."
+         timeout. Wait at most once per run; after timeout report the login \
+         blocker and stop, rather than repeating the wait or increasing its timeout. \
+         A user-confirmed follow-up may try again."
     }
 
     fn input_schema(&self) -> Value {
@@ -4773,7 +4775,7 @@ impl Tool for WaitForLoginTool {
             "properties": {
                 "timeout_seconds": {
                     "type": "integer",
-                    "description": "Seconds to wait before returning (default 180, max 600)."
+                    "description": "Seconds to wait before returning (default/max 180). At most one wait per run."
                 }
             }
         })
@@ -4796,6 +4798,23 @@ impl Tool for WaitForLoginTool {
                 "logged_in": false,
                 "remote_browser": true,
                 "message": REMOTE_LOGIN_NOTE,
+            })));
+        }
+        // A different timeout must not evade the per-run human-wait budget.
+        // The live login check above still allows an already completed login
+        // to proceed immediately. Never reset this from model-supplied input.
+        if !ctx.claim_login_wait("xhs") {
+            return Ok(json_result(&json!({
+                "ok": false,
+                "logged_in": false,
+                "reason": "login_required",
+                "login_wait_already_attempted": true,
+                "requires_human_action": true,
+                "retry_allowed": false,
+                "message": "Login is still required. This run already waited for the user. \
+                            Do not wait again or retry acquisition. Explain that research is \
+                            blocked and preserve existing results. Resume only after the \
+                            user completes login and submits a confirmed follow-up.",
             })));
         }
         // Bring the XHS login wall on screen so the user has a QR to scan.
@@ -4827,12 +4846,18 @@ impl Tool for WaitForLoginTool {
             }
             if deadline.is_elapsed() {
                 return Ok(json_result(&json!({
+                    "ok": false,
                     "logged_in": false,
+                    "reason": "login_required",
                     "timed_out": true,
+                    "requires_human_action": true,
+                    "retry_allowed": false,
                     "message": format!(
-                        "Still not logged in after {timeout}s. Ask the user to scan \
-                         the QR / sign in on xiaohongshu.com (or rednote.com) in the browser, then \
-                         call wait_for_login again."
+                        "Still not logged in after {timeout}s. Stop this run's acquisition \
+                         and explain the login blocker; do not call wait_for_login again \
+                         or increase its timeout. Preserve existing results. The user must \
+                         complete QR/sign-in on the execution browser (xiaohongshu.com or \
+                         rednote.com), then submit a confirmed follow-up to resume."
                     ),
                 })));
             }
