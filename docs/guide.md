@@ -14,6 +14,15 @@ project. The [README](../README.md) is the product overview.
 
 Research is read-only by default. Explicit target-bound write commands run only when directly invoked and use durable one-shot receipts to prevent automatic resubmission.
 
+The shared agent prepares matching Xiaohongshu/Douyin task methods before its
+first model request when the request and selected sources identify a relevant
+workflow. Actual `read_skill` calls appear in the run events and canonical tool
+logs; these are runtime preparation, not model-authored calls. Other methods
+remain available on demand. Loading a method does not establish a login, enable
+a tool, prove which platform an archived record belongs to, or verify that its
+collection, OCR, download, or monitoring succeeded. Those results still require
+their own tool evidence and user-visible deliverables.
+
 ## Quick start
 
 ### Desktop app

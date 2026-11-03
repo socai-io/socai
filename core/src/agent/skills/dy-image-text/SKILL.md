@@ -13,6 +13,8 @@ description: 抖音 图文文案提取. Extract image text in order with per-ima
 
 ## 操作方法
 
+如果用户要求复用本会话已归档作品，不重新采集。Web 提供 read_conversation_context 时，先用空参数读取来源目录，再按实际返回的 read_request 读取需要的原件；不能只传 source_kind=tool_result 而遗漏 source_run_id，也不能猜轮次、序号或作品 ID。逐页原样使用 next_request，拼完整原件后再解析。图片工具需要 evidence 流的 source_sequence，不把 tool_result 流的序号混用；先读取实际 evidence 来源，确认作品 ID、图片列表及顺序。已暴露 ocr_source_media 时按真实 source_run_id、source_sequence、note_id、media_index 逐图调用，依照 next_request 续读识别文字；未暴露时明确缺口，不编造工具成功。生成 Word 时用实际逐图文字，保留识别原文与失败项；图片清单与成功/失败数必须对账。平台不明确时先看来源记录，不能因为加载了本方法就认定来源属于抖音。
+
 先获取本作品封面及所有目标配图的真实列表和顺序；用实际图片/OCR能力逐张识别，不把标题或笔记正文当图片识别结果。保留图片序号、来源、原始识别文字和失败原因；阅读顺序优先页面顺序，不把多张文字直接拼成一段而丢定位。金额、单位、参数、人名等关键字段对照原图，低置信或不可辨识处标注，不用模型补成事实。用户只需要原文时保留原文字段；纠错、整理和摘要另列。将文字与同一作品记录/已下载图片关联，供后续检索、拆解和导出复用。
 
 ## 交付与完成条件

@@ -45,8 +45,8 @@ use crate::agent::run_state::RunState;
 use crate::agent::signature::tool_call_signature;
 use crate::agent::system_prompt::build_system_prompt;
 use crate::agent::tool::{
-    SharedTool, SharedToolFailureRecovery, ToolContext, ToolProgressEvent, ToolRecoveryOutcome,
-    ToolResult, ToolResultBlock,
+    SharedTool, SharedToolFailureRecovery, Tool, ToolContext, ToolProgressEvent,
+    ToolRecoveryOutcome, ToolResult, ToolResultBlock,
 };
 use crate::media::RemoteOcrConfig;
 use crate::telemetry::trace::RunTraceBuilder;
@@ -405,11 +405,39 @@ pub async fn run_agent_with_events(
 
     let mut messages: Vec<Message> = options.seed_messages.clone();
     messages.push(Message::user(task.to_string()));
-    // Entrypoint-selected policies are instructions, not another user request.
-    // Keep them present after compaction without changing the task anchor.
-    let initial_instructions = super::skills::load_initial_skills(&options.initial_skills, &ctx)
-        .await?
-        .join("\n\n");
+    emit(
+        &events,
+        AgentEvent::Started {
+            run_id: run_id.clone(),
+            task: task.to_string(),
+            model: backend.label(),
+        },
+    );
+    let mut initial_skills = options.initial_skills.clone();
+    if find_tool(&tools, "read_skill").is_some() {
+        initial_skills.extend(super::skills::initial_social_skills(
+            task,
+            &options.enabled_sites,
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    initial_skills.retain(|name| seen.insert(name.clone()));
+    let initial_tool_count = initial_skills.len() as u32;
+    if initial_tool_count > 0 {
+        // Preparation belongs to the first step, before its model request.
+        emit(&events, AgentEvent::Step { step: 1 });
+    }
+    // Policies are instructions, not fabricated assistant tool calls. Execute
+    // the real reader and retain canonical logs/events before the first model.
+    let initial_instructions = load_initial_skills(
+        &initial_skills,
+        &ctx,
+        &run_recorder,
+        &mut run_trace,
+        &events,
+    )
+    .await?
+    .join("\n\n");
     let memory_instructions = options.local_memory.then(memory_prompt).unwrap_or_default();
     let extra_instructions = [
         options.extra_instructions.trim(),
@@ -435,15 +463,6 @@ pub async fn run_agent_with_events(
     // compaction rewrites. Tracking a persisted cross-run cursor to close the
     // gap isn't worth the state it would add.
     let mut traced_len = options.seed_messages.len();
-
-    emit(
-        &events,
-        AgentEvent::Started {
-            run_id: run_id.clone(),
-            task: task.to_string(),
-            model: backend.label(),
-        },
-    );
 
     let mut step = 0u32;
     let mut final_text = String::new();
@@ -471,7 +490,9 @@ pub async fn run_agent_with_events(
         let max_steps = extensions.execution_ceiling(&ctx, options.max_steps);
         step += 1;
         ctx.step = step;
-        emit(&events, AgentEvent::Step { step });
+        if step != 1 || initial_tool_count == 0 {
+            emit(&events, AgentEvent::Step { step });
+        }
         debug!(step, "agent step start");
 
         let mut schemas = tool_schemas(&tools, &ctx);
@@ -728,7 +749,7 @@ pub async fn run_agent_with_events(
                 let history = tool_call_history.entry(sig).or_default();
                 history.push(step);
                 let repeat_count = history.len() as u32;
-                let sequence = (idx + 1) as u32;
+                let sequence = (idx + 1) as u32 + if step == 1 { initial_tool_count } else { 0 };
                 let effective_input = if input.is_object() {
                     find_tool(&tools, name)
                         .map(|tool| tool.effective_input(input))
@@ -884,7 +905,7 @@ pub async fn run_agent_with_events(
                 history.push(step);
                 let repeat_count = history.len() as u32;
 
-                let sequence = (idx + 1) as u32;
+                let sequence = (idx + 1) as u32 + if step == 1 { initial_tool_count } else { 0 };
                 let effective_input = if input.is_object() {
                     find_tool(&tools, name)
                         .map(|tool| tool.effective_input(input))
@@ -1471,12 +1492,16 @@ async fn send_chat(
         attempt += 1;
         let start = recovery.as_ref().and_then(|_| SuspendClock::sample());
         let desktop_events = recovery.as_ref().map(|(events, _)| *events);
-        let result = if let Some(events) = desktop_events.filter(|_| backend.provider() == "socai") {
+        let result = if let Some(events) = desktop_events.filter(|_| backend.provider() == "socai")
+        {
             let preview = |text: &str, reasoning: &str| {
-                emit(events, AgentEvent::ModelPreview {
-                    text: text.to_owned(),
-                    reasoning: reasoning.to_owned(),
-                });
+                emit(
+                    events,
+                    AgentEvent::ModelPreview {
+                        text: text.to_owned(),
+                        reasoning: reasoning.to_owned(),
+                    },
+                );
             };
             let result = backend
                 .send_with_preview(system, messages, schemas, max_tokens, &preview)
@@ -1599,6 +1624,84 @@ fn tool_calls_have_distinct_parallel_scopes(tools: &[SharedTool], calls: &[ToolC
             .and_then(|tool| tool.parallel_scope())
             .is_some_and(|scope| !scope.is_empty() && scopes.insert(scope.to_string()))
     })
+}
+
+/// Runtime preparation uses the same real skill reader as model tool calls.
+/// Keep ctx.step at zero so activation precedes the first model step, while
+/// recording these calls as the first step's preparation (never step zero).
+async fn load_initial_skills(
+    names: &[String],
+    ctx: &ToolContext,
+    run_recorder: &AgentRunRecorder,
+    run_trace: &mut RunTraceBuilder,
+    events: &broadcast::Sender<AgentEvent>,
+) -> anyhow::Result<Vec<String>> {
+    let tool = super::skills::ReadSkillTool::new(super::skills::default_skills_root());
+    let mut instructions = Vec::new();
+    for (idx, name) in names.iter().enumerate() {
+        let sequence = (idx + 1) as u32;
+        let input = json!({"name": name});
+        let id = format!("initial-skill-{}-{sequence}", ctx.run_id);
+        let recorder = run_recorder.start_tool_call(1, sequence, "read_skill", &input)?;
+        let mut tool_ctx = ctx.clone().with_tool_dir(recorder.dir());
+        tool_ctx.active_tool_name = "read_skill".to_string();
+        emit(
+            events,
+            AgentEvent::ToolCall {
+                id: id.clone(),
+                step: 1,
+                sequence,
+                name: "read_skill".to_string(),
+                input: input.clone(),
+                repeat_count: 1,
+            },
+        );
+        let started = Instant::now();
+        let (result, error) = match tool.call(input.clone(), &tool_ctx).await {
+            Ok(result) => {
+                let error = result.failed().then(|| result.flat_text());
+                (result, error)
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                (ToolResult::failure(message.clone()), Some(message))
+            }
+        };
+        let duration_ms = started.elapsed().as_millis() as u64;
+        recorder.finish_blocks(&result.blocks, duration_ms, error.as_deref())?;
+        let content = content_for_log(&tool_result_to_content(&result));
+        run_trace.record_tool(
+            1,
+            sequence,
+            "read_skill",
+            duration_ms,
+            &input,
+            &content,
+            error.as_deref(),
+        );
+        let flat = result.flat_text();
+        emit(
+            events,
+            AgentEvent::ToolResult {
+                id,
+                step: 1,
+                sequence,
+                name: "read_skill".to_string(),
+                input,
+                content,
+                summary: truncate_summary(&flat, 240),
+                duration_ms,
+                error: error.clone(),
+            },
+        );
+        if let Some(error) = error {
+            anyhow::bail!("Initial skill `{name}` failed: {error}");
+        }
+        instructions.push(format!(
+            "Request method, already loaded by runtime preparation:\n{flat}"
+        ));
+    }
+    Ok(instructions)
 }
 
 fn emit(events: &broadcast::Sender<AgentEvent>, event: AgentEvent) {
