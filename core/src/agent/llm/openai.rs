@@ -292,16 +292,8 @@ fn validate_deepseek_tool_context(messages: &[Message]) -> anyhow::Result<()> {
                         "DeepSeek API error | status=400 | code=invalid_tool_context | message=assistant turn started before every prior tool call had a matching result"
                     );
                 }
-                let has_reasoning = message.content.as_blocks().iter().any(|block| {
-                    matches!(block, Block::ReasoningContent { text } if !text.trim().is_empty())
-                });
                 for block in message.content.as_blocks() {
                     if let Block::ToolUse { id, .. } = block {
-                        if !has_reasoning {
-                            anyhow::bail!(
-                                "DeepSeek API error | status=400 | code=invalid_reasoning_context | message=assistant tool call is missing its reasoning_content"
-                            );
-                        }
                         if id.trim().is_empty() || !pending.insert(id) {
                             anyhow::bail!(
                                 "DeepSeek API error | status=400 | code=invalid_tool_context | message=assistant history contains an empty or duplicate tool call id"
