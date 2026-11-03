@@ -2297,6 +2297,18 @@ fn app_note_comment(comment: &Value) -> Option<Value> {
         .filter(|t| !t.is_empty())?;
     let mut map = Map::new();
     map.insert("text".into(), Value::String(text.to_string()));
+    // Keep observed identities for later comment -> profile reads. Nicknames
+    // are display labels, not stable keys; missing identities remain missing.
+    for key in ["comment_id", "author_id", "author_url"] {
+        if let Some(value) = comment
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            map.insert(key.into(), Value::String(value.to_string()));
+        }
+    }
     if let Some(author) = comment
         .get("username")
         .and_then(Value::as_str)
@@ -2811,7 +2823,7 @@ fn compact_filter_result(filters: &Value) -> Option<Value> {
 
 /// Per-note entity fields kept in the lean output handed to the LLM: the basic
 /// human-readable post (title/author/content/date), the engagement counts, the
-/// comment texts, and the three handoff locators (`note_id`, `url`,
+/// comments with their observed identities, and the three note handoff locators (`note_id`, `url`,
 /// `author_id`). Everything else — hashtags, images, image_count, author URLs,
 /// location, type, video,
 /// content_source, and the body wait diagnostics — stays only in the run artifact,
@@ -2848,36 +2860,50 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     "audio_transcript",
 ];
 
-/// Collapse one full comment object to its lean form: `null` when it has no text,
-/// a plain text string when it has no replies, or `{text, replies:[…]}` when it
-/// does. Reply objects are flattened to their text the same way (one level deep —
-/// XHS replies don't nest further).
+/// Keep the text and observed comment/author locators needed for follow-up
+/// reads, including replies. Older cached text-only samples remain readable;
+/// never infer a missing identity from the nickname or from the parent.
 fn lean_comment(comment: &Value) -> Option<Value> {
-    let text = comment.get("text").and_then(Value::as_str).unwrap_or("");
-    if text.is_empty() {
+    if let Some(text) = comment.as_str() {
+        return (!text.trim().is_empty()).then(|| Value::String(text.to_string()));
+    }
+    let text = comment.get("text").and_then(Value::as_str)?;
+    if text.trim().is_empty() {
         return None;
+    }
+    let mut lean = Map::new();
+    lean.insert("text".into(), Value::String(text.to_string()));
+    for key in [
+        "comment_id",
+        "username",
+        "author",
+        "author_id",
+        "author_url",
+    ] {
+        if let Some(value) = comment
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lean.insert(key.into(), Value::String(value.to_string()));
+        }
     }
     let replies: Vec<Value> = comment
         .get("sub_comments")
+        .or_else(|| comment.get("replies"))
         .and_then(Value::as_array)
-        .map(|subs| {
-            subs.iter()
-                .filter_map(|s| s.get("text").and_then(Value::as_str))
-                .filter(|s| !s.is_empty())
-                .map(|s| Value::String(s.to_string()))
-                .collect()
-        })
+        .map(|subs| subs.iter().filter_map(lean_comment).collect())
         .unwrap_or_default();
-    if replies.is_empty() {
-        Some(Value::String(text.to_string()))
-    } else {
-        Some(json!({ "text": text, "replies": replies }))
+    if !replies.is_empty() {
+        lean.insert("replies".into(), Value::Array(replies));
     }
+    Some(Value::Object(lean))
 }
 
 /// Trim one scanned-note entry to the lean shape: drop the per-entry provenance
 /// wrappers (`source_position`, `ok`, `skipped`, plus failure detail), collapse
-/// `top_comments` to a plain array of comment texts, and whitelist the entity to
+/// `top_comments` to compact comments with observed identities, and whitelist the entity to
 /// [`LEAN_NOTE_FIELDS`]. Applies to both freshly-read and reused (cached)
 /// entities; the full objects stay in the run artifact.
 fn lean_scan_note(note: &mut Value) {
@@ -2903,11 +2929,9 @@ fn lean_scan_note(note: &mut Value) {
     let Some(entity) = entity.as_object_mut() else {
         return;
     };
-    // Collapse comment objects before the whitelist runs (which keeps
-    // `top_comments`): a comment with no replies becomes its plain text; one with
-    // replies becomes `{text, replies:[reply text, …]}` so the lean view keeps
-    // the thread structure. The full objects (usernames, likes, times) stay in
-    // the run artifact.
+    // Keep author/comment locators beside the exact text before the whitelist
+    // runs, so a follow-up profile read doesn't require guessing by nickname.
+    // Likes, times and other full metadata stay in the run artifact.
     if let Some(comments) = entity.get_mut("top_comments").and_then(Value::as_array_mut) {
         let lean: Vec<Value> = comments.iter().filter_map(lean_comment).collect();
         entity.insert("top_comments".into(), Value::Array(lean));

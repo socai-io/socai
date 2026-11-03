@@ -142,6 +142,8 @@ export interface NoteMedia {
 /** One archived top comment on a note (replies flatten one level). */
 export interface NoteComment {
   comment_id?: string;
+  author_id?: string;
+  author_url?: string;
   text: string;
   author?: string;
   likes?: number;
