@@ -121,6 +121,35 @@ pub(super) const SKILLS: &[SocialSkill] = &[
 /// Preparation hints only: this never enables a site or proves source identity.
 /// Unrelated requests still use the ordinary on-demand catalogue.
 pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String> {
+    // The hosted attachment index is reference metadata, not another user
+    // request. An old attachment's OCR fields or filename must not choose this
+    // turn's preparation method. This changes hints, never tool permissions.
+    let task = task
+        .split_once("\n\n[Server attachment index: metadata only,")
+        .map_or(task, |(request, _)| request);
+    // A confirmed brief describes what to write, including quoted research and
+    // explicit prohibitions. Do not treat those mentions as collection orders:
+    // e.g. "不要…OCR、素材下载或音频转写" used to preload all three methods.
+    // Parse the existing envelope, rather than keying on an arbitrary "初稿"
+    // substring. The data remain untrusted and grant no collection/write access.
+    let confirmed_brief = task
+        .strip_prefix("根据以下用户已确认的创作简报完成初稿。")
+        .and_then(|rest| rest.rsplit_once("\n已确认简报：\n"))
+        .and_then(|(_, raw)| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .is_some_and(|brief| {
+            matches!(brief["medium"].as_str(), Some("image_text" | "video"))
+                && brief["title"].is_string()
+                && brief["core_judgment"].is_string()
+                && brief["outline"].is_array()
+                && brief["topic"]["source_run_id"].is_string()
+        });
+    if confirmed_brief {
+        return ["xhs", "douyin"]
+            .into_iter()
+            .filter(|site| enabled_sites.iter().any(|enabled| enabled == site))
+            .map(|site| format!("{}-content-workflow", if site == "xhs" { "xhs" } else { "dy" }))
+            .collect();
+    }
     let text = task.to_ascii_lowercase();
     let has = |words: &[&str]| words.iter().any(|word| text.contains(word));
     let explicit_xhs = has(&["小红书", "xiaohongshu", "xhslink", "rednote", "xhs-"]);
