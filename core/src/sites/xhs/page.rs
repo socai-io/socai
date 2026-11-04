@@ -1185,14 +1185,44 @@ impl<'a> XhsPageRuntime<'a> {
     /// The returned `comments` array is hot-sorted and trimmed so primary + reply
     /// count does not exceed the budget.
     pub async fn load_comments(&self, max_total: i64, timeout_seconds: f64) -> Result<Value> {
+        self.load_comments_continuing(max_total, timeout_seconds, "", Vec::new())
+            .await
+    }
+
+    /// Continue a comment walk from comments already archived for this note.
+    /// The page is still opened and verified normally; the prior snapshot only
+    /// prevents virtualized rows from being forgotten when a bounded call is
+    /// resumed.
+    pub async fn load_comments_continuing(
+        &self,
+        max_total: i64,
+        timeout_seconds: f64,
+        expected_note_id: &str,
+        previous_comments: Vec<Value>,
+    ) -> Result<Value> {
         self.ensure_xhs(false).await?;
         let deadline = ExecutionDeadline::after(Duration::from_secs_f64(timeout_seconds.max(2.0)));
+        let continued_from_primary = previous_comments.len() as i64;
+        let continued_from_total = continued_from_primary
+            + previous_comments
+                .iter()
+                .map(|comment| {
+                    comment
+                        .get("sub_comments")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len) as i64
+                })
+                .sum::<i64>();
         let initial = self
             .expect_object(
                 "commentAreaState",
-                Some(&json!({ "previous_comments": [] })),
+                Some(&json!({
+                    "previous_comments": previous_comments,
+                    "note_id": expected_note_id,
+                })),
             )
             .await?;
+        validate_comment_snapshot(&initial)?;
         let note_id = initial.get("note_id").and_then(Value::as_str).unwrap_or("");
         anyhow::ensure!(
             !note_id.is_empty(),
@@ -1207,11 +1237,14 @@ impl<'a> XhsPageRuntime<'a> {
             .extract_comments_with_wait(0, timeout_seconds.clamp(0.5, 5.0))
             .await?;
 
-        let mut last_total: i64 = -1;
         let mut last_progress = String::new();
         let mut platform_total: Option<i64> = None;
-        let mut stale_rounds = 0;
+        let mut last_progress_at = std::time::Instant::now();
         let mut rounds = 0;
+        let mut parent_end_seen = false;
+        let mut reply_pass = false;
+        let mut reply_pass_complete = false;
+        let mut last_reply_click_at: Option<std::time::Instant> = None;
         let stop_reason;
         loop {
             let state = self
@@ -1246,22 +1279,17 @@ impl<'a> XhsPageRuntime<'a> {
                 .get("has_end")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            parent_end_seen |= has_end;
 
             // Budget reached — no need to load more.
             if max_total > 0 && loaded_total >= max_total {
                 stop_reason = "budget_reached";
                 break;
             }
-            // Everything that exists is loaded and expanded: the end sentinel is
-            // showing, no reply threads are left to expand, and the count has
-            // settled.
-            if has_end && pending == 0 && loaded_total == last_total {
-                stop_reason = "exhausted";
-                break;
-            }
             // Walking a long comment column is progress even before the next
-            // parent page enters the viewport. Count-only stalls stopped after
-            // three scrolls through already loaded replies.
+            // parent page enters the viewport. Use elapsed grace instead of a
+            // fixed number of loops because remote CDP and XHS hydration have
+            // variable latency.
             let progress = json!([
                 loaded_total,
                 pending,
@@ -1269,27 +1297,36 @@ impl<'a> XhsPageRuntime<'a> {
                 state.get("scroll_height"),
             ])
             .to_string();
-            if progress == last_progress {
-                stale_rounds += 1;
-            } else {
-                stale_rounds = 0;
-            }
-            // No growth across several rounds despite scrolling/expanding.
-            if stale_rounds >= 3 {
-                stop_reason = "stalled";
-                break;
+            if progress != last_progress {
+                last_progress_at = std::time::Instant::now();
+                last_progress = progress;
             }
             if deadline.is_elapsed() {
                 stop_reason = "timeout";
                 break;
             }
-            last_total = loaded_total;
-            last_progress = progress;
             rounds += 1;
 
-            // Expand any visible reply buttons first (cheap, surfaces sub-comments
-            // that count toward the budget), then scroll for more parents.
-            if pending > 0 {
+            // First walk every visible parent page. Expanding replies before
+            // scrolling used the entire 30-second budget on the first ten
+            // parents of large threads, so later primary comments were never
+            // observed. Once the parent sentinel is reached, restart at the top
+            // and make a second pass that expands replies.
+            if !reply_pass && parent_end_seen {
+                let _ = self
+                    .expect_object(
+                        "scrollComments",
+                        Some(&json!({ "to_start": true, "note_id": note_id })),
+                    )
+                    .await;
+                reply_pass = true;
+                last_progress.clear();
+                last_progress_at = std::time::Instant::now();
+                sleep_ms(300).await;
+                continue;
+            }
+
+            if reply_pass && pending > 0 {
                 let expanded = self
                     .expect_object(
                         "expandCommentReplies",
@@ -1309,20 +1346,44 @@ impl<'a> XhsPageRuntime<'a> {
                     .unwrap_or(0)
                     > 0
                 {
+                    last_reply_click_at = Some(std::time::Instant::now());
                     continue;
                 }
             }
-            if !has_end || pending > 0 {
-                let _ = self
-                    .expect_object(
-                        "scrollComments",
-                        Some(
-                            &json!({ "pixels": 1200, "reveal_reply": has_end, "note_id": note_id }),
-                        ),
-                    )
-                    .await;
+
+            let scroll = self
+                .expect_object(
+                    "scrollComments",
+                    Some(&json!({
+                        "pixels": 1200,
+                        "reveal_reply": reply_pass && pending > 0,
+                        "note_id": note_id,
+                    })),
+                )
+                .await
+                .unwrap_or_else(|_| json!({ "ok": false, "at_end": false }));
+            let moved = scroll.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            let at_end = scroll
+                .get("at_end")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            if reply_pass && pending == 0 && at_end && !moved {
+                if last_reply_click_at
+                    .is_some_and(|clicked| clicked.elapsed() < Duration::from_secs(3))
+                {
+                    sleep_ms(1000).await;
+                    continue;
+                }
+                reply_pass_complete = true;
+                stop_reason = "exhausted";
+                break;
             }
-            sleep_ms(500).await;
+            if !moved && last_progress_at.elapsed() >= Duration::from_secs(6) {
+                stop_reason = "stalled";
+                break;
+            }
+            sleep_ms(if moved { 500 } else { 1000 }).await;
         }
 
         // Preserve every observed parent/reply before virtualized rows leave the
@@ -1362,6 +1423,11 @@ impl<'a> XhsPageRuntime<'a> {
             })
             .sum();
         let returned_total = returned_primary + returned_replies;
+        let added_total = loaded_total.saturating_sub(continued_from_total);
+        let coverage_gap = platform_total.map(|total| total.saturating_sub(returned_total));
+        let complete = stop_reason == "exhausted"
+            && reply_pass_complete
+            && platform_total.is_some_and(|total| total > 0 && returned_total >= total);
 
         Ok(json!({
             "ok": true,
@@ -1372,11 +1438,18 @@ impl<'a> XhsPageRuntime<'a> {
             "returned_primary": returned_primary,
             "returned_replies": returned_replies,
             "returned_total": returned_total,
+            "continued_from_primary": continued_from_primary,
+            "continued_from_total": continued_from_total,
+            "added_total": added_total,
             "rounds": rounds,
             "stop_reason": stop_reason,
             "platform_total": platform_total,
-            "complete": stop_reason == "exhausted"
-                && platform_total.is_some_and(|total| total > 0 && returned_total >= total),
+            "coverage_gap": coverage_gap,
+            "primary_complete": parent_end_seen,
+            "reply_pass_complete": reply_pass_complete,
+            "visible_complete": parent_end_seen && reply_pass_complete,
+            "resume_available": !complete && matches!(stop_reason, "timeout" | "stalled"),
+            "complete": complete,
             "ready": first
                 .get("ready")
                 .and_then(Value::as_bool)
