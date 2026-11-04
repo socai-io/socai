@@ -1185,7 +1185,7 @@ impl<'a> XhsPageRuntime<'a> {
     /// The returned `comments` array is hot-sorted and trimmed so primary + reply
     /// count does not exceed the budget.
     pub async fn load_comments(&self, max_total: i64, timeout_seconds: f64) -> Result<Value> {
-        self.load_comments_continuing(max_total, timeout_seconds, "", Vec::new())
+        self.load_comments_continuing(max_total, timeout_seconds, "", Vec::new(), false)
             .await
     }
 
@@ -1199,10 +1199,16 @@ impl<'a> XhsPageRuntime<'a> {
         timeout_seconds: f64,
         expected_note_id: &str,
         previous_comments: Vec<Value>,
+        previous_primary_complete: bool,
     ) -> Result<Value> {
         self.ensure_xhs(false).await?;
         let deadline = ExecutionDeadline::after(Duration::from_secs_f64(timeout_seconds.max(2.0)));
         let continued_from_primary = previous_comments.len() as i64;
+        // Only the same note's archived collector metadata can resume this
+        // phase. A nonempty snapshot alone does not prove parent exhaustion.
+        let resume_reply_pass = previous_primary_complete
+            && !expected_note_id.is_empty()
+            && !previous_comments.is_empty();
         let continued_from_total = continued_from_primary
             + previous_comments
                 .iter()
@@ -1241,8 +1247,18 @@ impl<'a> XhsPageRuntime<'a> {
         let mut platform_total: Option<i64> = None;
         let mut last_progress_at = std::time::Instant::now();
         let mut rounds = 0;
-        let mut parent_end_seen = false;
-        let mut reply_pass = false;
+        let mut parent_end_seen = resume_reply_pass;
+        let mut reply_pass = resume_reply_pass;
+        if resume_reply_pass {
+            // Rewalking all parent pages used the whole next timeout again,
+            // leaving no time to expand the remaining replies. Start the reply
+            // walk at the top; it still captures new parents while traversing.
+            self.expect_object(
+                "scrollComments",
+                Some(&json!({ "to_start": true, "note_id": note_id })),
+            )
+            .await?;
+        }
         let mut reply_pass_complete = false;
         let mut last_reply_click_at: Option<std::time::Instant> = None;
         let stop_reason;
@@ -1439,6 +1455,7 @@ impl<'a> XhsPageRuntime<'a> {
             "returned_replies": returned_replies,
             "returned_total": returned_total,
             "continued_from_primary": continued_from_primary,
+            "continued_from_primary_complete": resume_reply_pass,
             "continued_from_total": continued_from_total,
             "added_total": added_total,
             "rounds": rounds,
