@@ -242,6 +242,7 @@
       "args": {
         "pixels": { "type": "integer", "required": false, "description": "Requested distance inside the comments column, clamped to an overlapping viewport step." },
         "reveal_reply": { "type": "boolean", "required": false, "description": "Reveal the next reply control after parent pagination ends." },
+        "to_start": { "type": "boolean", "required": false, "description": "Restart a second pass at the first loaded parent comment." },
         "note_id": { "type": "string", "required": false, "description": "Expected active note id; refuse after a note switch." }
       },
       "returns": { "type": "object", "description": "Comment-column scroll outcome; never falls back to the underlying feed." }

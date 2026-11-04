@@ -392,6 +392,15 @@ test('comment scroll steps overlap the viewport instead of skipping virtual rows
   assert.ok(result.delta>0 && result.delta<=f.area.clientHeight*0.8);
 });
 
+test('comment scrolling can restart a reply pass at the first parent', async () => {
+  const f = fixture();
+  f.area.scrollTop = 900;
+  const result = await f.scripts.scrollComments({to_start:true});
+  assert.equal(f.area.scrollTop, 0);
+  assert.equal(result.at_start, true);
+  assert.equal(result.at_end, false);
+});
+
 test('snapshot hydration preserves known likes but accepts an explicit zero', () => {
   const row = comment('a','Parent');
   const f = fixture({rows:[row]});
