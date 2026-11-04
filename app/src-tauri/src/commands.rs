@@ -2054,7 +2054,8 @@ fn artifact_preview_kind(path: &std::path::Path, size_bytes: u64) -> Option<&'st
     let (kind, limit) = match extension.as_str() {
         "md" | "markdown" => ("markdown", ARTIFACT_TEXT_PREVIEW_MAX_BYTES),
         "csv" | "tsv" => ("csv", ARTIFACT_TEXT_PREVIEW_MAX_BYTES),
-        "txt" | "json" | "jsonl" | "yaml" | "yml" | "toml" | "xml" | "html" | "htm" | "css"
+        "html" | "htm" => ("html", ARTIFACT_TEXT_PREVIEW_MAX_BYTES),
+        "txt" | "json" | "jsonl" | "yaml" | "yml" | "toml" | "xml" | "css"
         | "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "rs" | "py" | "go" | "java" | "kt"
         | "swift" | "sh" | "zsh" | "fish" | "ps1" | "sql" | "log" => {
             ("text", ARTIFACT_TEXT_PREVIEW_MAX_BYTES)

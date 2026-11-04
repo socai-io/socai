@@ -101,6 +101,12 @@ function renderPreviewBody(preview: ArtifactPreviewPaneState): string {
   if (preview.previewKind === "csv") {
     return renderCsv(preview.text ?? "", preview.kind === "TSV" ? "\t" : ",");
   }
+  if (preview.previewKind === "html") {
+    // Keep the attachment in its own origin, with no scripts or external requests.
+    const policy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; base-uri 'none'; form-action 'none'";
+    const page = `<!doctype html><meta http-equiv="Content-Security-Policy" content="${policy}">${preview.text ?? ""}`;
+    return `<iframe class="artifact-preview__html" sandbox="" referrerpolicy="no-referrer" title="${esc(preview.name)}" srcdoc="${esc(page)}"></iframe>`;
+  }
   if (preview.previewKind === "text") {
     return `<pre class="artifact-preview__text">${esc(formatTextPreview(preview.name, preview.text ?? ""))}</pre>`;
   }
