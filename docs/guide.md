@@ -390,15 +390,24 @@ loaded parent/total counts, returned count, stop reason, and `complete`.
 The count budget includes replies, and collection remains time-bounded per post.
 `complete:false` means the result is a sample or partial collection, not every
 comment; a missing comment result is not evidence of zero comments. Completion
-requires the visible parent-list end, no remaining reply controls, a known
-positive platform total and no count shortfall after trimming. An unknown total
-does not prove completeness. The loader merges observed parent and reply IDs
-across overlapping viewport steps before virtualized rows disappear, re-captures expanded replies
-before scrolling, and refuses collection or actions after the active note changes.
-Snapshots belong only to the current native call, not a browser-global cache;
-this is not a persisted continuation cursor. Hidden, moderated or unavailable comments are
-not bypassed. The coverage metadata remains in compact agent results as well as
-the full artifact.
+requires the visible parent-list end, a completed reply pass, a known positive
+platform total and no count shortfall after trimming. An unknown total does not
+prove completeness. Large budgets first walk the parent-comment list to its end,
+then restart at the first loaded parent and expand replies during a second pass;
+this prevents long reply threads near the top from consuming the whole window
+before later primary comments are observed.
+
+The loader merges observed parent and reply IDs across overlapping viewport
+steps before virtualized rows disappear and refuses continuation after the
+active note changes. A later read of the same exact note starts from that note's
+saved comment snapshot, so a timeout can add new IDs without discarding earlier
+ones. This is an observed-data continuation, not a platform cursor: the page may
+still re-walk duplicate rows. `continued_from_total` and `added_total` show the
+effect of the resume; `primary_complete`, `reply_pass_complete`, and
+`visible_complete` keep the two passes explicit. Saved comments are never merged
+across note IDs or kept in browser-global page state. Hidden, moderated or
+unavailable comments are not bypassed. The coverage metadata remains in compact
+agent results as well as the full artifact.
 
 `platform_total` is `null` when the platform counter is absent or still loading,
 including when the collected comment list is empty. Only a readable numeric
