@@ -6,11 +6,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use socai_core::agent::compaction::{compact_json_value, truncate};
 use socai_core::agent::note_store::load_notes;
-use socai_core::agent::{AgentEvent, Conversation, SharedTool, Tool, ToolContext, ToolResult};
+use socai_core::agent::{
+    AgentEvent, Conversation, SharedTool, Tool, ToolContext, ToolResult, ToolResultBlock,
+};
 use socai_core::media::RemoteOcrConfig;
 use socai_core::runtime::{
     create_llm_provider_for_task, ensure_llm_provider_configured_for, run_agent_task,
@@ -838,6 +841,44 @@ impl Tool for HostTool {
             std::fs::write(ctx.run_dir.join("published-research-table"), b"published")?;
         }
         let content = payload.get("result").cloned().unwrap_or(Value::Null);
+        // Only this authenticated, conversation-scoped application tool may
+        // supply model images. Never reinterpret arbitrary host JSON as a
+        // multimodal envelope or stringify base64 as if the model saw an image.
+        if self.definition.name == "read_uploaded_file" {
+            let blocks = content
+                .get("model_content")
+                .cloned()
+                .and_then(|value| serde_json::from_value::<Vec<ToolResultBlock>>(value).ok());
+            let Some(blocks) = blocks else {
+                return Ok(ToolResult::failure(
+                    "The uploaded file reader returned an invalid content envelope.",
+                ));
+            };
+            let mut images = 0;
+            let valid = !blocks.is_empty()
+                && blocks.len() <= 3
+                && blocks.iter().all(|block| match block {
+                    ToolResultBlock::Text { text } => text.len() <= 60_000,
+                    ToolResultBlock::Image { data, media_type } => {
+                        images += 1;
+                        images <= 1
+                            && matches!(
+                                media_type.as_str(),
+                                "image/jpeg" | "image/png" | "image/webp"
+                            )
+                            && base64::engine::general_purpose::STANDARD
+                                .decode(data)
+                                .is_ok_and(|bytes| !bytes.is_empty() && bytes.len() <= 160 * 1024)
+                    }
+                });
+            return Ok(if valid {
+                ToolResult::blocks(blocks)
+            } else {
+                ToolResult::failure(
+                    "The uploaded file reader returned unsupported or oversized content.",
+                )
+            });
+        }
         let text = match content {
             Value::String(value) => value,
             value => serde_json::to_string(&value)?,
@@ -1580,33 +1621,78 @@ mod tests {
 
     #[tokio::test]
     async fn host_tool_calls_the_bound_loopback_endpoint() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind loopback endpoint");
-        let address = listener.local_addr().expect("read loopback address");
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("accept host tool call");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                let read = socket.read(&mut buffer).await.expect("read request");
-                if read == 0 {
-                    break;
+        for (name, body, expected_image, expected_failure) in [
+            (
+                "create_scheduled_task",
+                r#"{"ok":true,"result":{"status":"scheduled"}}"#,
+                false,
+                false,
+            ),
+            (
+                "read_uploaded_file",
+                r#"{"ok":true,"result":{"model_content":[{"type":"text","text":"page 1 of 2"}]}}"#,
+                false,
+                false,
+            ),
+            (
+                "read_uploaded_file",
+                r#"{"ok":true,"result":{"model_content":[{"type":"text","text":"image preview"},{"type":"image","media_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}]}}"#,
+                true,
+                false,
+            ),
+            (
+                "read_uploaded_file",
+                r#"{"ok":true,"result":{"model_content":[{"type":"image","media_type":"text/html","data":"aW1hZ2U="}]}}"#,
+                false,
+                true,
+            ),
+            (
+                "read_uploaded_file",
+                r#"{"ok":true,"result":{"model_content":[{"type":"image","media_type":"image/png","data":"invalid base64"}]}}"#,
+                false,
+                true,
+            ),
+            (
+                "read_uploaded_file",
+                r#"{"ok":true,"result":{"model_content":[]}}"#,
+                false,
+                true,
+            ),
+            (
+                "read_uploaded_file",
+                r#"{"ok":true,"result":{"status":"text instead of an image"}}"#,
+                false,
+                true,
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback endpoint");
+            let address = listener.local_addr().expect("read loopback address");
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.expect("accept host tool call");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = socket.read(&mut buffer).await.expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|value| value == b"\r\n\r\n")
+                        && request
+                            .windows(16)
+                            .any(|value| value == b"scheduled report")
+                    {
+                        break;
+                    }
                 }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|value| value == b"\r\n\r\n")
-                    && request
-                        .windows(16)
-                        .any(|value| value == b"scheduled report")
-                {
-                    break;
-                }
-            }
-            let request = String::from_utf8(request).expect("utf8 request");
-            assert!(request.contains("authorization: Bearer test-token-that-is-long-enough-123"));
-            assert!(request.contains("create_scheduled_task"));
-            let body = r#"{"ok":true,"result":{"status":"scheduled"}}"#;
-            socket
+                let request = String::from_utf8(request).expect("utf8 request");
+                assert!(
+                    request.contains("authorization: Bearer test-token-that-is-long-enough-123")
+                );
+                assert!(request.contains(name));
+                socket
                 .write_all(
                     format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -1617,31 +1703,40 @@ mod tests {
                 )
                 .await
                 .expect("write response");
-        });
-        let tool = HostTool::shared(
-            HostToolDefinition {
-                name: "create_scheduled_task".into(),
-                description: "Create a scheduled task.".into(),
-                input_schema: json!({"type":"object"}),
-            },
-            HostToolEndpoint {
-                url: format!("http://{address}/internal/worker-tools"),
-                bearer_token: "test-token-that-is-long-enough-123".into(),
-            },
-            run_spec("run-host-tool").binding,
-            "run-host-tool".into(),
-        );
-        let context = ToolContext::new(
-            "run-host-tool",
-            std::env::temp_dir().join(format!("socai-host-tool-{}", uuid::Uuid::new_v4())),
-        );
-        let result = tool
-            .call(json!({"prompt":"scheduled report"}), &context)
-            .await
-            .expect("call host tool");
-        assert!(!result.failed());
-        assert_eq!(result.flat_text(), r#"{"status":"scheduled"}"#);
-        server.await.expect("join loopback server");
+            });
+            let tool = HostTool::shared(
+                HostToolDefinition {
+                    name: name.into(),
+                    description: "Create a scheduled task.".into(),
+                    input_schema: json!({"type":"object"}),
+                },
+                HostToolEndpoint {
+                    url: format!("http://{address}/internal/worker-tools"),
+                    bearer_token: "test-token-that-is-long-enough-123".into(),
+                },
+                run_spec("run-host-tool").binding,
+                "run-host-tool".into(),
+            );
+            let context = ToolContext::new(
+                "run-host-tool",
+                std::env::temp_dir().join(format!("socai-host-tool-{}", uuid::Uuid::new_v4())),
+            );
+            let result = tool
+                .call(json!({"prompt":"scheduled report"}), &context)
+                .await
+                .expect("call host tool");
+            assert_eq!(result.failed(), expected_failure);
+            assert_eq!(result.has_image(), expected_image);
+            if name == "create_scheduled_task" {
+                assert_eq!(result.flat_text(), r#"{"status":"scheduled"}"#);
+            }
+            if expected_image {
+                assert_eq!(result.flat_text(), "image preview\n\n[image omitted]");
+                assert!(matches!(&result.blocks[1], ToolResultBlock::Image { media_type, data }
+                    if media_type == "image/png" && data.starts_with("iVBORw0KGgo")));
+            }
+            server.await.expect("join loopback server");
+        }
     }
 
     #[tokio::test]

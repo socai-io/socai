@@ -14,6 +14,14 @@ project. The [README](../README.md) is the product overview.
 
 Research is read-only by default. Explicit target-bound write commands run only when directly invoked and use durable one-shot receipts to prevent automatic resubmission.
 
+Hosted applications can expose a conversation-owned `read_uploaded_file` tool.
+Its authenticated result must contain `model_content`: text blocks and at most
+one image block (JPEG/PNG/WebP, at most 160 KiB decoded). The Worker forwards
+these blocks to the model, rather than turning image bytes into text. Other
+host tools retain their existing JSON/text result contract. The application
+must enforce ownership, size limits and pagination; this transport alone does
+not provide an upload UI, PDF parsing or Desktop file selection.
+
 The shared agent prepares matching Xiaohongshu/Douyin task methods before its
 first model request when the request and selected sources identify a relevant
 workflow. Actual `read_skill` calls appear in the run events and canonical tool
