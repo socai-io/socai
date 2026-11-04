@@ -2080,7 +2080,8 @@ const SocaiXhsPageScripts = (() => {
       note_id: noteId,
       ...(capture ? {comments:items, visible_primary:visible.length,
         visible_total:visible.length + visible.reduce((n,c)=>n+c.sub_comments.length,0)} : {}),
-      total: parseCount(totalText),
+      // No counter / a loading label is unknown, not a measured zero.
+      total: /\d/.test(totalText) ? parseCount(totalText) : null,
       loaded_primary: items.length,
       loaded_total: items.length + subs,
       pending_show_more: pending.length,

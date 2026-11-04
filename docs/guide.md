@@ -371,6 +371,10 @@ this is not a persisted continuation cursor. Hidden, moderated or unavailable co
 not bypassed. The coverage metadata remains in compact agent results as well as
 the full artifact.
 
+`platform_total` is `null` when the platform counter is absent or still loading,
+including when the collected comment list is empty. Only a readable numeric
+zero is reported as `0`; preserve this distinction in reports and exports.
+
 If comment collection fails, the note body remains usable but `top_comments` is
 omitted. `top_comments_wait` then has `ready:false`, `complete:false`, unknown
 counts (`null`), and `stop_reason: "note_changed"` or `"read_failed"`. Reopen the

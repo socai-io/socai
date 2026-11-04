@@ -1367,7 +1367,7 @@ fn comment_load_metadata(payload: &Value) -> Value {
     json!({
         "ready": payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
         "complete": payload.get("complete").and_then(Value::as_bool).unwrap_or(false),
-        "platform_total": payload.get("platform_total").and_then(Value::as_i64).unwrap_or(0),
+        "platform_total": payload.get("platform_total").and_then(Value::as_i64).filter(|v| *v >= 0),
         "loaded_primary": payload.get("loaded_primary").and_then(Value::as_i64).unwrap_or(0),
         "loaded_total": payload.get("loaded_total").and_then(Value::as_i64).unwrap_or(0),
         "count_basis": "primary_plus_replies",

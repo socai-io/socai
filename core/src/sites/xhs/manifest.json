@@ -178,7 +178,7 @@
         "note_id": { "type": "string", "required": false, "description": "Expected active note id; refuse to merge after a note switch." },
         "prefer_hot": { "type": "boolean", "required": false, "description": "Hot-sort the final accumulated snapshot." }
       },
-      "returns": { "type": "object", "description": "Current comment-area state." }
+      "returns": { "type": "object", "description": "Current comment-area state. total is null when no readable numeric platform counter is present; null must not be treated as zero comments." }
     },
     "commentEditorTarget": {
       "description": "Inspect the verified active note and return owned pointer geometry for its visible comment editor; never focuses or types.",

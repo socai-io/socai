@@ -1193,7 +1193,7 @@ impl<'a> XhsPageRuntime<'a> {
 
         let mut last_total: i64 = -1;
         let mut last_progress = String::new();
-        let mut platform_total: i64 = 0;
+        let mut platform_total: Option<i64> = None;
         let mut stale_rounds = 0;
         let mut rounds = 0;
         let stop_reason;
@@ -1211,8 +1211,13 @@ impl<'a> XhsPageRuntime<'a> {
                 .get("comments")
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Comment snapshot missing from collection state"))?;
-            platform_total =
-                platform_total.max(state.get("total").and_then(Value::as_i64).unwrap_or(0));
+            if let Some(total) = state
+                .get("total")
+                .and_then(Value::as_i64)
+                .filter(|v| *v >= 0)
+            {
+                platform_total = Some(platform_total.map_or(total, |known| known.max(total)));
+            }
             let loaded_total = state
                 .get("loaded_total")
                 .and_then(Value::as_i64)
@@ -1355,7 +1360,7 @@ impl<'a> XhsPageRuntime<'a> {
             "stop_reason": stop_reason,
             "platform_total": platform_total,
             "complete": stop_reason == "exhausted"
-                && platform_total > 0 && returned_total >= platform_total,
+                && platform_total.is_some_and(|total| total > 0 && returned_total >= total),
             "ready": first
                 .get("ready")
                 .and_then(Value::as_bool)

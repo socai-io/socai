@@ -24,7 +24,7 @@ test('the browser regression helper fails closed before CDP without explicit acc
   assert.match(result.stderr, /SOCAI_ACCEPTANCE_TARGET, SOCAI_ACCEPTANCE_EMAIL and SOCAI_ACCEPTANCE_ACCOUNT_ID are required/);
 });
 
-function fixture({ rows = [], ends = [], replies = [], feed = false, video = null, resources = [] } = {}) {
+function fixture({ rows = [], ends = [], replies = [], feed = false, video = null, resources = [], totalText = '共 300 条评论' } = {}) {
   class Element {
     constructor(className, parentElement = null) {
       Object.assign(this, {className, parentElement, scrollTop:0, scrollHeight:400,
@@ -48,7 +48,7 @@ function fixture({ rows = [], ends = [], replies = [], feed = false, video = nul
   area.querySelectorAll = selector => {
     if (selector === '.show-more') return replies;
     if (selector === '.end-container') return ends;
-    if (selector === '.total') return [{innerText:'共 300 条评论'}];
+    if (selector === '.total') return totalText === null ? [] : [{innerText:totalText}];
     return [];
   };
   overlay.querySelectorAll = selector => {
@@ -76,6 +76,14 @@ function fixture({ rows = [], ends = [], replies = [], feed = false, video = nul
   vm.runInContext(source, context);
   return {scripts:vm.runInContext('SocaiXhsPageScripts', context), area, photo, overlay, Element};
 }
+
+test('missing or loading comment counts stay unknown instead of becoming zero', () => {
+  for (const totalText of [null, '', '评论', '加载中']) {
+    assert.equal(fixture({totalText}).scripts.commentAreaState().total, null);
+  }
+  assert.equal(fixture({totalText:'共 0 条评论'}).scripts.commentAreaState().total, 0);
+  assert.equal(fixture({totalText:'共 14 条评论'}).scripts.commentAreaState().total, 14);
+});
 
 test('video resource fallback skips JSON and scripts on fe-video CDN before the real MP4', () => {
   const video = {currentSrc:'blob:https://www.xiaohongshu.com/owned', src:'', poster:'', duration:2.8,
