@@ -421,10 +421,10 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output
         }
         if let MessageContent::Blocks(blocks) = &mut visual[2].content {
             if let Block::ToolResult { content, .. } = &mut blocks[0] {
-                content.push(ToolResultContent::Image {
+                content.extend(crate::agent::r#loop::live_tool_images(&[ToolResultContent::Image {
                     data: "aW1hZ2U=".into(),
                     media_type: "image/jpeg".into(),
-                });
+                }]));
             }
             blocks.push(Block::ToolResult {
                 tool_use_id: "call_2".into(),
@@ -456,6 +456,15 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output
             input[5]["content"][1]["image_url"],
             "data:image/jpeg;base64,aW1hZ2U="
         );
+        let logged = crate::agent::run_logging::without_image_data(&json!({
+            "chat": chat,
+            "responses": input,
+            "anthropic": {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"aW1hZ2U="}},
+            "gemini": {"inlineData":{"mimeType":"image/jpeg","data":"aW1hZ2U="}},
+            "tool": {"type":"image","media_type":"image/jpeg","data":"aW1hZ2U="}
+        }));
+        assert!(!logged.to_string().contains("aW1hZ2U="));
+        assert!(logged.to_string().contains("image/jpeg"));
 
         let deepseek = OpenAICompatBackend {
             provider: Provider::DeepSeek,

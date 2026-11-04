@@ -27,6 +27,11 @@ only. Responses requests likewise carry real `input_image` parts, not base64
 strings in function-output text. A model still needs visual-input support.
 Upload reads have a bounded 110-second deadline to accommodate parsing and
 optional metered OCR; other host tools retain their 20-second deadline.
+Tool-returned images are supplied to the next model request using an in-memory
+visual payload, separate from bounded conversation history. This avoids images
+being replaced with history placeholders before a vision model can see them.
+Inline image bytes are omitted from LLM request logs and tool-result JSON logs;
+original uploaded files and screenshot artifacts retain their normal ownership.
 
 The shared agent prepares matching Xiaohongshu/Douyin task methods before its
 first model request when the request and selected sources identify a relevant

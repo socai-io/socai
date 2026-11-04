@@ -2,9 +2,10 @@
 //!
 //! Each fact has one owner:
 //! - `run.json` owns agent-run metadata and aggregate usage.
-//! - `llm/NNN.request.json` and `llm/NNN.response.json` own exact LLM I/O.
+//! - `llm/NNN.request.json` and `llm/NNN.response.json` own LLM I/O, with
+//!   inline image bytes omitted from requests.
 //! - `tools/step-NNN-call-NN-name/tool.json` owns tool input and lifecycle.
-//! - tool `output.json` owns the raw tool result.
+//! - tool `output.json` owns the tool result, except inline image bytes.
 //! - standalone tool `tool.json` additionally owns its input because there is
 //!   no parent LLM response.
 
@@ -25,6 +26,27 @@ use crate::agent::tool::ToolResultBlock;
 
 fn timestamp() -> String {
     Utc::now().to_rfc3339()
+}
+
+pub(crate) fn without_image_data(value: &Value) -> Value {
+    match value {
+        Value::String(text) if text.starts_with("data:image/") => {
+            Value::String("[image data URL omitted]".into())
+        }
+        Value::Array(items) => Value::Array(items.iter().map(without_image_data).collect()),
+        Value::Object(object) => {
+            let image = object.get("type").and_then(Value::as_str) == Some("image")
+                || ["media_type", "mime_type", "mimeType"].iter().any(|key| {
+                    object.get(*key).and_then(Value::as_str).is_some_and(|kind| kind.starts_with("image/"))
+                });
+            Value::Object(object.iter().map(|(key, item)| {
+                (key.clone(), if image && key == "data" {
+                    Value::String("[image bytes omitted]".into())
+                } else { without_image_data(item) })
+            }).collect())
+        }
+        other => other.clone(),
+    }
 }
 
 fn safe_component(value: &str, fallback: &str) -> String {
@@ -170,7 +192,7 @@ impl AgentRunRecorder {
     pub fn record_llm_request(&self, step: u32, payload: &Value) -> std::io::Result<()> {
         write_json_atomic(
             &self.run_dir.join(format!("llm/{step:03}.request.json")),
-            payload,
+            &without_image_data(payload),
         )
     }
 
@@ -398,7 +420,7 @@ impl ToolCallRecorder {
         duration_ms: u64,
         error: Option<&str>,
     ) -> std::io::Result<()> {
-        write_json_atomic(&self.tool_dir.join("output.json"), output)?;
+        write_json_atomic(&self.tool_dir.join("output.json"), &without_image_data(output))?;
         self.finish_manifest(duration_ms, error)
     }
 
