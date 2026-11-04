@@ -1374,17 +1374,21 @@ fn comment_load_timeout(comment_count: i64) -> f64 {
     }
 }
 
-fn cached_comment_snapshot(history: &XhsHistoryStore, note_id: &str) -> Vec<Value> {
-    history
-        .get(note_id)
-        .and_then(|entry| entry.entity)
-        .and_then(|entity| {
-            entity
-                .get("top_comments")
-                .and_then(Value::as_array)
-                .cloned()
-        })
-        .unwrap_or_default()
+fn cached_comment_snapshot(history: &XhsHistoryStore, note_id: &str) -> (Vec<Value>, bool) {
+    let entity = history.get(note_id).and_then(|entry| entry.entity);
+    let comments = entity
+        .as_ref()
+        .and_then(|entity| entity.get("top_comments"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let primary_complete = entity
+        .as_ref()
+        .and_then(|entity| entity.get("top_comments_wait"))
+        .and_then(|metadata| metadata.get("primary_complete"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    (comments, primary_complete)
 }
 
 fn comment_load_metadata(payload: &Value) -> Value {
@@ -1399,6 +1403,7 @@ fn comment_load_metadata(payload: &Value) -> Value {
         "returned_replies": payload.get("returned_replies"),
         "returned_total": payload.get("returned_total").and_then(Value::as_i64).unwrap_or(0),
         "continued_from_primary": payload.get("continued_from_primary").and_then(Value::as_i64).unwrap_or(0),
+        "continued_from_primary_complete": payload.get("continued_from_primary_complete").and_then(Value::as_bool).unwrap_or(false),
         "continued_from_total": payload.get("continued_from_total").and_then(Value::as_i64).unwrap_or(0),
         "added_total": payload.get("added_total").and_then(Value::as_i64).unwrap_or(0),
         "rounds": payload.get("rounds").and_then(Value::as_i64).unwrap_or(0),
@@ -1809,13 +1814,15 @@ async fn scan_card_note(
     // Scans always include comments — there is no longer a level gate.
     if comment_count > 0 {
         let t_comments = std::time::Instant::now();
-        let previous_comments = cached_comment_snapshot(history, &card.note_id);
+        let (previous_comments, previous_primary_complete) =
+            cached_comment_snapshot(history, &card.note_id);
         let comments_result = xhs
             .load_comments_continuing(
                 comment_count,
                 comment_load_timeout(comment_count),
                 &card.note_id,
                 previous_comments,
+                previous_primary_complete,
             )
             .await;
         scan_perf.insert(
@@ -3668,13 +3675,15 @@ async fn scan_direct_note(
 
     if comment_count > 0 {
         let t_comments = std::time::Instant::now();
-        let previous_comments = cached_comment_snapshot(history, &target.note_id);
+        let (previous_comments, previous_primary_complete) =
+            cached_comment_snapshot(history, &target.note_id);
         let comments_result = xhs
             .load_comments_continuing(
                 comment_count,
                 comment_load_timeout(comment_count),
                 &target.note_id,
                 previous_comments,
+                previous_primary_complete,
             )
             .await;
         attach_comment_load_result(&mut entity, comments_result);
