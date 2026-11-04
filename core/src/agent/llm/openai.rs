@@ -873,18 +873,30 @@ struct WireFunction {
     arguments: Option<String>,
 }
 
+#[derive(Default)]
+struct StreamProgress {
+    bytes: u64,
+    failure: Option<&'static str>,
+    last_chunk: Option<std::time::Instant>,
+}
+
 /// The gateway emits one data line per JSON chunk. Read complete UTF-8 lines
 /// across arbitrary HTTP packet boundaries, including for split tool arguments.
 async fn read_chat_stream(
     provider: Provider,
     response: reqwest::Response,
     preview: &ModelPreview<'_>,
+    progress: &mut StreamProgress,
 ) -> anyhow::Result<WireResponse> {
     use futures::TryStreamExt;
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio_util::io::StreamReader;
 
-    let reader = StreamReader::new(response.bytes_stream().map_err(std::io::Error::other));
+    let chunks = response.bytes_stream().inspect_ok(|chunk| {
+        progress.bytes += chunk.len() as u64;
+        progress.last_chunk = Some(std::time::Instant::now());
+    });
+    let reader = StreamReader::new(chunks.map_err(std::io::Error::other));
     let mut lines = BufReader::new(reader).lines();
     let mut content = String::new();
     let mut reasoning = String::new();
@@ -931,6 +943,7 @@ async fn read_chat_stream(
         }
         let chunk: Value = serde_json::from_str(data)?;
         if chunk.get("error").is_some() {
+            progress.failure = Some("gateway error event");
             if let Some(status) = chunk["status"].as_u64().and_then(|s| u16::try_from(s).ok()) {
                 anyhow::bail!(format_http_error(provider.as_str(), status, data));
             }
@@ -984,6 +997,7 @@ async fn read_chat_stream(
             }
         }
     }
+    progress.failure = Some("stream ended before [DONE]");
     anyhow::bail!("hosted model stream ended before [DONE]")
 }
 
@@ -1305,31 +1319,52 @@ impl OpenAICompatBackend {
             }
         }
         let started = std::time::Instant::now();
-        let report = |phase: &str, error: reqwest::Error| {
+        let report = |stage: &str, chain: anyhow::Error, status: Option<reqwest::StatusCode>,
+                      headers_ms: Option<u64>, progress: Option<&StreamProgress>| {
             if let (Some(id), Some(telemetry)) = (request_id, &self.telemetry) {
-                let phase = if error.is_connect() { "connect" } else { phase };
-                let timed_out = error.is_timeout();
-                let chain = anyhow::Error::new(error);
-                let io_error = chain.chain().find_map(|cause| cause.downcast_ref::<std::io::Error>());
+                let http = chain.chain().find_map(|e| {
+                    e.downcast_ref::<reqwest::Error>().or_else(|| {
+                        e.downcast_ref::<std::io::Error>()?.get_ref()?.downcast_ref::<reqwest::Error>()
+                    })
+                });
+                let stage = if http.is_some_and(reqwest::Error::is_connect) { "connect" } else { stage };
+                let os_error = chain.chain().filter_map(|e| e.downcast_ref::<std::io::Error>())
+                    .find_map(std::io::Error::raw_os_error);
+                // Stream errors can carry arbitrary upstream data. Only include transport
+                // diagnostics or a fixed category, never the stream parser's raw message.
+                let diagnostic = match progress {
+                    Some(progress) if http.is_none() => {
+                        progress.failure.unwrap_or("invalid response stream").to_owned()
+                    }
+                    _ => crate::telemetry::redact_telemetry_error(&format!("{chain:#}"))
+                        .chars().take(480).collect::<String>(),
+                };
                 telemetry.capture("socai_gateway_request_error", json!({
                     "gateway_request_id": id.to_string(),
                     "billing_turn_id": self.task_id,
-                    "stage": phase,
+                    "stage": stage,
                     "duration_ms": started.elapsed().as_millis() as u64,
-                    "timed_out": timed_out,
-                    "os_error": io_error.and_then(std::io::Error::raw_os_error),
-                    "error": crate::telemetry::redact_telemetry_error(&format!("{chain:#}"))
-                        .chars().take(480).collect::<String>(),
+                    "headers_ms": headers_ms,
+                    "http_status": status.map(|s| s.as_u16()),
+                    "stream_bytes": progress.map(|p| p.bytes),
+                    "last_chunk_age_ms": progress.and_then(|p| p.last_chunk)
+                        .map(|t| t.elapsed().as_millis() as u64),
+                    "timed_out": http.is_some_and(reqwest::Error::is_timeout),
+                    "os_error": os_error,
+                    "error": diagnostic,
                 }));
-                return chain;
             }
-            anyhow::Error::new(error)
+            chain
         };
-        let response = request.json(&body).send().await.map_err(|e| report("send", e))?;
-
+        let response = request.json(&body).send().await
+            .map_err(|e| report("send", e.into(), None, None, None))?;
+        let headers_ms = Some(started.elapsed().as_millis() as u64);
         let status = response.status();
         if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
+            let text = response.text().await.unwrap_or_else(|e| {
+                let _ = report("response_body", e.into(), Some(status), headers_ms, None);
+                String::new()
+            });
             anyhow::bail!(format_http_error(
                 self.provider.as_str(),
                 status.as_u16(),
@@ -1343,8 +1378,13 @@ impl OpenAICompatBackend {
         let streamed = response.headers().get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with("text/event-stream"));
         let parsed: WireResponse = match preview {
-            Some(preview) if streamed => read_chat_stream(self.provider, response, preview).await?,
-            _ => response.json().await.map_err(|e| report("response_body", e))?,
+            Some(preview) if streamed => {
+                let mut progress = StreamProgress::default();
+                read_chat_stream(self.provider, response, preview, &mut progress).await
+                    .map_err(|e| report("response_stream", e, Some(status), headers_ms, Some(&progress)))?
+            }
+            _ => response.json().await
+                .map_err(|e| report("response_body", e.into(), Some(status), headers_ms, None))?,
         };
         let provider_usage = parsed.usage.clone();
         let response_model = parsed.model.as_deref().unwrap_or(&self.model);
