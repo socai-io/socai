@@ -147,7 +147,12 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
         return ["xhs", "douyin"]
             .into_iter()
             .filter(|site| enabled_sites.iter().any(|enabled| enabled == site))
-            .map(|site| format!("{}-content-workflow", if site == "xhs" { "xhs" } else { "dy" }))
+            .map(|site| {
+                format!(
+                    "{}-content-workflow",
+                    if site == "xhs" { "xhs" } else { "dy" }
+                )
+            })
             .collect();
     }
     let text = task.to_ascii_lowercase();
@@ -204,10 +209,33 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
         "keyword only",
         "keyword-only",
     ]);
+    // A short revision request is still writing: users need not repeat the
+    // onboarding label (e.g. 初稿/创作) to retain the same fact/quote boundaries.
+    // Require both a draft target and an editing action; merely mentioning
+    // source正文, OCR or a transcript must not turn collection into drafting.
+    let editing = !image_text
+        && !transcript
+        && !has(&[
+            "不要改稿",
+            "不用改稿",
+            "不改正文",
+            "不要修改正文",
+            "不要重写正文",
+            "不要润色",
+            "不需要改写",
+            "暂不改稿",
+            "先不改稿",
+        ])
+        && (has(&["改稿", "润色稿", "精简稿"])
+            || (has(&["正文", "稿件", "这稿", "这篇稿"])
+                && has(&[
+                    "精简", "润色", "删掉", "删去", "改短", "缩短", "重写", "改写", "修改",
+                ])));
     let workflow = !keyword_only
         && (has(&["内容工作流", "选题", "灵感"])
             || (!has(&["不要写", "先不写", "不写稿", "暂不写"])
                 && (has(&["写稿", "初稿", "成稿", "创作"])
+                    || editing
                     || (!image_text && !transcript && has(&["文案", "写一篇", "写笔记"])))));
     let collection = has(&["采集", "抓取", "收集", "导出", "保存", "整理", "collect"])
         && has(&["帖子", "笔记", "作品", "视频", "链接", "posts"])
