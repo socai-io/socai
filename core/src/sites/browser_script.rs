@@ -97,7 +97,12 @@ const BROWSER_SCRIPT_BRIDGE_JS: &str = r#"
       input,
     }),
     pageInfo: () => request('page_info'),
-    navigate: (url) => request('navigate', { url }),
+    navigate: (url) => {
+      if (typeof url !== 'string' || !url.trim()) {
+        throw new Error('socai.navigate(url) requires a non-empty URL string. For input.url, pass input as a JSON object, not a JSON-encoded string. String input is preserved; parse it explicitly with JSON.parse(input) only if that is intended.');
+      }
+      return request('navigate', { url });
+    },
     click: (selector) => request('click', { selector }),
     type: (selector, text) => request('type', { selector, text }),
     press: (key) => request('press', { key }),
@@ -1021,7 +1026,7 @@ impl Tool for BrowserScriptTool {
                     "description": "JavaScript async-function body. Use `input` and the async `socai` browser API; return JSON-serializable data."
                 },
                 "input": {
-                    "description": "JSON value exposed to the script as `input`."
+                    "description": "JSON value exposed unchanged as `input`. For structured parameters pass an actual JSON object, e.g. {\"url\":\"https://www.xiaohongshu.com/explore\"}, and read input.url. Do not JSON.stringify that object. Strings remain strings and are never automatically JSON-parsed; use JSON.parse(input) explicitly only when intentionally passing JSON text."
                 },
                 "timeout_ms": {
                     "type": "integer",
