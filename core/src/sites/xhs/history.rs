@@ -623,6 +623,14 @@ fn merge_entities(prev: &Value, mut fresh: Value) -> Value {
         if let Some(prev_comments) = prev.get("top_comments") {
             if let Some(fresh_obj) = fresh.as_object_mut() {
                 fresh_obj.insert("top_comments".into(), prev_comments.clone());
+                // A preview/search card has no new collector metadata. Keep
+                // the phase associated with the retained comment snapshot so
+                // a follow-up can resume replies rather than start over.
+                if let Some(metadata) = prev.get("top_comments_wait") {
+                    fresh_obj
+                        .entry("top_comments_wait")
+                        .or_insert_with(|| metadata.clone());
+                }
             }
         }
     }
@@ -698,12 +706,22 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = XhsHistoryStore::open(dir.path().join("h.json"));
 
-        store.record(&json!({"note_id": "n1"}), "deep", true);
+        store.record(
+            &json!({"note_id": "n1", "top_comments":[{"text":"saved"}],
+                "top_comments_wait":{"primary_complete":true,"returned_total":1}}),
+            "deep",
+            true,
+        );
         store.record(&json!({"note_id": "n1"}), "lite", false);
         let entry = store.get("n1").unwrap();
         assert_eq!(entry.level, "deep");
         assert!(entry.include_media);
         assert_eq!(entry.analysis_count, 2);
+        assert_eq!(
+            entry.entity.as_ref().unwrap()["top_comments_wait"]["primary_complete"],
+            true,
+            "A search card must not discard the saved comment continuation phase"
+        );
     }
 
     #[test]
