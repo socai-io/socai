@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::cdp::PageSession;
 use crate::media::MediaProcessor;
 use crate::util::execution_clock::{ExecutionClock, ExecutionDeadline};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
 
 use crate::sites::publication::PublicationTime;
@@ -265,14 +265,7 @@ impl<'a> XhsPageRuntime<'a> {
     }
 
     pub async fn current_url(&self) -> Result<String> {
-        Ok(self
-            .page
-            .page_info()
-            .await?
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string())
+        self.page.javascript_session().await?.top_frame_url().await
     }
 
     pub async fn ensure_xhs(&self, navigate_if_needed: bool) -> Result<()> {
@@ -350,9 +343,12 @@ impl<'a> XhsPageRuntime<'a> {
         // traces show degrading into multi-minute searches and dead tabs.
         // One cheap navigation resets both; tabs that aren't on XHS at all
         // are handled by login_gate's own navigation below.
-        let current = self.current_url().await?;
+        let current = self.current_url().await.context("read search page URL")?;
         if is_xhs_url(&current) && !is_xhs_home_url(&current) {
-            let state = self.expect_object("searchState", None).await?;
+            let state = self
+                .expect_object("searchState", None)
+                .await
+                .context("inspect previous search page")?;
             if let Some(reason) = search_blocker_reason(&state) {
                 return Ok(json!({
                     "ok": false,
@@ -363,7 +359,10 @@ impl<'a> XhsPageRuntime<'a> {
                     "state": state,
                 }));
             }
-            self.page.navigate(&xhs_home_url()).await?;
+            self.page
+                .navigate(&xhs_home_url())
+                .await
+                .context("reset search page")?;
         }
 
         // Pre-flight login gate: if logged out, bail immediately with
@@ -371,7 +370,12 @@ impl<'a> XhsPageRuntime<'a> {
         // retry cycle (which would grind for ~30s behind the wall). Same
         // failure shape (`ok:false` + `reason`) the transition-failure path
         // below returns, so callers handle both identically.
-        if self.login_gate(true).await? == LoginGate::Required {
+        if self
+            .login_gate(true)
+            .await
+            .context("check search session")?
+            == LoginGate::Required
+        {
             return Ok(json!({
                 "ok": false,
                 "query": keyword,
@@ -380,14 +384,20 @@ impl<'a> XhsPageRuntime<'a> {
                 "reason": "login_required",
             }));
         }
-        let submit = self.submit_search(keyword, wait_seconds).await?;
+        let submit = self
+            .submit_search(keyword, wait_seconds)
+            .await
+            .context("submit search")?;
         let ok = script_ok(&submit);
         // Apply any search-result filters before reading cards, so the returned
         // page reflects the filtered feed.
         let mut filter_result = Value::Object(Map::new());
         if ok {
             if let Some(filters) = filters {
-                filter_result = self.apply_search_filters(filters, wait_seconds).await?;
+                filter_result = self
+                    .apply_search_filters(filters, wait_seconds)
+                    .await
+                    .context("apply search filters")?;
             }
         }
         let cards = if ok {
@@ -395,8 +405,14 @@ impl<'a> XhsPageRuntime<'a> {
                 // Scroll the feed to lazy-load more cards until we reach the
                 // requested count (or the feed stops growing). `None`/`Some(0)`
                 // keeps the cheap first-page-only behaviour.
-                Some(target) if target > 0 => self.collect_search_cards(target).await?,
-                _ => self.extract_search_cards().await?,
+                Some(target) if target > 0 => self
+                    .collect_search_cards(target)
+                    .await
+                    .context("collect search cards")?,
+                _ => self
+                    .extract_search_cards()
+                    .await
+                    .context("read search cards")?,
             }
         } else {
             Vec::new()
@@ -410,7 +426,7 @@ impl<'a> XhsPageRuntime<'a> {
             "query": keyword,
             "submit": submit,
             "filters": filter_result,
-            "url": self.current_url().await?,
+            "url": self.current_url().await.context("read search page URL")?,
             "count": cards.len(),
             "cards": cards,
             "reason": if ok { "" } else {

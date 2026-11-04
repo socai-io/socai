@@ -2748,7 +2748,16 @@ fn lean_scan_payload(payload: &mut Value) {
     let Some(obj) = payload.as_object_mut() else {
         return;
     };
-    obj.remove("search");
+    if let Some(search) = obj.remove("search") {
+        if search.get("ok") == Some(&Value::Bool(false)) {
+            if let Some(error) = search
+                .get("error")
+                .or_else(|| search.pointer("/submit/error"))
+            {
+                obj.entry("error").or_insert_with(|| error.clone());
+            }
+        }
+    }
     obj.remove("sampling");
     obj.remove("timing");
     // The filter summary (which filters ended up active) is bookkeeping, not

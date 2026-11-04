@@ -179,8 +179,8 @@ return {
   h: innerHeight,
   sx: scrollX,
   sy: scrollY,
-  pw: document.documentElement.scrollWidth,
-  ph: document.documentElement.scrollHeight,
+  pw: document.documentElement?.scrollWidth ?? 0,
+  ph: document.documentElement?.scrollHeight ?? 0,
   readyState: document.readyState
 };
 "#;
