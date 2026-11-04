@@ -21,6 +21,12 @@ these blocks to the model, rather than turning image bytes into text. Other
 host tools retain their existing JSON/text result contract. The application
 must enforce ownership, size limits and pagination; this transport alone does
 not provide an upload UI, PDF parsing or Desktop file selection.
+Chat-compatible providers receive tool images as an associated user image
+message, after all pending tool responses; tool-role messages contain text
+only. Responses requests likewise carry real `input_image` parts, not base64
+strings in function-output text. A model still needs visual-input support.
+Upload reads have a bounded 110-second deadline to accommodate parsing and
+optional metered OCR; other host tools retain their 20-second deadline.
 
 The shared agent prepares matching Xiaohongshu/Douyin task methods before its
 first model request when the request and selected sources identify a relevant
