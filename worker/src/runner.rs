@@ -790,7 +790,16 @@ impl Tool for HostTool {
                 "tool": self.definition.name,
                 "input": input,
             }))
-            .timeout(std::time::Duration::from_secs(20))
+            // Upload reads can include bounded parsing and metered OCR. Keep
+            // ordinary host tools at their existing deadline; do not time out
+            // a legitimate OCR read while its provider call is still running.
+            .timeout(Duration::from_secs(
+                if self.definition.name == "read_uploaded_file" {
+                    110
+                } else {
+                    20
+                },
+            ))
             .send()
             .await
         {
