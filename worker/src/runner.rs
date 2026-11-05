@@ -761,6 +761,16 @@ struct HostTool {
 }
 
 impl HostTool {
+    fn response_deadline(name: &str) -> Duration {
+        Duration::from_secs(match name {
+            // Archive read + native decode + the host's bounded ASR deadline
+            // and attachment publication. Do not abandon an in-flight bill.
+            "transcribe_source_media" => 1_950,
+            "read_uploaded_file" => 110,
+            _ => 20,
+        })
+    }
+
     fn shared(
         definition: HostToolDefinition,
         endpoint: HostToolEndpoint,
@@ -806,22 +816,16 @@ impl Tool for HostTool {
                 "tool": self.definition.name,
                 "input": input,
             }))
-            // Upload reads can include bounded parsing and metered OCR. Keep
-            // ordinary host tools at their existing deadline; do not time out
-            // a legitimate OCR read while its provider call is still running.
-            .timeout(Duration::from_secs(
-                if self.definition.name == "read_uploaded_file" {
-                    110
-                } else {
-                    20
-                },
-            ))
+            // Long metered reads get their host's full processing budget;
+            // ordinary tool deadlines remain unchanged.
+            .timeout(Self::response_deadline(&self.definition.name))
             .send()
             .await
         {
             Ok(value) => value,
             Err(_) => {
                 let recovery = match self.definition.name.as_str() {
+                    "transcribe_source_media" => "Transcription may still be running or saved. Do not submit another paid transcription while the outcome is unknown. Inspect the current run and its attachments first; only a same-run retry can reuse its persistent ASR claim.",
                     "publish_artifact" => "The artifact may already have been saved. Call read_conversation_context to inspect existing files before deciding whether anything is still missing. Do not retry by changing the filename or content.",
                     "create_scheduled_task" | "update_scheduled_task" | "cancel_scheduled_task" => "The schedule may already have changed. Call list_scheduled_tasks and reconcile its current state before taking any further action. Do not blindly repeat the mutation.",
                     _ => "Inspect the application's current state before any retry. Do not repeat a state-changing action while its outcome is unknown.",
@@ -1654,7 +1658,16 @@ mod tests {
 
     #[tokio::test]
     async fn host_tool_calls_the_bound_loopback_endpoint() {
+        assert_eq!(HostTool::response_deadline("transcribe_source_media"), Duration::from_secs(1_950));
+        assert_eq!(HostTool::response_deadline("read_uploaded_file"), Duration::from_secs(110));
+        assert_eq!(HostTool::response_deadline("publish_artifact"), Duration::from_secs(20));
         for (name, body, expected_image, expected_failure) in [
+            (
+                "transcribe_source_media",
+                r#"{"ok":true,"result":{"text":"real transcript","timestamps_available":false}}"#,
+                false,
+                false,
+            ),
             (
                 "create_scheduled_task",
                 r#"{"ok":true,"result":{"status":"scheduled"}}"#,
