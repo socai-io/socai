@@ -16,6 +16,7 @@ mod md5;
 mod ocr;
 mod processor;
 mod remote_ocr;
+mod remote_asr;
 mod timing;
 mod video;
 
@@ -36,4 +37,5 @@ pub(crate) use self::ocr::ocr_images_bytes;
 pub use self::ocr::warm_up as ocr_warm_up;
 pub use self::processor::MediaProcessor;
 pub use self::remote_ocr::RemoteOcrConfig;
+pub use self::remote_asr::RemoteAsrConfig;
 pub use self::timing::{timing_delta, TimingRecord, TimingSnapshot};

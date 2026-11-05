@@ -7,14 +7,14 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::Engine as _;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use socai_core::agent::compaction::{compact_json_value, truncate};
 use socai_core::agent::note_store::load_notes;
 use socai_core::agent::{
     AgentEvent, Conversation, SharedTool, Tool, ToolContext, ToolResult, ToolResultBlock,
 };
-use socai_core::media::RemoteOcrConfig;
+use socai_core::media::{RemoteOcrConfig, RemoteAsrConfig};
 use socai_core::runtime::{
     create_llm_provider_for_task, ensure_llm_provider_configured_for, run_agent_task,
     AgentRunConfig, SocaiRuntime,
@@ -264,6 +264,22 @@ fn normalized_evidence_record(record: &Value, run_dir: &Path, minimal: bool) -> 
             .filter(|value| value.is_number() || value.is_boolean())
         {
             compact.insert(key.into(), value.clone());
+        }
+    }
+    if source.get("transcript").and_then(Value::as_str).is_some() {
+        let total = source["transcript"].as_str().unwrap_or_default().chars().count();
+        compact.insert("transcript_chars".into(), json!(total));
+        compact.insert("transcript_truncated".into(), json!(total > if minimal { 2_000 } else { 16_000 }));
+        for key in ["transcript_timestamps_available", "transcript_duration_s"] {
+            if let Some(value) = source.get(key).filter(|value| value.is_number() || value.is_boolean()) {
+                compact.insert(key.into(), value.clone());
+            }
+        }
+        if let Some(segments) = source.get("transcript_segments").and_then(Value::as_array) {
+            let limit = if minimal { 8 } else { 100 };
+            compact.insert("transcript_segments".into(), Value::Array(segments.iter().take(limit).cloned().collect()));
+            compact.insert("transcript_segments_total".into(), json!(segments.len()));
+            compact.insert("transcript_segments_truncated".into(), json!(segments.len() > limit));
         }
     }
     if let Some(author) = source.get("author").and_then(Value::as_object) {
@@ -1149,6 +1165,11 @@ async fn execute_run_inner(
             )?),
             _ => None,
         },
+        remote_asr: spec.host_tool_endpoint.as_ref().map(|endpoint| RemoteAsrConfig::new(
+            endpoint.url.clone(), endpoint.bearer_token.clone(),
+            serde_json::json!({"binding": spec.binding, "run_id": spec.run_id}),
+            &prepared.run_dir,
+        )).transpose()?,
         ..AgentRunConfig::default()
     };
     if let Some(value) = spec.max_steps {
@@ -1945,6 +1966,10 @@ mod tests {
                 "note_id":"xhs:note-1",
                 "url":"https://www.xiaohongshu.com/explore/note-1",
                 "title":"First title",
+                "transcript":"真实转写",
+                "transcript_segments":[{"start_ms":0,"end_ms":1000,"text":"真实转写"}],
+                "transcript_timestamps_available":true,
+                "transcript_duration_s":1,
                 "media":[{"kind":"image","src":"site_media/cover.png"}]
             }]))
             .expect("encode notes"),
@@ -1953,6 +1978,9 @@ mod tests {
         let first = tracker.take_changes(&run_dir);
         assert_eq!(first.len(), 1);
         assert_eq!(first[0]["note_id"], "xhs:note-1");
+        assert_eq!(first[0]["transcript_segments"][0]["end_ms"], 1000);
+        assert_eq!(first[0]["transcript_timestamps_available"], true);
+        assert_eq!(first[0]["transcript_truncated"], false);
         assert!(Path::new(first[0]["media"][0]["src"].as_str().expect("media path")).is_absolute());
         assert!(tracker.take_changes(&run_dir).is_empty());
 
