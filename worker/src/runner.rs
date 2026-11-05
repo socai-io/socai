@@ -7,14 +7,14 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::Engine as _;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use socai_core::agent::compaction::{compact_json_value, truncate};
 use socai_core::agent::note_store::load_notes;
 use socai_core::agent::{
     AgentEvent, Conversation, SharedTool, Tool, ToolContext, ToolResult, ToolResultBlock,
 };
-use socai_core::media::RemoteOcrConfig;
+use socai_core::media::{RemoteOcrConfig, RemoteAsrConfig};
 use socai_core::runtime::{
     create_llm_provider_for_task, ensure_llm_provider_configured_for, run_agent_task,
     AgentRunConfig, SocaiRuntime,
@@ -264,6 +264,22 @@ fn normalized_evidence_record(record: &Value, run_dir: &Path, minimal: bool) -> 
             .filter(|value| value.is_number() || value.is_boolean())
         {
             compact.insert(key.into(), value.clone());
+        }
+    }
+    if source.get("transcript").and_then(Value::as_str).is_some() {
+        let total = source["transcript"].as_str().unwrap_or_default().chars().count();
+        compact.insert("transcript_chars".into(), json!(total));
+        compact.insert("transcript_truncated".into(), json!(total > if minimal { 2_000 } else { 16_000 }));
+        for key in ["transcript_timestamps_available", "transcript_duration_s"] {
+            if let Some(value) = source.get(key).filter(|value| value.is_number() || value.is_boolean()) {
+                compact.insert(key.into(), value.clone());
+            }
+        }
+        if let Some(segments) = source.get("transcript_segments").and_then(Value::as_array) {
+            let limit = if minimal { 8 } else { 100 };
+            compact.insert("transcript_segments".into(), Value::Array(segments.iter().take(limit).cloned().collect()));
+            compact.insert("transcript_segments_total".into(), json!(segments.len()));
+            compact.insert("transcript_segments_truncated".into(), json!(segments.len() > limit));
         }
     }
     if let Some(author) = source.get("author").and_then(Value::as_object) {
@@ -745,6 +761,16 @@ struct HostTool {
 }
 
 impl HostTool {
+    fn response_deadline(name: &str) -> Duration {
+        Duration::from_secs(match name {
+            // Archive read + native decode + the host's bounded ASR deadline
+            // and attachment publication. Do not abandon an in-flight bill.
+            "transcribe_source_media" => 1_950,
+            "read_uploaded_file" => 110,
+            _ => 20,
+        })
+    }
+
     fn shared(
         definition: HostToolDefinition,
         endpoint: HostToolEndpoint,
@@ -790,22 +816,16 @@ impl Tool for HostTool {
                 "tool": self.definition.name,
                 "input": input,
             }))
-            // Upload reads can include bounded parsing and metered OCR. Keep
-            // ordinary host tools at their existing deadline; do not time out
-            // a legitimate OCR read while its provider call is still running.
-            .timeout(Duration::from_secs(
-                if self.definition.name == "read_uploaded_file" {
-                    110
-                } else {
-                    20
-                },
-            ))
+            // Long metered reads get their host's full processing budget;
+            // ordinary tool deadlines remain unchanged.
+            .timeout(Self::response_deadline(&self.definition.name))
             .send()
             .await
         {
             Ok(value) => value,
             Err(_) => {
                 let recovery = match self.definition.name.as_str() {
+                    "transcribe_source_media" => "Transcription may still be running or saved. Do not submit another paid transcription while the outcome is unknown. Inspect the current run and its attachments first; only a same-run retry can reuse its persistent ASR claim.",
                     "publish_artifact" => "The artifact may already have been saved. Call read_conversation_context to inspect existing files before deciding whether anything is still missing. Do not retry by changing the filename or content.",
                     "create_scheduled_task" | "update_scheduled_task" | "cancel_scheduled_task" => "The schedule may already have changed. Call list_scheduled_tasks and reconcile its current state before taking any further action. Do not blindly repeat the mutation.",
                     _ => "Inspect the application's current state before any retry. Do not repeat a state-changing action while its outcome is unknown.",
@@ -932,6 +952,9 @@ pub fn prepare_run(session_dir: &Path, spec: &RunSpec) -> Result<PreparedRun> {
     let digest = format!("{:x}", Sha256::digest(spec.run_id.as_bytes()));
     let run_dir = conversation_dir.join("runs").join(digest);
     let recovering = run_dir.exists();
+    // Hosted ASR binds to this canonical directory before the agent loop
+    // starts. Create it here, after checking whether this is a recovery.
+    std::fs::create_dir_all(&run_dir).context("failed to create prepared run directory")?;
     let mut context_note = conversation.context_note();
     if recovering {
         context_note.push_str(&format!(
@@ -1149,6 +1172,11 @@ async fn execute_run_inner(
             )?),
             _ => None,
         },
+        remote_asr: spec.host_tool_endpoint.as_ref().map(|endpoint| RemoteAsrConfig::new(
+            endpoint.url.clone(), endpoint.bearer_token.clone(),
+            serde_json::json!({"binding": spec.binding, "run_id": spec.run_id}),
+            &prepared.run_dir,
+        )).transpose()?,
         ..AgentRunConfig::default()
     };
     if let Some(value) = spec.max_steps {
@@ -1630,7 +1658,16 @@ mod tests {
 
     #[tokio::test]
     async fn host_tool_calls_the_bound_loopback_endpoint() {
+        assert_eq!(HostTool::response_deadline("transcribe_source_media"), Duration::from_secs(1_950));
+        assert_eq!(HostTool::response_deadline("read_uploaded_file"), Duration::from_secs(110));
+        assert_eq!(HostTool::response_deadline("publish_artifact"), Duration::from_secs(20));
         for (name, body, expected_image, expected_failure) in [
+            (
+                "transcribe_source_media",
+                r#"{"ok":true,"result":{"text":"real transcript","timestamps_available":false}}"#,
+                false,
+                false,
+            ),
             (
                 "create_scheduled_task",
                 r#"{"ok":true,"result":{"status":"scheduled"}}"#,
@@ -1783,7 +1820,14 @@ mod tests {
         assert!(first
             .run_dir
             .starts_with(session_dir.join("conversation/runs")));
-        std::fs::create_dir_all(&first.run_dir).expect("create interrupted run directory");
+        assert!(first.run_dir.is_dir(), "fresh run directory must exist before managed ASR setup");
+        assert!(!first.context_note.contains("continuing after"));
+        RemoteAsrConfig::new(
+            "http://127.0.0.1:12345/tools",
+            "a".repeat(64),
+            json!({"run_id":"run/with unsafe path"}),
+            &first.run_dir,
+        ).expect("configure managed ASR before the first agent step");
         std::fs::write(
             first.run_dir.join("notes.json"),
             serde_json::to_vec(&json!([{
@@ -1945,6 +1989,10 @@ mod tests {
                 "note_id":"xhs:note-1",
                 "url":"https://www.xiaohongshu.com/explore/note-1",
                 "title":"First title",
+                "transcript":"真实转写",
+                "transcript_segments":[{"start_ms":0,"end_ms":1000,"text":"真实转写"}],
+                "transcript_timestamps_available":true,
+                "transcript_duration_s":1,
                 "media":[{"kind":"image","src":"site_media/cover.png"}]
             }]))
             .expect("encode notes"),
@@ -1953,6 +2001,9 @@ mod tests {
         let first = tracker.take_changes(&run_dir);
         assert_eq!(first.len(), 1);
         assert_eq!(first[0]["note_id"], "xhs:note-1");
+        assert_eq!(first[0]["transcript_segments"][0]["end_ms"], 1000);
+        assert_eq!(first[0]["transcript_timestamps_available"], true);
+        assert_eq!(first[0]["transcript_truncated"], false);
         assert!(Path::new(first[0]["media"][0]["src"].as_str().expect("media path")).is_absolute());
         assert!(tracker.take_changes(&run_dir).is_empty());
 

@@ -16,10 +16,12 @@ mod md5;
 mod ocr;
 mod processor;
 mod remote_ocr;
+mod remote_asr;
 mod timing;
 mod video;
 
 pub use self::asr::{local_asr_status, transcribe_local_file_with_timeout, LocalAsrStatus};
+pub use self::audio::extract_audio_wav_file;
 pub(crate) use self::background::{
     background_media_is_stopped, background_video_download_semaphore, emit_background_media_event,
     reserve_background_video_download, subscribe_background_media_cancellation,
@@ -36,4 +38,5 @@ pub(crate) use self::ocr::ocr_images_bytes;
 pub use self::ocr::warm_up as ocr_warm_up;
 pub use self::processor::MediaProcessor;
 pub use self::remote_ocr::RemoteOcrConfig;
+pub use self::remote_asr::RemoteAsrConfig;
 pub use self::timing::{timing_delta, TimingRecord, TimingSnapshot};

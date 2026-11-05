@@ -12,6 +12,7 @@ use crate::media::common::{
     ensure_dir, named_file_path, save_bytes, save_named_bytes, MediaConfig, USER_AGENT,
 };
 use crate::media::remote_ocr::RemoteOcrConfig;
+use crate::media::remote_asr::RemoteAsrConfig;
 use crate::media::timing::TimingRecord;
 
 #[derive(Clone)]
@@ -22,6 +23,7 @@ pub struct MediaProcessor {
     pub(crate) timing: Arc<TimingRecord>,
     pub(crate) billing_task_id: Option<String>,
     pub(crate) remote_ocr: Option<RemoteOcrConfig>,
+    pub(crate) remote_asr: Option<RemoteAsrConfig>,
 }
 
 impl MediaProcessor {
@@ -38,6 +40,7 @@ impl MediaProcessor {
             timing: Arc::new(TimingRecord::default()),
             billing_task_id: None,
             remote_ocr: None,
+            remote_asr: None,
         })
     }
 
@@ -57,6 +60,7 @@ impl MediaProcessor {
     ) -> Result<Self> {
         let mut processor = Self::for_run_dir(ctx.output_dir(), llm_provider)?;
         processor.set_remote_ocr(ctx.remote_ocr());
+        processor.remote_asr = ctx.remote_asr();
         Ok(processor)
     }
 

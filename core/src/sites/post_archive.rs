@@ -1524,6 +1524,11 @@ fn video_detail_record(site_id: &str, item: &Value) -> Option<(String, Value)> {
         .filter(|value| !value.is_empty())
     {
         record.insert("transcript".into(), Value::String(transcript.to_string()));
+        for key in ["transcript_segments", "transcript_timestamps_available", "transcript_duration_s"] {
+            if let Some(value) = item.get("video").and_then(|video| video.get(key)) {
+                record.insert(key.into(), value.clone());
+            }
+        }
     }
     record.insert("level".into(), Value::String("deep".into()));
     Some((post_note_id(site_id, &native_id), Value::Object(record)))

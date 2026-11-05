@@ -211,6 +211,7 @@ pub struct ToolContext {
     pub billing_task_id: Option<String>,
     call_recovery: Option<Arc<CallRecovery>>,
     remote_ocr: Option<RemoteOcrConfig>,
+    remote_asr: Option<crate::media::RemoteAsrConfig>,
     pub run_state: Option<Arc<RunState>>,
     auxiliary_usage: Arc<Mutex<crate::agent::TokenUsage>>,
     usage_recorder: Option<Arc<super::run_logging::AgentRunRecorder>>,
@@ -339,6 +340,7 @@ impl ToolContext {
             billing_task_id: None,
             call_recovery: None,
             remote_ocr: None,
+            remote_asr: None,
             run_state: None,
             auxiliary_usage: Arc::new(Mutex::new(crate::agent::TokenUsage::default())),
             usage_recorder: None,
@@ -424,6 +426,15 @@ impl ToolContext {
     pub fn with_remote_ocr(mut self, config: Option<RemoteOcrConfig>) -> Self {
         self.remote_ocr = config;
         self
+    }
+
+    pub fn with_remote_asr(mut self, config: Option<crate::media::RemoteAsrConfig>) -> Self {
+        self.remote_asr = config;
+        self
+    }
+
+    pub fn remote_asr(&self) -> Option<crate::media::RemoteAsrConfig> {
+        self.remote_asr.clone()
     }
 
     pub fn remote_ocr(&self) -> Option<RemoteOcrConfig> {
