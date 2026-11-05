@@ -40,7 +40,7 @@ const HOSTED_X_MAX_COMMENTS_PER_POST: i64 = 5;
 // Account memory is an optional enhancement; it must not indefinitely delay
 // either the first Agent event or the terminal Worker event.
 const HOSTED_MEMORY_TIMEOUT: Duration = Duration::from_secs(60);
-const WORKER_PREAMBLE: &str = "You are running inside the socai Session Worker. Reply in the user's language and answer ordinary questions directly. For research requests, use the enabled browser or site tools to inspect real pages and gather diverse source-linked evidence. Start the final response with a concise answer or executive summary, then organize supporting findings and actionable insights. Clearly distinguish captured observations from your inference, link material claims to the exact original sources, and never expose raw tool JSON. Track explicit minimum source counts and satisfy them before finalizing when the sources are publicly reachable. Treat a requested minimum as the target unless the user asks for exhaustive coverage: stop after enough diverse evidence is captured, and avoid synonymous searches that mostly duplicate existing evidence. When a site tool reports login_required or challenge_required, immediately call the matching platform login wait tool and keep the run active; the connected browser view lets the user complete either login or a verification challenge. Do not merely ask the user to act in a final answer. After the wait tool reports the page is ready, retry the original tool and continue. For LinkedIn post searches, use the supported content result type.";
+const WORKER_PREAMBLE: &str = "You are running inside the socai Session Worker. Reply in the user's language and answer ordinary questions directly. For research requests, use the enabled browser or site tools to inspect real pages and gather diverse source-linked evidence. Start the final response with a concise answer or executive summary, then organize supporting findings and actionable insights. Clearly distinguish captured observations from your inference, link material claims to the exact original sources, and never expose raw tool JSON. Track explicit minimum source counts and satisfy them before finalizing when the sources are publicly reachable. Treat a requested minimum as the target unless the user asks for exhaustive coverage: stop after enough diverse evidence is captured, and avoid synonymous searches that mostly duplicate existing evidence. When a site tool reports login_required or challenge_required, immediately call wait_for_browser_action with the matching reason and keep the run active; the connected browser view lets the user complete either login or a verification challenge. Do not merely ask the user to act in a final answer. After the user confirms readiness, recheck the live page and retry the blocked read tool; do not assume login succeeded. For LinkedIn post searches, use the supported content result type.";
 const HOSTED_REMOTE_RESEARCH_POLICY: &str = "Hosted runtime: OCR here uses a metered remote vision service, not the near-free local OCR described in desktop knowledge. XHS OCR is opt-in per call. First discover relevant sources with preview=true and ocr=false; then read selected notes in small batches, using OCR only where image text is necessary. Keep media capture for previews. Cover every requested content type and date interval before deep enrichment: for mixed image/video requests, sample both early rather than spending the entire tool budget on one large carousel batch. Verify publication dates; popularity sorting does not enforce a historical date range. Expand batches until explicit source minimums and the question's scope are met; never call a partial sample complete. For bounded repository comparisons, collect a representative shortlist with authoritative metadata and stop once the requested comparison is supported instead of exhaustively exploring unrelated repositories. If the user has not specified which website/account to connect, ask for that information immediately without enumerating unrelated platform tools. Never claim a login or external action succeeded without evidence.";
 const RECOVERABLE_BROWSER_ERROR_MARKERS: [&str; 7] = [
     "cdp session is closed",
@@ -1227,6 +1227,13 @@ async fn execute_run_inner(
     if spec.research.deep && spec.research.web_search && research_page.is_none() {
         research_page = Some(runtime.ensure_site_page("web", "about:blank").await?);
     }
+    if research_page.is_some() {
+        tools.push(Arc::new(crate::human_action::WaitForBrowserAction));
+        instruction_blocks.push(
+            "For every browser blocker needing a real person (login_required, challenge_required/captcha, SMS/email two-factor verification, authorization confirmation, or a page that cannot progress), use wait_for_browser_action with the appropriate reason instead of a platform login waiter. Stop browser actions while waiting. Never solve or bypass a challenge. After user_ready, re-read the live page and retry only the blocked read operation once; if still blocked, request help again. User-ready is not authentication evidence or authorization for any external write."
+                .into(),
+        );
+    }
     tools.extend(socai_core::agent::research::ledger_tools());
     tools.extend(spec.research.tools(llm_provider.clone(), research_page, spec.enabled_sites.clone(), None,
         HOSTED_REMOTE_RESEARCH_POLICY.into()));
@@ -1542,7 +1549,13 @@ fn map_agent_event(sequencer: &mut EventSequencer, event: AgentEvent) -> Option<
         // terminal event after it can attach normalized usage.
         AgentEvent::Done { .. } => return None,
     };
-    sequencer.event(payload)
+    let event = sequencer.event(payload);
+    if let Some(event) = event.as_ref() {
+        if matches!(&event.payload, WorkerEventPayload::ToolCall { name, .. } if name == "wait_for_browser_action") {
+            socai_core::sites::login_wait::prepare_login_resume(&event.run_id);
+        }
+    }
+    event
 }
 
 #[allow(clippy::too_many_arguments)]
