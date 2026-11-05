@@ -322,6 +322,101 @@ impl<'a> XhsPageRuntime<'a> {
         super::page_diagnostics::attach(self.page, result).await;
     }
 
+    /// Retry only the read-only search setup, before any note opens or downloads.
+    pub(super) async fn start_search(
+        &self,
+        query: &str,
+        filters: Option<&Value>,
+        wait_seconds: f64,
+        num_notes: Option<usize>,
+    ) -> Value {
+        let mut first_error = None;
+        loop {
+            let mut result = match self
+                .search_notes(query, filters, wait_seconds, num_notes)
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let mut value = json!({
+                        "ok": false, "query": query, "reason": "search_failed",
+                        "error": format!("{error:#}"), "cards": [],
+                    });
+                    self.attach_page_failure_diagnostic(&mut value).await;
+                    value
+                }
+            };
+            if let Some(error) = first_error {
+                result["search_retry_error"] = Value::String(error);
+                return result;
+            }
+            let reason = result["reason"].as_str().unwrap_or_default();
+            let error = result["error"].as_str().unwrap_or(reason).to_owned();
+            let lower_error = error.to_ascii_lowercase();
+            let retryable = match reason {
+                "search_failed" => [
+                    "javascript exception",
+                    "execution context was destroyed",
+                    "cannot find context",
+                    "cannot find default execution context",
+                    "timed out",
+                ]
+                .iter()
+                .any(|marker| lower_error.contains(marker)),
+                "search_input_not_found"
+                | "filter_trigger_not_found"
+                | "filter_panel_not_found"
+                | "filter_not_applied"
+                | "search_submit_failed"
+                | "search_transition_failed" => true,
+                _ => lower_error.contains("search did not transition"),
+            };
+            // Connection recovery belongs to the runtime, which can rebind the
+            // shared page. Replaying DOM operations on a dead transport cannot help.
+            if !retryable || self.page.transport_closed().await {
+                return result;
+            }
+            sleep_ms(400).await;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(3),
+                self.page.wait_for_load_state("domcontentloaded", 2.0),
+            )
+            .await;
+            let state = match self.expect_object("searchState", None).await {
+                Ok(state) => state,
+                Err(error) => {
+                    result["search_reset_error"] =
+                        json!(format!("inspect page before retry: {error:#}"));
+                    return result;
+                }
+            };
+            let blocker = if state["login_required"] == true {
+                Some("login_required")
+            } else {
+                search_blocker_reason(&state)
+            };
+            if let Some(reason) = blocker {
+                result["reason"] = json!(reason);
+                result["state"] = state;
+                return result;
+            }
+            if !state["url"].as_str().is_some_and(is_xhs_url) {
+                return result;
+            }
+            // Reset even when already on the home URL: its SPA state may be stale.
+            // Do this only after checking login/security, and before opening notes.
+            let home = format!(
+                "{}/explore",
+                xhs_origin_for(state["url"].as_str().unwrap_or_default())
+            );
+            if let Err(reset_error) = self.page.navigate(&home).await {
+                result["search_reset_error"] = json!(format!("{reset_error:#}"));
+                return result;
+            }
+            first_error = Some(error);
+        }
+    }
+
     pub async fn search_notes(
         &self,
         query: &str,
@@ -398,6 +493,17 @@ impl<'a> XhsPageRuntime<'a> {
                     .apply_search_filters(filters, wait_seconds)
                     .await
                     .context("apply search filters")?;
+                if !script_ok(&filter_result) {
+                    filter_result["query"] = json!(keyword);
+                    filter_result["cards"] = json!([]);
+                    if filter_result.get("reason").is_none() {
+                        filter_result["reason"] = filter_result
+                            .get("error")
+                            .cloned()
+                            .unwrap_or(json!("filter_not_applied"));
+                    }
+                    return Ok(filter_result);
+                }
             }
         }
         let cards = if ok {

@@ -2749,6 +2749,11 @@ fn lean_scan_payload(payload: &mut Value) {
         return;
     };
     if let Some(search) = obj.remove("search") {
+        for field in ["search_retry_error", "search_reset_error"] {
+            if let Some(error) = search.get(field) {
+                obj.insert(field.into(), error.clone());
+            }
+        }
         if search.get("ok") == Some(&Value::Bool(false)) {
             if let Some(error) = search
                 .get("error")
@@ -5407,23 +5412,9 @@ impl Tool for SearchTool {
                 tokio::task::spawn_blocking(ocr_warm_up);
             }
             let xhs = XhsPageRuntime::new(&self.page);
-            let mut value = match xhs
-                .search_notes(&query, filters.as_ref(), SEARCH_WAIT_SECONDS, num_notes)
-                .await
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    let mut result = json!({
-                        "ok": false,
-                        "query": query.clone(),
-                        "reason": "search_failed",
-                        "error": format!("{err:#}"),
-                        "cards": [],
-                    });
-                    xhs.attach_page_failure_diagnostic(&mut result).await;
-                    result
-                }
-            };
+            let mut value = xhs
+                .start_search(&query, filters.as_ref(), SEARCH_WAIT_SECONDS, num_notes)
+                .await;
             promote_page_diagnostic(&mut value);
             if let Some(cards) = value.get_mut("cards") {
                 self.history.annotate_cards(cards);
@@ -5558,23 +5549,9 @@ impl Tool for SearchTool {
         // labels its own freshly-read cards as `already_analyzed`.
         let history_snapshot = self.history.snapshot();
 
-        // Filters are applied after the initial search below, so don't pass
-        // them here.
-        let mut search = match xhs
-            .search_notes(&query, None, SEARCH_WAIT_SECONDS, None)
-            .await
-        {
-            Ok(value) => value,
-            Err(err) => {
-                let mut result = json!({
-                    "ok": false,
-                    "reason": "search_failed",
-                    "error": format!("{err:#}"),
-                });
-                xhs.attach_page_failure_diagnostic(&mut result).await;
-                result
-            }
-        };
+        let mut search = xhs
+            .start_search(&query, filters.as_ref(), SEARCH_WAIT_SECONDS, None)
+            .await;
 
         // If the search never landed on a results page (search box not found,
         // login required, …) bail before the browse loop. Otherwise
@@ -5620,11 +5597,7 @@ impl Tool for SearchTool {
             }),
         );
 
-        // Optional filter application.
-        let mut filter_result = Value::Object(serde_json::Map::new());
-        if let Some(filters) = filters.as_ref() {
-            filter_result = xhs.apply_search_filters(filters, 1.5).await?;
-        }
+        let mut filter_result = search.get("filters").cloned().unwrap_or_else(|| json!({}));
 
         // Every sampled note is read with the same extraction level (body +
         // top comments).

@@ -248,12 +248,13 @@ fn interrupted_run_messages(run_dir: &Path) -> Vec<Message> {
         let mut results = Vec::with_capacity(response.tool_calls.len());
         for (index, tool_call) in response.tool_calls.iter().enumerate() {
             let sequence = index as u32 + 1;
-            let content = persisted_tool_result(run_dir, step, sequence).unwrap_or_else(|| {
-                vec![ToolResultContent::Text {
-                    text: "[This tool call was interrupted before a result was recorded.]"
-                        .to_string(),
-                }]
-            });
+            let content = persisted_tool_result(run_dir, step, sequence, &tool_call.name)
+                .unwrap_or_else(|| {
+                    vec![ToolResultContent::Text {
+                        text: "[This tool call was interrupted before a result was recorded.]"
+                            .to_string(),
+                    }]
+                });
             results.push(Block::ToolResult {
                 tool_use_id: tool_call.id.clone(),
                 content,
@@ -269,6 +270,7 @@ fn persisted_tool_result(
     run_dir: &Path,
     step: u32,
     sequence: u32,
+    name: &str,
 ) -> Option<Vec<ToolResultContent>> {
     let prefix = format!("step-{step:03}-call-{sequence:02}-");
     let tools_dir = run_dir.join("tools");
@@ -278,7 +280,7 @@ fn persisted_tool_result(
         .find(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))?;
     let text = std::fs::read_to_string(entry.path().join("output.json")).ok()?;
     let blocks: Vec<ToolResultBlock> = serde_json::from_str(&text).ok()?;
-    Some(tool_result_blocks_for_history(&blocks))
+    Some(tool_result_blocks_for_history(name, &blocks))
 }
 
 fn dir_id(dir: &Path) -> String {

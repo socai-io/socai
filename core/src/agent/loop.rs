@@ -880,7 +880,7 @@ pub async fn run_agent_with_events(
                     },
                 );
                 run_state.note_tool_result(step, &name, &effective_input, &summary, duration_s);
-                let mut history_content = bound_content_for_history(&result_content);
+                let mut history_content = content_for_tool_history(&name, &result_content);
                 pending_tool_images.insert(id.clone(), live_tool_images(&result_content));
                 let feedback = if local_delivery {
                     Default::default()
@@ -1091,7 +1091,7 @@ pub async fn run_agent_with_events(
                     },
                 );
                 run_state.note_tool_result(step, name, &effective_input, &summary, duration_s);
-                let mut history_content = bound_content_for_history(&result_content);
+                let mut history_content = content_for_tool_history(name, &result_content);
                 pending_tool_images.insert(id.clone(), live_tool_images(&result_content));
                 let feedback = if local_delivery {
                     Default::default()
@@ -1788,12 +1788,25 @@ fn tool_result_blocks_to_content(blocks: &[ToolResultBlock]) -> Vec<ToolResultCo
         .collect()
 }
 
-/// Rebuild the bounded model-facing form of a persisted tool result. This is
+/// Rebuild the model-facing form of a persisted tool result. This is
 /// used when a later run resumes an interrupted turn: raw `output.json` stays
 /// the source of truth, while the replayed context matches the same bounds as
-/// the live agent loop.
-pub(crate) fn tool_result_blocks_for_history(blocks: &[ToolResultBlock]) -> Vec<ToolResultContent> {
-    bound_content_for_history(&tool_result_blocks_to_content(blocks))
+/// the live agent loop, including intact Browser Script DOM evidence.
+pub(crate) fn tool_result_blocks_for_history(
+    name: &str,
+    blocks: &[ToolResultBlock],
+) -> Vec<ToolResultContent> {
+    content_for_tool_history(name, &tool_result_blocks_to_content(blocks))
+}
+
+fn content_for_tool_history(name: &str, content: &[ToolResultContent]) -> Vec<ToolResultContent> {
+    // DOM evidence must reach the model intact. The browser runtime already
+    // rejects oversized results; generic JSON compaction would reduce the
+    // entire slim DOM string to 320 characters and hide the relevant controls.
+    if name == "browser_script" {
+        return content.to_vec();
+    }
+    bound_content_for_history(content)
 }
 
 /// Squash a tool_result for the chat history:

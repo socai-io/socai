@@ -965,6 +965,47 @@ The helper is scoped to that evaluation. Built-in scripts retain a direct-call
 fallback for standalone fixtures. Use the typed `PageSession` methods for trusted
 input: they group mouse press/release and whole text entry into single actions.
 
+Browser task recovery uses native tools first. XHS search resets to the current
+host's home page and retries setup once for transient input/filter/transition
+failures, before opening notes or downloading media. `search_retry_error` retains
+the first failure; a failed reset is reported as `search_reset_error`. Runtime
+connection recovery remains responsible for reconnecting the browser. Connection
+errors do not trigger JavaScript repair.
+
+For remaining page failures, `browser_script` supports
+`return await socai.snapshot()` or `socai.snapshot({selector: "..."})`. It reuses
+`cdp::snapshot::slim_dom`, the same slimming as disk-oriented debug snapshots:
+remove head, scripts, styles and noscript blocks, replace SVG internals with a
+stub, and preserve the remaining element structure, attributes and text. There
+is no node sampling, field clipping, or additional 16/24 KiB response cutoff.
+Browser Script results reach the next model step and conversation replay without
+per-tool text compression; normal conversation-level memory management still
+applies. The existing 4 MiB browser runtime result guard remains unchanged and
+fails explicitly rather than returning a truncated DOM. Snapshot metadata
+includes `raw_bytes`, `dom_bytes`, `found` and `scope`.
+
+Combine related actions and readback, then return to collection tools. Existing
+`save_as` persistence is unchanged and is not required for temporary recovery.
+
+To exercise recovery locally with the real agent loop and your configured model:
+
+```bash
+cargo build -p socai-core --example check_browser_recovery
+node scripts/check-browser-recovery.mjs
+```
+
+The runner launches an isolated headless Chrome profile and fulfills all requests
+from its owned site tab with local fixture HTML. It does not touch the daily
+browser or production XHS. Model requests use the configured provider normally;
+`RECOVERY_CHECK_PROVIDER` / `RECOVERY_CHECK_MODEL` can select another configured
+backend, and `CHROME_BIN` selects the Chrome executable. An optional output
+directory argument preserves evidence there; otherwise a unique temporary
+directory is used. Evidence records native search attempts/resets, actual model
+steps and Browser Script calls, the DOM received by the model, and final delivery.
+The two cases inject a transient missing input and a persistent selector failure.
+The latter requires recovering through the visible page; its search input is
+after 3,200 nodes to catch DOM sampling or history truncation regressions.
+
 ### Sogou WeChat article experiment
 
 Run the standalone script with Node.js 22+ and installed Google Chrome; no npm

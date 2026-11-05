@@ -180,6 +180,8 @@ Current metadata keys:
 | `remote_browser` | boolean | Whether a login-wait result refers to a hosted remote browser session. |
 | `failure_reason` | string | Semantic failure reason when a tool returns `ok=false`. |
 | `failure_detail` | string | First line of an explicit tool result error on structured failure, redacted and capped at 480 characters. |
+| `search_retry_error` | string | Error from the first XHS search setup attempt when the built-in retried, including successful recoveries. Same redaction and cap. |
+| `search_reset_error` | string | Failure while inspecting or resetting the page before a search retry. Same redaction and cap. |
 | `page_error` | string | Error or reason associated with the unexpected page/control diagnostic, for example `not_profile_page` or `search_input_not_found`. |
 | `page_url` | string | Origin of an unexpected page URL; path, query, fragment, account, and post locators are omitted. |
 | `page_path_depth` | number | Number of non-empty URL path segments, retained without their values. |

@@ -97,6 +97,7 @@ const BROWSER_SCRIPT_BRIDGE_JS: &str = r#"
       input,
     }),
     pageInfo: () => request('page_info'),
+    snapshot: (options = {}) => request('snapshot', options),
     navigate: (url) => request('navigate', { url }),
     click: (selector) => request('click', { selector }),
     type: (selector, text) => request('type', { selector, text }),
@@ -683,6 +684,10 @@ impl BrowserScriptRuntime {
                 self.evaluate_target(script, &input, remaining).await
             }
             "page_info" => self.page.page_info().await,
+            "snapshot" => {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                self.snapshot(&args, remaining).await
+            }
             "navigate" => {
                 let url = required_arg(&args, "url")?;
                 if !site_url_allowed(&self.site, url) {
@@ -749,6 +754,41 @@ impl BrowserScriptRuntime {
         }?;
         self.ensure_site_authority(operation == "page_info").await?;
         Ok(result)
+    }
+
+    async fn snapshot(&self, options: &Value, timeout: Duration) -> Result<Value> {
+        let selector = match options.get("selector") {
+            None | Some(Value::Null) => Value::Null,
+            Some(Value::String(selector)) => json!(selector),
+            _ => anyhow::bail!("snapshot selector must be a CSS selector string"),
+        };
+        let expression = format!(
+            r#"(() => {{
+                const selector = {selector};
+                const root = selector === null ? document.documentElement : document.querySelector(selector);
+                return {{url: location.href, title: document.title, ready: document.readyState,
+                    scope: selector, found: !!root, dom: root ? root.outerHTML : ""}};
+            }})()"#,
+        );
+        // Read in an isolated world, then reuse the debug recorder's exact
+        // slimming rules. Apply the existing runtime size guard after slimming,
+        // so large script/style bundles do not exclude a useful, small DOM.
+        let mut value = self
+            .page
+            .evaluate_json_in_isolated_world_with_timeout(&expression, timeout)
+            .await?;
+        let raw = value["dom"].as_str().unwrap_or_default();
+        let raw_bytes = raw.len();
+        let dom = crate::cdp::snapshot::slim_dom(raw);
+        value["raw_bytes"] = json!(raw_bytes);
+        value["dom_bytes"] = json!(dom.len());
+        value["format"] = json!("slim_dom");
+        value["dom"] = json!(dom);
+        anyhow::ensure!(
+            serde_json::to_vec(&value)?.len() <= MAX_RESULT_BYTES,
+            "slim DOM exceeds the existing {MAX_RESULT_BYTES}-byte browser runtime limit; scope snapshot to the relevant region"
+        );
+        Ok(value)
     }
 
     async fn evaluate_target(
@@ -988,11 +1028,9 @@ struct BrowserScriptTool {
 
 impl BrowserScriptTool {
     fn new(runtime: BrowserScriptRuntime, allowed_tools: Arc<BTreeSet<String>>) -> Self {
-        let names = allowed_tools.iter().cloned().collect::<Vec<_>>().join(", ");
-        let contract = override_contract_hint(&runtime.site);
         let description = format!(
-            "Execute arbitrary JavaScript that controls the current {} browser tab. The script is an async function body with `input` and `socai` available and must return JSON-serializable data. Use `await socai.evaluate(pageScript, input)` for arbitrary DOM JavaScript in the live page's isolated world; pageScript may be a JavaScript function such as `() => ({{ title: document.title }})` or a function-body string. Function closures and page-owned JavaScript globals are not shared, but the live DOM is available. The same forms work with `waitFor(pageScript, options)`. Other helpers are `pageInfo()`, `click(selector)`, `type(selector, text)`, `press(key)`, `navigate(url)`, `scroll(deltaY)`, and `wait(ms)`. The control program survives target-page navigation, and click/type/press use trusted CDP input. Use small probes to diagnose a failed browser-backed tool. Optional `save_as.tool` writes and activates a verified local override for one of: {}. {} On a socai upgrade, the built-in tool receives one canary call before an older override is reused; a working built-in retires the override, while a still-failing built-in lets a contract-valid override be re-certified. JavaScript has the logged-in page's authority but no host shell or file-system APIs. Do not use it to bypass login, captcha, security verification, rate limits, permissions, or a confirmed valid empty result.",
-            runtime.site, names, contract
+            "Execute arbitrary JavaScript that controls the current {} browser tab. The script is an async function body with `input` and `socai` available and must return JSON-serializable data. Use `await socai.evaluate(pageScript, input)` for arbitrary DOM JavaScript in the live page's isolated world; pageScript may be a JavaScript function such as `() => ({{ title: document.title }})` or a function-body string. Function closures and page-owned JavaScript globals are not shared, but the live DOM is available. The same forms work with `waitFor(pageScript, options)`. Other helpers are `pageInfo()`, `click(selector)`, `type(selector, text)`, `press(key)`, `navigate(url)`, `scroll(deltaY)`, and `wait(ms)`. The control program survives target-page navigation, and click/type/press use trusted CDP input. Use `socai.snapshot(options?)` to read the slim DOM, optionally scoped with {{selector: CSS}}. It uses the same slimming as debug snapshots: strips head, script/style/noscript bodies and SVG internals, retaining the remaining elements, attributes and text without sampling or truncation. Bundle related checks, actions and readback in one call. Use snapshot for DOM inspection instead of returning raw HTML or page-owned JavaScript state. Pass input as JSON, not a JSON-encoded string. Connection failures belong to runtime recovery. Once candidates are available, pass them to an existing site tool. Leave save_as unset for ordinary temporary recovery. Existing save_as support is optional; ordinary task recovery does not need a reusable replacement. JavaScript has the logged-in page's authority but no host shell or file-system APIs. Do not use it to bypass login, captcha, security verification, rate limits, permissions, or a confirmed valid empty result.",
+            runtime.site
         );
         Self {
             runtime,
@@ -1031,7 +1069,7 @@ impl Tool for BrowserScriptTool {
                 },
                 "save_as": {
                     "type": "object",
-                    "description": "After a successful disk-backed execution, activate this script as a local override for the named site tool.",
+                    "description": format!("Optional existing persistence support. Leave unset for temporary task recovery. After successful disk-backed execution, activate a validated override. {}", override_contract_hint(&self.runtime.site)),
                     "properties": {
                         "tool": {
                             "type": "string",
@@ -1811,12 +1849,8 @@ fn recovery_directive(
         "original_tool": tool,
         "original_input": input,
         "active_script": active_script,
-        "save_as": {
-            "site": site,
-            "tool": tool,
-            "mode": "override",
-        },
-        "instruction": "Inspect the live page with small browser_script probes, save a verified replacement for this exact tool, then retry the original tool once and continue the user's task. Do not repeat the original call before repair.",
+        "site": site,
+        "instruction": "Prefer normal reset/retry or runtime connection recovery first. search_retry_error means search already reset and retried; do not repeat that loop. Use existing tools with available candidates. Only for a remaining reproducible page failure, inspect socai.snapshot() or a scoped snapshot and bundle actions with readback. Use the slim DOM instead of raw HTML; do not truncate away evidence needed for recovery. Stop after two inspections without actionable progress. Continue the user task as soon as usable data exists. Temporary recovery does not require save_as.",
     })
 }
 
@@ -1873,7 +1907,7 @@ fn builtin_tool_revision(site: &str, tool: &str) -> u32 {
         // changes without changing the override input/output contract. That
         // forces one native canary even in a locally rebuilt package carrying
         // the same Cargo version.
-        ("xhs", "search") => 2,
+        ("xhs", "search") => 3,
         ("xhs", "get_notes" | "author_scan") | ("dy", "search") => 1,
         _ => 0,
     }
@@ -2231,9 +2265,10 @@ fn local_override_result(
 fn contains_non_repairable_failure(value: &Value) -> bool {
     failure_strings(value).any(|text| {
         let text = text.to_ascii_lowercase();
-        NON_REPAIRABLE_REASONS
-            .iter()
-            .any(|reason| text.contains(reason))
+        is_browser_connection_error(&text)
+            || NON_REPAIRABLE_REASONS
+                .iter()
+                .any(|reason| text.contains(reason))
             || [
                 "login",
                 "captcha",
@@ -2245,6 +2280,9 @@ fn contains_non_repairable_failure(value: &Value) -> bool {
                 "blank_or_throttled",
                 "no_results",
                 "empty_result",
+                "unsupported filter",
+                "filters must",
+                "filter option must",
             ]
             .iter()
             .any(|marker| text.contains(marker))
@@ -2254,10 +2292,13 @@ fn contains_non_repairable_failure(value: &Value) -> bool {
 fn failure_strings(value: &Value) -> Box<dyn Iterator<Item = &str> + '_> {
     match value {
         Value::Object(object) => Box::new(object.iter().flat_map(|(key, value)| {
-            let own = matches!(key.as_str(), "reason" | "error" | "code")
-                .then(|| value.as_str())
-                .flatten()
-                .into_iter();
+            let own = matches!(
+                key.as_str(),
+                "reason" | "error" | "code" | "search_reset_error"
+            )
+            .then(|| value.as_str())
+            .flatten()
+            .into_iter();
             own.chain(failure_strings(value))
         })),
         Value::Array(values) => Box::new(values.iter().flat_map(failure_strings)),
@@ -2270,6 +2311,10 @@ fn is_structured_repairable_failure(value: &Value) -> bool {
     let known_browser_reason = matches!(
         reason.as_str(),
         "search_failed"
+            | "search_input_not_found"
+            | "filter_trigger_not_found"
+            | "filter_panel_not_found"
+            | "filter_not_applied"
             | "search_submit_failed"
             | "search_transition_failed"
             | "page_access_failed"
@@ -2288,6 +2333,9 @@ fn is_structured_repairable_failure(value: &Value) -> bool {
 
 fn is_repairable_browser_error(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
+    if is_browser_connection_error(&error) {
+        return false;
+    }
     if [
         "login",
         "captcha",
@@ -2354,6 +2402,24 @@ fn is_repairable_browser_error(error: &str) -> bool {
         .iter()
         .any(|marker| error.contains(marker));
     direct_browser_evidence || browser_timeout
+}
+
+fn is_browser_connection_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    [
+        "not attached to an active page",
+        "target closed",
+        "session closed",
+        "session with given id not found",
+        "connection closed",
+        "connection refused",
+        "connection reset",
+        "disconnected",
+        "transport closed",
+        "websocket",
+    ]
+    .iter()
+    .any(|marker| error.contains(marker))
 }
 
 fn bounded_program_expression(script: &str, input: &Value) -> Result<String> {

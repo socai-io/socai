@@ -36,12 +36,17 @@ reasoning. Each macro tool should contain all inputs needed to navigate and
 collect evidence internally, then return structured results and artifact
 references.
 
-The exception is an explicit `recovery.action:"browser_script"` result. It
-means the macro's browser contract no longer matches the live page. Follow the
-system-level local browser self-repair protocol, activate a verified local
-override for that exact macro, retry it once, and continue the original task.
-Do not use browser scripts for login, captcha, security, rate-limit, permission,
-or confirmed empty-result conditions.
+A failed macro is not proof that the site changed. Search handles a bounded
+home-page reset and retry before opening notes; `search_retry_error` records
+that the retry was used. Connection recovery belongs to the runtime. Do not
+repeat an exhausted reset/retry loop or attempt to reconnect with browser scripts.
+An explicit `recovery.action:"browser_script"` permits bounded inspection only
+for a remaining page failure. Prefer usable candidate references and `get_notes`
+over repairing the entire macro. Use `socai.snapshot()` for the slim DOM,
+scoping with `{selector: ...}` when a specific region is relevant.
+Combine related actions and readback, then continue normal tools. Leave `save_as`
+unset for ordinary task recovery. Do not use browser scripts for login, captcha,
+security, rate-limit, permission, or confirmed empty-result conditions.
 
 The default interactive XHS tools are intentionally high level:
 

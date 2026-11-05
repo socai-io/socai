@@ -173,19 +173,29 @@ pub fn summarize_tool_result(value: &Value) -> Map<String, Value> {
             props.insert("page_path_depth".into(), json!(path_depth));
         }
     }
+    // Only explicit operational fields; never recursively pick an error
+    // from page content, note bodies or the model's recovery instructions.
+    let record_error = |props: &mut Map<String, Value>, key: &str, error: &str| {
+        let safe = super::trace::redact_telemetry_error(error);
+        props.insert(
+            key.into(),
+            json!(safe
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(480)
+                .collect::<String>()),
+        );
+    };
+    for field in ["search_retry_error", "search_reset_error"] {
+        if let Some(error) = data.get(field).and_then(Value::as_str) {
+            record_error(&mut props, field, error);
+        }
+    }
     if data.get("ok").and_then(Value::as_bool) == Some(false) {
         if let Some(error) = data.get("error").and_then(Value::as_str) {
-            let safe = super::trace::redact_telemetry_error(error);
-            props.insert(
-                "failure_detail".into(),
-                json!(safe
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .chars()
-                    .take(480)
-                    .collect::<String>()),
-            );
+            record_error(&mut props, "failure_detail", error);
         }
         if let Some(reason) = data
             .get("reason")
@@ -406,6 +416,8 @@ mod tests {
                 "strategy": "direct_search_result_navigation",
                 "reason": "not_profile_page",
                 "error": "read search page URL: failed at https://example.org/private?q=secret",
+                "search_retry_error": "submit search: context was destroyed",
+                "search_reset_error": "reset failed at https://example.org/private?q=secret",
                 "page_error": "not_profile_page",
                 "page_url": "https://www.xiaohongshu.com/explore/abc?xsec_token=secret",
                 "page_ocr_text": page_ocr,
@@ -453,6 +465,14 @@ mod tests {
             Some(&json!(
                 "read search page URL: failed at https://example.org/<redacted>"
             ))
+        );
+        assert_eq!(
+            props.get("search_retry_error"),
+            Some(&json!("submit search: context was destroyed"))
+        );
+        assert_eq!(
+            props.get("search_reset_error"),
+            Some(&json!("reset failed at https://example.org/<redacted>"))
         );
         assert_eq!(props.get("page_error"), Some(&json!("not_profile_page")));
         assert_eq!(
