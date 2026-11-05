@@ -961,6 +961,10 @@ when the user clicks Continue. Resume wakes both the execution and its human
 waiter. The result is `user_ready: true, verified: false`: inspect the live
 page and recheck the blocked read operation, never assume authentication or
 replay external writes. Captchas are completed by the user, not bypassed.
+Worker pause acknowledgement also waits for already queued/in-flight browser
+commands to settle. If they have not settled within the bounded handoff window,
+or a command outcome is unknown, takeover fails closed; keep the viewer read-only
+and retry instead of granting input while an old command may still execute.
 On timeout the agent stops bulk retries and produces an
 explicitly partial answer from saved evidence instead of losing the whole run
 to the host's outer inactivity timeout. This watchdog does not cancel external

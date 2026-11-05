@@ -527,6 +527,14 @@ impl SocaiRuntime {
         self.cdp.disconnect().await;
     }
 
+    /// The caller must stop Agent polling first. Fail closed if commands have
+    /// not settled; freezing a future alone does not cancel an issued CDP call.
+    pub async fn wait_for_browser_commands_idle(&self) -> anyhow::Result<()> {
+        let client = self.cdp.browser_client().await
+            .ok_or_else(|| anyhow::anyhow!("Browser is not connected"))?;
+        client.wait_for_idle().await
+    }
+
     /// Cancel an in-flight (including not-yet-polled) browser connection and
     /// wait until a started detached connect task has released its lock. An
     /// established browser remains connected. CLI request cancellation uses
