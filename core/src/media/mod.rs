@@ -21,6 +21,7 @@ mod timing;
 mod video;
 
 pub use self::asr::{local_asr_status, transcribe_local_file_with_timeout, LocalAsrStatus};
+pub use self::audio::extract_audio_wav_file;
 pub(crate) use self::background::{
     background_media_is_stopped, background_video_download_semaphore, emit_background_media_event,
     reserve_background_video_download, subscribe_background_media_cancellation,

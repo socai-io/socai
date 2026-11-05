@@ -141,7 +141,7 @@ impl MediaProcessor {
         let target = out.clone();
         let max_seconds = self.config.max_audio_seconds;
         let duration = tokio::task::spawn_blocking(move || {
-            decode_aac_to_pcm_wav(&source, &target, max_seconds)
+            decode_aac_to_pcm_wav(&source, &target, max_seconds, false)
         })
         .await
         .context("audio decode task panicked")??;
@@ -168,9 +168,28 @@ impl MediaProcessor {
     }
 }
 
+/// Decode an owned archived video without downloading it or running ASR.
+/// The output must be new. Never present a capped or corrupt decode as a full
+/// transcript input; callers own cleanup of their private temporary directory.
+pub fn extract_audio_wav_file(source: &Path, target: &Path, max_seconds: u64) -> Result<f64> {
+    if !(1..=1200).contains(&max_seconds) {
+        anyhow::bail!("archived audio duration limit must be between 1 and 1200 seconds");
+    }
+    let duration = decode_aac_to_pcm_wav(source, target, max_seconds, true)?;
+    if duration >= max_seconds as f64 {
+        anyhow::bail!("video reaches the duration limit; full audio extraction is unavailable");
+    }
+    Ok(duration)
+}
+
 /// Decode the first AAC track of `source` into a mono PCM WAV, keeping at most
 /// `max_seconds` of audio. Returns the written duration in seconds.
-fn decode_aac_to_pcm_wav(source: &Path, target: &Path, max_seconds: u64) -> Result<f64> {
+fn decode_aac_to_pcm_wav(
+    source: &Path,
+    target: &Path,
+    max_seconds: u64,
+    exclusive: bool,
+) -> Result<f64> {
     if max_seconds == 0 {
         anyhow::bail!(MediaUnavailable(
             "managed audio duration limit must be positive".into()
@@ -198,6 +217,17 @@ fn decode_aac_to_pcm_wav(source: &Path, target: &Path, max_seconds: u64) -> Resu
         .find(|track| track.codec_params.codec == CODEC_TYPE_AAC)
         .ok_or_else(|| MediaUnavailable(format!("no AAC audio track in {}", source.display())))?;
     let track_id = track.id;
+    let expected_duration = track
+        .codec_params
+        .time_base
+        .zip(track.codec_params.n_frames)
+        .map(|(base, frames)| {
+            let time = base.calc_time(frames);
+            time.seconds as f64 + time.frac
+        });
+    if exclusive && expected_duration.is_some_and(|duration| duration >= max_seconds as f64) {
+        anyhow::bail!("video reaches the duration limit; full audio extraction is unavailable");
+    }
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .context("failed to initialize the AAC decoder")?;
@@ -227,7 +257,7 @@ fn decode_aac_to_pcm_wav(source: &Path, target: &Path, max_seconds: u64) -> Resu
         }
         let decoded = match decoder.decode(&packet) {
             Ok(decoded) => decoded,
-            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(SymphoniaError::DecodeError(_)) if !exclusive => continue,
             Err(err) => return Err(err.into()),
         };
         let spec = *decoded.spec();
@@ -259,7 +289,7 @@ fn decode_aac_to_pcm_wav(source: &Path, target: &Path, max_seconds: u64) -> Resu
             let target_rate = spec.rate.min(CLOUD_ASR_SAMPLE_RATE);
             decoded_sample_rate = Some(spec.rate);
             max_samples = max_seconds.saturating_mul(u64::from(target_rate));
-            writer = Some(PcmWavWriter::create(target, target_rate)?);
+            writer = Some(PcmWavWriter::create(target, target_rate, exclusive)?);
             resampler = Some(LinearResampler::new(spec.rate, target_rate));
         }
 
@@ -305,7 +335,11 @@ fn decode_aac_to_pcm_wav(source: &Path, target: &Path, max_seconds: u64) -> Resu
     let sample_rate = decoded_sample_rate
         .expect("a decoded sample rate exists when the WAV writer exists")
         .min(CLOUD_ASR_SAMPLE_RATE);
-    Ok(written_samples as f64 / f64::from(sample_rate))
+    let duration = written_samples as f64 / f64::from(sample_rate);
+    if exclusive && expected_duration.is_some_and(|expected| (duration - expected).abs() > 0.25) {
+        anyhow::bail!("decoded audio does not cover the container's complete audio track");
+    }
+    Ok(duration)
 }
 
 struct LinearResampler {
@@ -361,8 +395,13 @@ struct PcmWavWriter {
 }
 
 impl PcmWavWriter {
-    fn create(target: &Path, sample_rate: u32) -> Result<Self> {
-        let file = std::fs::File::create(target)
+    fn create(target: &Path, sample_rate: u32, exclusive: bool) -> Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(!exclusive)
+            .truncate(!exclusive)
+            .create_new(exclusive)
+            .open(target)
             .with_context(|| format!("failed to create {}", target.display()))?;
         let mut writer = std::io::BufWriter::new(file);
         writer.write_all(b"RIFF")?;
