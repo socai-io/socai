@@ -603,6 +603,7 @@ export namespace agentPanel {
   }
 
   export function renderAccountConfig(): string {
+    if (!authMenu.isLoggedIn() || !modelsCache.some((info) => info.provider !== "socai")) return "";
     const ownKey = !!selectedModel() && modelProvider !== "socai";
     return `<div class="agent-account-config">
       <label class="agent-own-key-toggle t-small">

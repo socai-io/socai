@@ -224,7 +224,7 @@ export namespace authMenu {
         ${activeUntil ? `<span class="auth-balance-expiry t-small subtle">${esc(t("billing.proEnds", { date: formatDate(activeUntil) }))}</span>` : ""}
       </div>
       ${walletUnavailable && !sessionRejected ? `<button id="auth-wallet-retry" type="button" class="auth-text-button">${esc(t("billing.retry"))}</button>` : ""}
-      <section class="auth-model-picker">${modelConfigContent}</section>
+      ${modelConfigContent ? `<section class="auth-model-picker">${modelConfigContent}</section>` : ""}
       ${sessionRejected ? `
         <button id="auth-sign-in-again" type="button" class="btn-primary auth-full-button" ${phase !== "idle" ? "disabled" : ""}>${esc(t("auth.signInAgain"))}</button>
       ` : activeUntil ? `

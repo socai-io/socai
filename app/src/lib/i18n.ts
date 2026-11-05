@@ -161,7 +161,7 @@ const messages = {
   "auth.signIn": { en: "Sign In", zh: "登录" },
   "auth.phoneLogin": { en: "Sign in with Phone", zh: "手机号登录" },
   "auth.trialUsed": { en: "Sign in to continue using socai.", zh: "登录后继续使用 socai。" },
-  "agent.useOwnKey": { en: "Use my own LLM API key instead", zh: "改用自己的 LLM API Key" },
+  "agent.useOwnKey": { en: "Use my own LLM API key (Legacy)", zh: "使用自己的 LLM API Key（旧版兼容）" },
   "agent.provider": { en: "Provider", zh: "提供商" },
   "auth.googleWaiting": { en: "Continue in your browser to sign in with Google.", zh: "请在浏览器中完成 Google 登录。" },
   "auth.googlePreparing": { en: "Opening Google sign-in…", zh: "正在打开 Google 登录…" },
@@ -180,14 +180,6 @@ const messages = {
     zh: import.meta.env.VITE_SOCAI_DEMO === "true"
       ? "活动期内新用户注册赠送{points}点试用额度，限量100名"
       : "新用户注册赠送{points}点 agent额度",
-  },
-  "auth.useOwnApiKey": {
-    en: "or use your own API key, no sign-in required",
-    zh: "或自己输入API key，无需登录",
-  },
-  "auth.useOwnApiKeyNoPoints": {
-    en: "or use your own API key without points",
-    zh: "或自己输入API key，不使用点数",
   },
   "auth.phone": { en: "phone", zh: "手机号" },
   "auth.sendCode": { en: "send code", zh: "获取验证码" },
@@ -287,8 +279,8 @@ const messages = {
   "subscription.renewal": { en: "renewal", zh: "续费方式" },
   "subscription.noAutoRenew": { en: "manual", zh: "到期不自动续费" },
   "subscription.planHint": {
-    en: "Includes hosted AI access with no API key setup. Your own API key remains available in settings.",
-    zh: "包含免配置 API Key 的云端模型用量；你仍可在设置中使用自己的 API Key。",
+    en: "Includes hosted AI access with no API key setup.",
+    zh: "包含免配置 API Key 的云端模型用量。",
   },
   "subscription.perMonth": { en: "/month", zh: "/月" },
   "subscription.monthlyPoints": { en: "{points} points/month", zh: "{points}点数/月" },
@@ -625,16 +617,16 @@ const messages = {
   },
   "task.replySend": { en: "send", zh: "发送" },
   "task.preflightModelConfig": {
-    en: "the selected model is not ready. configure its api key or account connection in the account menu, then try again.",
-    zh: "当前模型尚未完成配置。请在右上角账号菜单中添加 API Key 或完成账号连接，然后重试。",
+    en: "the selected model is not ready. check your model and account status in the account menu, then try again.",
+    zh: "当前模型尚未就绪。请在右上角账号菜单中检查模型和账号状态，然后重试。",
   },
   "task.preflightAuth": {
     en: "your socai account is signed out. sign in, then send the task again.",
     zh: "当前 socai 账号尚未登录。请先登录账号，然后重新发送任务。",
   },
   "task.preflightBalance": {
-    en: "your socai account does not have enough points. recharge or switch to another configured model, then try again.",
-    zh: "当前 socai 账号点数不足。请充值点数或切换到其他已配置的模型，然后重试。",
+    en: "your socai account does not have enough points. recharge, then try again.",
+    zh: "当前 socai 账号点数不足。请充值点数，然后重试。",
   },
   "task.preflightAccount": {
     en: "socai could not verify your account and point balance. check the network and account region, then try again.",
@@ -925,8 +917,8 @@ const messages = {
     zh: "从社交平台的信息中，找到有依据的答案。",
   },
   "task.addKeyHint": {
-    en: "add an api key in the account menu (top right) to run.",
-    zh: "在右上角账号菜单中添加 api key 后即可运行。",
+    en: "check your model and account status in the account menu (top right) to run.",
+    zh: "请在右上角账号菜单中检查模型和账号状态后再运行。",
   },
   "task.agentPlaceholder": {
     en: "tell socai what you want researched…",

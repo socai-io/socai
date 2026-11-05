@@ -411,6 +411,7 @@ pub struct AgentRunOutcome {
 
 #[tauri::command]
 pub async fn agent_save_api_key(provider: String, api_key: String) -> Result<(), String> {
+    crate::legacy_byok::require()?;
     let provider_enum = Provider::from_name(provider.trim())
         .ok_or_else(|| format!("unknown provider: {provider}"))?;
     if provider_enum == Provider::Socai {
@@ -423,16 +424,19 @@ pub async fn agent_save_api_key(provider: String, api_key: String) -> Result<(),
 
 #[tauri::command]
 pub async fn agent_list_models() -> Result<Vec<Value>, String> {
-    use socai_core::agent::PROVIDERS;
+    let legacy_byok = crate::legacy_byok::enabled()?;
     let _ = socai_core::cloud::take_hosted_llm_default().map_err(|err| format!("{err:#}"))?;
-    // The provider/model that would be used right now. Environment overrides
-    // win when present; otherwise the desktop restores persisted defaults even
-    // if the selected provider still needs a key. The frontend uses
-    // `is_default` to restore this choice across relaunches.
     let guest = !socai_core::cloud::auth_session()
         .map_err(|e| e.to_string())?
         .logged_in;
-    let default_provider = if guest {
+    desktop_model_rows(legacy_byok, guest)
+}
+
+fn desktop_model_rows(legacy_byok: bool, guest: bool) -> Result<Vec<Value>, String> {
+    use socai_core::agent::PROVIDERS;
+    // Only legacy users restore BYOK defaults/environment overrides. Everyone
+    // else selects the hosted model even if old CLI defaults still exist.
+    let default_provider = if guest || !legacy_byok {
         Some(Provider::Socai)
     } else if provider_env_override_present() {
         resolve_provider(None, None)
@@ -446,8 +450,11 @@ pub async fn agent_list_models() -> Result<Vec<Value>, String> {
     let env_model = model_env_override();
     let mut out = Vec::new();
     for cfg in PROVIDERS {
+        if cfg.provider != Provider::Socai && (guest || !legacy_byok) {
+            continue;
+        }
         let credential_kind = provider_credential_kind(cfg.provider);
-        if cfg.provider == Provider::Socai && credential_kind.is_none() && !guest {
+        if cfg.provider == Provider::Socai && credential_kind.is_none() && !guest && legacy_byok {
             continue;
         }
         let credential_kind_label = match credential_kind {
@@ -547,6 +554,7 @@ pub async fn agent_set_default_model(provider: String, model: String) -> Result<
     if provider_enum == Provider::Socai {
         return socai_core::cloud::set_hosted_llm_selected(true).map_err(|err| format!("{err:#}"));
     }
+    crate::legacy_byok::require()?;
     socai_core::cloud::set_hosted_llm_selected(false).map_err(|err| format!("{err:#}"))?;
     save_default_model(provider_enum, model.trim())
         .map(|_| ())
@@ -618,6 +626,7 @@ pub fn open_chrome_data_access_settings() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn agent_open_codex_login() -> Result<Value, String> {
+    crate::legacy_byok::require()?;
     tokio::task::spawn_blocking(start_codex_login)
         .await
         .map_err(|e| format!("codex login task failed: {e}"))?
@@ -713,12 +722,13 @@ pub async fn agent_task_start(
     let anonymous = !socai_core::cloud::auth_session()
         .map_err(|e| e.to_string())?
         .logged_in;
-    let provider = if anonymous {
+    let managed_only = anonymous || !crate::legacy_byok::enabled()?;
+    let provider = if managed_only {
         Some("socai".to_string())
     } else {
         provider
     };
-    let model = if anonymous {
+    let model = if managed_only {
         Some("managed".to_string())
     } else {
         model
@@ -850,12 +860,13 @@ pub async fn agent_task_reply(
     let anonymous = !socai_core::cloud::auth_session()
         .map_err(|e| e.to_string())?
         .logged_in;
-    let provider = if anonymous {
+    let managed_only = anonymous || !crate::legacy_byok::enabled()?;
+    let provider = if managed_only {
         Some("socai".to_string())
     } else {
         provider
     };
-    let model = if anonymous {
+    let model = if managed_only {
         Some("managed".to_string())
     } else {
         model
@@ -4220,12 +4231,12 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn agent_list_models_honors_socai_model_as_selected_row() {
+    #[test]
+    fn agent_list_models_honors_socai_model_only_for_legacy_users() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _env = EnvGuard::set(&[("SOCAI_LLM_PROVIDER", None), ("SOCAI_MODEL", Some("o3"))]);
 
-        let models = agent_list_models().await.unwrap();
+        let models = desktop_model_rows(true, false).unwrap();
         let selected: Vec<&Value> = models
             .iter()
             .filter(|model| model.get("is_default").and_then(Value::as_bool) == Some(true))
@@ -4244,6 +4255,14 @@ mod tests {
             selected[0].get("selected_model").and_then(Value::as_str),
             Some("o3")
         );
+
+        for (legacy, guest) in [(false, false), (false, true), (true, true)] {
+            let models = desktop_model_rows(legacy, guest).unwrap();
+            assert_eq!(models.len(), 1);
+            assert_eq!(models[0]["provider"], "socai");
+            assert_eq!(models[0]["model_id"], "managed");
+            assert_eq!(models[0]["is_default"], true);
+        }
     }
 
     #[test]

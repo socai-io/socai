@@ -1167,8 +1167,19 @@ The desktop allows one completed managed-model answer before sign-in. Local
 trial credentials and the consumed flag live separately in `~/.socai/guest.json`
 (mode 0600); `guest.lock` prevents simultaneous trials across app processes.
 Failed/cancelled answers can retry. New questions and follow-ups require sign-in
-after completion. In the signed-in account menu, **Use my own LLM API key instead**
-reveals the external provider/model/key fields; unchecking returns to the managed model.
+after completion. New desktop users and users who have never saved an API key
+use the managed model, with no API-key setup entry in the account menu.
+On the first launch of this version, the desktop snapshots whether
+`~/.socai/auth.json` already contains a saved provider API key and persists the
+result in `~/.socai/desktop-byok.json`. This is local OS-user compatibility state,
+not a cloud-account entitlement or a cross-device history lookup. Environment
+keys and implicit Codex login alone do not qualify; adding a CLI key later does
+not unlock desktop BYOK. CLI behavior is unchanged.
+Only eligible users see **Use my own LLM API key (Legacy)** in the signed-in
+account menu. They retain provider/model selection and key updates, and can
+switch back to the managed model without losing eligibility. Desktop commands
+also enforce eligibility for key saving, external model selection and Codex
+login; new tasks and follow-ups use the managed model for everyone else.
 An in-flight guest task keeps its guest billing identity if the user signs in.
 
 The API requires `GUEST_TRIAL_ENABLED=true` and `/v1/auth/guest`. Quota is also

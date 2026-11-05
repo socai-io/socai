@@ -1,6 +1,7 @@
 mod artifact_tool;
 mod commands;
 mod connectors;
+mod legacy_byok;
 mod tasks;
 mod telemetry;
 mod timeline;
@@ -128,6 +129,12 @@ pub fn run() {
         .manage(connectors::feishu::FeishuState::default())
         .manage(telemetry)
         .setup(|app| {
+            // Snapshot existing keys before the webview can change credentials.
+            // A migration error fails closed in model/key commands without
+            // preventing access to the rest of the desktop app.
+            if let Err(err) = legacy_byok::enabled() {
+                eprintln!("failed to initialize desktop BYOK eligibility: {err}");
+            }
             // Let the webview load locally-downloaded note media (images/video)
             // from the run-artifact root via the asset protocol (convertFileSrc).
             // The static scope in tauri.conf.json can only name the default
