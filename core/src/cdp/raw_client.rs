@@ -14,6 +14,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 const COMMAND_CHANNEL_CAPACITY: usize = 64;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const IDLE_BARRIER: &str = "__socai_wait_for_idle";
 
 /// Minimal CDP websocket client.
 ///
@@ -80,6 +81,35 @@ struct CdpErrorPayload {
 }
 
 impl RawCdpClient {
+    /// Called only after the owning Agent future stops polling. Wait for
+    /// already queued/sent commands, without issuing another browser action.
+    pub(crate) async fn wait_for_idle(&self) -> Result<()> {
+        if self.is_closed() || !self.unhealthy_sessions.lock().expect("poisoned").is_empty() {
+            anyhow::bail!("Browser command outcome is unknown; takeover is not safe");
+        }
+        let (resp, received) = oneshot::channel();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            self.tx
+                .send(CommandRequest {
+                    id: 0,
+                    method: IDLE_BARRIER.into(),
+                    params: Value::Null,
+                    session_id: None,
+                    resp,
+                })
+                .await
+                .map_err(|_| anyhow!("CDP command channel closed"))?;
+            received
+                .await
+                .map_err(|_| anyhow!("CDP idle barrier closed"))?
+                .map_err(anyhow::Error::msg)?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .map_err(|_| anyhow!("Browser commands are still in flight; retry takeover"))??;
+        Ok(())
+    }
+
     pub async fn connect(ws_url: &str) -> Result<Self> {
         let config = WebSocketConfig {
             max_message_size: None,
@@ -224,6 +254,8 @@ async fn run_connection<S>(
     let (mut write, mut read) = ws.split();
     let mut pending: HashMap<u64, oneshot::Sender<std::result::Result<Value, String>>> =
         HashMap::new();
+    let mut idle_waiters = Vec::new();
+    let mut abandoned_command = false;
 
     // Periodically drop entries whose caller already gave up — `execute_*` times
     // out after COMMAND_TIMEOUT and drops its receiver, which marks the sender
@@ -236,13 +268,27 @@ async fn run_connection<S>(
     loop {
         tokio::select! {
             _ = prune.tick() => {
+                let before = pending.len();
                 pending.retain(|_, resp| !resp.is_closed());
+                // A dropped receiver is not proof Chrome finished executing.
+                // Do not grant takeover from an empty but uncertain queue.
+                abandoned_command |= before != pending.len();
             }
             command = rx.recv() => {
                 let Some(command) = command else {
                     fail_all(&mut pending, "command channel closed");
                     break;
                 };
+                if command.method == IDLE_BARRIER {
+                    if abandoned_command {
+                        let _ = command.resp.send(Err("A browser command outcome is unknown".into()));
+                    } else if pending.is_empty() {
+                        let _ = command.resp.send(Ok(serde_json::json!({})));
+                    } else {
+                        idle_waiters.push(command.resp);
+                    }
+                    continue;
+                }
                 let id = command.id;
                 let mut payload = serde_json::json!({
                     "id": id,
@@ -302,6 +348,15 @@ async fn run_connection<S>(
                         break;
                     }
                 }
+            }
+        }
+        if abandoned_command || pending.is_empty() {
+            for waiter in idle_waiters.drain(..) {
+                let _ = waiter.send(if abandoned_command {
+                    Err("A browser command outcome is unknown".into())
+                } else {
+                    Ok(serde_json::json!({}))
+                });
             }
         }
     }
