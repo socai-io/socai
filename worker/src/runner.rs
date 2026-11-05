@@ -705,12 +705,97 @@ impl Tool for AuthorizedWriteTool {
     }
 }
 
+/// Keep recovery advice consistent with the tools this hosted run can call.
+/// This changes neither the original failure nor the site's write authority.
+struct HostedRecoveryTool {
+    inner: SharedTool,
+}
+
+#[async_trait]
+impl Tool for HostedRecoveryTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn input_schema(&self) -> Value {
+        self.inner.input_schema()
+    }
+
+    fn external_write(&self) -> bool {
+        self.inner.external_write()
+    }
+
+    fn parallel_scope(&self) -> Option<&str> {
+        self.inner.parallel_scope()
+    }
+
+    fn always_available(&self) -> bool {
+        self.inner.always_available()
+    }
+
+    fn available_in_local_delivery(&self) -> bool {
+        self.inner.available_in_local_delivery()
+    }
+
+    fn defer_until_site(&self) -> &str {
+        self.inner.defer_until_site()
+    }
+
+    fn is_available(&self, ctx: &ToolContext) -> bool {
+        self.inner.is_available(ctx)
+    }
+
+    fn effective_input(&self, input: &Value) -> Value {
+        self.inner.effective_input(input)
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let mut result = self.inner.call(input, ctx).await?;
+        for block in &mut result.blocks {
+            let ToolResultBlock::Text { text } = block else {
+                continue;
+            };
+            if !text.contains("\"recovery\"") {
+                continue;
+            }
+            let Ok(mut value) = serde_json::from_str::<Value>(text) else {
+                continue;
+            };
+            if value.get("ok").and_then(Value::as_bool) != Some(false) {
+                continue;
+            }
+            let Some(recovery) = value.get_mut("recovery").and_then(Value::as_object_mut) else {
+                continue;
+            };
+            if recovery.get("action").and_then(Value::as_str) != Some("browser_script") {
+                continue;
+            }
+            recovery.remove("action");
+            recovery.remove("save_as");
+            recovery.insert("available".into(), Value::Bool(false));
+            recovery.insert(
+                "unavailable_tool".into(),
+                Value::String("browser_script".into()),
+            );
+            recovery.insert("instruction".into(), Value::String(
+                "Browser script recovery is not exposed in this hosted run. Do not call the unavailable tool or repeat an unchanged failed action. Preserve the original failure and evidence, explain which part is blocked, and continue only with available tools and saved material. Do not claim the browser problem was repaired.".into(),
+            ));
+            *text = serde_json::to_string(&value)?;
+        }
+        Ok(result)
+    }
+}
+
 fn authorize_site_tools(
     site: &str,
     tools: Vec<SharedTool>,
     grants: &[ExternalWriteGrant],
 ) -> Vec<SharedTool> {
-    tools
+    let tools: Vec<SharedTool> = tools
         .into_iter()
         .filter_map(|tool| {
             if !tool.external_write() {
@@ -723,6 +808,13 @@ fn authorize_site_tools(
                 .collect::<Vec<_>>();
             (!matching.is_empty()).then(|| AuthorizedWriteTool::wrap(tool, matching))
         })
+        .collect();
+    if tools.iter().any(|tool| tool.name() == "browser_script") {
+        return tools;
+    }
+    tools
+        .into_iter()
+        .map(|inner| Arc::new(HostedRecoveryTool { inner }) as SharedTool)
         .collect()
 }
 
@@ -1509,8 +1601,12 @@ mod tests {
             self.external_write
         }
 
-        async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-            Ok(ToolResult::text("ok"))
+        async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+            Ok(if input.get("ok").and_then(Value::as_bool) == Some(false) {
+                ToolResult::failure(input.to_string())
+            } else {
+                ToolResult::text(input.to_string())
+            })
         }
     }
 
@@ -2053,8 +2149,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn external_write_tools_are_hidden_until_their_site_and_tool_are_granted() {
+    #[tokio::test]
+    async fn external_write_tools_are_hidden_until_their_site_and_tool_are_granted() {
         let tools = || {
             vec![
                 classified_tool("search", false),
@@ -2082,6 +2178,94 @@ mod tests {
         assert_eq!(
             names(authorize_site_tools("instagram", tools(), &[grant])),
             ["search"]
+        );
+
+        let restricted = authorize_site_tools("xhs", tools(), &[]);
+        let context = ToolContext::new("recovery-contract", std::env::temp_dir());
+        let original = json!({
+            "ok": false,
+            "reason": "search_retry_error",
+            "error": "filter panel not found after retry",
+            "recovery": {
+                "action": "browser_script",
+                "original_tool": "search",
+                "original_input": {"query":"租房收纳"},
+                "instruction": "Inspect socai.snapshot() with browser_script",
+                "save_as": {"tool":"search"}
+            }
+        });
+        let result = restricted[0]
+            .call(original.clone(), &context)
+            .await
+            .expect("result");
+        assert!(
+            result.failed(),
+            "do not turn an acquisition failure into success"
+        );
+        let visible: Value = serde_json::from_str(&result.flat_text()).expect("JSON result");
+        assert_eq!(visible["reason"], original["reason"]);
+        assert_eq!(visible["error"], original["error"]);
+        assert_eq!(
+            visible["recovery"]["original_input"],
+            original["recovery"]["original_input"]
+        );
+        assert_eq!(visible["recovery"]["available"], false);
+        assert!(
+            visible["recovery"].get("action").is_none(),
+            "must not recommend an unavailable tool"
+        );
+        assert!(visible["recovery"].get("save_as").is_none());
+
+        let ordinary = json!({"ok":false,"reason":"login_required"});
+        let result = restricted[0]
+            .call(ordinary.clone(), &context)
+            .await
+            .expect("login result");
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.flat_text()).expect("JSON"),
+            ordinary
+        );
+
+        for unchanged in [
+            json!({"ok":true,"recovery":{"action":"browser_script"}}),
+            json!({"ok":false,"recovery":{"action":"wait_for_login"}}),
+            json!({"ok":false,"recovery":"invalid upstream shape"}),
+            json!({"ok":false,"record":{"recovery":{"action":"browser_script"}}}),
+        ] {
+            let result = restricted[0]
+                .call(unchanged.clone(), &context)
+                .await
+                .expect("unchanged result");
+            assert_eq!(
+                serde_json::from_str::<Value>(&result.flat_text()).expect("JSON"),
+                unchanged
+            );
+            assert_eq!(result.failed(), unchanged["ok"] == false);
+        }
+        let namespaced = NamespacedTool::wrap("xhs", restricted[0].clone());
+        assert_eq!(namespaced.name(), "xhs__search");
+        assert!(!namespaced.external_write());
+        let result = namespaced
+            .call(original.clone(), &context)
+            .await
+            .expect("namespaced result");
+        let namespaced_value: Value = serde_json::from_str(&result.flat_text()).expect("JSON");
+        assert_eq!(namespaced_value["recovery"]["available"], false);
+
+        let grant = ExternalWriteGrant {
+            site: "xhs".into(),
+            tool: "browser_script".into(),
+            input: json!({"script":"return {};"}),
+        };
+        let exposed = authorize_site_tools("xhs", tools(), &[grant]);
+        assert_eq!(names(exposed.clone()), ["search", "browser_script"]);
+        let result = exposed[0]
+            .call(original.clone(), &context)
+            .await
+            .expect("exposed result");
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.flat_text()).expect("JSON"),
+            original
         );
     }
 
