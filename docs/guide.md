@@ -52,6 +52,25 @@ Only the compact catalog is included by default, not all instruction bodies.
 These methods do not add parsers, enable unavailable export formats or grant
 permission to publish or send content.
 
+Managed Web Workers transcribe video audio through the existing authenticated
+loopback host channel, bound to the account, conversation, run and assignment.
+The host must implement `internal_transcribe_audio` with a current-run relative
+PCM WAV path, durable duplicate suppression and Web usage settlement. No
+desktop device token is needed or copied. The endpoint is internal, not another
+model-facing tool. Missing configuration, unsupported audio, empty speech and
+timeouts are explicit failures; managed requests never fall back to an absent
+local ASR helper. Native Desktop/CLI behavior remains unchanged.
+
+Hosted video results retain `transcript`, provider-supplied
+`transcript_segments` (`start_ms`, `end_ms`, `text`),
+`transcript_timestamps_available` and measured `transcript_duration_s` in the
+saved work. Providers without sentence timing return text and explicitly mark
+timings unavailable. Bounded evidence previews carry truncation flags; retrieve
+the original archive for complete text. Hosted requests reaching the 20-minute
+decoder limit fail rather than silently reporting a clipped transcript as full.
+This transport does not itself supply a standalone batch-job UI or prove a
+deployed end-to-end transcription, provider accuracy or file-download workflow.
+
 ## Quick start
 
 ### Desktop app

@@ -9,6 +9,22 @@ use crate::media::processor::MediaProcessor;
 /// CDN throughput varies; still bounded so a stalled download can't hang a scan.
 const VIDEO_DOWNLOAD_TIMEOUT_S: u64 = 600;
 
+fn apply_transcript(video: &mut Value, result: &Value) {
+    let Some(text) = result.get("text").and_then(Value::as_str).filter(|text| !text.trim().is_empty()) else {
+        insert_string(video, "transcript_error", "No speech was recognized in this video");
+        return;
+    };
+    insert_string(video, "transcript", text);
+    if let Some(map) = video.as_object_mut() {
+        for (source, target) in [("segments", "transcript_segments"),
+            ("timestamps_available", "transcript_timestamps_available"), ("duration_s", "transcript_duration_s")] {
+            if let Some(value) = result.get(source) {
+                map.insert(target.into(), value.clone());
+            }
+        }
+    }
+}
+
 impl MediaProcessor {
     /// OCR a video note's already-downloaded poster in place: read
     /// `poster_local_path` and attach `poster_ocr` (or `poster_ocr_error`).
@@ -212,11 +228,8 @@ impl MediaProcessor {
             map.remove("transcript_error");
         }
         let t0 = Instant::now();
-        match self.transcribe_audio(&path, "").await {
-            Ok(transcript) if !transcript.trim().is_empty() => {
-                insert_string(video, "transcript", transcript);
-            }
-            Ok(_) => {}
+        match self.transcribe_audio_result(&path, "").await {
+            Ok(transcript) => apply_transcript(video, &transcript),
             Err(err) => insert_string(video, "transcript_error", format!("{err:#}")),
         }
         if let Some(map) = video.as_object_mut() {
@@ -271,11 +284,8 @@ impl MediaProcessor {
             if let Some(map) = result.as_object_mut() {
                 map.remove("transcript_error");
             }
-            match self.transcribe_audio(&source, referer).await {
-                Ok(transcript) if !transcript.trim().is_empty() => {
-                    insert_string(&mut result, "transcript", transcript);
-                }
-                Ok(_) => {}
+            match self.transcribe_audio_result(&source, referer).await {
+                Ok(transcript) => apply_transcript(&mut result, &transcript),
                 Err(err) => insert_string(&mut result, "transcript_error", format!("{err:#}")),
             }
         }
@@ -556,5 +566,64 @@ mod tests {
             cached.join("video.mp4").exists(),
             "preserve the old file, don't delete user data"
         );
+
+        // The updated media contract also preserves host sentence timings.
+        // This is controlled loopback transport coverage, not provider ASR.
+        let input = directory.path().join("site_media/hosted/audio.wav");
+        std::fs::create_dir_all(input.parent().unwrap()).unwrap();
+        std::fs::write(&input, b"controlled transport input").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/internal/worker-tools", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for end_ms in [1000, 3000] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0u8; 4096];
+                let header_end = loop {
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(index) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+                        break index + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..header_end]).to_lowercase();
+                let length: usize = headers.lines().find_map(|line| line.strip_prefix("content-length:"))
+                    .unwrap().trim().parse().unwrap();
+                while bytes.len() < header_end + length {
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                }
+                let request: serde_json::Value = serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
+                assert_eq!(request["tool"], "internal_transcribe_audio");
+                assert_eq!(request["run_id"], "current-run");
+                assert_eq!(request["input"]["path"], "site_media/hosted/audio.wav");
+                assert!(request["input"].get("audio_base64").is_none());
+                let body = serde_json::to_vec(&json!({"ok":true,"result":{
+                    "text":"真实转写", "duration_s":1,"timestamps_available":true,
+                    "segments":[{"start_ms":0,"end_ms":end_ms,"text":"真实转写"}]
+                }})).unwrap();
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
+            }
+        });
+        let token = "private-test-token-should-not-appear-in-debug";
+        let remote = crate::media::RemoteAsrConfig::new(endpoint, token,
+            json!({"run_id":"current-run","binding":{"user_id":"account"}}), directory.path()).unwrap();
+        assert!(!format!("{remote:?}").contains(token));
+        let result = remote.transcribe(&input).await.unwrap();
+        let mut video = json!({});
+        super::apply_transcript(&mut video, &result);
+        assert_eq!(video["transcript"], "真实转写");
+        assert_eq!(video["transcript_segments"][0]["end_ms"], 1000);
+        assert!(remote.transcribe(&input).await.is_err(), "invalid timing must not pass");
+        server.await.unwrap();
+        let outside = tempdir().unwrap();
+        let foreign = outside.path().join("foreign.wav");
+        std::fs::write(&foreign, b"foreign").unwrap();
+        assert!(remote.transcribe(&foreign).await.is_err());
+        assert!(crate::media::RemoteAsrConfig::new("https://example.com", token,
+            json!({}), directory.path()).is_err());
     }
 }

@@ -23,9 +23,38 @@ impl MediaProcessor {
     /// Transcribe a video/audio source through managed cloud ASR for paid
     /// sessions, or through the bundled local Whisper small worker otherwise.
     pub async fn transcribe_audio(&self, source: &str, referer: &str) -> Result<String> {
+        let result = self.transcribe_audio_result(source, referer).await?;
+        Ok(result["text"].as_str().unwrap_or_default().to_string())
+    }
+
+    pub(crate) async fn transcribe_audio_result(&self, source: &str, referer: &str) -> Result<serde_json::Value> {
         let t0 = Instant::now();
-        let result = self.transcribe_audio_inner(source, referer).await;
+        let result = if let Some(remote) = &self.remote_asr {
+            self.transcribe_hosted_audio(remote, source, referer).await
+        } else {
+            self.transcribe_audio_inner(source, referer).await.map(|text| serde_json::json!({
+                "text": text, "segments": [], "timestamps_available": false,
+            }))
+        };
         self.timing.record("asr_transcribe", t0.elapsed());
+        result
+    }
+
+    async fn transcribe_hosted_audio(&self, remote: &crate::media::RemoteAsrConfig,
+        source: &str, referer: &str) -> Result<serde_json::Value> {
+        if !self.config.use_cloud_asr {
+            anyhow::bail!("video transcription is disabled for this media request");
+        }
+        let source = self.local_audio_source(source, referer).await?;
+        let (wav, duration) = self.extract_audio_wav(&source).await?;
+        let result = if duration >= self.config.max_audio_seconds as f64 {
+            // The shared decoder caps native previews. A hosted full-transcript
+            // request must not silently label that clipped preview as complete.
+            Err(anyhow::anyhow!("video reaches the transcription duration limit; full transcription is unavailable"))
+        } else {
+            remote.transcribe(&wav).await
+        };
+        let _ = tokio::fs::remove_file(&wav).await;
         result
     }
 
@@ -129,7 +158,13 @@ impl MediaProcessor {
             self.config.base_dir.join("audio")
         };
         let dir = ensure_dir(&dir)?;
-        Ok(dir.join("audio.wav"))
+        // Parallel hosted video requests must never overwrite one another's
+        // provider input. Desktop retains its existing stable preview path.
+        Ok(dir.join(if self.remote_asr.is_some() {
+            format!("audio-{}.wav", uuid::Uuid::new_v4())
+        } else {
+            "audio.wav".into()
+        }))
     }
 }
 

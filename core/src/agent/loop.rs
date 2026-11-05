@@ -157,6 +157,7 @@ pub struct AgentOptions {
     pub billing_task_id: Option<String>,
     /// Optional host-owned OCR endpoint. Local entrypoints leave this unset.
     pub remote_ocr: Option<RemoteOcrConfig>,
+    pub remote_asr: Option<crate::media::RemoteAsrConfig>,
     /// Optional entrypoint-owned recovery hook for transient dependencies used
     /// by tools. A recovered call is retried once; failed recovery switches
     /// the loop to bounded local delivery followed by a partial summary.
@@ -185,6 +186,7 @@ impl Default for AgentOptions {
             background_media_generation: None,
             billing_task_id: None,
             remote_ocr: None,
+            remote_asr: None,
             tool_failure_recovery: None,
             desktop_network_recovery: false,
             model_previews: false,
@@ -402,7 +404,8 @@ pub async fn run_agent_with_events(
         .with_run_state(Arc::clone(&run_state))
         .with_background_media_generation(options.background_media_generation)
         .with_billing_task_id(options.billing_task_id)
-        .with_remote_ocr(options.remote_ocr);
+        .with_remote_ocr(options.remote_ocr)
+        .with_remote_asr(options.remote_asr);
     for site in &options.enabled_sites {
         ctx.enable_site(site.clone());
     }

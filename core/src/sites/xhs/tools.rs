@@ -2316,6 +2316,11 @@ pub fn note_data_record(
         .filter(|text| !text.is_empty())
     {
         record.insert("transcript".into(), Value::String(transcript.to_string()));
+        for key in ["transcript_segments", "transcript_timestamps_available", "transcript_duration_s"] {
+            if let Some(value) = entity.get("video").and_then(|video| video.get(key)) {
+                record.insert(key.into(), value.clone());
+            }
+        }
     }
     record.insert("media".into(), Value::Array(media.clone()));
     record.insert("media_dir".into(), Value::String(String::new()));
@@ -2912,6 +2917,8 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     // Video audio transcript from the selected ASR route. The full video object stays in the
     // artifact; this keeps the usable text in the compact result.
     "audio_transcript",
+    "audio_transcript_truncated",
+    "audio_transcript_chars",
 ];
 
 /// Keep the text and observed comment/author locators needed for follow-up
@@ -2994,18 +3001,22 @@ fn lean_scan_note(note: &mut Value) {
 }
 
 fn attach_note_audio_transcript(entity: &mut Value) {
-    let Some(transcript) = entity
+    let Some((transcript, total_chars)) = entity
         .get("video")
         .and_then(|video| video.get("transcript"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
-        .map(|text| truncate(text, 6000))
+        .map(|text| (truncate(text, 6000), text.chars().count()))
     else {
         return;
     };
     if let Some(map) = entity.as_object_mut() {
         map.insert("audio_transcript".into(), Value::String(transcript));
+        if total_chars > 6000 {
+            map.insert("audio_transcript_truncated".into(), Value::Bool(true));
+            map.insert("audio_transcript_chars".into(), Value::from(total_chars));
+        }
     }
 }
 
