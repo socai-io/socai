@@ -13,7 +13,10 @@ description: Organize an answer or requested downloadable document/table from re
    exact source identity, IDs, units, dates and parent/reply relationships.
    Do not fabricate missing rows or treat samples as full-platform coverage.
 3. Use the exposed artifact/file tool and its current schema. In hosted runs,
-   use `publish_artifact` when available. For supported source-backed exports,
+   use `publish_artifact` when available. Include the real format extension in
+   its filename, matching the media type (for example, `summary.docx` for Word
+   or `notes.xlsx` for Excel); a display title without an extension is not a
+   complete filename. For supported source-backed exports,
    copy exact source references from `read_conversation_context`, not a filename
    or a remembered ID. Use structured document/table/comment export inputs
    when the tool contract requires them. A skill cannot enable an unsupported
@@ -22,6 +25,8 @@ description: Organize an answer or requested downloadable document/table from re
    the requested content. Include useful source references and genuine coverage
    limits, without unrelated process notes. For multiple files, use distinct
    meaningful names and tell the user which one contains what.
+   A one-sentence rewrite stays one sentence in the file; do not add the old
+   draft, an editing report or extra alternatives unless the user asks.
 5. Check the actual tool result before claiming delivery: successful output,
    returned file name/type, row or section count when provided, and the exact
    attachment/link supplied by the runtime. If a suitable readback tool is
