@@ -42,6 +42,16 @@ a tool, prove which platform an archived record belongs to, or verify that its
 collection, OCR, download, or monitoring succeeded. Those results still require
 their own tool evidence and user-visible deliverables.
 
+Three common methods are also available by default through `read_skill`, without
+an installation step or settings page: `file-analysis` for supplied documents,
+images and tables; `writing` for drafts, rewrites and summaries; and
+`result-delivery` for requested files and multi-source reports. A short request
+such as “summarize these files” or “turn this into a Word document” is enough;
+the agent selects relevant methods and uses the tools exposed by its interface.
+Only the compact catalog is included by default, not all instruction bodies.
+These methods do not add parsers, enable unavailable export formats or grant
+permission to publish or send content.
+
 ## Quick start
 
 ### Desktop app
