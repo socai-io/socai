@@ -155,7 +155,52 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
             })
             .collect();
     }
-    let text = task.to_ascii_lowercase();
+    // Preparation is only a hint, not a permission gate. Match affirmative
+    // request text, not a forbidden-work list such as "不要OCR、评论或转写".
+    // Keep comma/顿号 lists together so a negation applies to the whole list;
+    // an explicit contrast starts another clause and can request a different
+    // action. The model still receives the complete, unchanged user request.
+    let request = task
+        .to_ascii_lowercase()
+        .replace("但是", "。")
+        .replace("不过", "。")
+        .replace("而是", "。")
+        .replace('但', "。")
+        .replace(" but ", ".");
+    let text = request
+        .split(['。', '.', '！', '!', '？', '?', '；', ';', '\n'])
+        .map(|clause| {
+            let end = [
+                "不要",
+                "不需要",
+                "不用",
+                "无需",
+                "禁止",
+                "别再",
+                "先不",
+                "暂不",
+                "不做",
+                "do not ",
+                "don't ",
+                "without ",
+                "no ",
+            ]
+            .iter()
+            .filter_map(|marker| {
+                clause.match_indices(marker).find_map(|(index, _)| {
+                    // English "no " must not match a word ending, e.g. piano.
+                    (!marker.is_ascii()
+                        || index == 0
+                        || !clause.as_bytes()[index - 1].is_ascii_alphanumeric())
+                    .then_some(index)
+                })
+            })
+            .min()
+            .unwrap_or(clause.len());
+            &clause[..end]
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     let has = |words: &[&str]| words.iter().any(|word| text.contains(word));
     let explicit_xhs = has(&["小红书", "xiaohongshu", "xhslink", "rednote", "xhs-"]);
     let explicit_dy = has(&["抖音", "douyin", "dy-"]);
@@ -195,7 +240,7 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
     let monitoring = has(&["监控", "monitor"])
         || (has(&["账号", "博主", "达人", "主页"])
             && has(&["定时", "每天", "追踪更新", "新增作品"]));
-    let media = has(&["下载", "download", "无水印"])
+    let media = has(&["下载", "保存", "download", "save", "无水印"])
         && has(&["配图", "图片", "图集", "视频", "素材", "原图", "media"]);
     let account = has(&["账号", "博主", "达人", "主页", "account"])
         && has(&["分析", "对标", "拆解", "定位", "analy"]);
@@ -242,6 +287,7 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
         && !image_text
         && !transcript
         && !comments
+        && !media
         && !monitoring;
     let methods = [
         (image_text, "image-text"),
