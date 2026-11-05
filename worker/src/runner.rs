@@ -712,6 +712,10 @@ fn authorize_site_tools(
 ) -> Vec<SharedTool> {
     tools
         .into_iter()
+        // Hosted runs use the run-bound generic human-action gate. Keeping
+        // the platform waiter exposed lets older site instructions select its
+        // short timeout instead, even when the generic tool is available.
+        .filter(|tool| tool.name() != "wait_for_login")
         .filter_map(|tool| {
             if !tool.external_write() {
                 return Some(tool);
@@ -1112,7 +1116,7 @@ async fn execute_run_inner(
     if research_page.is_some() {
         tools.push(Arc::new(crate::human_action::WaitForBrowserAction));
         instruction_blocks.push(
-            "For every browser blocker needing a real person (login_required, challenge_required/captcha, SMS/email two-factor verification, authorization confirmation, or a page that cannot progress), use wait_for_browser_action with the appropriate reason instead of a platform login waiter. Stop browser actions while waiting. Never solve or bypass a challenge. After user_ready, re-read the live page and retry only the blocked read operation once; if still blocked, request help again. User-ready is not authentication evidence or authorization for any external write."
+            "For every browser blocker needing a real person (login_required, challenge_required/captcha, SMS/email two-factor verification, authorization confirmation, or a page that cannot progress), use wait_for_browser_action with the appropriate reason instead of a platform login waiter. The old wait_for_login tool is not exposed in hosted runs; any site instructions mentioning it refer to the local desktop flow. Stop browser actions while waiting. Never solve or bypass a challenge. After user_ready, re-read the live page and retry only the blocked read operation once; if still blocked, request help again. User-ready is not authentication evidence or authorization for any external write."
                 .into(),
         );
     }
@@ -2071,6 +2075,7 @@ mod tests {
         let tools = || {
             vec![
                 classified_tool("search", false),
+                classified_tool("wait_for_login", false),
                 classified_tool("comment", true),
                 classified_tool("browser_script", true),
             ]
