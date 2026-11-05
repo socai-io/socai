@@ -31,6 +31,30 @@ pub const WORKER_CAPABILITIES: &[&str] = &[
     "run_sequence_resume.v1",
 ];
 
+/// Normal stdio Worker, or bounded local audio extraction for the owning host.
+/// This utility never starts an Agent, browser, model request or ASR provider.
+pub async fn run_cli_with_build_info(build: WorkerBuildInfo) -> anyhow::Result<()> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.is_empty() {
+        return run_stdio_with_build_info(build).await;
+    }
+    if args.len() != 4 || args[0] != "--extract-audio" {
+        anyhow::bail!("usage: socai-session-worker [--extract-audio INPUT OUTPUT MAX_SECONDS]");
+    }
+    let source = std::path::PathBuf::from(&args[1]);
+    let target = std::path::PathBuf::from(&args[2]);
+    let max_seconds = args[3]
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("invalid duration"))?
+        .parse::<u64>()?;
+    let duration = tokio::task::spawn_blocking(move || {
+        socai_core::media::extract_audio_wav_file(&source, &target, max_seconds)
+    })
+    .await??;
+    println!("{duration:.9}");
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkerBuildInfo {
     pub worker_version: String,
