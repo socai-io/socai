@@ -926,6 +926,15 @@ intervals do not consume either budget or XHS page/search polling budgets.
 Local entrypoints without pause controls retain ordinary elapsed-time limits.
 This does not freeze already issued HTTP/CDP requests or background media jobs;
 their transport deadlines and wall-clock telemetry remain independent.
+Browser-backed hosted runs expose `wait_for_browser_action` for login,
+captcha/security checks, SMS/email verification, authorization, or stuck pages.
+The tool stops browser work and waits for a run-bound human-ready signal for
+up to 30 minutes, independently of research budgets. The host must acknowledge
+`run.pause` before making its browser viewer writable, then send `run.resume`
+when the user clicks Continue. Resume wakes both the execution and its human
+waiter. The result is `user_ready: true, verified: false`: inspect the live
+page and recheck the blocked read operation, never assume authentication or
+replay external writes. Captchas are completed by the user, not bypassed.
 On timeout the agent stops bulk retries and produces an
 explicitly partial answer from saved evidence instead of losing the whole run
 to the host's outer inactivity timeout. This watchdog does not cancel external

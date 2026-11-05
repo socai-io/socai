@@ -4845,19 +4845,10 @@ impl Tool for WaitForLoginTool {
                     "message": "Login detected. Re-run the original tool to continue.",
                 })));
             }
-            // A manual "continue" accelerates verification; it does not bypass
-            // a visible logged-out wall. The full gate tolerates sidebar class
-            // changes after a successful QR redirect that make the strict
-            // one-shot selector inconclusive.
-            if human_ready.was_signaled()
-                && xhs.login_gate(false).await.unwrap_or(LoginGate::Required) == LoginGate::LoggedIn
-            {
-                return Ok(json_result(&json!({
-                    "logged_in": true,
-                    "human_confirmed": true,
-                    "message": "Login confirmed from the live browser. Re-run the original tool.",
-                })));
-            }
+            // Continue wakes this loop; only positive live-page evidence may
+            // confirm login. The permissive browsing gate treats an unknown
+            // sidebar as usable, so it is not authentication evidence.
+            human_ready.was_signaled();
             if deadline.is_elapsed() {
                 return Ok(json_result(&json!({
                     "ok": false,
