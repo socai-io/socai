@@ -288,6 +288,8 @@ and model in use are captured on `socai_agent_task_start`.
 | `socai_subscription_checkout` | A WeChat Pay or Alipay order is created or fails | `provider`, `plan_id`, `outcome`, `order_id`, `amount_fen`, `points`, `duration_days`, `error` |
 | `socai_subscription_paid` | Polling first observes a paid subscription order | `order_id`, `amount_fen`, `added_points`, `duration_days`, `pro_active_until` |
 | `socai_agent_task_start` | A task begins running | `task_id`, `provider`, `model`, `task_len`, `task_text` |
+| `socai_task_app_exit` | App exit or update restart requested while a turn is queued/running | `task_id`, `billing_turn_id`, `run_id`, `exit_intent` (`quit` or `update_restart`); intent is saved in the existing task index before browser cleanup |
+| `socai_task_startup_recovery` | Startup finds an unfinished turn or an interrupted turn with a saved exit intent | `task_id`, `billing_turn_id`, `run_id`, `previous_status`, `previous_run_status`, `exit_intent`, `report_present`, `trace_present`; reads existing files before recovery changes their status |
 | `socai_task_system_wake` | Desktop agent run observed at least 2 seconds of system suspend between samples | `task_id`, `run_id`, `step`, `elapsed_ms` (includes suspend), `awake_ms`, `suspend_ms` |
 | `socai_model_connection` | A desktop model attempt schedules a retry, waits for reachability, retries, exhausts its budget, or succeeds after recovery/suspend | `task_id`, `run_id`, `step`, `attempt` (1-based, the attempt whose result triggered the event), `provider`, `outcome`, `reason`, `elapsed_ms`, `awake_ms`, `suspend_ms` for that attempt (null when unavailable) |
 | `socai_gateway_request_error` | A desktop hosted model HTTP attempt fails during transport, response decoding or SSE consumption | `gateway_request_id` (same UUID as gateway logs), `billing_turn_id`, `stage` (connect, send, response_body, response_stream), `duration_ms`, `http_status` and `headers_ms` once headers arrive, `stream_bytes` and `last_chunk_age_ms` for SSE (age null before first chunk), `timed_out`, `os_error` when available, bounded redacted `error` |
@@ -299,6 +301,15 @@ and model in use are captured on `socai_agent_task_start`.
 | `socai_server_browser_session` | The backend creates, denies, quota-blocks, or releases a hosted browser | `stage`, `outcome`, `browser_session_id`, timeout/spend/budget fields, `error` |
 
 Desktop field semantics:
+
+Startup recovery emits once for a saved queued/running turn and for a turn
+already interrupted during exit cleanup, consuming its saved exit intent.
+A null `exit_intent` means no exit intent was recorded, including
+older versions; it does not establish a crash. `quit` records entry into the
+exit-request handler, not successful teardown. Report/trace presence records
+file existence, not delivery to the user. These events use the existing
+best-effort event queue; the saved exit intent can be reported on the next launch
+even when the exit event never reached the server. Follow-up turns clear it.
 
 Feishu chat failures use `stage` to separate `check_connection`,
 `check_send_scopes`, `validate_send_request`, `execute_send`,

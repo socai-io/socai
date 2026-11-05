@@ -124,7 +124,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(runtime)
-        .manage(AgentTaskRegistry::default())
+        .manage(AgentTaskRegistry::new(&telemetry))
         .manage(commands::GoogleAuthState::default())
         .manage(connectors::feishu::FeishuState::default())
         .manage(telemetry)
@@ -159,9 +159,8 @@ pub fn run() {
             let handle = app.handle().clone();
             let media_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
-                // A graceful app shutdown marks active tasks interrupted in
-                // tasks.json before this process starts. If its trace drop
-                // guard finished during shutdown, recover and upload it now.
+                // Registry startup marks unfinished tasks interrupted. If the
+                // trace drop guard finished during shutdown, upload it now.
                 for snapshot in tasks.index().await {
                     if snapshot.status == "interrupted" {
                         if let Some(run_dir) = snapshot.run_dir.as_deref() {
@@ -429,7 +428,16 @@ pub fn run() {
             // session would bill until its server-side timeout.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let runtime = app_handle.state::<SocaiRuntime>().inner().clone();
-                tauri::async_runtime::block_on(runtime.disconnect_browser());
+                tauri::async_runtime::block_on(async {
+                    app_handle
+                        .state::<AgentTaskRegistry>()
+                        .record_exit_intent(
+                            tasks::AppExitIntent::Quit,
+                            &app_handle.state::<DesktopTelemetry>(),
+                        )
+                        .await;
+                    runtime.disconnect_browser().await;
+                });
             }
         });
 }

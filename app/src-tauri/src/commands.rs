@@ -217,6 +217,12 @@ pub async fn cdp_refresh(_runtime: State<'_, SocaiRuntime>) -> Result<(), String
 /// app is still fully alive instead, after the same browser cleanup quit does.
 #[tauri::command]
 pub async fn app_relaunch(app: AppHandle) {
+    app.state::<AgentTaskRegistry>()
+        .record_exit_intent(
+            crate::tasks::AppExitIntent::UpdateRestart,
+            &app.state::<DesktopTelemetry>(),
+        )
+        .await;
     app.state::<SocaiRuntime>().disconnect_browser().await;
     app.cleanup_before_exit();
     tauri::process::restart(&app.env());
@@ -889,6 +895,7 @@ pub async fn agent_task_reply(
             },
             |snapshot| {
                 snapshot.status = "queued".into();
+                snapshot.exit_intent = None;
                 // The runtime can reuse the conversation tab, but this turn only
                 // becomes dependent on it when its own browser tool binds it.
                 snapshot.target_id = None;

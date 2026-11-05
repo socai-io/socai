@@ -3,12 +3,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use socai_core::agent::{mark_agent_run_status, Conversation};
 use socai_core::runtime::BrowserTargetInfo;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::AbortHandle;
 
+use crate::telemetry::DesktopTelemetry;
 use crate::timeline::{self, AgentTaskEventKind, AgentTaskEventPayload};
 
 const MAX_CONCURRENT_AGENT_TASKS: usize = 3;
@@ -72,6 +73,9 @@ pub struct AgentTaskSnapshot {
     pub(crate) created_at: u64,
     pub(crate) started_at: Option<u64>,
     pub(crate) finished_at: Option<u64>,
+    /// Written before exit cleanup so startup recovery can explain an unfinished turn.
+    #[serde(default)]
+    pub(crate) exit_intent: Option<AppExitIntent>,
     pub(crate) run_id: Option<String>,
     pub(crate) run_dir: Option<String>,
     pub(crate) session_dir: Option<String>,
@@ -100,6 +104,13 @@ pub struct AgentTaskSnapshot {
     pub(crate) current_message: Option<String>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AppExitIntent {
+    Quit,
+    UpdateRestart,
+}
+
 impl AgentTaskSnapshot {
     pub(crate) fn billing_id(&self) -> &str {
         self.billing_turn_id.as_deref().unwrap_or(&self.task_id)
@@ -114,12 +125,36 @@ pub(crate) fn default_task_sites() -> Vec<String> {
     vec!["xhs".into()]
 }
 
-impl Default for AgentTaskRegistry {
-    fn default() -> Self {
+impl AgentTaskRegistry {
+    pub(crate) fn new(telemetry: &DesktopTelemetry) -> Self {
         let mut tasks = load_task_index();
         let interrupted_at = now_ms();
         for task in &mut tasks {
-            if matches!(task.status.as_str(), "queued" | "running") {
+            let unfinished = matches!(task.status.as_str(), "queued" | "running");
+            if unfinished || (task.status == "interrupted" && task.exit_intent.is_some()) {
+                // Read the existing evidence before recovery overwrites run.json.
+                let run_dir = task.run_dir.as_deref().map(PathBuf::from);
+                let run = run_dir
+                    .as_ref()
+                    .and_then(|dir| std::fs::read(dir.join("run.json")).ok())
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .unwrap_or(Value::Null);
+                telemetry.capture("socai_task_startup_recovery", json!({
+                    "task_id": task.task_id,
+                    "billing_turn_id": task.billing_turn_id,
+                    "run_id": run["id"].as_str().or(task.run_id.as_deref()),
+                    "previous_status": task.status,
+                    "previous_run_status": run["status"].as_str().filter(|status|
+                        matches!(*status, "running" | "completed" | "failed" | "cancelled" | "interrupted")),
+                    "exit_intent": task.exit_intent,
+                    "report_present": run_dir.as_ref().is_some_and(|dir| dir.join("report.md").is_file()),
+                    "trace_present": run_dir.as_ref().is_some_and(|dir| dir.join("trace.json").is_file()),
+                }));
+                // Exit cleanup may already have marked a browser task interrupted.
+                // Consume its intent too, so this diagnostic is emitted only once.
+                task.exit_intent = None;
+            }
+            if unfinished {
                 task.status = "interrupted".into();
                 task.finished_at = Some(interrupted_at);
                 task.error = Some("app was closed before this task finished".into());
@@ -179,6 +214,31 @@ fn persisted_run_task(run_dir: &str) -> Option<String> {
 }
 
 impl AgentTaskRegistry {
+    pub(crate) async fn record_exit_intent(
+        &self,
+        intent: AppExitIntent,
+        telemetry: &DesktopTelemetry,
+    ) {
+        let mut guard = self.inner.lock().await;
+        for task in &mut guard.tasks {
+            if matches!(task.status.as_str(), "queued" | "running") {
+                // Keep the explicit update reason if an exit callback follows it.
+                task.exit_intent.get_or_insert(intent);
+            }
+        }
+        persist_task_index(&guard.tasks);
+        for task in &guard.tasks {
+            if matches!(task.status.as_str(), "queued" | "running") {
+                telemetry.capture("socai_task_app_exit", json!({
+                    "task_id": task.task_id,
+                    "billing_turn_id": task.billing_turn_id,
+                    "run_id": task.run_id,
+                    "exit_intent": task.exit_intent,
+                }));
+            }
+        }
+    }
+
     pub(crate) async fn create(
         &self,
         task: String,
@@ -212,6 +272,7 @@ impl AgentTaskRegistry {
             created_at: now_ms(),
             started_at: None,
             finished_at: None,
+            exit_intent: None,
             run_id: None,
             run_dir: Some(run_dir),
             session_dir: Some(session_dir),
@@ -739,6 +800,7 @@ fn persist_task_index(tasks: &[AgentTaskSnapshot]) {
                 "created_at": task.created_at,
                 "started_at": task.started_at,
                 "finished_at": task.finished_at,
+                "exit_intent": task.exit_intent,
                 "run_dir": &task.run_dir,
                 "session_dir": &task.session_dir,
                 "partial": task.partial,
