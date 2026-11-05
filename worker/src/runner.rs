@@ -948,6 +948,9 @@ pub fn prepare_run(session_dir: &Path, spec: &RunSpec) -> Result<PreparedRun> {
     let digest = format!("{:x}", Sha256::digest(spec.run_id.as_bytes()));
     let run_dir = conversation_dir.join("runs").join(digest);
     let recovering = run_dir.exists();
+    // Hosted ASR binds to this canonical directory before the agent loop
+    // starts. Create it here, after checking whether this is a recovery.
+    std::fs::create_dir_all(&run_dir).context("failed to create prepared run directory")?;
     let mut context_note = conversation.context_note();
     if recovering {
         context_note.push_str(&format!(
@@ -1804,7 +1807,14 @@ mod tests {
         assert!(first
             .run_dir
             .starts_with(session_dir.join("conversation/runs")));
-        std::fs::create_dir_all(&first.run_dir).expect("create interrupted run directory");
+        assert!(first.run_dir.is_dir(), "fresh run directory must exist before managed ASR setup");
+        assert!(!first.context_note.contains("continuing after"));
+        RemoteAsrConfig::new(
+            "http://127.0.0.1:12345/tools",
+            "a".repeat(64),
+            json!({"run_id":"run/with unsafe path"}),
+            &first.run_dir,
+        ).expect("configure managed ASR before the first agent step");
         std::fs::write(
             first.run_dir.join("notes.json"),
             serde_json::to_vec(&json!([{
