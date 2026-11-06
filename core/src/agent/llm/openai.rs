@@ -877,6 +877,8 @@ struct WireFunction {
 struct StreamProgress {
     bytes: u64,
     failure: Option<&'static str>,
+    gateway_call_id: Option<uuid::Uuid>,
+    gateway_error_status: Option<u16>,
     last_chunk: Option<std::time::Instant>,
 }
 
@@ -944,6 +946,11 @@ async fn read_chat_stream(
         let chunk: Value = serde_json::from_str(data)?;
         if chunk.get("error").is_some() {
             progress.failure = Some("gateway error event");
+            progress.gateway_call_id = chunk.get("request_id").and_then(Value::as_str)
+                .and_then(|id| uuid::Uuid::parse_str(id).ok());
+            progress.gateway_error_status = chunk.get("status").and_then(Value::as_u64)
+                .and_then(|status| u16::try_from(status).ok())
+                .filter(|status| (400..=599).contains(status));
             if let Some(status) = chunk["status"].as_u64().and_then(|s| u16::try_from(s).ok()) {
                 anyhow::bail!(format_http_error(provider.as_str(), status, data));
             }
@@ -1341,11 +1348,13 @@ impl OpenAICompatBackend {
                 };
                 telemetry.capture("socai_gateway_request_error", json!({
                     "gateway_request_id": id.to_string(),
+                    "gateway_call_id": progress.and_then(|p| p.gateway_call_id).map(|id| id.to_string()),
                     "billing_turn_id": self.task_id,
                     "stage": stage,
                     "duration_ms": started.elapsed().as_millis() as u64,
                     "headers_ms": headers_ms,
                     "http_status": status.map(|s| s.as_u16()),
+                    "gateway_error_status": progress.and_then(|p| p.gateway_error_status),
                     "stream_bytes": progress.map(|p| p.bytes),
                     "last_chunk_age_ms": progress.and_then(|p| p.last_chunk)
                         .map(|t| t.elapsed().as_millis() as u64),
@@ -1365,6 +1374,23 @@ impl OpenAICompatBackend {
                 let _ = report("response_body", e.into(), Some(status), headers_ms, None);
                 String::new()
             });
+            if let (Some(id), Some(telemetry)) = (request_id, &self.telemetry) {
+                // Only retain a validated gateway call ID; the response can contain
+                // arbitrary provider text. Server logs hold the detailed rejection.
+                let call_id = serde_json::from_str::<Value>(&text).ok()
+                    .and_then(|v| v.get("request_id").and_then(Value::as_str)
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok()));
+                telemetry.capture("socai_gateway_request_error", json!({
+                    "gateway_request_id": id.to_string(),
+                    "gateway_call_id": call_id.map(|id| id.to_string()),
+                    "billing_turn_id": self.task_id,
+                    "stage": "http_response",
+                    "duration_ms": started.elapsed().as_millis() as u64,
+                    "headers_ms": headers_ms,
+                    "http_status": status.as_u16(),
+                    "error": "gateway HTTP error",
+                }));
+            }
             anyhow::bail!(format_http_error(
                 self.provider.as_str(),
                 status.as_u16(),
