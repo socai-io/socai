@@ -757,6 +757,26 @@ socai daemon answered the version-exempt local ping.
 
 ## Run results and artifacts
 
+Desktop and TUI conversations use the conversation root as their shared file
+working directory. `shell`, `read_file`, `write_file`, and Desktop
+`publish_artifact` resolve relative paths against this same directory on every
+turn. Generated files go here by default; no per-turn `deliverables/` folder is
+required. Each shell call starts here independently, so `cd` does not carry over
+to the next call. The agent can use absolute paths through `shell` to save or copy
+files to other user-requested directories. `write_file` creates new files without
+overwriting existing ones; revisions need a different name.
+
+Per-turn records (`notes.json`, `report.md`, `tools/`, and media) stay in their
+individual run directories. The agent receives their explicit paths, including
+earlier turns. Desktop publishing copies a verified file from the conversation
+into that turn's `outputs/` directory and returns the published absolute path.
+This preserves historical download cards when a working file changes later.
+Files saved outside the conversation can still be used locally; to attach one,
+the agent must explicitly copy it into the conversation and publish it. Existing
+run archives and attachments remain readable without migration. Single-shot
+agent runs without a conversation continue to use their run directory as the
+file working directory.
+
 The local agent's `read_file` tool can read existing `.docx` files as Word body
 text, including paragraphs, table cells and hyperlink text. Its `offset` and
 `limit` select body-text lines. This is not a Word renderer: automatic list

@@ -42,8 +42,8 @@ const TAURI_AGENT_PREAMBLE: &str =
     "You are running inside the socai desktop app as a conversational, multi-turn agent. \
      Besides the site and browser tools you have unrestricted local environment tools: \
      `read_file` (read text, or view image/screenshot files) and `shell` (PowerShell on \
-     Windows, `sh` on macOS/Linux; use absolute paths to work outside the current run \
-     directory). Only access files relevant to the user's request. Maintain continuity \
+     Windows, `sh` on macOS/Linux; use absolute paths to work outside the conversation \
+     working directory). Only access files relevant to the user's request. Maintain continuity \
      with earlier turns in this chat.";
 
 // Keep source references portable; the desktop enriches known URLs locally.
@@ -3494,6 +3494,7 @@ async fn run_desktop_agent(
             initial_skills: research.initial_skills(),
             seed_messages,
             run_dir,
+            working_dir: Some(PathBuf::from(session_dir)),
             session_id: Some(session_id),
             background_media_generation,
             billing_task_id: Some(billing_id.to_owned()),
