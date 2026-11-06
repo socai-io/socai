@@ -912,6 +912,11 @@ mod tests {
             let skill = definition(entry.name).unwrap();
             assert_eq!(skill.description, entry.description);
             assert!(prompt.contains(entry.name));
+            if entry.name.ends_with("-comment-leads") {
+                assert!(skill.document.contains("已有评论优先"));
+                assert!(skill.document.contains("read_conversation_context"));
+                assert!(skill.document.contains("不为补齐字段重新采集"));
+            }
         }
     }
 
