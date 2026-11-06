@@ -157,7 +157,20 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
     let transcript = has(&["逐字稿", "转录", "transcript", "视频文案提取"])
         || (has(&["视频", "音频"]) && has(&["转写", "字幕", "转文字"]));
     let comments = has(&["评论", "comments", "replies"]);
-    let leads = comments && has(&["截流", "意向", "获客", "线索", "触达", "引流"]);
+    let leads = comments
+        && has(&[
+            "截流",
+            "意向",
+            "获客",
+            "线索",
+            "触达",
+            "引流",
+            "回复草稿",
+            "回复建议",
+            "建议回复",
+            "reply draft",
+            "draft replies",
+        ]);
     let monitoring = has(&["监控", "monitor"])
         || (has(&["账号", "博主", "达人", "主页"])
             && has(&["定时", "每天", "追踪更新", "新增作品"]));
