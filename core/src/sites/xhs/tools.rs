@@ -1363,6 +1363,30 @@ fn media_for(
 /// but short enough that one stalled note does not consume minutes.
 const COMMENT_LOAD_TIMEOUT_S: f64 = 30.0;
 
+fn comment_load_timeout(comment_count: i64) -> f64 {
+    if comment_count <= 20 {
+        COMMENT_LOAD_TIMEOUT_S
+    } else {
+        // Full-thread requests are inherently slower than the normal top-comment
+        // sample. Give an explicit large budget one bounded continuation window
+        // instead of forcing the agent to repeat the same 30-second call.
+        (COMMENT_LOAD_TIMEOUT_S + (comment_count.min(300) - 20) as f64 * 0.4).min(120.0)
+    }
+}
+
+fn cached_comment_snapshot(history: &XhsHistoryStore, note_id: &str) -> Vec<Value> {
+    history
+        .get(note_id)
+        .and_then(|entry| entry.entity)
+        .and_then(|entity| {
+            entity
+                .get("top_comments")
+                .and_then(Value::as_array)
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
 fn comment_load_metadata(payload: &Value) -> Value {
     json!({
         "ready": payload.get("ready").and_then(Value::as_bool).unwrap_or(false),
@@ -1374,8 +1398,16 @@ fn comment_load_metadata(payload: &Value) -> Value {
         "returned_primary": payload.get("returned_primary"),
         "returned_replies": payload.get("returned_replies"),
         "returned_total": payload.get("returned_total").and_then(Value::as_i64).unwrap_or(0),
+        "continued_from_primary": payload.get("continued_from_primary").and_then(Value::as_i64).unwrap_or(0),
+        "continued_from_total": payload.get("continued_from_total").and_then(Value::as_i64).unwrap_or(0),
+        "added_total": payload.get("added_total").and_then(Value::as_i64).unwrap_or(0),
         "rounds": payload.get("rounds").and_then(Value::as_i64).unwrap_or(0),
         "stop_reason": payload.get("stop_reason").and_then(Value::as_str).unwrap_or(""),
+        "coverage_gap": payload.get("coverage_gap"),
+        "primary_complete": payload.get("primary_complete").and_then(Value::as_bool).unwrap_or(false),
+        "reply_pass_complete": payload.get("reply_pass_complete").and_then(Value::as_bool).unwrap_or(false),
+        "visible_complete": payload.get("visible_complete").and_then(Value::as_bool).unwrap_or(false),
+        "resume_available": payload.get("resume_available").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -1777,8 +1809,14 @@ async fn scan_card_note(
     // Scans always include comments — there is no longer a level gate.
     if comment_count > 0 {
         let t_comments = std::time::Instant::now();
+        let previous_comments = cached_comment_snapshot(history, &card.note_id);
         let comments_result = xhs
-            .load_comments(comment_count, COMMENT_LOAD_TIMEOUT_S)
+            .load_comments_continuing(
+                comment_count,
+                comment_load_timeout(comment_count),
+                &card.note_id,
+                previous_comments,
+            )
             .await;
         scan_perf.insert(
             "comments_ms".into(),
@@ -3609,8 +3647,14 @@ async fn scan_direct_note(
 
     if comment_count > 0 {
         let t_comments = std::time::Instant::now();
+        let previous_comments = cached_comment_snapshot(history, &target.note_id);
         let comments_result = xhs
-            .load_comments(comment_count, COMMENT_LOAD_TIMEOUT_S)
+            .load_comments_continuing(
+                comment_count,
+                comment_load_timeout(comment_count),
+                &target.note_id,
+                previous_comments,
+            )
             .await;
         attach_comment_load_result(&mut entity, comments_result);
         perf.insert(
@@ -3683,7 +3727,7 @@ impl Tool for GetNotesTool {
                 },
                 "num_comments": {
                     "type": "integer",
-                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. top_comments_wait reports returned_primary, returned_replies and returned_total separately; loaded counts describe the pre-trim observation, not the returned sample. 0 skips comments.",
+                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. Large budgets walk all visible primary comments before a second reply-expansion pass and resume from the note's saved comment snapshot. top_comments_wait reports primary/reply coverage, continuation and stop reason separately. 0 skips comments.",
                     "default": TOP_COMMENTS_PER_NOTE,
                     "minimum": 0
                 },
@@ -5345,7 +5389,7 @@ impl Tool for SearchTool {
                 },
                 "num_comments": {
                     "type": "integer",
-                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. top_comments_wait reports returned_primary, returned_replies and returned_total; loaded counts are pre-trim observations. May stop below this budget; higher values add latency. Ignored in preview mode.",
+                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. Large budgets prioritize primary-comment pagination, then replies, and resume from the saved snapshot. top_comments_wait reports primary/reply coverage, continuation and stop reason. May stop below this budget; higher values add latency. Ignored in preview mode.",
                     "default": AGENT_TOP_COMMENTS_PER_NOTE,
                     "minimum": 0
                 },
@@ -6189,7 +6233,7 @@ impl Tool for AuthorScanTool {
                 },
                 "num_comments": {
                     "type": "integer",
-                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. top_comments_wait reports returned_primary, returned_replies and returned_total; loaded counts are pre-trim observations. May stop below this budget; higher values add latency. Ignored in preview mode.",
+                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. Large budgets prioritize primary-comment pagination, then replies, and resume from the saved snapshot. top_comments_wait reports primary/reply coverage, continuation and stop reason. May stop below this budget; higher values add latency. Ignored in preview mode.",
                     "default": AGENT_TOP_COMMENTS_PER_NOTE,
                     "minimum": 0
                 },

@@ -2153,7 +2153,11 @@ const SocaiXhsPageScripts = (() => {
     const pending = opts.reveal_reply && $$(SHOW_MORE_SELECTOR, scope)
       .find((button) => isVisible(button) && !/收起/.test(text(button)));
     const before = container ? container.scrollTop : 0;
-    if (pending && container) {
+    if (opts.to_start && container) {
+      await browserAction(() => container.scrollTo
+        ? container.scrollTo({top:0, behavior:'instant'})
+        : container.scrollBy({top:-container.scrollTop, behavior:'instant'}));
+    } else if (pending && container) {
       const offset = pending.getBoundingClientRect().top - container.getBoundingClientRect().top
         - container.clientHeight / 2;
       await browserAction(() => container.scrollBy({top:offset, behavior:'instant'}));
@@ -2165,8 +2169,10 @@ const SocaiXhsPageScripts = (() => {
       await browserAction(() => container.scrollBy({top:step, behavior:'instant'}));
     }
     const after = container ? container.scrollTop : 0;
+    const maxTop = container ? Math.max(0, container.scrollHeight - container.clientHeight) : 0;
     return {ok:after !== before, container:container ? (container.className || container.id || container.tagName) : 'none',
-      delta:after-before, error:after !== before ? '' : 'comments_not_scrollable'};
+      delta:after-before, at_start:after <= 1, at_end:after >= maxTop - 1,
+      error:after !== before || (opts.to_start && after === 0) ? '' : 'comments_not_scrollable'};
   }
 
   // ── search/feed scroll ───────────────────────────────────────
