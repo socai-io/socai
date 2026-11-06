@@ -2941,7 +2941,7 @@ fn comment_image_urls(comment: &Value) -> Vec<Value> {
         .flatten()
         .filter_map(Value::as_str)
         .filter(|url| {
-            url::Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+            reqwest::Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
         })
         .map(|url| Value::String(url.to_owned()))
         .collect()
