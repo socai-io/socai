@@ -714,6 +714,7 @@ pub async fn agent_task_start(
     research_mode: Option<bool>,
     workflow: Option<TaskWorkflow>,
     custom_workflow: Option<crate::tasks::WorkflowSkill>,
+    upload_ids: Option<Vec<String>>,
 ) -> Result<AgentTaskSnapshot, String> {
     let workflow = workflow.unwrap_or_default();
     let custom_workflow = validate_custom_workflow(custom_workflow)?;
@@ -751,6 +752,7 @@ pub async fn agent_task_start(
     let conversation = Conversation::create_at(&conversation_dir, model.clone())
         .map_err(|err| format!("failed to create desktop conversation session for task: {err}"))?;
     let run_dir = conversation.next_turn_dir(&task_text);
+    crate::chat_uploads::attach(&run_dir, upload_ids.unwrap_or_default())?;
     let _ = std::fs::create_dir_all(&run_dir);
     let session_dir = conversation.dir.display().to_string();
     let registry = tasks.inner().clone();
@@ -836,6 +838,7 @@ pub async fn agent_task_reply(
     research_mode: Option<bool>,
     workflow: Option<TaskWorkflow>,
     custom_workflow: Option<crate::tasks::WorkflowSkill>,
+    upload_ids: Option<Vec<String>>,
 ) -> Result<AgentTaskSnapshot, String> {
     let custom_workflow = validate_custom_workflow(custom_workflow)?;
     let message_text = message.trim().to_string();
@@ -885,6 +888,7 @@ pub async fn agent_task_reply(
     let conversation = Conversation::load(session_dir)
         .map_err(|err| format!("failed to load conversation for task: {err}"))?;
     let run_dir = conversation.next_turn_dir(&message_text);
+    crate::chat_uploads::attach(&run_dir, upload_ids.unwrap_or_default())?;
 
     let snapshot = registry
         .update_if(
@@ -3483,12 +3487,13 @@ async fn run_desktop_agent(
             .filter(|site| site.browserless_tools.is_some())
             .map(|site| site.default_agent_instructions.unwrap_or(site.agent_instructions)(""))
             .collect::<Vec<_>>().join("\n\n");
+        let upload_instructions = run_dir.as_deref().map(crate::chat_uploads::instructions).transpose().map_err(anyhow::Error::msg)?.unwrap_or_default();
         let config = AgentRunConfig {
             max_steps: research.max_steps(),
             extra_instructions: format!(
-                "{}{}{}{}{}\n\n{}\n\n{}",
+                "{}{}{}{}{}\n\n{}\n\n{}{}",
                 instructions, TAURI_SITE_ROUTING_RULES, TAURI_CITATION_RULES, TAURI_ARTIFACT_RULES,
-                source_instructions, http_instructions, research.instructions()
+                source_instructions, http_instructions, research.instructions(), upload_instructions
             ),
             enabled_sites: available_sites,
             initial_skills: research.initial_skills(),

@@ -1,6 +1,6 @@
 [package]
 name = "socai_app"
-version = "0.6.15"
+version = "0.6.16"
 description = "socai desktop app"
 edition = "2021"
 
@@ -24,6 +24,7 @@ reqwest.workspace = true
 futures.workspace = true
 sha2 = "0.10"
 hex = "0.4"
+pdf-extract = "=0.12.1"
 fs2 = "0.4"
 libc.workspace = true
 same-file = "1"

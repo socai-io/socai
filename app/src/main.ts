@@ -66,6 +66,7 @@ export interface AgentModelPreview {
 }
 
 export interface AgentTaskSnapshot {
+  uploads_by_turn?: import("./lib/chat-uploads").ChatUpload[][];
   sites?: string[];
   task_id: string;
   task: string;
