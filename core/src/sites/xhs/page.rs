@@ -1853,7 +1853,27 @@ impl<'a> XhsPageRuntime<'a> {
         }
         self.ensure_xhs(true).await?;
 
-        let origin = xhs_origin_for(&self.current_url().await?);
+        let current_url = self.current_url().await?;
+        // A bounded comment walk may need another call on the same note.
+        // Reloading it discards expanded replies and repeats the same prefix,
+        // so continuation can time out forever before reaching the last thread.
+        // Reuse only a ready, unlocked detail page for this exact note; the
+        // caller still checks the extracted entity's id before recording it.
+        if is_xhs_url(&current_url) && opened_note_id_from_url(&current_url) == note_id {
+            let state = self.expect_object("noteOpen", None).await?;
+            let state_url = state.get("url").and_then(Value::as_str).unwrap_or("");
+            if note_is_open(&state)
+                && is_xhs_url(state_url)
+                && opened_note_id_from_url(state_url) == note_id
+                && state.get("login_required").and_then(Value::as_bool) == Some(false)
+            {
+                return Ok(json!({
+                    "ok": true, "url": state_url, "state": state,
+                    "strategy": "already_open",
+                }));
+            }
+        }
+        let origin = xhs_origin_for(&current_url);
         let mut url = reqwest::Url::parse(&xhs_note_route_url(&origin, note_id))?;
         url.query_pairs_mut()
             .append_pair("xsec_token", xsec_token)
