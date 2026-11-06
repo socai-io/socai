@@ -1752,6 +1752,13 @@ const SocaiXhsPageScripts = (() => {
     const authorIdMatch = authorUrl.match(/\/user\/profile\/([^/?#]+)/);
     const username = firstText(['.name', '.user-name', '.nickname', '.author-name'], item);
     const content = firstText(['.content', '.comment-text', '.note-text', '.desc', '[class*="content"]'], item);
+    // Image-only replies have an empty .content and a sibling gallery. Only
+    // this row's gallery is content: never its avatar or a nested reply's image.
+    const replyOwner = item.closest?.(SUB_COMMENT_SELECTOR) || null;
+    const imageUrls = [...new Set($$('.comment-image-gallery img, .comment-image-gallery__item img', item)
+      .filter((img) => (img.closest?.(SUB_COMMENT_SELECTOR) || null) === replyOwner)
+      .map((img) => absUrl(img.currentSrc || img.getAttribute?.('src') || ''))
+      .filter((url) => /^https?:\/\//i.test(url)))];
     const likes = firstText(['.like .count', '.like-wrapper .count', '.interact-wrapper .count', '[class*="like"] .count'], item);
     const time = firstText(['.time', '.date', '.create-time', '.comment-time', '[class*="time"]'], item);
     const badge = firstText(['.author-tag', '.tag.author', '.reply-tag', '.user-tag', '[class*="author-tag"]'], item);
@@ -1761,7 +1768,7 @@ const SocaiXhsPageScripts = (() => {
       const children = $$(SUB_COMMENT_SELECTOR, item).filter((sub) => !sub.parentElement?.closest(SUB_COMMENT_SELECTOR));
       for (const child of children) {
         const parsed = parseComment(child, false);
-        if (parsed.text) subs.push(parsed);
+        if (hasCommentContent(parsed)) subs.push(parsed);
       }
     }
     return {
@@ -1770,6 +1777,7 @@ const SocaiXhsPageScripts = (() => {
       author_id: authorIdMatch ? decodeURIComponent(authorIdMatch[1]) : '',
       author_url: authorUrl,
       text: content,
+      ...(imageUrls.length ? {image_urls:imageUrls} : {}),
       likes,
       like_count: parseCount(likes),
       // Comment times reuse the note-date normalizer: "10小时前北京" (glued
@@ -1785,7 +1793,12 @@ const SocaiXhsPageScripts = (() => {
   function commentIdentity(item) {
     return item.comment_id
       ? `id:${item.comment_id}`
-      : JSON.stringify([item.author_id || item.username, item.text, item.time]);
+      : JSON.stringify([item.author_id || item.username, item.text || item.image_urls, item.time]);
+  }
+
+  function hasCommentContent(item) {
+    return !!item && typeof item.text === 'string' && (!!item.text.trim()
+      || (Array.isArray(item.image_urls) && item.image_urls.some((url) => typeof url === 'string' && /^https?:\/\//i.test(url))));
   }
 
   // The native load call owns these snapshots. No browser-global cache: a new
@@ -1796,21 +1809,21 @@ const SocaiXhsPageScripts = (() => {
     // match only when it identifies one platform ID, never merge two real IDs.
     const identified = new Map();
     for (const item of [...previous, ...current]) {
-      if (!item || !item.comment_id || typeof item.text !== 'string' || !item.text) continue;
+      if (!item?.comment_id || !hasCommentContent(item)) continue;
       const fallback = commentIdentity({...item, comment_id:''});
       const key = commentIdentity(item);
       if (!identified.has(fallback)) identified.set(fallback, key);
       else if (identified.get(fallback) !== key) identified.set(fallback, null);
     }
     for (const item of [...previous, ...current]) {
-      if (!item || typeof item !== 'object' || typeof item.text !== 'string' || !item.text) continue;
+      if (!hasCommentContent(item)) continue;
       const identity = commentIdentity(item);
       const key = item.comment_id ? identity : identified.get(identity) || identity;
       const old = byId.get(key);
       const merged = {...old};
       for (const [field, value] of Object.entries(item)) {
         if (field === 'like_count' && item.likes === '' && old?.likes) continue;
-        if (field !== 'sub_comments' && value !== '' && value != null) merged[field] = value;
+        if (field !== 'sub_comments' && (value !== '' || field === 'text') && value != null) merged[field] = value;
       }
       merged.sub_comments = includeReplies ? mergeCommentSnapshots(
         old?.sub_comments || [], Array.isArray(item.sub_comments) ? item.sub_comments : [], false,
@@ -1829,7 +1842,7 @@ const SocaiXhsPageScripts = (() => {
     let out = [];
     for (const item of items) {
       const parsed = parseComment(item, true);
-      if (!parsed.text) continue;
+      if (!hasCommentContent(parsed)) continue;
       const key = commentIdentity(parsed);
       if (seen.has(key)) continue;
       seen.add(key);

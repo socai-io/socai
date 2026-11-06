@@ -161,6 +161,36 @@ test('explicit comment data attributes retain precedence over the DOM ID fallbac
   assert.equal(fixture({rows:[row]}).scripts.comments({prefer_hot:false})[0].comment_id, 'existing-id');
 });
 
+test('image-only comments and replies survive snapshots without borrowing avatars or child images', () => {
+  const imageSelector = '.comment-image-gallery img, .comment-image-gallery__item img';
+  const first = 'https://sns-webpic.xhscdn.com/comment/first.webp';
+  const second = 'https://sns-webpic.xhscdn.com/comment/second.webp';
+  const parent = comment('image-parent', '');
+  const reply = comment('image-reply', '');
+  const image = (url, owner) => ({currentSrc:url, closest:()=>owner});
+  const parentImage = image(first, null);
+  const replyImage = image(second, reply);
+  parent.closest = () => null;
+  reply.closest = () => reply;
+  parent.querySelectorAll = selector => selector === imageSelector ? [parentImage, replyImage]
+    : selector === '.comment-item-sub' ? [reply] : [];
+  reply.querySelectorAll = selector => selector === imageSelector ? [replyImage] : [];
+  // Avatar-only and empty loading rows must still be excluded.
+  const empty = comment('empty', '');
+  empty.querySelectorAll = selector => selector === 'img' ? [image('https://example.com/avatar.jpg', null)] : [];
+  const rows = [parent, empty];
+  const f = fixture({rows});
+  let saved = f.scripts.commentAreaState({previous_comments:[]});
+  assert.equal(saved.loaded_total, 2);
+  assert.equal(saved.comments[0].text, '');
+  assert.deepEqual(Array.from(saved.comments[0].image_urls), [first]);
+  assert.deepEqual(Array.from(saved.comments[0].sub_comments[0].image_urls), [second]);
+  rows.splice(0);
+  saved = f.scripts.commentAreaState({previous_comments:JSON.parse(JSON.stringify(saved.comments))});
+  assert.equal(saved.loaded_total, 2);
+  assert.deepEqual(Array.from(saved.comments[0].sub_comments[0].image_urls), [second]);
+});
+
 test('saved ID-less comments upgrade to rendered IDs without duplicate parents or replies', () => {
   const parent = {username:'作者',text:'相同完整原文',time:'11-06',comment_id:'',sub_comments:[
     {username:'回复者',text:'完整回复',time:'11-06',comment_id:'',sub_comments:[]},
