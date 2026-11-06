@@ -304,6 +304,12 @@ the cached level/media setting is insufficient for the current task.
   `xiaohongshu.com/explore/<id>` link without xsec_token cannot be opened on desktop web.
 - Distinguish note body text, comments, author profile facts, engagement, and
   media observations.
+- When reporting an analyzed or delivered comment sample, use
+  `top_comments_wait.returned_primary`, `returned_replies`, and `returned_total`,
+  verified against the returned `top_comments` tree. `loaded_primary` and
+  `loaded_total` describe a larger pre-trim page observation, not evidence
+  returned to this task. Keep `platform_total` separate. If these fields are
+  absent, count the actual returned tree; never substitute the display total.
 - If a macro returns partial success, use the collected evidence and clearly say
   what was missing.
 - If a macro reports login/session/security/route/DOM failures, do not pretend
