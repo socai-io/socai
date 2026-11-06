@@ -10,8 +10,12 @@ use crate::config;
 
 const AUTH_KEY: &str = "socai_pro";
 const LEGACY_AUTH_KEY: &str = "socai_cloud";
-const LEGACY_PRO_BASE_URLS: &[&str] = &["http://47.94.86.171", "https://api.socai.work"];
-const PRODUCTION_BASE_URL: &str = "https://agent-api.socai.io";
+const LEGACY_PRO_BASE_URLS: &[&str] = &[
+    "http://47.94.86.171",
+    "https://api.socai.work",
+    "https://agent-api.socai.io",
+];
+const PRODUCTION_BASE_URL: &str = "https://agentcn-api.socai.io";
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
@@ -554,6 +558,7 @@ fn compiled_base_url() -> Option<String> {
     option_env!("SOCAI_PRO_BASE_URL")
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| Some(PRODUCTION_BASE_URL.to_string()))
 }
 
 pub(super) fn load_credentials() -> Option<CloudCredentials> {

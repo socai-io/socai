@@ -691,6 +691,7 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState
         seed_messages: state.conversation.chat_messages(),
         session_id: Some(state.conversation.id.clone()),
         run_dir: Some(run_dir.clone()),
+        working_dir: Some(state.conversation.dir.clone()),
         ..AgentRunConfig::default()
     };
     // Race the agent against Ctrl+C so the user can interrupt a long run and

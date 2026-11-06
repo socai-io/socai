@@ -46,7 +46,7 @@ impl Tool for PublishArtifactTool {
     fn description(&self) -> &str {
         "Publish a completed user-requested file so the desktop app displays a \
          download card. Call this after creating and verifying the file. Pass \
-         its path relative to the current run directory or an absolute path \
+         its path relative to the file working directory or an absolute path \
          inside the current conversation, including an earlier turn. The \
          source must be a regular file. Publishing never overwrites an existing \
          output. Do not tell the user a file is downloadable until this tool \
@@ -59,7 +59,7 @@ impl Tool for PublishArtifactTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Completed file path, relative to the current run directory or absolute within the current conversation."
+                    "description": "Completed file path, relative to the file working directory or absolute within the current conversation."
                 }
             },
             "required": ["path"],
@@ -85,7 +85,7 @@ impl Tool for PublishArtifactTool {
                 ctx.run_dir.display()
             )
         })?;
-        let requested = resolve_source_path(raw_path, &ctx.run_dir);
+        let requested = resolve_source_path(raw_path, ctx.working_dir());
         let requested_metadata = std::fs::symlink_metadata(&requested).map_err(|error| {
             anyhow::anyhow!(
                 "could not inspect artifact source {}: {error}",
@@ -270,7 +270,7 @@ impl Tool for PublishArtifactTool {
             .file_name()
             .and_then(|value| value.to_str())
             .ok_or_else(|| anyhow::anyhow!("published artifact has no valid filename"))?;
-        let relative_path = ctx.register_artifact(
+        ctx.register_artifact(
             &published,
             name,
             "deliverable",
@@ -288,7 +288,7 @@ impl Tool for PublishArtifactTool {
             "ok": true,
             "artifact": {
                 "name": name,
-                "path": relative_path,
+                "path": published,
                 "size_bytes": metadata.len(),
             },
             "message": "Artifact published. The desktop app will display a download card."
@@ -296,12 +296,12 @@ impl Tool for PublishArtifactTool {
     }
 }
 
-fn resolve_source_path(raw_path: &str, run_dir: &Path) -> PathBuf {
+fn resolve_source_path(raw_path: &str, working_dir: &Path) -> PathBuf {
     let path = PathBuf::from(raw_path);
     if path.is_absolute() {
         path
     } else {
-        run_dir.join(path)
+        working_dir.join(path)
     }
 }
 
