@@ -929,6 +929,13 @@ does not grant publishing permission. Independent platform tool scopes may run
 concurrently, while calls within one scope and external writes remain ordered.
 Browserless site adapters keep their browser-free execution path.
 
+`browser_script` carries arbitrary logged-in page authority and is not part of
+ordinary read-only hosted research. When it is absent from a site's authorized
+tool list, native failures retain their original error and evidence but mark
+script recovery unavailable instead of instructing the agent to call a missing
+tool. This does not grant script access, replay a failed action, or establish
+that the original collection problem was repaired.
+
 Hosted operators can set `SOCAI_READ_TOOL_IDLE_SECONDS` (1–300) and
 `SOCAI_READ_TOOL_WALL_SECONDS` (1–3600, default 900) to bound selected read-only
 research calls. Only real tool progress renews the idle deadline; the hard
