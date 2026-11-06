@@ -10,9 +10,9 @@
 //! remain available to embedders that explicitly want a lexical path boundary,
 //! but socai's interactive entrypoints use their unrestricted constructors.
 //!
-//! Paths are resolved against the current run directory when relative; a
+//! Paths are resolved against the shared file working directory when relative; a
 //! leading `~` expands to the home directory. `shell` also runs with its
-//! working directory set to the current run dir.
+//! working directory set to that same directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -287,11 +287,7 @@ impl Tool for ReadFileTool {
         let Some(raw) = input.get("path").and_then(Value::as_str) else {
             anyhow::bail!("read_file requires a `path`");
         };
-        let cwd = if ctx.run_dir.is_dir() {
-            ctx.run_dir.clone()
-        } else {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        };
+        let cwd = ctx.working_dir().to_path_buf();
         let path = absolutize(&resolve_path(raw), &cwd);
         if !self.roots.is_empty() {
             if !within_roots(&path, &self.roots, &cwd) {
@@ -392,7 +388,7 @@ impl Tool for ReadFileTool {
 }
 
 /// A text writer that remains usable when external dependencies fail.
-/// Creates a new run-local file; revisions use another filename.
+/// Creates a new workspace file; revisions use another filename.
 pub struct WriteFileTool;
 
 #[async_trait]
@@ -401,11 +397,11 @@ impl Tool for WriteFileTool {
         "write_file"
     }
     fn description(&self) -> &str {
-        "Write UTF-8 text (Markdown, plain text, CSV, etc.) to a new file relative to this run directory. Creates subdirectories. Existing files are not overwritten; use a new filename for revisions. Returns the saved path; use publish_artifact afterward for a downloadable attachment. No shell or browser required."
+        "Write UTF-8 text (Markdown, plain text, CSV, etc.) to a new file relative to the file working directory. Creates subdirectories. Existing files are not overwritten; use a new filename for revisions. Returns the saved path; use publish_artifact afterward for a downloadable attachment. Use shell for other user-requested locations. No shell or browser required."
     }
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{
-            "path":{"type":"string","description":"New file path relative to the run, e.g. drafts/report.md."},
+            "path":{"type":"string","description":"New file path relative to the file working directory, e.g. analysis.md."},
             "content":{"type":"string","description":"Complete UTF-8 file contents."}
         },"required":["path","content"],"additionalProperties":false})
     }
@@ -429,12 +425,12 @@ impl Tool for WriteFileTool {
         if path.as_os_str().is_empty()
             || !path.components().all(|c| matches!(c, Component::Normal(_)))
         {
-            anyhow::bail!("path must be relative to this run, without . or .. components");
+            anyhow::bail!("path must be relative to the file working directory, without . or .. components; use shell for other user-requested locations");
         }
         if content.len() > 4 * 1024 * 1024 {
             anyhow::bail!("text exceeds 4 MB; split the deliverable");
         }
-        let mut parent = ctx.run_dir.canonicalize()?;
+        let mut parent = ctx.working_dir().canonicalize()?;
         if let Some(relative_parent) = path.parent() {
             for component in relative_parent.components() {
                 parent.push(component.as_os_str());
@@ -463,7 +459,7 @@ impl Tool for WriteFileTool {
 }
 
 /// `shell` — run a platform-native shell command. The flexible escape hatch for writing files,
-/// listing/grepping artifacts, etc. Working directory is the current run dir.
+/// listing/grepping artifacts, etc. Uses the shared file working directory.
 /// A non-empty `roots` confines path-like arguments to those directory trees
 /// (see module doc — a best-effort static check, not a sandbox).
 pub struct ShellTool {
@@ -549,14 +545,14 @@ impl Tool for ShellTool {
         #[cfg(windows)]
         if !self.roots.is_empty() {
             "Run a PowerShell command and return its stdout/stderr and \
-             exit code. Working directory is the current run dir. Confined to \
+             exit code. Starts in the file working directory on every call. Confined to \
              socai's data directories — commands referencing paths outside \
              them are rejected. Use this to write output files (e.g. \
              Set-Content), list/search run artifacts, create directories, etc. within \
              those directories."
         } else {
             "Run a PowerShell command and return its stdout/stderr and exit \
-             code. Working directory is the current run dir, so relative paths land \
+             code. Each call starts in the file working directory, so relative paths land \
              there; use absolute paths for other user-requested locations. Use this \
              to write output files, list/search artifacts, create directories, etc. \
              Scope: stay within files relevant to the user's task — do not run \
@@ -566,14 +562,14 @@ impl Tool for ShellTool {
         #[cfg(not(windows))]
         if !self.roots.is_empty() {
             "Run a POSIX shell command via `sh -c` and return its stdout/stderr and \
-             exit code. Working directory is the current run dir. Confined to \
+             exit code. Starts in the file working directory on every call. Confined to \
              socai's data directories — commands referencing paths outside \
              them are rejected. Use this to write output files (e.g. \
              printf/tee), list and grep run artifacts, mkdir, etc. within \
              those directories."
         } else {
             "Run a POSIX shell command via `sh -c` and return its stdout/stderr and exit \
-             code. Working directory is the current run dir, so relative paths land \
+             code. Each call starts in the file working directory, so relative paths land \
              there; use absolute paths for other user-requested locations. Use this \
              to write output files (e.g. printf/tee), list and grep artifacts, mkdir, \
              etc. Scope: stay within files relevant to the user's task — do not run \
@@ -610,16 +606,12 @@ impl Tool for ShellTool {
                 .unwrap_or(SHELL_DEFAULT_TIMEOUT_MS),
         );
 
-        let cwd = if ctx.run_dir.is_dir() {
-            ctx.run_dir.clone()
-        } else {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        };
+        let cwd = ctx.working_dir().to_path_buf();
 
         if !self.roots.is_empty() {
             if !within_roots(&cwd, &self.roots, &cwd) {
                 anyhow::bail!(
-                    "run dir {} is outside {} — refusing to run shell there",
+                    "working directory {} is outside {} — refusing to run shell there",
                     cwd.display(),
                     roots_display(&self.roots)
                 );
@@ -824,31 +816,58 @@ mod tests {
 
     #[tokio::test]
     async fn read_honors_offset_and_limit() {
-        let dir = std::env::temp_dir().join(format!("socai_fs_win_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("lines.txt");
-        std::fs::write(&file, "a\nb\nc\nd").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("turn-2");
+        std::fs::create_dir(&run_dir).unwrap();
+        let context = ToolContext::new("run", &run_dir).with_working_dir(dir.path());
+        WriteFileTool
+            .call(
+                json!({"path": "lines.txt", "content": "a\nb\nc\nd"}),
+                &context,
+            )
+            .await
+            .unwrap();
+        assert!(dir.path().join("lines.txt").is_file());
+        assert!(!run_dir.join("lines.txt").exists());
 
         let read = ReadFileTool::unrestricted()
             .call(
-                json!({"path": file.to_string_lossy(), "offset": 2, "limit": 2}),
-                &ctx(),
+                json!({"path": "lines.txt", "offset": 2, "limit": 2}),
+                &context,
             )
             .await
             .unwrap();
         assert_eq!(read.flat_text(), "b\nc");
 
-        let _ = std::fs::remove_dir_all(&dir);
+        let next_context =
+            ToolContext::new("next-run", dir.path().join("turn-3")).with_working_dir(dir.path());
+        assert_eq!(
+            ReadFileTool::unrestricted()
+                .call(
+                    json!({"path": "lines.txt", "offset": 2, "limit": 2}),
+                    &next_context
+                )
+                .await
+                .unwrap()
+                .flat_text(),
+            "b\nc"
+        );
     }
 
     #[tokio::test]
     async fn shell_runs_and_reports_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("turn-1");
+        std::fs::create_dir(&run_dir).unwrap();
+        let context = ToolContext::new("run", &run_dir).with_working_dir(dir.path());
         let ok = ShellTool::unrestricted()
-            .call(json!({"command": "echo hi"}), &ctx())
+            .call(json!({"command": "echo hi; echo hi > shell.txt"}), &context)
             .await
             .unwrap();
         assert!(ok.flat_text().contains("hi"));
         assert!(!ok.failed());
+        assert!(dir.path().join("shell.txt").is_file());
+        assert!(!run_dir.join("shell.txt").exists());
 
         let fail = ShellTool::unrestricted()
             .call(json!({"command": "exit 3"}), &ctx())

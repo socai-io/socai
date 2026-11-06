@@ -527,6 +527,14 @@ impl SocaiRuntime {
         self.cdp.disconnect().await;
     }
 
+    /// The caller must stop Agent polling first. Fail closed if commands have
+    /// not settled; freezing a future alone does not cancel an issued CDP call.
+    pub async fn wait_for_browser_commands_idle(&self) -> anyhow::Result<()> {
+        let client = self.cdp.browser_client().await
+            .ok_or_else(|| anyhow::anyhow!("Browser is not connected"))?;
+        client.wait_for_idle().await
+    }
+
     /// Cancel an in-flight (including not-yet-polled) browser connection and
     /// wait until a started detached connect task has released its lock. An
     /// established browser remains connected. CLI request cancellation uses
@@ -1081,6 +1089,8 @@ pub struct AgentRunConfig {
     pub enabled_sites: Vec<String>,
     pub initial_skills: Vec<String>,
     pub run_dir: Option<PathBuf>,
+    /// Shared file workspace for conversation turns; defaults to the run directory.
+    pub working_dir: Option<PathBuf>,
     /// Prior chat-level messages to continue an ongoing conversation from.
     pub seed_messages: Vec<Message>,
     pub session_id: Option<String>,
@@ -1109,6 +1119,7 @@ impl Default for AgentRunConfig {
             enabled_sites: Vec::new(),
             initial_skills: Vec::new(),
             run_dir: None,
+            working_dir: None,
             seed_messages: Vec::new(),
             session_id: None,
             background_media_generation: None,
@@ -1139,6 +1150,7 @@ pub async fn run_agent_task(
         max_tokens: config.max_tokens,
         extra_instructions: config.extra_instructions,
         run_dir: config.run_dir,
+        working_dir: config.working_dir,
         enabled_sites: config.enabled_sites,
         initial_skills: config.initial_skills,
         compact_after_messages: config.compact_after_messages,

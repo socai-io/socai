@@ -154,8 +154,9 @@ impl Conversation {
 
     pub fn context_note(&self) -> String {
         let mut lines = vec![format!(
-            "This is an ongoing chat conversation (conversation dir: {}). Earlier runs \
-             have their full records in these run dirs:",
+            "This is an ongoing chat conversation (conversation dir: {}). This is the \
+             shared working directory for generated files across turns. Earlier runs \
+             have their full records at these explicit paths:",
             self.dir.display()
         )];
         for (index, run) in self.runs.iter().enumerate() {
