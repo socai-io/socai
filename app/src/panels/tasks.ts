@@ -1841,12 +1841,13 @@ export namespace agentPanel {
     // of falling back to the old run's now-irrelevant values.
     const sameRun = incoming.run_dir === existing.run_dir;
     if (!sameRun) {
-      return { ...incoming };
+      return { ...incoming, uploads_by_turn: incoming.uploads_by_turn ?? existing.uploads_by_turn };
     }
     const status = statusRank(existing.status) > statusRank(incoming.status) ? existing.status : incoming.status;
     const terminalIncoming = statusRank(incoming.status) >= 2;
     return {
       ...incoming,
+      uploads_by_turn: incoming.uploads_by_turn ?? existing.uploads_by_turn,
       status,
       started_at: incoming.started_at ?? existing.started_at,
       finished_at: incoming.finished_at ?? existing.finished_at,

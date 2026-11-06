@@ -1723,7 +1723,7 @@ body.has-paper > #app { position: relative; z-index: 1; }
 .turn > .chat-upload-list { justify-content:flex-end; margin:8px 0 16px; }
 .chat-upload-card { display:flex; align-items:center; gap:10px; width:min(100%,310px); padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--canvas); }
 .chat-upload-icon { display:grid; place-items:center; flex:none; width:32px; }
-.chat-upload-icon svg { width:26px; height:30px; }
+.chat-upload-icon svg { width:26px; height:30px; color:var(--fg) !important; }
 .chat-upload-info { display:flex; flex:1; min-width:0; flex-direction:column; gap:3px; font-size:13px; }
 .chat-upload-info > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-upload-info small { color:var(--fg-soft); font-size:11px; }

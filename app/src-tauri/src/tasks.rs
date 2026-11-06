@@ -48,7 +48,7 @@ pub struct WorkflowSkill {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct AgentTaskSnapshot {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) uploads_by_turn: Vec<Vec<crate::chat_uploads::ChatUpload>>,
     pub(crate) task_id: String,
     #[serde(default)]
