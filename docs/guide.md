@@ -679,6 +679,17 @@ socai config set chrome.profile remote
 
 CLI endpoint overrides remain available through `SOCAI_CDP_WS` and `SOCAI_CDP_URL`.
 
+### Managed account endpoint
+
+Desktop and CLI managed-account services default to
+`https://agentcn-api.socai.io` in Singapore. This endpoint covers account login,
+the hosted model gateway, billing and cloud speech recognition. Saved official
+legacy addresses (`agent-api.socai.io`, `api.socai.work`, and the retired HTTP
+IP) migrate to that endpoint without discarding the device login. Custom server
+addresses and runtime/build-time `SOCAI_PRO_BASE_URL` overrides remain supported;
+known legacy official addresses resolve to Singapore in those overrides too.
+An endpoint change does not interrupt or reroute an already-started model call.
+
 ### Browser action speed
 
 Configure each platform's speed through the CLI or `~/.socai/config.json`:
