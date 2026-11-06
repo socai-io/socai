@@ -17,6 +17,8 @@ description: 小红书 评论采集. Collect distinct top-level comments and rep
 
 ## 交付与完成条件
 
+报告、看板和导出中的样本数以实际返回的`top_comments`及其`sub_comments`为准，分别核对`returned_primary`、`returned_replies`和`returned_total`。`loaded_primary`/`loaded_total`只是裁剪前页面曾加载的数量，`platform_total`是平台展示数，两者都不能冒充已分析或已交付的样本；旧记录缺少返回计数时直接数原件，无法读取则明确未知。
+
 评论及回复表（作品/评论/父级ID、原文、作者公开标识、时间、点赞、来源）、一级/回复分别计数、覆盖限制与断点。
 
 开始、失败或部分完成都要在当前任务中保留实际步骤和来源。正文、评论、图片、音频、文件或监控的缺失不能用示意数据、推测内容、接口200或构建成功代替。遇到登录、验证码或风控交由用户正常接管，不自动绕过，不重复提交未知结果的写操作。跨任务学习不存放用户资料或平台原文。
