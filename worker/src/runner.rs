@@ -192,6 +192,32 @@ fn normalized_comment(value: &Value, minimal: bool, replies: bool) -> Option<Val
     }
     let mut comment = serde_json::Map::new();
     insert_bounded_string(&mut comment, source, "comment_id", 200);
+    // These observed keys are not display text: never truncate them into a
+    // different identity while reducing the size of a Worker evidence frame.
+    if let Some(id) = source
+        .get("author_id")
+        .and_then(Value::as_str)
+        .filter(|id| {
+            !id.trim().is_empty() && id.chars().count() <= 200 && !id.chars().any(char::is_control)
+        })
+    {
+        comment.insert("author_id".into(), Value::String(id.to_string()));
+    }
+    if let Some(value) = source
+        .get("author_url")
+        .and_then(Value::as_str)
+        .filter(|value| value.chars().count() <= 2_048 && !value.chars().any(char::is_control))
+    {
+        if let Ok(url) = reqwest::Url::parse(value) {
+            if matches!(url.scheme(), "http" | "https")
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+            {
+                comment.insert("author_url".into(), Value::String(value.to_string()));
+            }
+        }
+    }
     comment.insert(
         "text".into(),
         Value::String(truncate(text, if minimal { 600 } else { 2_000 })),
@@ -1945,6 +1971,12 @@ mod tests {
                 "note_id":"xhs:note-1",
                 "url":"https://www.xiaohongshu.com/explore/note-1",
                 "title":"First title",
+                "comments":[{
+                    "text":"First comment", "author_id":"001-reader",
+                    "author_url":"https://www.xiaohongshu.com/user/profile/001-reader",
+                    "replies":[{"text":"Reply", "author_id":"002-reader",
+                        "author_url":"https://www.xiaohongshu.com/user/profile/002-reader"}]
+                }],
                 "media":[{"kind":"image","src":"site_media/cover.png"}]
             }]))
             .expect("encode notes"),
@@ -1953,6 +1985,34 @@ mod tests {
         let first = tracker.take_changes(&run_dir);
         assert_eq!(first.len(), 1);
         assert_eq!(first[0]["note_id"], "xhs:note-1");
+        assert_eq!(first[0]["comments"][0]["author_id"], "001-reader");
+        assert_eq!(
+            first[0]["comments"][0]["author_url"],
+            "https://www.xiaohongshu.com/user/profile/001-reader"
+        );
+        assert_eq!(
+            first[0]["comments"][0]["replies"][0]["author_id"],
+            "002-reader"
+        );
+        assert_eq!(
+            first[0]["comments"][0]["replies"][0]["author_url"],
+            "https://www.xiaohongshu.com/user/profile/002-reader"
+        );
+        for minimal in [false, true] {
+            let comment = normalized_comment(&first[0]["comments"][0], minimal, true)
+                .expect("normalize observed identity");
+            assert_eq!(comment["author_id"], "001-reader");
+            assert_eq!(comment["replies"][0]["author_id"], "002-reader");
+            let invalid = normalized_comment(
+                &json!({"text":"Comment",
+                "author_id":"x".repeat(201), "author_url":"https://user:secret@example.com/"}),
+                minimal,
+                true,
+            )
+            .expect("normalize bounded comment");
+            assert!(invalid.get("author_id").is_none());
+            assert!(invalid.get("author_url").is_none());
+        }
         assert!(Path::new(first[0]["media"][0]["src"].as_str().expect("media path")).is_absolute());
         assert!(tracker.take_changes(&run_dir).is_empty());
 

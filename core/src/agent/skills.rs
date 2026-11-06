@@ -1079,6 +1079,30 @@ mod tests {
         assert!(!prompt.contains("## Recovery loop"));
         assert!(!prompt.contains("## Learning gate"));
         assert!(!prompt.contains("## Completion review"));
+
+        // Catalog selection must not turn excluded work into preparation.
+        let sites = vec!["xhs".to_string()];
+        assert_eq!(
+            initial_social_skills(
+                "打开小红书笔记，保存原图后看看前三张。不要OCR、重新抓评论或生成文件。",
+                &sites,
+            ),
+            vec!["xhs-media-download"],
+        );
+        assert!(initial_social_skills("看看小红书原图，不需要OCR和评论采集。", &sites).is_empty());
+        assert!(initial_social_skills(
+            "View the xhs images without OCR, comments or transcripts.",
+            &sites
+        )
+        .is_empty());
+        assert_eq!(
+            initial_social_skills("小红书配图逐图OCR，不要重新采集评论。", &sites),
+            vec!["xhs-image-text"],
+        );
+        assert_eq!(
+            initial_social_skills("小红书不要OCR，但要下载原图。", &sites),
+            vec!["xhs-media-download"],
+        );
     }
 
     #[test]

@@ -220,9 +220,11 @@ impl Tool for ResearchBoardTool {
         let temporary = path.with_extension("json.tmp");
         std::fs::write(&temporary, serde_json::to_vec_pretty(&board)?)?;
         std::fs::rename(temporary, path)?;
-        let mut message =
-            "Research workbench updated. Continue discovery; this is not a completion check."
-                .to_owned();
+        let mut message = format!(
+            "Research workbench updated. Saved board: {} leads, {} relationships. These are the total saved board nodes and edges after upsert, not collected posts or comment coverage; use these counts instead of estimating from this update. Continue discovery; this is not a completion check.",
+            board["leads"].as_array().map_or(0, Vec::len),
+            board["relations"].as_array().map_or(0, Vec::len),
+        );
         if !normalized_relations.is_empty() {
             message.push_str(&format!(
                 " Normalized conflicting kind/uncertain values to kind=hypothesis, uncertain=true for: {}. Review the evidence gap; no relationship was promoted to certainty.",

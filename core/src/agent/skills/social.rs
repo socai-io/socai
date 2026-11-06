@@ -121,7 +121,86 @@ pub(super) const SKILLS: &[SocialSkill] = &[
 /// Preparation hints only: this never enables a site or proves source identity.
 /// Unrelated requests still use the ordinary on-demand catalogue.
 pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String> {
-    let text = task.to_ascii_lowercase();
+    // The hosted attachment index is reference metadata, not another user
+    // request. An old attachment's OCR fields or filename must not choose this
+    // turn's preparation method. This changes hints, never tool permissions.
+    let task = task
+        .split_once("\n\n[Server attachment index: metadata only,")
+        .map_or(task, |(request, _)| request);
+    // A confirmed brief describes what to write, including quoted research and
+    // explicit prohibitions. Do not treat those mentions as collection orders:
+    // e.g. "不要…OCR、素材下载或音频转写" used to preload all three methods.
+    // Parse the existing envelope, rather than keying on an arbitrary "初稿"
+    // substring. The data remain untrusted and grant no collection/write access.
+    let confirmed_brief = task
+        .strip_prefix("根据以下用户已确认的创作简报完成初稿。")
+        .and_then(|rest| rest.rsplit_once("\n已确认简报：\n"))
+        .and_then(|(_, raw)| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .is_some_and(|brief| {
+            matches!(brief["medium"].as_str(), Some("image_text" | "video"))
+                && brief["title"].is_string()
+                && brief["core_judgment"].is_string()
+                && brief["outline"].is_array()
+                && brief["topic"]["source_run_id"].is_string()
+        });
+    if confirmed_brief {
+        return ["xhs", "douyin"]
+            .into_iter()
+            .filter(|site| enabled_sites.iter().any(|enabled| enabled == site))
+            .map(|site| {
+                format!(
+                    "{}-content-workflow",
+                    if site == "xhs" { "xhs" } else { "dy" }
+                )
+            })
+            .collect();
+    }
+    // Preparation is only a hint, not a permission gate. Match affirmative
+    // request text, not a forbidden-work list such as "不要OCR、评论或转写".
+    // Keep comma/顿号 lists together so a negation applies to the whole list;
+    // an explicit contrast starts another clause and can request a different
+    // action. The model still receives the complete, unchanged user request.
+    let request = task
+        .to_ascii_lowercase()
+        .replace("但是", "。")
+        .replace("不过", "。")
+        .replace("而是", "。")
+        .replace('但', "。")
+        .replace(" but ", ".");
+    let text = request
+        .split(['。', '.', '！', '!', '？', '?', '；', ';', '\n'])
+        .map(|clause| {
+            let end = [
+                "不要",
+                "不需要",
+                "不用",
+                "无需",
+                "禁止",
+                "别再",
+                "先不",
+                "暂不",
+                "不做",
+                "do not ",
+                "don't ",
+                "without ",
+                "no ",
+            ]
+            .iter()
+            .filter_map(|marker| {
+                clause.match_indices(marker).find_map(|(index, _)| {
+                    // English "no " must not match a word ending, e.g. piano.
+                    (!marker.is_ascii()
+                        || index == 0
+                        || !clause.as_bytes()[index - 1].is_ascii_alphanumeric())
+                    .then_some(index)
+                })
+            })
+            .min()
+            .unwrap_or(clause.len());
+            &clause[..end]
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     let has = |words: &[&str]| words.iter().any(|word| text.contains(word));
     let explicit_xhs = has(&["小红书", "xiaohongshu", "xhslink", "rednote", "xhs-"]);
     let explicit_dy = has(&["抖音", "douyin", "dy-"]);
@@ -161,7 +240,7 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
     let monitoring = has(&["监控", "monitor"])
         || (has(&["账号", "博主", "达人", "主页"])
             && has(&["定时", "每天", "追踪更新", "新增作品"]));
-    let media = has(&["下载", "download", "无水印"])
+    let media = has(&["下载", "保存", "download", "save", "无水印"])
         && has(&["配图", "图片", "图集", "视频", "素材", "原图", "media"]);
     let account = has(&["账号", "博主", "达人", "主页", "account"])
         && has(&["分析", "对标", "拆解", "定位", "analy"]);
@@ -175,16 +254,40 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
         "keyword only",
         "keyword-only",
     ]);
+    // A short revision request is still writing: users need not repeat the
+    // onboarding label (e.g. 初稿/创作) to retain the same fact/quote boundaries.
+    // Require both a draft target and an editing action; merely mentioning
+    // source正文, OCR or a transcript must not turn collection into drafting.
+    let editing = !image_text
+        && !transcript
+        && !has(&[
+            "不要改稿",
+            "不用改稿",
+            "不改正文",
+            "不要修改正文",
+            "不要重写正文",
+            "不要润色",
+            "不需要改写",
+            "暂不改稿",
+            "先不改稿",
+        ])
+        && (has(&["改稿", "润色稿", "精简稿"])
+            || (has(&["正文", "稿件", "这稿", "这篇稿"])
+                && has(&[
+                    "精简", "润色", "删掉", "删去", "改短", "缩短", "重写", "改写", "修改",
+                ])));
     let workflow = !keyword_only
         && (has(&["内容工作流", "选题", "灵感"])
             || (!has(&["不要写", "先不写", "不写稿", "暂不写"])
                 && (has(&["写稿", "初稿", "成稿", "创作"])
+                    || editing
                     || (!image_text && !transcript && has(&["文案", "写一篇", "写笔记"])))));
     let collection = has(&["采集", "抓取", "收集", "导出", "保存", "整理", "collect"])
         && has(&["帖子", "笔记", "作品", "视频", "链接", "posts"])
         && !image_text
         && !transcript
         && !comments
+        && !media
         && !monitoring;
     let methods = [
         (image_text, "image-text"),
