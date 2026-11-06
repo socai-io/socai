@@ -2840,6 +2840,24 @@ fn lean_scan_payload(payload: &mut Value) {
         if let Some(profile) = obj.get_mut("profile").and_then(Value::as_object_mut) {
             profile.remove("note_cards");
         }
+    } else if let Some(profile) = obj.get_mut("profile").and_then(Value::as_object_mut) {
+        // The artifact already holds covers, repeated author fields and history.
+        // Keep every preview card and its original locator, but do not make
+        // the model page through image URLs to compare fifty titles/likes.
+        if let Some(cards) = profile.get_mut("note_cards").and_then(Value::as_array_mut) {
+            for card in cards.iter_mut().filter_map(Value::as_object_mut) {
+                card.retain(|key, _| {
+                    matches!(
+                        key.as_str(),
+                        "note_id" | "link" | "xsec_token" | "title" | "likes" | "type" | "position"
+                    )
+                });
+            }
+            profile.insert(
+                "note_count_scope".into(),
+                json!("observed_cards_not_account_total"),
+            );
+        }
     }
     if let Some(notes) = obj.get_mut("notes").and_then(Value::as_array_mut) {
         for note in notes.iter_mut() {
@@ -6243,6 +6261,9 @@ impl Tool for AuthorScanTool {
          Use this to discover an author's other projects, collaborators, history, \
          expertise and useful new search directions, including founder/project \
          sourcing. Preview first, then use get_notes on relevant returned cards. \
+         num_notes is a visible-card target, not the account's lifetime post count. \
+         When the user accepts fewer, report the observed count; do not search more \
+         authors solely to meet that target. Full cover URLs remain in the artifact. \
          Investigate selectively; uncertain identity does not disqualify a useful \
          social lead or the companies mentioned by a roundup author."
     }
