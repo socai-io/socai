@@ -927,8 +927,9 @@ async fn read_chat_stream(
                     !call.id.is_empty() && !call.function.name.is_empty(),
                     "incomplete streamed tool call"
                 );
-                serde_json::from_str::<Value>(call.function.arguments.as_deref().unwrap_or("{}"))
-                    .context("invalid streamed tool arguments")?;
+                // Preserve malformed arguments as a string, just like a
+                // non-streamed response. The agent rejects the whole step
+                // before dispatch and can request a bounded correction.
             }
             return Ok(WireResponse {
                 model,
