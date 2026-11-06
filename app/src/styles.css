@@ -2233,6 +2233,12 @@ body.has-paper > #app { position: relative; z-index: 1; }
 }
 .composer__voice.is-recording:hover:not(:disabled) { color: var(--ink-9); background: var(--ink-1); }
 .composer__voice-glyph { display: block; }
+.composer__voice-activity { display:flex; align-items:center; gap:8px; color:var(--fg-soft); font:12px/1.5 var(--font-sans); padding:0 var(--sp-1); }
+.composer__voice-meter { --voice-level:0; display:inline-flex; align-items:center; justify-content:center; gap:3px; width:34px; height:22px; color:var(--ink-0); }
+.composer__voice-meter i { display:block; width:3px; height:calc(3px + var(--voice-level) * 14px); border-radius:2px; background:currentColor; transition:height 100ms linear; }
+.composer__voice-meter i:nth-child(2),.composer__voice-meter i:nth-child(4) { height:calc(3px + var(--voice-level) * 10px); }
+.composer__voice-meter i:first-child,.composer__voice-meter i:last-child { height:calc(3px + var(--voice-level) * 6px); }
+@media(prefers-reduced-motion:reduce) { .composer__voice-meter i { transition:none; } }
 .composer__voice-stop {
   width: 8px;
   height: 8px;

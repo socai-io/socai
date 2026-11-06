@@ -326,6 +326,7 @@ const messages = {
   "voice.startCloud": { en: "start cloud voice input", zh: "开始云端语音输入" },
   "voice.startLocal": { en: "start local voice input", zh: "开始本地语音输入" },
   "voice.stop": { en: "stop recording and transcribe", zh: "停止录音并转写" },
+  "voice.listening": { en: "Listening · pauses finish recording automatically", zh: "正在聆听，停顿后自动识别" },
   "voice.requesting": { en: "requesting microphone access…", zh: "正在请求麦克风权限…" },
   "voice.transcribingCloud": { en: "transcribing with cloud ASR…", zh: "正在使用云端 ASR 转写…" },
   "voice.transcribingLocal": { en: "transcribing with local Whisper small…", zh: "正在使用本地 Whisper small 转写…" },
