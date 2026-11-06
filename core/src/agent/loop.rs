@@ -713,14 +713,25 @@ pub async fn run_agent_with_events(
         }
         truncation_retries = 0;
 
-        if response.tool_calls.is_empty() && contains_pseudo_tool_call(&visible_texts.join("\n\n")) {
+        let invalid_arguments = response
+            .tool_calls
+            .iter()
+            .any(|call| !call.input.is_object());
+        if invalid_arguments
+            || (response.tool_calls.is_empty()
+                && contains_pseudo_tool_call(&visible_texts.join("\n\n")))
+        {
             run_recorder.mark_llm_response_hidden(step)?;
             invalid_tool_retries += 1;
             if invalid_tool_retries > 2 {
-                extension_stop_reason = Some("Repeated invalid tool-call text; summarize available progress without claiming unexecuted actions.".into());
+                extension_stop_reason = Some("Repeated invalid tool calls; summarize available progress without claiming unexecuted actions.".into());
                 break;
             }
-            messages.push(Message::user("Use the actual exposed tool API instead of XML/DSML markup, or answer directly using the available results."));
+            messages.push(Message::user(if invalid_arguments {
+                "Your last response contained tool arguments that were not valid JSON objects. The entire response was discarded before dispatch; none of its calls executed. Resend only those pending calls with well-formed JSON objects, escaping quotes inside strings. Do not repeat successful actions from earlier steps."
+            } else {
+                "Use the actual exposed tool API instead of XML/DSML markup, or answer directly using the available results."
+            }));
             continue;
         }
 
