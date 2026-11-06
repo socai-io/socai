@@ -2287,16 +2287,19 @@ fn build_note_record(entry: &Value, ctx: &ToolContext, level: &str) -> Option<(S
 
 /// One archived comment in the app's `NoteComment` shape, from the full DOM
 /// comment object (`username`/`text`/`like_count`/`time`/`sub_comments`).
-/// `None` when the comment has no text. Replies flatten one level (XHS replies
-/// don't nest further).
+/// `None` when the comment has neither text nor gallery images.
+/// Replies flatten one level (XHS replies don't nest further).
 fn app_note_comment(comment: &Value) -> Option<Value> {
-    let text = comment
-        .get("text")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|t| !t.is_empty())?;
+    let text = comment.get("text").and_then(Value::as_str).map(str::trim)?;
+    let images = comment_image_urls(comment);
+    if text.is_empty() && images.is_empty() {
+        return None;
+    }
     let mut map = Map::new();
     map.insert("text".into(), Value::String(text.to_string()));
+    if !images.is_empty() {
+        map.insert("image_urls".into(), Value::Array(images));
+    }
     // Keep observed identities for later comment -> profile reads. Nicknames
     // are display labels, not stable keys; missing identities remain missing.
     for key in ["comment_id", "author_id", "author_url"] {
@@ -2874,19 +2877,37 @@ const LEAN_NOTE_FIELDS: &[&str] = &[
     "audio_transcript",
 ];
 
-/// Keep the text and observed comment/author locators needed for follow-up
-/// reads, including replies. Older cached text-only samples remain readable;
-/// never infer a missing identity from the nickname or from the parent.
+/// Keep only observed remote gallery locators, not avatars or invented labels.
+fn comment_image_urls(comment: &Value) -> Vec<Value> {
+    comment
+        .get("image_urls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|url| {
+            url::Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        })
+        .map(|url| Value::String(url.to_owned()))
+        .collect()
+}
+
+/// Keep text, gallery images and observed comment/author locators for follow-up
+/// reads, including replies. Never infer an identity from nickname or parent.
 fn lean_comment(comment: &Value) -> Option<Value> {
     if let Some(text) = comment.as_str() {
         return (!text.trim().is_empty()).then(|| Value::String(text.to_string()));
     }
     let text = comment.get("text").and_then(Value::as_str)?;
-    if text.trim().is_empty() {
+    let images = comment_image_urls(comment);
+    if text.trim().is_empty() && images.is_empty() {
         return None;
     }
     let mut lean = Map::new();
     lean.insert("text".into(), Value::String(text.to_string()));
+    if !images.is_empty() {
+        lean.insert("image_urls".into(), Value::Array(images));
+    }
     for key in [
         "comment_id",
         "username",
