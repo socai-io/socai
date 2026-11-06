@@ -1376,6 +1376,14 @@ fn comment_load_timeout(comment_count: i64) -> f64 {
 
 fn cached_comment_snapshot(history: &XhsHistoryStore, note_id: &str) -> (Vec<Value>, bool) {
     let entity = history.get(note_id).and_then(|entry| entry.entity);
+    // Legacy text/date identities drift across reads and can inflate totals.
+    // Rewalk this note instead of seeding an incompatible saved snapshot.
+    if !entity
+        .as_ref()
+        .is_some_and(super::history::comment_snapshot_identified)
+    {
+        return (Vec::new(), false);
+    }
     let comments = entity
         .as_ref()
         .and_then(|entity| entity.get("top_comments"))
