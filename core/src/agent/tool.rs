@@ -200,6 +200,8 @@ struct CallRecovery {
 pub struct ToolContext {
     pub run_id: String,
     pub run_dir: PathBuf,
+    /// Stable base for model-authored files, separate from per-run records.
+    working_dir: PathBuf,
     pub step: u32,
     pub active_tool_name: String,
     /// Desktop user-turn generation used to cancel background media work when
@@ -285,6 +287,7 @@ impl std::fmt::Debug for ToolContext {
         f.debug_struct("ToolContext")
             .field("run_id", &self.run_id)
             .field("run_dir", &self.run_dir)
+            .field("working_dir", &self.working_dir)
             .field("step", &self.step)
             .field("active_tool_name", &self.active_tool_name)
             .field("has_run_state", &self.run_state.is_some())
@@ -332,6 +335,7 @@ impl ToolContext {
             .collect();
         Self {
             run_id: run_id.into(),
+            working_dir: run_dir.clone(),
             run_dir,
             step: 0,
             active_tool_name: String::new(),
@@ -354,6 +358,15 @@ impl ToolContext {
             login_waits: Arc::new(Mutex::new(BTreeSet::new())),
             recovery_evidence: Arc::new(Mutex::new(RecoveryEvidenceState::default())),
         }
+    }
+
+    pub fn with_working_dir(mut self, working_dir: impl AsRef<Path>) -> Self {
+        self.working_dir = working_dir.as_ref().to_path_buf();
+        self
+    }
+
+    pub fn working_dir(&self) -> &Path {
+        &self.working_dir
     }
 
     pub(crate) fn claim_login_wait(&self, site: &str) -> bool {

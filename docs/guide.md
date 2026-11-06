@@ -42,6 +42,16 @@ a tool, prove which platform an archived record belongs to, or verify that its
 collection, OCR, download, or monitoring succeeded. Those results still require
 their own tool evidence and user-visible deliverables.
 
+Three common methods are also available by default through `read_skill`, without
+an installation step or settings page: `file-analysis` for supplied documents,
+images and tables; `writing` for drafts, rewrites and summaries; and
+`result-delivery` for requested files and multi-source reports. A short request
+such as “summarize these files” or “turn this into a Word document” is enough;
+the agent selects relevant methods and uses the tools exposed by its interface.
+Only the compact catalog is included by default, not all instruction bodies.
+These methods do not add parsers, enable unavailable export formats or grant
+permission to publish or send content.
+
 ## Quick start
 
 ### Desktop app
@@ -679,6 +689,17 @@ socai config set chrome.profile remote
 
 CLI endpoint overrides remain available through `SOCAI_CDP_WS` and `SOCAI_CDP_URL`.
 
+### Managed account endpoint
+
+Desktop and CLI managed-account services default to
+`https://agentcn-api.socai.io` in Singapore. This endpoint covers account login,
+the hosted model gateway, billing and cloud speech recognition. Saved official
+legacy addresses (`agent-api.socai.io`, `api.socai.work`, and the retired HTTP
+IP) migrate to that endpoint without discarding the device login. Custom server
+addresses and runtime/build-time `SOCAI_PRO_BASE_URL` overrides remain supported;
+known legacy official addresses resolve to Singapore in those overrides too.
+An endpoint change does not interrupt or reroute an already-started model call.
+
 ### Browser action speed
 
 Configure each platform's speed through the CLI or `~/.socai/config.json`:
@@ -745,6 +766,26 @@ instead of touching Chrome. `daemon_running` separately reports whether any
 socai daemon answered the version-exempt local ping.
 
 ## Run results and artifacts
+
+Desktop and TUI conversations use the conversation root as their shared file
+working directory. `shell`, `read_file`, `write_file`, and Desktop
+`publish_artifact` resolve relative paths against this same directory on every
+turn. Generated files go here by default; no per-turn `deliverables/` folder is
+required. Each shell call starts here independently, so `cd` does not carry over
+to the next call. The agent can use absolute paths through `shell` to save or copy
+files to other user-requested directories. `write_file` creates new files without
+overwriting existing ones; revisions need a different name.
+
+Per-turn records (`notes.json`, `report.md`, `tools/`, and media) stay in their
+individual run directories. The agent receives their explicit paths, including
+earlier turns. Desktop publishing copies a verified file from the conversation
+into that turn's `outputs/` directory and returns the published absolute path.
+This preserves historical download cards when a working file changes later.
+Files saved outside the conversation can still be used locally; to attach one,
+the agent must explicitly copy it into the conversation and publish it. Existing
+run archives and attachments remain readable without migration. Single-shot
+agent runs without a conversation continue to use their run directory as the
+file working directory.
 
 The local agent's `read_file` tool can read existing `.docx` files as Word body
 text, including paragraphs, table cells and hyperlink text. Its `offset` and
@@ -926,6 +967,19 @@ intervals do not consume either budget or XHS page/search polling budgets.
 Local entrypoints without pause controls retain ordinary elapsed-time limits.
 This does not freeze already issued HTTP/CDP requests or background media jobs;
 their transport deadlines and wall-clock telemetry remain independent.
+Browser-backed hosted runs expose `wait_for_browser_action` for login,
+captcha/security checks, SMS/email verification, authorization, or stuck pages.
+The tool stops browser work and waits for a run-bound human-ready signal for
+up to 30 minutes, independently of research budgets. The host must acknowledge
+`run.pause` before making its browser viewer writable, then send `run.resume`
+when the user clicks Continue. Resume wakes both the execution and its human
+waiter. The result is `user_ready: true, verified: false`: inspect the live
+page and recheck the blocked read operation, never assume authentication or
+replay external writes. Captchas are completed by the user, not bypassed.
+Worker pause acknowledgement also waits for already queued/in-flight browser
+commands to settle. If they have not settled within the bounded handoff window,
+or a command outcome is unknown, takeover fails closed; keep the viewer read-only
+and retry instead of granting input while an old command may still execute.
 On timeout the agent stops bulk retries and produces an
 explicitly partial answer from saved evidence instead of losing the whole run
 to the host's outer inactivity timeout. This watchdog does not cancel external

@@ -71,17 +71,29 @@ pub fn login_resume_receiver(run_id: &str) -> LoginResumeSubscription {
     }
 }
 
-pub fn signal_login_resume(run_id: &str) {
+/// Install a zero-generation gate before publishing its tool-call event. A
+/// fast human-ready click may arrive before the execution future subscribes.
+pub fn prepare_login_resume(run_id: &str) {
     let mut signals = login_resume_signals()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let entry = signals
+    signals
         .entry(run_id.to_owned())
         .or_insert_with(|| LoginResumeEntry {
             generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
             sender: tokio::sync::watch::channel(0).0,
             subscribers: 0,
         });
+}
+
+pub fn signal_login_resume(run_id: &str) {
+    let mut signals = login_resume_signals()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Ending an ordinary proactive pause must not pre-confirm a future gate.
+    let Some(entry) = signals.get_mut(run_id) else {
+        return;
+    };
     let next = entry.sender.borrow().saturating_add(1);
     entry.sender.send_replace(next);
 }

@@ -137,6 +137,9 @@ pub struct AgentOptions {
     pub max_tokens: u32,
     pub extra_instructions: String,
     pub run_dir: Option<PathBuf>,
+    /// Stable file workspace; conversation hosts use the conversation root.
+    /// Single-shot callers default to the run directory.
+    pub working_dir: Option<PathBuf>,
     /// Site names to pre-enable in ToolContext (gates `defer_until_site` tools).
     pub enabled_sites: Vec<String>,
     /// Entrypoint-selected skills loaded before the first model request.
@@ -176,6 +179,7 @@ impl Default for AgentOptions {
             max_tokens: 16000,
             extra_instructions: String::new(),
             run_dir: None,
+            working_dir: None,
             enabled_sites: Vec::new(),
             initial_skills: Vec::new(),
             compact_after_messages: DEFAULT_COMPACT_AFTER_MESSAGES,
@@ -378,6 +382,9 @@ pub async fn run_agent_with_events(
     let run_id = resolve_run_id(options.run_id);
     let run_dir = options.run_dir.unwrap_or_else(|| make_run_dir(task));
     ensure_dir(&run_dir)?;
+    let working_dir =
+        std::path::absolute(options.working_dir.unwrap_or_else(|| run_dir.clone()))?;
+    ensure_dir(&working_dir)?;
     let run_state = Arc::new(RunState::new(task));
     let run_recorder = Arc::new(AgentRunRecorder::start(
         &run_dir,
@@ -398,6 +405,7 @@ pub async fn run_agent_with_events(
     );
 
     let mut ctx = ToolContext::new(&run_id, &run_dir)
+        .with_working_dir(&working_dir)
         .with_usage_recorder(Arc::clone(&run_recorder))
         .with_run_state(Arc::clone(&run_state))
         .with_background_media_generation(options.background_media_generation)
@@ -443,8 +451,20 @@ pub async fn run_agent_with_events(
     .await?
     .join("\n\n");
     let memory_instructions = options.local_memory.then(memory_prompt).unwrap_or_default();
+    let workspace_instructions = format!(
+        "Local file working directory: {}. Relative paths in shell, read_file, write_file, \
+         and publish_artifact use this same directory. Generate user-requested files here \
+         by default; no per-turn deliverables subdirectory is required. You may use shell \
+         to save or copy files to other locations requested by the user. Each shell call \
+         starts in this working directory; cd does not persist between calls.\n\
+         Current run records directory: {}. Run records (notes.json, tools/, report.md) \
+         remain separate from your working files; use their explicit paths when reading them.",
+        working_dir.display(),
+        std::path::absolute(&run_dir)?.display(),
+    );
     let extra_instructions = [
         options.extra_instructions.trim(),
+        workspace_instructions.as_str(),
         initial_instructions.trim(),
         memory_instructions.trim(),
     ]
