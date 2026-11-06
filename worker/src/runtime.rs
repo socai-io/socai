@@ -268,6 +268,13 @@ pub async fn run_stdio_with_build_info(build: WorkerBuildInfo) -> Result<()> {
                             }
                             run.paused = true;
                         }
+                        if !matches!(tokio::time::timeout(
+                            std::time::Duration::from_secs(6),
+                            runtime.wait_for_browser_commands_idle(),
+                        ).await, Ok(Ok(()))) {
+                            send_error(&output_tx, Some(request_id), "browser_not_idle", "Browser commands have not safely settled; retry takeover");
+                            continue;
+                        }
                         let _ = output_tx.send(WorkerOutput::CommandAccepted {
                             protocol_version: CONTROL_PROTOCOL_VERSION,
                             request_id,
@@ -294,9 +301,10 @@ pub async fn run_stdio_with_build_info(build: WorkerBuildInfo) -> Result<()> {
                                 continue;
                             }
                             run.paused = false;
-                        } else {
-                            socai_core::sites::login_wait::signal_login_resume(&run_id);
                         }
+                        // A paused human waiter needs both edges: restart the
+                        // same future AND tell that wait the user is ready.
+                        socai_core::sites::login_wait::signal_login_resume(&run_id);
                         let _ = output_tx.send(WorkerOutput::CommandAccepted {
                             protocol_version: CONTROL_PROTOCOL_VERSION,
                             request_id,
