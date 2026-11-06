@@ -37,3 +37,18 @@ test('picker failure and too many attachments retain the existing draft',async()
  context.invoke=async()=>{throw Error('Unreadable file');};await listeners.attach();assert.equal(api.uploadIds('new').length,3);assert.match(api.renderUploads(api.uploadDraft('new'),'new'),/Unreadable file/);
  context.invoke=async()=>Array.from({length:8},(_,i)=>({...mixed[0],id:String(i)}));await listeners.attach();assert.equal(api.uploadIds('new').length,3);assert.equal(api.uploadsBusy('new'),false);
 });
+
+test('compact history refresh cannot erase verified attachment cards',async()=>{
+ const source=await readFile(new URL('../src/panels/tasks.ts',import.meta.url),'utf8');
+ const start=source.indexOf('  function mergeSnapshot('),end=source.indexOf('  function statusRank(',start);
+ assert.ok(start>=0&&end>start);
+ const context={statusRank:s=>({queued:0,running:1,completed:2})[s]};
+ runInNewContext(stripTypeScriptTypes(source.slice(start,end))+'\nglobalThis.merge=mergeSnapshot;',context);
+ const existing={task_id:'task',run_dir:'turn-1',status:'completed',uploads_by_turn:[mixed]};
+ for(const run_dir of ['turn-1','turn-2']){
+  const merged=context.merge(existing,{task_id:'task',run_dir,status:'completed'});
+  assert.equal(merged.uploads_by_turn[0].length,3);
+ }
+ const hydrated=context.merge(existing,{task_id:'task',run_dir:'turn-1',status:'completed',uploads_by_turn:[[]]});
+ assert.equal(hydrated.uploads_by_turn[0].length,0);
+});
