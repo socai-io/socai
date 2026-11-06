@@ -126,6 +126,65 @@ function comment(id, text) {
   };
 }
 
+test('rendered comment IDs survive the live parent wrapper and reply layout', () => {
+  const primaryId = '6a84ab37000000001402c6a4';
+  const replyId = '6ad01c43000000000b037375';
+  const primary = {...comment('', '一级评论'), id:`comment-${primaryId}`};
+  const reply = {...comment('', '一条回复'), id:`comment-${replyId}`, parentElement:null};
+  const parent = {
+    ...comment('', '一级评论'),
+    matches: selector => selector === '.parent-comment',
+    querySelector: selector => selector === '.comment-item' ? primary : primary.querySelector(selector),
+    querySelectorAll: selector => selector === '.comment-item-sub' ? [reply] : [],
+  };
+  primary.closest = selector => selector === '.parent-comment' ? parent : null;
+  const rows = fixture({rows:[parent]}).scripts.comments({prefer_hot:false});
+  assert.equal(rows[0].comment_id, primaryId);
+  assert.equal(rows[0].sub_comments[0].comment_id, replyId);
+});
+
+test('DOM ID fallback never borrows a nested reply or arbitrary generated ID', () => {
+  const reply = {...comment('', '不属于一级的回复'), id:'comment-6ad01c43000000000b037375'};
+  reply.closest = selector => selector === '.comment-item-sub' ? reply : null;
+  const parent = {...comment('', '没有可读ID的一级'),
+    matches: selector => selector === '.parent-comment',
+    querySelector: selector => selector === '.comment-item' ? reply : comment('', '没有可读ID的一级').querySelector(selector)};
+  for (const id of ['comment-list', 'comment-item-1', '6a84ab37000000001402c6a4', 'comment-xyz', 'comment-6a84ab37000000001402c6a4-extra']) {
+    const rows = fixture({rows:[{...comment('', '原文'), id}]}).scripts.comments({prefer_hot:false});
+    assert.equal(rows[0].comment_id, '', id);
+  }
+  assert.equal(fixture({rows:[parent]}).scripts.comments({prefer_hot:false})[0].comment_id, '');
+});
+
+test('explicit comment data attributes retain precedence over the DOM ID fallback', () => {
+  const row = {...comment('existing-id', '原文'), id:'comment-6a84ab37000000001402c6a4'};
+  assert.equal(fixture({rows:[row]}).scripts.comments({prefer_hot:false})[0].comment_id, 'existing-id');
+});
+
+test('saved ID-less comments upgrade to rendered IDs without duplicate parents or replies', () => {
+  const parent = {username:'作者',text:'相同完整原文',time:'11-06',comment_id:'',sub_comments:[
+    {username:'回复者',text:'完整回复',time:'11-06',comment_id:'',sub_comments:[]},
+  ]};
+  const current = {...parent,comment_id:'primary-id',sub_comments:[{...parent.sub_comments[0],comment_id:'reply-id'}]};
+  for (const [before,after] of [[parent,current],[current,parent]]) {
+    // Exercise the public snapshot entry point with a live row below.
+    const row = comment(current.comment_id, parent.text);
+    row.querySelector = selector => selector === '.name' ? {innerText:parent.username}
+      : selector === '.time' ? {innerText:parent.time} : selector === '.content' ? {innerText:parent.text} : null;
+    const reply = comment(after.sub_comments[0].comment_id, '完整回复');
+    reply.querySelector = selector => selector === '.name' ? {innerText:'回复者'}
+      : selector === '.time' ? {innerText:parent.time} : selector === '.content' ? {innerText:'完整回复'} : null;
+    row.getAttribute = name => name === 'data-comment-id' ? after.comment_id : null;
+    row.querySelectorAll = selector => selector === '.comment-item-sub' ? [reply] : [];
+    reply.parentElement = null;
+    const snapshot = fixture({rows:[row]}).scripts.commentAreaState({previous_comments:[before]});
+    assert.equal(snapshot.comments.length, 1, JSON.stringify(snapshot.comments));
+    assert.equal(snapshot.comments[0].comment_id, 'primary-id');
+    assert.equal(snapshot.comments[0].sub_comments.length, 1);
+    assert.equal(snapshot.comments[0].sub_comments[0].comment_id, 'reply-id');
+  }
+});
+
 test('comment pagination scrolls the comments column instead of the taller image column', async () => {
   const f = fixture();
   const scroll = f.scripts.scrollComments || f.scripts.scrollInNote;

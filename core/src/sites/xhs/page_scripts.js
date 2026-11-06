@@ -1733,6 +1733,19 @@ const SocaiXhsPageScripts = (() => {
     return '';
   }
 
+  function renderedCommentId(item) {
+    const explicit = item.getAttribute?.('data-comment-id') || item.getAttribute?.('data-id');
+    if (explicit) return explicit;
+    // Live XHS puts comment-<platform ID> on the primary row inside an
+    // ID-less .parent-comment wrapper, and directly on each reply row.
+    let row = item;
+    if (item.matches?.('.parent-comment')) {
+      row = item.querySelector?.('.comment-item');
+      if (!row || row.closest?.('.parent-comment') !== item || row.closest?.(SUB_COMMENT_SELECTOR)) return '';
+    }
+    return row?.id?.match(/^comment-([a-f0-9]{24})$/i)?.[1] || '';
+  }
+
   function parseComment(item, includeChildren) {
     const authorLink = item.querySelector?.('a[href*="/user/profile/"]');
     const authorUrl = authorLink ? absUrl(authorLink.href || authorLink.getAttribute('href')) : '';
@@ -1752,7 +1765,7 @@ const SocaiXhsPageScripts = (() => {
       }
     }
     return {
-      comment_id: item.getAttribute?.('data-comment-id') || item.getAttribute?.('data-id') || '',
+      comment_id: renderedCommentId(item),
       username,
       author_id: authorIdMatch ? decodeURIComponent(authorIdMatch[1]) : '',
       author_url: authorUrl,
@@ -1779,9 +1792,20 @@ const SocaiXhsPageScripts = (() => {
   // task cannot accidentally inherit another note's or account's comments.
   function mergeCommentSnapshots(previous, current, includeReplies = true) {
     const byId = new Map();
+    // Old saved snapshots may lack IDs. Upgrade an exact author/text/time
+    // match only when it identifies one platform ID, never merge two real IDs.
+    const identified = new Map();
+    for (const item of [...previous, ...current]) {
+      if (!item || !item.comment_id || typeof item.text !== 'string' || !item.text) continue;
+      const fallback = commentIdentity({...item, comment_id:''});
+      const key = commentIdentity(item);
+      if (!identified.has(fallback)) identified.set(fallback, key);
+      else if (identified.get(fallback) !== key) identified.set(fallback, null);
+    }
     for (const item of [...previous, ...current]) {
       if (!item || typeof item !== 'object' || typeof item.text !== 'string' || !item.text) continue;
-      const key = commentIdentity(item);
+      const identity = commentIdentity(item);
+      const key = item.comment_id ? identity : identified.get(identity) || identity;
       const old = byId.get(key);
       const merged = {...old};
       for (const [field, value] of Object.entries(item)) {
