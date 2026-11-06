@@ -183,12 +183,27 @@ impl XhsHistoryStore {
         if transcribe_audio && !prev.transcribed {
             return false;
         }
+        if min_comments > 0
+            && prev.entity.as_ref().is_some_and(|entity| {
+                entity_comment_count(entity) > 0 && !comment_snapshot_identified(entity)
+            })
+        {
+            return false;
+        }
         // A request for more comments than we cached forces a re-read — unless we
         // already captured the whole thread (loaded >= the note's own total), in
         // which case there is nothing more to fetch.
         if min_comments > 0
             && (prev.comments_loaded as i64) < min_comments
-            && (prev.comments_total == 0 || prev.comments_loaded < prev.comments_total)
+            && (prev.comments_total == 0
+                || prev.comments_loaded < prev.comments_total
+                || prev
+                    .entity
+                    .as_ref()
+                    .and_then(|e| e.get("top_comments_wait"))
+                    .and_then(|m| m.get("complete"))
+                    .and_then(Value::as_bool)
+                    != Some(true))
         {
             return false;
         }
@@ -382,6 +397,35 @@ fn string_field(value: &Value, key: &str) -> String {
 /// Count the comments cached on an entity: primary comments plus their replies.
 /// `top_comments` may be full objects (with `sub_comments`) or already-leaned
 /// (a string, or `{text, replies}`), so cover both shapes.
+/// Only stable platform identities can be resumed across reads. Relative date
+/// labels change, so an ID-less historical row cannot safely be matched by text.
+pub(super) fn comment_snapshot_identified(entity: &Value) -> bool {
+    fn identified(items: &[Value], seen: &mut std::collections::BTreeSet<String>) -> bool {
+        items.iter().all(|item| {
+            let Some(id) = item.get("comment_id").and_then(Value::as_str) else {
+                return false;
+            };
+            if id.len() != 24
+                || !id.bytes().all(|c| c.is_ascii_hexdigit())
+                || !seen.insert(id.to_ascii_lowercase())
+            {
+                return false;
+            }
+            match item.get("sub_comments").or_else(|| item.get("replies")) {
+                None | Some(Value::Null) => true,
+                Some(Value::Array(children)) => identified(children, seen),
+                _ => false,
+            }
+        })
+    }
+    entity
+        .get("top_comments")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            !items.is_empty() && identified(items, &mut std::collections::BTreeSet::new())
+        })
+}
+
 fn entity_comment_count(entity: &Value) -> u32 {
     let Some(comments) = entity.get("top_comments").and_then(Value::as_array) else {
         return 0;
@@ -619,7 +663,11 @@ fn merge_entities(prev: &Value, mut fresh: Value) -> Value {
             fresh_obj.insert("image_count".into(), json!(prev_images.len()));
         }
     }
-    if entity_comment_count(prev) > entity_comment_count(&fresh) {
+    // A larger pre-ID cache can contain duplicate-looking legacy rows. Keep it
+    // readable as historical evidence, but never restore it over a fresh stable
+    // identity snapshot. A later continuation must start from the clean rows.
+    let replaces_legacy = comment_snapshot_identified(&fresh) && !comment_snapshot_identified(prev);
+    if entity_comment_count(prev) > entity_comment_count(&fresh) && !replaces_legacy {
         if let Some(prev_comments) = prev.get("top_comments") {
             if let Some(fresh_obj) = fresh.as_object_mut() {
                 fresh_obj.insert("top_comments".into(), prev_comments.clone());
@@ -722,6 +770,30 @@ mod tests {
             true,
             "A search card must not discard the saved comment continuation phase"
         );
+        store.record(
+            &json!({"note_id":"legacy","top_comments":[{"text":"saved"},{"text":"other"}]}),
+            "deep",
+            false,
+        );
+        assert!(
+            !store.is_satisfied_by("legacy", "deep", false, false, false, false, 1),
+            "ID-less legacy comments cannot satisfy a new comment read"
+        );
+        let identified = json!({"note_id":"legacy","top_comments":[{
+            "comment_id":"6abf6fb8000000000801e064","text":"saved"}],
+            "top_comments_wait":{"complete":false}});
+        store.record(&identified, "deep", false);
+        let entry = store.get("legacy").unwrap();
+        assert_eq!(
+            entry.comments_loaded, 1,
+            "Larger ID-less history must not overwrite fresh identified rows"
+        );
+        assert_eq!(
+            entry.entity.as_ref().unwrap()["top_comments"],
+            identified["top_comments"]
+        );
+        assert!(store.is_satisfied_by("legacy", "deep", false, false, false, false, 1));
+        assert!(!store.is_satisfied_by("legacy", "deep", false, false, false, false, 2));
     }
 
     #[test]
@@ -739,6 +811,17 @@ mod tests {
         assert!(!store.is_satisfied_by("n1", "lite", false, true, false, false, 0));
         assert!(!store.is_satisfied_by("n1", "lite", false, false, true, false, 0));
         assert!(!store.is_satisfied_by("n1", "lite", false, false, false, true, 0));
+        store.record(
+            &json!({"note_id":"counted","comments_count":"1",
+            "top_comments":[{"comment_id":"6abf6fb8000000000801e064","text":"observed"}],
+            "top_comments_wait":{"complete":false,"stop_reason":"timeout"}}),
+            "deep",
+            false,
+        );
+        assert!(
+            !store.is_satisfied_by("counted", "deep", false, false, false, false, 100),
+            "Reaching a displayed count does not prove that a timed-out walk finished"
+        );
     }
 
     #[test]
