@@ -48,6 +48,8 @@ pub struct WorkflowSkill {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct AgentTaskSnapshot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) uploads_by_turn: Vec<Vec<crate::chat_uploads::ChatUpload>>,
     pub(crate) task_id: String,
     #[serde(default)]
     pub(crate) billing_turn_id: Option<String>,
@@ -255,6 +257,7 @@ impl AgentTaskRegistry {
         guard.next_seq += 1;
         let task_id = format!("task-{}-{}", now_ms(), guard.next_seq);
         let snapshot = AgentTaskSnapshot {
+            uploads_by_turn: Vec::new(),
             task_id,
             billing_turn_id: Some(new_billing_turn_id()),
             current_message: Some(task.clone()),
@@ -294,7 +297,7 @@ impl AgentTaskRegistry {
         };
         guard.tasks.push(snapshot.clone());
         persist_task_index(&guard.tasks);
-        snapshot
+        hydrate_task_snapshot(snapshot)
     }
 
     pub(crate) async fn acquire_run_permit(&self) -> Option<OwnedSemaphorePermit> {
@@ -654,6 +657,7 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 fn hydrate_task_snapshot(mut snapshot: AgentTaskSnapshot) -> AgentTaskSnapshot {
+    snapshot.uploads_by_turn = crate::timeline::conversation_run_dirs(&snapshot).iter().map(|(dir, _)| crate::chat_uploads::files(dir)).collect();
     if let Some(run_dir) = snapshot.run_dir.as_deref() {
         snapshot.final_text = final_text_from_run_dir(run_dir);
         let read_board = |dir: &str| -> Option<Value> {

@@ -1717,6 +1717,24 @@ body.has-paper > #app { position: relative; z-index: 1; }
 /* citation pills need to sit comfortably in the larger prose */
 .conv-answer .note-cite { font-size: 0.82em; }
 
+.chat-upload-list { display:flex; flex-wrap:wrap; gap:8px; }
+.chat-upload-list:empty { display:none; }
+.composer__form > .chat-upload-list:not(:empty) { padding:10px 12px 0; }
+.turn > .chat-upload-list { justify-content:flex-end; margin:8px 0 16px; }
+.chat-upload-card { display:flex; align-items:center; gap:10px; width:min(100%,310px); padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--canvas); }
+.chat-upload-icon { display:grid; place-items:center; flex:none; width:32px; }
+.chat-upload-icon svg { width:26px; height:30px; color:var(--fg) !important; }
+.chat-upload-info { display:flex; flex:1; min-width:0; flex-direction:column; gap:3px; font-size:13px; }
+.chat-upload-info > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-upload-info small { color:var(--fg-soft); font-size:11px; }
+.chat-upload-card button { border:0; background:none; color:inherit; cursor:pointer; padding:6px; }
+.chat-upload-card button:disabled { opacity:.4; cursor:default; }
+.chat-upload-card button:focus-visible { outline:2px solid currentColor; border-radius:4px; }
+@media(hover:hover) and (pointer:fine) {
+  .chat-upload-download { opacity:0; }
+  .chat-upload-card:hover .chat-upload-download,.chat-upload-card:focus-within .chat-upload-download { opacity:1; }
+}
+
 /* Generated-file attachments: the main control previews; the ellipsis opens
    source-file reveal and Save As actions. */
 .artifact-cards {

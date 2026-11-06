@@ -3,6 +3,7 @@ import { refreshResearchBoard, bindResearchBoard } from "./research-board";
 import { getLanguage } from "../lib/i18n";
 import { bindTaskExamples } from "../lib/task-examples";
 import { hostedReplyRecovery, type ReplyModelChoice } from "../lib/reply-model-recovery";
+import {bindUploads, uploadIds, uploadsBusy, clearUploads} from "../lib/chat-uploads";
 //! Task workspace coordinator: shared state, agent configuration popover,
 //! task event intake, and bindings. The sidebar (history list) + delete dialog
 //! live in `task_history.ts`; the conversation view lives in `conversation.ts`.
@@ -1404,6 +1405,7 @@ export namespace agentPanel {
       shell.rerender();
     });
     const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+    bindUploads(composerTask?.task_id || "new", () => shell.rerender());
     disposeComposerAutosize?.();
     if (!composerTask) bindTaskExamples(({ platform, prompt }) => {
       draft = prompt;
@@ -1616,7 +1618,8 @@ export namespace agentPanel {
     const modelReady = task ? true : !!selected && selected.has_key;
     const disabled = submitting
       || running
-      || !value.trim()
+      || (!value.trim() && !uploadIds(task?.task_id || "new").length)
+      || uploadsBusy(task?.task_id || "new")
       || !modelReady
       || voiceInput.isBusy();
     if (button.disabled !== disabled) button.disabled = disabled;
@@ -1634,8 +1637,9 @@ export namespace agentPanel {
   }
 
   async function startAgentTask(shell: ShellState): Promise<void> {
-    const value = draft.trim();
-    if (!value || pendingTask) return;
+    const attachments = uploadIds("new");
+    const value = draft.trim() || (attachments.length ? (getLanguage()==="zh" ? "请分析我上传的文件。" : "Analyze my attached files.") : "");
+    if (!value || pendingTask || uploadsBusy("new")) return;
     sourcesExpanded = false;
     pendingTask = value;
     submitError = "";
@@ -1645,6 +1649,7 @@ export namespace agentPanel {
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_start", {
         language: getLanguage(),
         task: value,
+        uploadIds: attachments,
         sites: draftSites,
         provider: selected?.provider || modelProvider || null,
         model: selected ? modelId(selected) : model || null,
@@ -1658,6 +1663,7 @@ export namespace agentPanel {
         view = "detail";
       }
       draft = "";
+      clearUploads("new");
       researchMode = false;
     } catch (err) {
       console.error("agent_task_start failed:", err);
@@ -1671,8 +1677,8 @@ export namespace agentPanel {
   // Continues an existing task's conversation: same task_id/session, a fresh
   // run dir for this turn. Mirrors startAgentTask but hits agent_task_reply.
   async function submitReply(shell: ShellState, taskId: string): Promise<void> {
-    const value = replyDraft.trim();
-    if (!value || pendingReply) return;
+    const value = replyDraft.trim() || (uploadIds(taskId).length ? (getLanguage()==="zh" ? "请分析我上传的文件。" : "Analyze my attached files.") : "");
+    if (!value || pendingReply || uploadsBusy(taskId)) return;
     await submitReplyValue(shell, taskId, value);
   }
 
@@ -1690,6 +1696,7 @@ export namespace agentPanel {
         language: getLanguage(),
         taskId,
         message: value,
+        uploadIds: uploadIds(taskId),
         ...replyModelOverrides.get(taskId),
         sites: taskSites(taskId),
         researchMode: replyResearchModes.get(taskId) ?? tasks.find((task) => task.task_id === taskId)?.research_mode ?? false,
@@ -1699,6 +1706,7 @@ export namespace agentPanel {
       replySites.delete(taskId);
       upsertTask(snapshot);
       replyModelOverrides.delete(taskId);
+      clearUploads(taskId);
       if (view === "detail" && selectedTaskId === taskId) replyDraft = "";
       replyResearchModes.delete(taskId);
       replyWorkflows.delete(taskId);
@@ -1833,12 +1841,13 @@ export namespace agentPanel {
     // of falling back to the old run's now-irrelevant values.
     const sameRun = incoming.run_dir === existing.run_dir;
     if (!sameRun) {
-      return { ...incoming };
+      return { ...incoming, uploads_by_turn: incoming.uploads_by_turn ?? existing.uploads_by_turn };
     }
     const status = statusRank(existing.status) > statusRank(incoming.status) ? existing.status : incoming.status;
     const terminalIncoming = statusRank(incoming.status) >= 2;
     return {
       ...incoming,
+      uploads_by_turn: incoming.uploads_by_turn ?? existing.uploads_by_turn,
       status,
       started_at: incoming.started_at ?? existing.started_at,
       finished_at: incoming.finished_at ?? existing.finished_at,

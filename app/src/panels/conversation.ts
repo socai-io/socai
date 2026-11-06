@@ -42,6 +42,7 @@ import { artifactFileIcon, formatArtifactSize, renderArtifactActionMenu } from "
 import { workflowIcon, workflowLabel } from "./workflows";
 import { renderResearchBoard } from "./research-board";
 import type { AgentTaskView } from "./tasks";
+import {renderUploads, uploadDraft, uploadsBusy} from "../lib/chat-uploads";
 
 export type ChromeSetupState = "waiting" | "ready" | "permission_required";
 
@@ -419,6 +420,7 @@ function renderTurn(
   return `
     <div class="turn">
       ${userText ? renderUserPrompt(userText, userAt) : ""}
+      ${renderUploads(task.uploads_by_turn?.[index] ?? [])}
       ${renderActivity(task, body, index, showWorking, metrics, isActivityOpen)}
       ${isLast ? `<div data-research-board>${renderResearchBoard(task)}</div>` : ""}
       ${showWorking && hosted && !task.preview?.accepted ? `<div class="conv-answer" data-preview-answer>${esc(task.preview?.text ?? "")}</div>` : ""}
@@ -782,8 +784,10 @@ function renderConvMeta(bits: string[]): string {
 // ── composer (pinned) — starts a new task OR continues the thread ────
 function renderComposer(c: ComposerProps): string {
   const disabled = c.submitting || c.running;
+  const uploadScope = c.taskId || "new";
   const sendDisabled = disabled
-    || !c.value.trim()
+    || (!c.value.trim() && !uploadDraft(uploadScope).length)
+    || uploadsBusy(uploadScope)
     || !c.modelReady
     || c.voice.phase !== "idle";
   const voiceDisabled = c.voice.phase === "recording"
@@ -838,6 +842,7 @@ function renderComposer(c: ComposerProps): string {
   return `
     <div class="composer">
       <form id="composer-form" class="composer__form">
+        ${renderUploads(uploadDraft(uploadScope), uploadScope, disabled || uploadsBusy(uploadScope))}
         <div class="composer__row ${disabled ? "is-disabled" : ""}">
           <textarea
             id="composer-input"
@@ -846,6 +851,7 @@ function renderComposer(c: ComposerProps): string {
             placeholder="${esc(placeholder)}"
             ${disabled ? "disabled" : ""}
           >${esc(c.value)}</textarea>
+          <button id="composer-attach" type="button" class="composer__voice" aria-label="${getLanguage() === "zh" ? "上传Word、PDF或图片" : "Attach Word, PDF or images"}" title="${getLanguage() === "zh" ? "上传文件（可多选）" : "Attach files (multiple)"}" ${disabled || uploadsBusy(uploadScope) ? "disabled" : ""}><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m8 12 6-6a3 3 0 0 1 4 4L9 19a5 5 0 0 1-7-7l10-10"/></svg></button>
           <span class="composer__voice-wrap" title="${esc(voiceTitle)}">
             <button
               id="composer-voice"

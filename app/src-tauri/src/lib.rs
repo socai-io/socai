@@ -1,4 +1,5 @@
 mod artifact_tool;
+mod chat_uploads;
 mod commands;
 mod connectors;
 mod legacy_byok;
@@ -338,6 +339,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            chat_uploads::chat_upload_pick,
+            chat_uploads::chat_upload_save,
             commands::cdp_connect,
             commands::cdp_disconnect,
             commands::cdp_status,
