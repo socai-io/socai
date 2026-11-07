@@ -919,10 +919,10 @@ async fn enrich_gallery_result(
                 let bytes = downloader
                     .fetch_limited(url, &referer, MAX_POSTER_DOWNLOAD_BYTES, "image")
                     .await?;
-                let suffix = match crate::media::common::detect_media_type(&bytes).as_str() {
-                    "image/jpeg" => "jpg",
-                    "image/png" => "png",
-                    "image/webp" => "webp",
+                let suffix = match image::guess_format(&bytes)? {
+                    image::ImageFormat::Jpeg => "jpg",
+                    image::ImageFormat::Png => "png",
+                    image::ImageFormat::WebP => "webp",
                     _ => anyhow::bail!("gallery image format was not supported"),
                 };
                 media.save_named_bytes(&bytes, &id, &format!("image-{:03}.{suffix}", index + 1))
