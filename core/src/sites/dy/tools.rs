@@ -365,7 +365,7 @@ impl Tool for GetVideosTool {
                     "items": { "type": "string" },
                     "minItems": 1,
                     "maxItems": 100,
-                    "description": "Douyin video ids or full douyin.com video URLs."
+                    "description": "Douyin work ids or full video/note URLs; image galleries retain all slides."
                 },
                 "num_comments": {
                     "type": "integer",
@@ -376,7 +376,7 @@ impl Tool for GetVideosTool {
                 "download_media": { "type": "boolean", "default": false },
                 "ocr": {
                     "type": "boolean",
-                    "description": "Run local OCR on the video cover without requiring a video-file download.",
+                    "description": "OCR the video cover, or every image of a gallery in page order. Does not invent missing text.",
                     "default": false
                 },
                 "transcribe_audio": { "type": "boolean", "default": false },
@@ -740,6 +740,18 @@ async fn enrich_video_result(
     ocr: bool,
     transcribe_audio: bool,
 ) {
+    if result.pointer("/entity/content_type").and_then(Value::as_str) == Some("image") {
+        enrich_gallery_result(
+            media,
+            downloader,
+            result,
+            download_media_requested,
+            ocr,
+            transcribe_audio,
+        )
+        .await;
+        return;
+    }
     let Some(entity) = result.get_mut("entity").and_then(Value::as_object_mut) else {
         return;
     };
@@ -868,6 +880,92 @@ async fn enrich_video_result(
         });
     } else {
         result["enrichment"] = json!({ "ok": true });
+    }
+}
+
+async fn enrich_gallery_result(
+    media: &MediaProcessor,
+    downloader: &SafeDouyinMediaClient,
+    result: &mut Value,
+    download: bool,
+    ocr: bool,
+    transcribe_audio: bool,
+) {
+    let Some(entity) = result.get_mut("entity") else {
+        return;
+    };
+    let id = entity
+        .get("video_id")
+        .and_then(Value::as_str)
+        .unwrap_or("gallery")
+        .to_string();
+    let referer = entity
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let mut images = entity
+        .get("images")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut failure = None;
+    if download || ocr {
+        // Reuse Douyin's bounded, redirect-checked CDN client. Sequential
+        // images keep both bytes and OCR memory bounded for long galleries.
+        for (index, image) in images.iter_mut().enumerate() {
+            let url = image.get("url").and_then(Value::as_str).unwrap_or("");
+            let saved = async {
+                let bytes = downloader
+                    .fetch_limited(url, &referer, MAX_POSTER_DOWNLOAD_BYTES, "image")
+                    .await?;
+                let suffix = match crate::media::common::detect_media_type(&bytes).as_str() {
+                    "image/jpeg" => "jpg",
+                    "image/png" => "png",
+                    "image/webp" => "webp",
+                    _ => anyhow::bail!("gallery image format was not supported"),
+                };
+                media.save_named_bytes(&bytes, &id, &format!("image-{:03}.{suffix}", index + 1))
+            }
+            .await;
+            match saved {
+                Ok(path) => insert_string(image, "local_path", path.to_string_lossy()),
+                Err(error) => {
+                    let error = format!("{error:#}");
+                    insert_string(image, "download_error", &error);
+                    failure.get_or_insert(("gallery_image_download_failed", error));
+                }
+            }
+        }
+        if ocr {
+            media.ocr_downloaded_images(&mut images).await;
+            for image in &images {
+                if let Some(error) = image.get("ocr_error").and_then(Value::as_str) {
+                    failure.get_or_insert(("gallery_image_ocr_failed", error.to_string()));
+                } else if image.get("ocr_text").and_then(Value::as_str).is_none() {
+                    failure.get_or_insert((
+                        "gallery_image_ocr_incomplete",
+                        "An image has no completed OCR result".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    entity["images"] = json!(images);
+    if transcribe_audio {
+        // The music/placeholder player is not a spoken video belonging to the
+        // gallery. Retain the gallery, but report the unsupported request.
+        failure = Some((
+            "gallery_has_no_video_transcript",
+            "This work is an image gallery, not a spoken video".to_string(),
+        ));
+    }
+    if let Some((reason, error)) = failure {
+        result["ok"] = Value::Bool(false);
+        result["reason"] = json!(reason);
+        result["enrichment"] = json!({"ok": false, "reason": reason, "error": error});
+    } else {
+        result["enrichment"] = json!({"ok": true});
     }
 }
 

@@ -84,7 +84,7 @@
       "returns": { "type": "object", "description": "Scroll position and movement." }
     },
     "videoState": {
-      "description": "Read hydration and identity state for the active Douyin video.",
+      "description": "Read hydration and identity state for the active Douyin video or complete image gallery.",
       "path": "page_scripts.js",
       "binding": "window.SocaiDouyinPageScripts",
       "callable": "videoState",
@@ -92,7 +92,7 @@
       "returns": { "type": "object", "description": "Active video state." }
     },
     "videoDetail": {
-      "description": "Extract the active Douyin video metadata and media candidates.",
+      "description": "Extract the active Douyin work: video media or every gallery slide in page order. Incomplete galleries are not successful details; recommended videos and background audio are not gallery media.",
       "path": "page_scripts.js",
       "binding": "window.SocaiDouyinPageScripts",
       "callable": "videoDetail",

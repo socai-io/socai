@@ -574,11 +574,34 @@
     return cards;
   }
 
+  function galleryInfo() {
+    // Observed on Douyin's real note detail page: each slide contains both a
+    // foreground and background copy. Read one image per slide, not all imgs
+    // on the page (avatars, comments and recommended works are unrelated).
+    const root = firstVisible(['main[data-e2e="note-detail"]']);
+    if (!root) return null;
+    const player = root.querySelector('[data-e2e="player-container"]');
+    const slides = player ? Array.from(player.querySelectorAll('.dySwiperSlide')) : [];
+    if (!slides.length) return null;
+    const counter = Array.from(player.querySelectorAll('div, span')).find(node =>
+      /^\d+\s*\/\s*\d+$/.test(text(node)));
+    const count = Number((text(counter).match(/\/\s*(\d+)$/) || [])[1]) || 0;
+    const images = slides.map((slide, position) => {
+      const img = Array.from(slide.querySelectorAll('img')).find(node =>
+        /tplv-dy-aweme-images/.test(node.currentSrc || node.getAttribute('src') || ''));
+      return {url: allowedMediaUrl(img && (img.currentSrc || img.getAttribute('src'))),
+        width: img ? img.naturalWidth : 0, height: img ? img.naturalHeight : 0, position};
+    });
+    return {root, player, images, count, complete: count > 0 && count <= 200 &&
+      images.length === count && images.every(image => image.url)};
+  }
+
   function videoState() {
     const canonical = document.querySelector('link[rel="canonical"]');
     const id = videoIdFromUrl(location.href) || videoIdFromUrl(canonical && canonical.href);
     const bodyText = text(document.body);
-    const video = mainVisibleVideo(id);
+    const gallery = galleryInfo();
+    const video = gallery ? null : mainVisibleVideo(id);
     const videoSource = video && (video.currentSrc || video.src || (video.querySelector('source') && video.querySelector('source').src)) || '';
     const hasVideo = !!video && (!!videoSource || video.readyState > 0);
     const detailNode = firstVisible([
@@ -586,6 +609,7 @@
       '[data-e2e="video-desc"]',
       '[data-e2e="video-author-name"]',
       '[class*="video-desc"]',
+      'main[data-e2e="note-detail"] .wB7XlRLR',
     ]);
     const detailText = text(detailNode) || metaContent('og:description');
     const hasDetail = detailText.length > 0 || (hasVideo && metaContent('og:title').length > 0);
@@ -599,7 +623,7 @@
     // the author block and playable source arrive. Returning at that point
     // produces an apparently successful but mostly empty entity. Wait until
     // at least one stable identity/media signal is present.
-    const contentReady = hasDetail && (hasAuthor || !!videoSource);
+    const contentReady = hasDetail && (gallery ? gallery.complete && hasAuthor : hasAuthor || !!videoSource);
     return {
       ok: !!id && contentReady,
       site: 'dy',
@@ -607,12 +631,14 @@
       video_id: id,
       url: location.href,
       ready_state: document.readyState,
-      login_required: loginBlocked(hasVideo),
+      login_required: loginBlocked(hasVideo || !!gallery?.complete),
       challenge_required: challengeRequired(),
       unavailable: /作品不存在|视频不见了|内容已删除|暂时无法播放/.test(bodyText),
       has_video: hasVideo,
       has_author: hasAuthor,
       has_video_source: !!videoSource,
+      ...(gallery ? {is_gallery: true, image_count: gallery.count,
+        images_ready: gallery.complete} : {}),
     };
   }
 
@@ -621,11 +647,12 @@
     if (!state.ok) {
       return { ok: false, reason: 'not_video_detail', state };
     }
-    const video = mainVisibleVideo(state.video_id);
+    const gallery = state.is_gallery ? galleryInfo() : null;
+    const video = gallery ? null : mainVisibleVideo(state.video_id);
     if (!video && state.has_video) {
       return { ok: false, reason: 'ambiguous_video_player', state };
     }
-    const detailRoot = firstVisible([
+    const detailRoot = gallery?.root || firstVisible([
       '[data-e2e="detail-video-info"]',
       '[class*="video-detail-container"]',
     ]);
@@ -651,7 +678,7 @@
       .find((link) => normUrl(link.href || link.getAttribute('href')) === authorUrl && text(link).length > 0) : null;
     const authorLink = explicitAuthorLink || authorTextLink || genericAuthorLink;
     const authorAvatar = authorLink && authorLink.querySelector('img[alt]');
-    const descNode = firstVisible([
+    const descNode = (gallery && firstVisibleWithin(gallery.root, ['.wB7XlRLR'])) || firstVisible([
       '[data-e2e="video-desc"]',
       '[data-e2e="detail-video-info"] [data-click-from="title"]',
       '[data-e2e="detail-video-info"] h1',
@@ -664,9 +691,11 @@
     if (video && video.paused && video.src && video.src.startsWith('blob:')) {
       video.play().catch(() => {});
     }
-    const cover = normUrl((video && video.poster) || shareCardCover(state.video_id));
-    const media = collectVideoInfo(video, cover);
-    const actionBar = video && video.closest('[data-e2e="player-container"]');
+    const cover = gallery ? gallery.images[0].url : normUrl((video && video.poster) || shareCardCover(state.video_id));
+    // A gallery can have a music/placeholder player and recommended videos.
+    // None of those is the work's video or spoken transcript.
+    const media = gallery ? {} : collectVideoInfo(video, cover);
+    const actionBar = gallery?.player || (video && video.closest('[data-e2e="player-container"]'));
     const hashtagSet = new Set();
     for (const match of description.matchAll(/#([^#\s]+)/g)) hashtagSet.add(match[1]);
     for (const link of (detailRoot || document).querySelectorAll('a[href*="/search/"]')) {
@@ -693,6 +722,7 @@
       views: '',
       duration_seconds: video ? Math.round(Number(video.duration) || 0) : 0,
       cover_url: cover,
+      ...(gallery ? {content_type: 'image', images: gallery.images, image_count: gallery.count} : {}),
       video: media,
       top_comments: [],
     };
