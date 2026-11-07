@@ -53,8 +53,18 @@ pub struct DouyinVideo {
     pub views: String,
     pub duration_seconds: i64,
     pub cover_url: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub content_type: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<Value>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub image_count: usize,
     pub video: Value,
     pub top_comments: Vec<DouyinComment>,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

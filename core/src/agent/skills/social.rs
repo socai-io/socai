@@ -121,6 +121,15 @@ pub(super) const SKILLS: &[SocialSkill] = &[
 /// Preparation hints only: this never enables a site or proves source identity.
 /// Unrelated requests still use the ordinary on-demand catalogue.
 pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String> {
+    // Host delivery/navigation guidance is not another collection request.
+    // Keep it in the model prompt, but do not let "extracted", "save" or
+    // "comments" in that guidance select unrelated preparatory methods.
+    let task = task
+        .split_once("\n\n[Web creation delivery contract]\n")
+        .map_or(task, |(request, _)| request);
+    let task = task
+        .split_once("\n\nServer-verified read targets (navigation metadata,")
+        .map_or(task, |(request, _)| request);
     let text = task.to_ascii_lowercase();
     let has = |words: &[&str]| words.iter().any(|word| text.contains(word));
     let explicit_xhs = has(&["小红书", "xiaohongshu", "xhslink", "rednote", "xhs-"]);
@@ -157,7 +166,20 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
     let transcript = has(&["逐字稿", "转录", "transcript", "视频文案提取"])
         || (has(&["视频", "音频"]) && has(&["转写", "字幕", "转文字"]));
     let comments = has(&["评论", "comments", "replies"]);
-    let leads = comments && has(&["截流", "意向", "获客", "线索", "触达", "引流"]);
+    let leads = comments
+        && has(&[
+            "截流",
+            "意向",
+            "获客",
+            "线索",
+            "触达",
+            "引流",
+            "回复草稿",
+            "回复建议",
+            "建议回复",
+            "reply draft",
+            "draft replies",
+        ]);
     let monitoring = has(&["监控", "monitor"])
         || (has(&["账号", "博主", "达人", "主页"])
             && has(&["定时", "每天", "追踪更新", "新增作品"]));

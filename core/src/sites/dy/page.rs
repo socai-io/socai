@@ -111,6 +111,102 @@ impl<'a> DouyinPageRuntime<'a> {
         self.expect_object("pageState", None).await
     }
 
+    /// A bounded CDP workflow, not arbitrary model-generated JavaScript. Keep
+    /// the DOM extractor in the manifest while hosted research can type and
+    /// wait without enabling browser_script's external-write authority.
+    pub async fn search_suggestions(&self, query: &str, wait_seconds: f64) -> Result<Value> {
+        let query = query.trim();
+        anyhow::ensure!(!query.is_empty(), "query is required");
+        let wait_seconds = wait_seconds.clamp(1.0, 30.0);
+        self.ensure_douyin(true, wait_seconds).await?;
+        let state = self.wait_until_interactive(wait_seconds).await?;
+        if let Some(reason) = state_failure_reason(&state) {
+            return Ok(json!({"ok": false, "query": query, "error": reason, "state": state}));
+        }
+        let original = self.expect_object("searchInput", None).await?;
+        if !script_ok(&original) {
+            return Ok(
+                json!({"ok": false, "query": query, "error": "search_input_not_found", "state": original}),
+            );
+        }
+        let previous = original
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        // Always reach cleanup after input starts, including a CDP/extractor
+        // failure. Never submit Enter, navigate to results or dismiss a gate.
+        let outcome = async {
+            self.type_suggestion_query(query).await?;
+            let deadline = Instant::now() + Duration::from_secs_f64(wait_seconds);
+            let mut last_labels = Value::Null;
+            let mut latest = json!({"query": query, "error": "suggestions_not_ready"});
+            while Instant::now() < deadline {
+                let state = self.detect_state().await?;
+                if let Some(reason) = state_failure_reason(&state) {
+                    return Ok(json!({"query": query, "error": reason, "state": state}));
+                }
+                latest = self
+                    .expect_object("searchSuggestions", Some(&json!({"query": query})))
+                    .await?;
+                let labels = latest.get("suggestions").cloned().unwrap_or(Value::Null);
+                let ready = latest.get("error").is_none()
+                    && latest.get("stale_row_count").and_then(Value::as_u64) == Some(0)
+                    && labels.as_array().is_some_and(|items| !items.is_empty());
+                if ready && labels == last_labels {
+                    return Ok(latest);
+                }
+                last_labels = if ready { labels } else { Value::Null };
+                sleep_ms(400).await;
+            }
+            // Do not pass a last, unstable snapshot off as a successful list.
+            if latest.get("error").is_none() {
+                latest["error"] = json!("suggestions_not_stable");
+            }
+            Ok::<Value, anyhow::Error>(latest)
+        }
+        .await;
+        let restored = async {
+            let state = self.detect_state().await?;
+            anyhow::ensure!(
+                state_failure_reason(&state).is_none(),
+                "input restore blocked by page gate"
+            );
+            self.type_suggestion_query(&previous).await
+        }
+        .await;
+        let mut result = outcome?;
+        if result.get("error").is_some() {
+            result["ok"] = json!(false);
+        }
+        result["input_restored"] = json!(restored.is_ok());
+        Ok(result)
+    }
+
+    async fn type_suggestion_query(&self, query: &str) -> Result<()> {
+        let input = self.expect_object("searchInput", None).await?;
+        anyhow::ensure!(script_ok(&input), "search_input_not_found");
+        let point = input
+            .get("input")
+            .context("search_input_geometry_missing")?;
+        self.page
+            .click(number(point, "x"), number(point, "y"))
+            .await?;
+        let selected = self.expect_object("selectSearchInput", None).await?;
+        anyhow::ensure!(script_ok(&selected), "search_input_selection_failed");
+        // Douyin accepts trusted insertText on a focused background page.
+        // Per-character keyDown/keyUp can succeed at the CDP transport layer
+        // without inserting any text there. Inserting an empty string also
+        // replaces the selected range when restoring an initially empty box.
+        self.page.type_text(query).await?;
+        let current = self.expect_object("searchInput", None).await?;
+        anyhow::ensure!(
+            current.get("value").and_then(Value::as_str) == Some(query),
+            "search_input_mismatch"
+        );
+        Ok(())
+    }
+
     pub async fn search_videos(
         &self,
         query: &str,
@@ -225,7 +321,11 @@ impl<'a> DouyinPageRuntime<'a> {
         if entity.author_id.trim().is_empty() {
             missing.push("author_id");
         }
-        if entity
+        if entity.content_type == "image" {
+            if entity.images.is_empty() || entity.images.len() != entity.image_count {
+                missing.push("images");
+            }
+        } else if entity
             .video
             .get("resolved_url")
             .and_then(Value::as_str)
@@ -287,16 +387,26 @@ impl<'a> DouyinPageRuntime<'a> {
                 .get("author_id")
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.is_empty());
-            let has_media = latest
-                .pointer("/video/resolved_url")
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.is_empty());
+            let has_gallery = latest.get("content_type").and_then(Value::as_str) == Some("image")
+                && latest
+                    .get("images")
+                    .and_then(Value::as_array)
+                    .is_some_and(|images| {
+                        !images.is_empty()
+                            && latest.get("image_count").and_then(Value::as_u64)
+                                == Some(images.len() as u64)
+                    });
+            let has_media = has_gallery
+                || latest
+                    .pointer("/video/resolved_url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty());
             let has_audio = latest
                 .pointer("/video/audio_url")
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.is_empty());
             if has_author && has_media {
-                if !require_audio || has_audio {
+                if has_gallery || !require_audio || has_audio {
                     return Ok(latest);
                 }
                 let since = media_ready_since.get_or_insert_with(Instant::now);

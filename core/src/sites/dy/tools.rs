@@ -102,6 +102,14 @@ pub static DY_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     kind: ArgKind::Int,
                 },
                 CommandArg {
+                    key: "suggestions_only",
+                    long: Some("suggestions-only"),
+                    value_name: "",
+                    help: "Read actual search-box suggestions without submitting a video search.",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+                CommandArg {
                     key: "wait_seconds",
                     long: Some("wait-seconds"),
                     value_name: "SECONDS",
@@ -357,7 +365,7 @@ impl Tool for GetVideosTool {
                     "items": { "type": "string" },
                     "minItems": 1,
                     "maxItems": 100,
-                    "description": "Douyin video ids or full douyin.com video URLs."
+                    "description": "Douyin work ids or full video/note URLs; image galleries retain all slides."
                 },
                 "num_comments": {
                     "type": "integer",
@@ -368,7 +376,7 @@ impl Tool for GetVideosTool {
                 "download_media": { "type": "boolean", "default": false },
                 "ocr": {
                     "type": "boolean",
-                    "description": "Run local OCR on the video cover without requiring a video-file download.",
+                    "description": "OCR the video cover, or every image of a gallery in page order. Does not invent missing text.",
                     "default": false
                 },
                 "transcribe_audio": { "type": "boolean", "default": false },
@@ -535,7 +543,10 @@ impl Tool for SearchTool {
          `cards` (`url` is also present after search submission); each card uses Douyin fields \
          such as `video_id`, `url`, `title`, `author`, `author_id`, `cover_url`, \
          `duration_seconds`, and visible engagement text. Defaults to 10 cards and may wait \
-         several minutes if Douyin web is throttled."
+         several minutes if Douyin web is throttled. For actual dropdown keywords, use \
+         suggestions_only=true: types the query without submitting, waits for stable visible \
+         suggestions and restores the prior input. Returns query, suggestions, observed_at \
+         and url, or an explicit access/empty-state error; never search-volume estimates."
     }
 
     fn input_schema(&self) -> Value {
@@ -543,6 +554,11 @@ impl Tool for SearchTool {
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "Search query" },
+                "suggestions_only": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Read real dropdown suggestions, not video results. Does not submit a search."
+                },
                 "num": {
                     "type": "integer",
                     "description": "Number of video cards to collect by scrolling.",
@@ -567,9 +583,15 @@ impl Tool for SearchTool {
         let wait_seconds = get_f64(&input, "wait_seconds", 330.0).clamp(1.0, 330.0);
         let num_videos = get_i64(&input, "num", 10).clamp(1, 100) as usize;
         let runtime = DouyinPageRuntime::new(&self.page);
-        let value = runtime
-            .search_videos(&query, wait_seconds, num_videos)
-            .await?;
+        let value = if input.get("suggestions_only").and_then(Value::as_bool) == Some(true) {
+            runtime
+                .search_suggestions(&query, wait_seconds.min(30.0))
+                .await?
+        } else {
+            runtime
+                .search_videos(&query, wait_seconds, num_videos)
+                .await?
+        };
         persist_site_tool_result(ctx, "dy", "search", &value, None);
         Ok(json_result(&value))
     }
@@ -718,6 +740,18 @@ async fn enrich_video_result(
     ocr: bool,
     transcribe_audio: bool,
 ) {
+    if result.pointer("/entity/content_type").and_then(Value::as_str) == Some("image") {
+        enrich_gallery_result(
+            media,
+            downloader,
+            result,
+            download_media_requested,
+            ocr,
+            transcribe_audio,
+        )
+        .await;
+        return;
+    }
     let Some(entity) = result.get_mut("entity").and_then(Value::as_object_mut) else {
         return;
     };
@@ -755,7 +789,8 @@ async fn enrich_video_result(
         if let Some(path) = transcript_path {
             let mut transcript = json!({ "local_path": path });
             media.transcribe_downloaded_video(&mut transcript).await;
-            for key in ["transcript", "transcript_error", "transcript_ms"] {
+            for key in ["transcript", "transcript_error", "transcript_ms", "transcript_segments",
+                "transcript_timestamps_available", "transcript_duration_s"] {
                 if let Some(value) = transcript.get(key) {
                     enriched[key] = value.clone();
                 }
@@ -845,6 +880,92 @@ async fn enrich_video_result(
         });
     } else {
         result["enrichment"] = json!({ "ok": true });
+    }
+}
+
+async fn enrich_gallery_result(
+    media: &MediaProcessor,
+    downloader: &SafeDouyinMediaClient,
+    result: &mut Value,
+    download: bool,
+    ocr: bool,
+    transcribe_audio: bool,
+) {
+    let Some(entity) = result.get_mut("entity") else {
+        return;
+    };
+    let id = entity
+        .get("video_id")
+        .and_then(Value::as_str)
+        .unwrap_or("gallery")
+        .to_string();
+    let referer = entity
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let mut images = entity
+        .get("images")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut failure = None;
+    if download || ocr {
+        // Reuse Douyin's bounded, redirect-checked CDN client. Sequential
+        // images keep both bytes and OCR memory bounded for long galleries.
+        for (index, image) in images.iter_mut().enumerate() {
+            let url = image.get("url").and_then(Value::as_str).unwrap_or("");
+            let saved = async {
+                let bytes = downloader
+                    .fetch_limited(url, &referer, MAX_POSTER_DOWNLOAD_BYTES, "image")
+                    .await?;
+                let suffix = match image::guess_format(&bytes)? {
+                    image::ImageFormat::Jpeg => "jpg",
+                    image::ImageFormat::Png => "png",
+                    image::ImageFormat::WebP => "webp",
+                    _ => anyhow::bail!("gallery image format was not supported"),
+                };
+                media.save_named_bytes(&bytes, &id, &format!("image-{:03}.{suffix}", index + 1))
+            }
+            .await;
+            match saved {
+                Ok(path) => insert_string(image, "local_path", &path.to_string_lossy()),
+                Err(error) => {
+                    let error = format!("{error:#}");
+                    insert_string(image, "download_error", &error);
+                    failure.get_or_insert(("gallery_image_download_failed", error));
+                }
+            }
+        }
+        if ocr {
+            media.ocr_downloaded_images(&mut images).await;
+            for image in &images {
+                if let Some(error) = image.get("ocr_error").and_then(Value::as_str) {
+                    failure.get_or_insert(("gallery_image_ocr_failed", error.to_string()));
+                } else if image.get("ocr_text").and_then(Value::as_str).is_none() {
+                    failure.get_or_insert((
+                        "gallery_image_ocr_incomplete",
+                        "An image has no completed OCR result".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    entity["images"] = json!(images);
+    if transcribe_audio {
+        // The music/placeholder player is not a spoken video belonging to the
+        // gallery. Retain the gallery, but report the unsupported request.
+        failure = Some((
+            "gallery_has_no_video_transcript",
+            "This work is an image gallery, not a spoken video".to_string(),
+        ));
+    }
+    if let Some((reason, error)) = failure {
+        result["ok"] = Value::Bool(false);
+        result["reason"] = json!(reason);
+        result["enrichment"] = json!({"ok": false, "reason": reason, "error": error});
+    } else {
+        result["enrichment"] = json!({"ok": true});
     }
 }
 
