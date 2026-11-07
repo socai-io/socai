@@ -189,6 +189,8 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
                 "先不",
                 "暂不",
                 "不做",
+                "不重新",
+                "不再",
                 "do not ",
                 "don't ",
                 "without ",
@@ -265,7 +267,7 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
     let media = has(&["下载", "保存", "download", "save", "无水印"])
         && has(&["配图", "图片", "图集", "视频", "素材", "原图", "media"]);
     let account = has(&["账号", "博主", "达人", "主页", "account"])
-        && has(&["分析", "对标", "拆解", "定位", "analy"]);
+        && has(&["分析", "对标", "对比", "比较", "对照", "拆解", "定位", "analy", "compar"]);
     let viral = has(&["爆款", "viral"]) && has(&["分析", "拆解", "研究", "analy"]);
     let keyword = has(&["关键词", "搜索词", "下拉词", "联想词", "keyword"]);
     // OCR/transcription wording can include 文案; that alone is not a new draft.
