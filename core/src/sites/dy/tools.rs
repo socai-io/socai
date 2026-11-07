@@ -102,6 +102,14 @@ pub static DY_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     kind: ArgKind::Int,
                 },
                 CommandArg {
+                    key: "suggestions_only",
+                    long: Some("suggestions-only"),
+                    value_name: "",
+                    help: "Read actual search-box suggestions without submitting a video search.",
+                    required: false,
+                    kind: ArgKind::Flag,
+                },
+                CommandArg {
                     key: "wait_seconds",
                     long: Some("wait-seconds"),
                     value_name: "SECONDS",
@@ -535,7 +543,10 @@ impl Tool for SearchTool {
          `cards` (`url` is also present after search submission); each card uses Douyin fields \
          such as `video_id`, `url`, `title`, `author`, `author_id`, `cover_url`, \
          `duration_seconds`, and visible engagement text. Defaults to 10 cards and may wait \
-         several minutes if Douyin web is throttled."
+         several minutes if Douyin web is throttled. For actual dropdown keywords, use \
+         suggestions_only=true: types the query without submitting, waits for stable visible \
+         suggestions and restores the prior input. Returns query, suggestions, observed_at \
+         and url, or an explicit access/empty-state error; never search-volume estimates."
     }
 
     fn input_schema(&self) -> Value {
@@ -543,6 +554,11 @@ impl Tool for SearchTool {
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "Search query" },
+                "suggestions_only": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Read real dropdown suggestions, not video results. Does not submit a search."
+                },
                 "num": {
                     "type": "integer",
                     "description": "Number of video cards to collect by scrolling.",
@@ -567,9 +583,15 @@ impl Tool for SearchTool {
         let wait_seconds = get_f64(&input, "wait_seconds", 330.0).clamp(1.0, 330.0);
         let num_videos = get_i64(&input, "num", 10).clamp(1, 100) as usize;
         let runtime = DouyinPageRuntime::new(&self.page);
-        let value = runtime
-            .search_videos(&query, wait_seconds, num_videos)
-            .await?;
+        let value = if input.get("suggestions_only").and_then(Value::as_bool) == Some(true) {
+            runtime
+                .search_suggestions(&query, wait_seconds.min(30.0))
+                .await?
+        } else {
+            runtime
+                .search_videos(&query, wait_seconds, num_videos)
+                .await?
+        };
         persist_site_tool_result(ctx, "dy", "search", &value, None);
         Ok(json_result(&value))
     }
@@ -755,7 +777,8 @@ async fn enrich_video_result(
         if let Some(path) = transcript_path {
             let mut transcript = json!({ "local_path": path });
             media.transcribe_downloaded_video(&mut transcript).await;
-            for key in ["transcript", "transcript_error", "transcript_ms"] {
+            for key in ["transcript", "transcript_error", "transcript_ms", "transcript_segments",
+                "transcript_timestamps_available", "transcript_duration_s"] {
                 if let Some(value) = transcript.get(key) {
                     enriched[key] = value.clone();
                 }

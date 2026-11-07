@@ -25,14 +25,31 @@
       "args": {},
       "returns": { "type": "object", "description": "Search input state and geometry." }
     },
+    "selectSearchInput": {
+      "action": true,
+      "description": "Focus and select the current Douyin search input before typing a query. Does not submit.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiDouyinPageScripts",
+      "callable": "selectSearchInput",
+      "args": {},
+      "returns": { "type": "object", "description": "Input selection outcome." }
+    },
     "setSearchInput": {
       "action": true,
-      "description": "Set and submit the Douyin search input using the active page DOM.",
+      "description": "Set the Douyin search input using the active page DOM. Does not submit.",
       "path": "page_scripts.js",
       "binding": "window.SocaiDouyinPageScripts",
       "callable": "setSearchInput",
       "args": { "query": { "type": "string", "required": true, "description": "Search text." } },
-      "returns": { "type": "object", "description": "Input and submit outcome." }
+      "returns": { "type": "object", "description": "Input update outcome." }
+    },
+    "searchSuggestions": {
+      "description": "Read actual visible Douyin dropdown suggestions for the exact current query. Excludes stale labels and history; does not input or submit. Empty or unavailable dropdowns return an explicit error, not invented keywords.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiDouyinPageScripts",
+      "callable": "searchSuggestions",
+      "args": { "query": { "type": "string", "required": true, "description": "Exact expected current search input text." } },
+      "returns": { "type": "object", "description": "Query, visible suggestions in page order, URL, observation time and stale-row count." }
     },
     "searchState": {
       "description": "Read the active Douyin search route and result state.",
