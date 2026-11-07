@@ -267,8 +267,17 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
     let media = has(&["下载", "保存", "download", "save", "无水印"])
         && has(&["配图", "图片", "图集", "视频", "素材", "原图", "media"]);
     let account = has(&["账号", "博主", "达人", "主页", "account"])
-        && has(&["分析", "对标", "对比", "比较", "对照", "拆解", "定位", "analy", "compar"]);
-    let viral = has(&["爆款", "viral"]) && has(&["分析", "拆解", "研究", "analy"]);
+        && has(&[
+            "分析", "对标", "对比", "比较", "对照", "拆解", "定位", "analy", "compar",
+        ]);
+    // Users can ask for a high/medium/low comparison without knowing the
+    // onboarding label. This selects a method only, never new collection.
+    let stratified = has(&["高中低", "高、中、低", "高/中/低", "分档", "分层"])
+        && has(&["点赞", "赞数", "互动"]);
+    let viral = (has(&["爆款", "viral"]) || stratified)
+        && has(&[
+            "分析", "拆解", "研究", "比较", "对比", "对照", "差异", "analy", "compar",
+        ]);
     let keyword = has(&["关键词", "搜索词", "下拉词", "联想词", "keyword"]);
     // OCR/transcription wording can include 文案; that alone is not a new draft.
     let keyword_only = has(&[

@@ -1131,12 +1131,29 @@ mod tests {
             initial_social_skills("小红书不要OCR，但要下载原图。", &sites),
             vec!["xhs-media-download"],
         );
+        assert_eq!(
+            initial_social_skills(
+                "用已有租房收纳笔记按赞数分高中低三档，分析标题和内容差异，给带链接的Excel；缺的别猜，不重新采集。",
+                &sites,
+            ),
+            vec!["xhs-viral-analysis"],
+        );
+        assert!(initial_social_skills("按高中低利润分析销售报表", &sites).is_empty());
         // Host-only delivery hints must not turn visual comparison into OCR,
         // or a keyword/transcript request into comment collection.
         for (request, site) in [
-            ("在小红书找3篇高、中、低互动的租房收纳笔记，比较标题、配图和评论，给3个选题。", "xhs"),
-            ("看一下抖音租房收纳的真实联想词，按需求分3类，每类给一个选题。", "douyin"),
-            ("在抖音找一条租房收纳视频，读取真实口播并按时间段下载逐字稿。", "douyin"),
+            (
+                "在小红书找3篇高、中、低互动的租房收纳笔记，比较标题、配图和评论，给3个选题。",
+                "xhs",
+            ),
+            (
+                "看一下抖音租房收纳的真实联想词，按需求分3类，每类给一个选题。",
+                "douyin",
+            ),
+            (
+                "在抖音找一条租房收纳视频，读取真实口播并按时间段下载逐字稿。",
+                "douyin",
+            ),
         ] {
             let selected = vec![site.to_string()];
             let plain = initial_social_skills(request, &selected);
