@@ -777,7 +777,8 @@ async fn enrich_video_result(
         if let Some(path) = transcript_path {
             let mut transcript = json!({ "local_path": path });
             media.transcribe_downloaded_video(&mut transcript).await;
-            for key in ["transcript", "transcript_error", "transcript_ms"] {
+            for key in ["transcript", "transcript_error", "transcript_ms", "transcript_segments",
+                "transcript_timestamps_available", "transcript_duration_s"] {
                 if let Some(value) = transcript.get(key) {
                     enriched[key] = value.clone();
                 }
