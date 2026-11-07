@@ -1642,6 +1642,9 @@ fn media_items(value: Option<&Value>) -> Vec<Value> {
 }
 
 fn video_media(item: &Value) -> Vec<Value> {
+    if item.get("content_type").and_then(Value::as_str) == Some("image") {
+        return media_items(item.get("images"));
+    }
     let video = item.get("video").unwrap_or(&Value::Null);
     let local_src = text_at(video, &["local_path"]);
     let src = if is_remote_url(&local_src) {
