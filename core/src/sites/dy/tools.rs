@@ -929,7 +929,7 @@ async fn enrich_gallery_result(
             }
             .await;
             match saved {
-                Ok(path) => insert_string(image, "local_path", path.to_string_lossy()),
+                Ok(path) => insert_string(image, "local_path", &path.to_string_lossy()),
                 Err(error) => {
                     let error = format!("{error:#}");
                     insert_string(image, "download_error", &error);
