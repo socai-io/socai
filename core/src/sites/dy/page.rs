@@ -121,12 +121,12 @@ impl<'a> DouyinPageRuntime<'a> {
         self.ensure_douyin(true, wait_seconds).await?;
         let state = self.wait_until_interactive(wait_seconds).await?;
         if let Some(reason) = state_failure_reason(&state) {
-            return Ok(json!({"query": query, "error": reason, "state": state}));
+            return Ok(json!({"ok": false, "query": query, "error": reason, "state": state}));
         }
         let original = self.expect_object("searchInput", None).await?;
         if !script_ok(&original) {
             return Ok(
-                json!({"query": query, "error": "search_input_not_found", "state": original}),
+                json!({"ok": false, "query": query, "error": "search_input_not_found", "state": original}),
             );
         }
         let previous = original
@@ -176,6 +176,9 @@ impl<'a> DouyinPageRuntime<'a> {
         }
         .await;
         let mut result = outcome?;
+        if result.get("error").is_some() {
+            result["ok"] = json!(false);
+        }
         result["input_restored"] = json!(restored.is_ok());
         Ok(result)
     }
