@@ -208,6 +208,47 @@
     return { ok: true, query, value: target.value || text(target), loc: searchInput() };
   }
 
+  function searchSuggestions(arg) {
+    const query = String((arg && arg.query) || '').trim();
+    const input = findSearchInput();
+    const value = input ? String(input.value || text(input)).trim() : '';
+    const metadata = { query, input_value: value, url: location.href, observed_at: new Date().toISOString() };
+    if (challengeRequired()) return { error: 'challenge_required', ...metadata };
+    if (!query) return { error: 'search_query_required', ...metadata };
+    if (!input) return { error: 'search_input_not_found', ...metadata };
+    if (value !== query) return { error: 'search_input_mismatch', ...metadata };
+    // Observed Douyin dropdown rows carry all three attributes; the nested
+    // completion icon also has data-text, so it must not become a second row.
+    const selector = '[data-index][data-text][data-isrichsug]';
+    let scope = input.parentElement;
+    for (let depth = 0; scope && depth < 3 && !scope.querySelector(selector); depth++) scope = scope.parentElement;
+    const rows = scope ? Array.from(scope.querySelectorAll(selector)).filter(visible) : [];
+    const normalize = (value) => value.replace(/\s+/g, '').toLocaleLowerCase();
+    const suggestions = [], seen = new Set();
+    let staleCount = 0;
+    for (const row of rows) {
+      const label = (row.getAttribute('data-text') || '').trim();
+      // Douyin also suggests shorter phrases, highlighting only the matching
+      // part of the query (e.g. 租房好物 for 租房收纳). Keep these real rows;
+      // requiring the entire seed incorrectly discards platform suggestions.
+      const highlights = Array.from(row.firstElementChild?.querySelectorAll('span') || []).map(text).filter(Boolean);
+      const matchesQuery = highlights.length
+        ? highlights.some((part) => normalize(query).includes(normalize(part)))
+        : normalize(label).includes(normalize(query));
+      // DOM updates can briefly retain the preceding query's dropdown.
+      if (!label || !matchesQuery || normalize(text(row)) !== normalize(label)) {
+        staleCount++;
+        continue;
+      }
+      if (!seen.has(label)) {
+        seen.add(label);
+        suggestions.push(label);
+      }
+    }
+    if (!suggestions.length) return { error: 'search_suggestions_not_ready', ...metadata, stale_row_count: staleCount };
+    return { ...metadata, suggestions, stale_row_count: staleCount };
+  }
+
   function cardNodes(root) {
     const scope = root && root.querySelectorAll ? root : document;
     const nodes = Array.from(scope.querySelectorAll(
@@ -1039,6 +1080,7 @@
     searchInput,
     selectSearchInput,
     setSearchInput,
+    searchSuggestions,
     searchState,
     videoCards,
     scrollFeed,
