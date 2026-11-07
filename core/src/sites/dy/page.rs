@@ -321,7 +321,11 @@ impl<'a> DouyinPageRuntime<'a> {
         if entity.author_id.trim().is_empty() {
             missing.push("author_id");
         }
-        if entity
+        if entity.content_type == "image" {
+            if entity.images.is_empty() || entity.images.len() != entity.image_count {
+                missing.push("images");
+            }
+        } else if entity
             .video
             .get("resolved_url")
             .and_then(Value::as_str)
@@ -383,16 +387,26 @@ impl<'a> DouyinPageRuntime<'a> {
                 .get("author_id")
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.is_empty());
-            let has_media = latest
-                .pointer("/video/resolved_url")
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.is_empty());
+            let has_gallery = latest.get("content_type").and_then(Value::as_str) == Some("image")
+                && latest
+                    .get("images")
+                    .and_then(Value::as_array)
+                    .is_some_and(|images| {
+                        !images.is_empty()
+                            && latest.get("image_count").and_then(Value::as_u64)
+                                == Some(images.len() as u64)
+                    });
+            let has_media = has_gallery
+                || latest
+                    .pointer("/video/resolved_url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty());
             let has_audio = latest
                 .pointer("/video/audio_url")
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.is_empty());
             if has_author && has_media {
-                if !require_audio || has_audio {
+                if has_gallery || !require_audio || has_audio {
                     return Ok(latest);
                 }
                 let since = media_ready_since.get_or_insert_with(Instant::now);

@@ -114,9 +114,9 @@ impl MediaProcessor {
             match self.ocr_image_timed(&bytes).await {
                 Ok((text, elapsed)) => {
                     predict += elapsed;
-                    if !text.trim().is_empty() {
-                        insert_string(item, "ocr_text", text);
-                    }
+                    // Empty text is still a completed recognition result;
+                    // leaving it absent looks like an image was never read.
+                    insert_string(item, "ocr_text", text);
                 }
                 Err(err) => insert_string(item, "ocr_error", format!("{err:#}")),
             }
