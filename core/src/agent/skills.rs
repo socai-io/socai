@@ -1131,6 +1131,20 @@ mod tests {
             initial_social_skills("小红书不要OCR，但要下载原图。", &sites),
             vec!["xhs-media-download"],
         );
+        // Host-only delivery hints must not turn visual comparison into OCR,
+        // or a keyword/transcript request into comment collection.
+        for (request, site) in [
+            ("在小红书找3篇高、中、低互动的租房收纳笔记，比较标题、配图和评论，给3个选题。", "xhs"),
+            ("看一下抖音租房收纳的真实联想词，按需求分3类，每类给一个选题。", "douyin"),
+            ("在抖音找一条租房收纳视频，读取真实口播并按时间段下载逐字稿。", "douyin"),
+        ] {
+            let selected = vec![site.to_string()];
+            let plain = initial_social_skills(request, &selected);
+            let hosted = format!("{request}\n\n[Web creation delivery contract]\nSave requested topics; previously extracted text and comments are not proof.");
+            assert_eq!(initial_social_skills(&hosted, &selected), plain);
+            let navigation = format!("{request}\n\nServer-verified read targets (navigation metadata, NOT acquired evidence). Respect content and comments.\n[]");
+            assert_eq!(initial_social_skills(&navigation, &selected), plain);
+        }
     }
 
     #[test]

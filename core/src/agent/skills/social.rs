@@ -127,6 +127,15 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
     let task = task
         .split_once("\n\n[Server attachment index: metadata only,")
         .map_or(task, |(request, _)| request);
+    // Host delivery/navigation guidance is not another collection request.
+    // Keep it in the model prompt, but do not let "extracted", "save" or
+    // "comments" in that guidance select unrelated preparatory methods.
+    let task = task
+        .split_once("\n\n[Web creation delivery contract]\n")
+        .map_or(task, |(request, _)| request);
+    let task = task
+        .split_once("\n\nServer-verified read targets (navigation metadata,")
+        .map_or(task, |(request, _)| request);
     // A confirmed brief describes what to write, including quoted research and
     // explicit prohibitions. Do not treat those mentions as collection orders:
     // e.g. "不要…OCR、素材下载或音频转写" used to preload all three methods.
