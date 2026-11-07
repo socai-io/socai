@@ -586,11 +586,11 @@
     const counter = Array.from(player.querySelectorAll('div, span')).find(node =>
       /^\d+\s*\/\s*\d+$/.test(text(node)));
     const count = Number((text(counter).match(/\/\s*(\d+)$/) || [])[1]) || 0;
-    const images = slides.map((slide, position) => {
+    const images = slides.map((slide, index) => {
       const img = Array.from(slide.querySelectorAll('img')).find(node =>
         /tplv-dy-aweme-images/.test(node.currentSrc || node.getAttribute('src') || ''));
       return {url: allowedMediaUrl(img && (img.currentSrc || img.getAttribute('src'))),
-        width: img ? img.naturalWidth : 0, height: img ? img.naturalHeight : 0, position};
+        width: img ? img.naturalWidth : 0, height: img ? img.naturalHeight : 0, index};
     });
     return {root, player, images, count, complete: count > 0 && count <= 200 &&
       images.length === count && images.every(image => image.url)};
