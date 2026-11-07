@@ -194,11 +194,11 @@ impl<'a> DouyinPageRuntime<'a> {
             .await?;
         let selected = self.expect_object("selectSearchInput", None).await?;
         anyhow::ensure!(script_ok(&selected), "search_input_selection_failed");
-        if query.is_empty() {
-            self.page.press_key("Backspace").await?;
-        } else {
-            self.page.type_chars(query).await?;
-        }
+        // Douyin accepts trusted insertText on a focused background page.
+        // Per-character keyDown/keyUp can succeed at the CDP transport layer
+        // without inserting any text there. Inserting an empty string also
+        // replaces the selected range when restoring an initially empty box.
+        self.page.type_text(query).await?;
         let current = self.expect_object("searchInput", None).await?;
         anyhow::ensure!(
             current.get("value").and_then(Value::as_str) == Some(query),
