@@ -193,6 +193,7 @@ impl OpenAICompatBackend {
         matches!(
             self.provider,
             Provider::Socai
+                | Provider::OpenRouter
                 | Provider::Kimi
                 | Provider::Qwen
                 | Provider::QwenIntl
@@ -509,19 +510,31 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output
             handoff_acknowledged: Default::default(),
             task_id: None,
         };
-        let payload = serde_json::to_value(kimi.build_chat_request(
-            "system",
-            &messages,
-            &[ToolSchema {
-                name: "lookup".into(),
-                description: "lookup a value".into(),
-                input_schema: json!({"type": "object"}),
-            }],
-            1024,
-        ))
-        .expect("request should serialize");
-        assert_eq!(payload["tool_choice"], "auto");
-        assert!(payload["messages"][2]["content"].is_null());
+        for provider in [Provider::Kimi, Provider::OpenRouter] {
+            let backend = OpenAICompatBackend {
+                provider,
+                ..kimi.clone()
+            };
+            let payload = serde_json::to_value(backend.build_chat_request(
+                "system",
+                &messages,
+                &[ToolSchema {
+                    name: "lookup".into(),
+                    description: "lookup a value".into(),
+                    input_schema: json!({"type": "object"}),
+                }],
+                1024,
+            ))
+            .expect("request should serialize");
+            assert_eq!(payload["tool_choice"], "auto");
+            assert!(payload["messages"][2]["content"].is_null());
+            assert_eq!(
+                payload["messages"][2]["reasoning_content"],
+                "need the lookup result"
+            );
+            assert_eq!(payload["messages"][2]["tool_calls"][0]["id"], "call_1");
+            assert_eq!(payload["messages"][3]["tool_call_id"], "call_1");
+        }
 
         let text_only_reasoning = [Message::assistant_blocks(vec![
             Block::ReasoningContent {
