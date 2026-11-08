@@ -794,11 +794,14 @@ impl Tool for HostTool {
                 "tool": self.definition.name,
                 "input": input,
             }))
-            // Upload reads can include bounded parsing and metered OCR. Keep
-            // ordinary host tools at their existing deadline; do not time out
-            // a legitimate OCR read while its provider call is still running.
+            // Upload parsing/OCR and artifact source reads, claim review and
+            // storage can outlast the ordinary 20s transport deadline. Wait
+            // for their bounded result without retrying an unknown mutation.
             .timeout(Duration::from_secs(
-                if self.definition.name == "read_uploaded_file" {
+                if matches!(
+                    self.definition.name.as_str(),
+                    "read_uploaded_file" | "publish_artifact"
+                ) {
                     110
                 } else {
                     20
