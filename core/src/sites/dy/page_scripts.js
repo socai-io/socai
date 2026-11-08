@@ -144,11 +144,19 @@
     if (!input) {
       return { ok: false, error: 'search_input_not_found', state: pageState() };
     }
+    if (challengeRequired()) return { ok: false, error: 'challenge_required' };
+    const point = center(input);
+    const hit = document.elementFromPoint(point.x, point.y);
+    // A header input can remain visible underneath a full-page login mask.
+    // Do not focus or type through that mask; report the actual blocker.
+    if (!hit || (hit !== input && !input.contains(hit))) {
+      return { ok: false, error: loginBlocked(false) ? 'login_required' : 'search_input_obscured' };
+    }
     const submit = document.querySelector('[data-e2e="searchbar-button"]') ||
       Array.from(document.querySelectorAll('button')).find((btn) => visible(btn) && /搜索/.test(text(btn)));
     return {
       ok: true,
-      input: center(input),
+      input: point,
       submit: submit && visible(submit) ? center(submit) : null,
       placeholder: input.getAttribute('placeholder') || '',
       value: input.value || text(input),
@@ -156,6 +164,8 @@
   }
 
   function selectSearchInput() {
+    const loc = searchInput();
+    if (!loc.ok) return loc;
     const input = findSearchInput();
     if (!input) return { ok: false, error: 'search_input_not_found' };
     input.focus();
@@ -190,9 +200,7 @@
     const query = String((arg && arg.query) || '').trim();
     const loc = searchInput();
     if (!loc.ok) return loc;
-    // Resolve the same visible DOM input directly. A full-page login overlay
-    // can make elementFromPoint return the overlay even while the header
-    // search input remains present and focusable underneath it.
+    // Resolve the same visible, hit-tested input; never focus behind a mask.
     const target = findSearchInput();
     if (!target) {
       return { ok: false, error: 'search_input_target_missing', loc };
@@ -216,6 +224,8 @@
     if (challengeRequired()) return { error: 'challenge_required', ...metadata };
     if (!query) return { error: 'search_query_required', ...metadata };
     if (!input) return { error: 'search_input_not_found', ...metadata };
+    const loc = searchInput();
+    if (!loc.ok) return { error: loc.error, ...metadata };
     if (value !== query) return { error: 'search_input_mismatch', ...metadata };
     // Observed Douyin dropdown rows carry all three attributes; the nested
     // completion icon also has data-text, so it must not become a second row.
