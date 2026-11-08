@@ -728,6 +728,29 @@
     };
   }
 
+  function commentPanel() {
+    return firstVisible(['[data-e2e="comment-list"]', '[class*="comment-list"]', '[class*="commentList"]']);
+  }
+
+  async function openComments() {
+    if (commentPanel()) return { ok: true, clicked: false };
+    // The detail sidebar defaults to related works. Comments can already be
+    // mounted under display:none, so waiting/scrolling is not enough.
+    const tabs = document.querySelector('#detailrelatedVideoCard');
+    const tab = tabs && Array.from(tabs.querySelectorAll('div, button, [role="tab"]'))
+      .find((node) => visible(node) && node.children.length === 0 && /^评论\s*[（(]\d+[）)]$/.test(text(node)));
+    const control = tab || firstVisible(['[data-e2e="player-container"] [data-e2e="feed-comment-icon"]']);
+    if (!control) return { ok: false, reason: 'comment_control_not_found' };
+    await browserAction(() => control.click());
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (commentPanel()) return { ok: true, clicked: true };
+      if (challengeRequired()) return { ok: false, reason: 'challenge_required' };
+      if (loginBlocked(false)) return { ok: false, reason: 'login_required' };
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return { ok: false, reason: 'comment_panel_not_open' };
+  }
+
   function commentNodes() {
     const wrapped = Array.from(document.querySelectorAll('[class*="comment-item-info-wrap"]'))
       .map((node) => node.parentElement)
@@ -822,7 +845,7 @@
       '[class*="commentList"]',
     ]) || document;
     const before = commentTreeCount(comments({ limit: 999 }));
-    const expandPattern = /(?:view|show|load|展开|查看)(?:\s+all|\s+more|更多|全部)?\s*(?:\d+\s*)?(?:repl(?:y|ies)|回复|评论)/i;
+    const expandPattern = /(?:view|show|load|展开|查看)(?:\s+all|\s+more|更多|全部)?\s*(?:\d+\s*(?:条\s*)?)?(?:repl(?:y|ies)|回复|评论)/i;
     let clicked = 0;
     for (const control of root.querySelectorAll('button, [role="button"]')) {
       if (!visible(control) || control.disabled) continue;
@@ -1116,6 +1139,7 @@
     scrollFeed,
     videoState,
     videoDetail,
+    openComments,
     comments,
     scrollComments,
     authorState,

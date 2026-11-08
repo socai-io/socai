@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 
 use crate::cdp::PageSession;
@@ -273,7 +273,22 @@ impl<'a> DouyinPageRuntime<'a> {
     ) -> Result<Value> {
         let target = douyin_video_url(locator)?;
         let expected_id = extract_video_id(&target);
-        let navigation = self.navigate_to(&target).await?;
+        let current = self.current_url().await.unwrap_or_default();
+        let navigation = if !expected_id.is_empty()
+            && is_douyin_page_url(&current)
+            && extract_video_id(&current) == expected_id
+        {
+            // An image work's numeric ID resolves to /video/<id>, which
+            // redirects back to the current /note/<id>. Reopening it resets
+            // the comment tab and can never satisfy the URL-change fence.
+            // The state poll below still validates the actual work identity.
+            NavigationExpectation {
+                previous_url: current,
+                navigated: false,
+            }
+        } else {
+            self.navigate_to(&target).await?
+        };
         let state = self
             .wait_for_named_state(
                 "videoState",
@@ -830,30 +845,30 @@ impl<'a> DouyinPageRuntime<'a> {
     }
 
     async fn collect_comments(&self, target: usize) -> Result<Vec<DouyinComment>> {
+        let panel = self.expect_object("openComments", None).await?;
+        if !script_ok(&panel) {
+            bail!("Douyin comment panel did not open: {panel}");
+        }
         let mut comments = Vec::new();
-        let mut seen = std::collections::HashSet::new();
         let mut stalls = 0usize;
         while comments.len() < target && stalls < 4 {
             let raw = self
                 .expect_array("comments", Some(&json!({ "limit": target })))
                 .await?;
-            let before = comments.len();
+            let before = comment_tree_count(&comments);
+            let mut batch = Vec::new();
             for item in raw {
                 let comment: DouyinComment = serde_json::from_value(item)
                     .context("Douyin comments returned an invalid entity")?;
-                let key = if comment.comment_id.is_empty() {
-                    format!("{}\n{}", comment.author, comment.text)
-                } else {
-                    comment.comment_id.clone()
-                };
-                if !comment.text.is_empty() && seen.insert(key) {
-                    comments.push(comment);
-                }
+                batch.push(comment);
             }
+            // Replies arrive after the parent was first seen. Deduplicating
+            // only the parent ID silently discards those later replies.
+            merge_comment_batch(&mut comments, batch);
             if comments.len() >= target {
                 break;
             }
-            if comments.len() == before {
+            if comment_tree_count(&comments) == before {
                 stalls += 1;
             } else {
                 stalls = 0;
@@ -1022,6 +1037,33 @@ fn search_transition_ok(value: &Value) -> bool {
 
 fn without_fragment(value: &str) -> &str {
     value.split('#').next().unwrap_or(value)
+}
+
+fn comment_tree_count(comments: &[DouyinComment]) -> usize {
+    comments
+        .iter()
+        .map(|comment| 1 + comment_tree_count(&comment.replies))
+        .sum()
+}
+
+fn merge_comment_batch(current: &mut Vec<DouyinComment>, incoming: Vec<DouyinComment>) {
+    for comment in incoming {
+        if comment.text.is_empty() {
+            continue;
+        }
+        let existing = current.iter_mut().find(|existing| {
+            if !comment.comment_id.is_empty() && !existing.comment_id.is_empty() {
+                existing.comment_id == comment.comment_id
+            } else {
+                existing.author == comment.author && existing.text == comment.text
+            }
+        });
+        if let Some(existing) = existing {
+            merge_comment_batch(&mut existing.replies, comment.replies);
+        } else {
+            current.push(comment);
+        }
+    }
 }
 
 fn bounded_wait_duration(seconds: f64) -> Duration {

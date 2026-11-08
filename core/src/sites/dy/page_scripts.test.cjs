@@ -53,6 +53,7 @@ class FakeElement {
   get poster() { return this.attrs.poster || ''; }
   get src() { return this.attrs.src || ''; }
   get currentSrc() { return this.src; }
+  get children() { return this.childNodes.filter((child) => child instanceof FakeElement); }
   get href() { return this.attrs.href ? new URL(this.attrs.href, PAGE_URL).href : ''; }
   get textContent() {
     return this.childNodes.map((child) => (typeof child === 'string' ? child : child.textContent)).join('\n');
@@ -157,6 +158,7 @@ function loadScripts(page) {
   };
   const context = {
     URL,
+    setTimeout,
     window,
     location: { href: page.url },
     performance: { getEntriesByType: () => [] },
@@ -172,6 +174,51 @@ function loadScripts(page) {
   vm.runInNewContext(source, context);
   return window.SocaiDouyinPageScripts;
 }
+
+test('comments open the actual inactive detail tab without requiring login', async () => {
+  const page = detailPage({ publishTime: '2026-11-07 12:00' });
+  const panel = el('div', { 'data-e2e': 'comment-list', hidden: true }, '全部评论');
+  const tab = el('div', { class: 'X9EiuBV4 JPPmtWk8' }, '评论(3)');
+  let clicks = 0;
+  tab.click = () => { clicks += 1; panel.attrs.hidden = false; };
+  const tabs = el('div', { id: 'detailrelatedVideoCard' },
+    el('div', { class: 'EqrWeopv' }, el('div', {}, '相关推荐'), tab));
+  page.body.childNodes.push(tabs, panel);
+  tabs.parentElement = panel.parentElement = page.body;
+  const api = loadScripts(page);
+  const first = await api.openComments();
+  assert.equal(first.ok, true);
+  assert.equal(first.clicked, true);
+  assert.equal(clicks, 1);
+  assert.equal((await api.openComments()).ok, true);
+  assert.equal(clicks, 1, 'an already open panel must not toggle closed');
+});
+
+test('comments fail explicitly when neither panel nor a visible open control exists', async () => {
+  const api = loadScripts(detailPage({ publishTime: '2026-11-07 12:00' }));
+  // The fixture has a hidden player comment icon; do not click hidden controls.
+  const result = await api.openComments();
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'comment_control_not_found');
+});
+
+test('comment scrolling expands the observed Chinese reply label including 条', async () => {
+  const page = detailPage({ publishTime: '2026-11-07 12:00' });
+  const parent = el('div', { 'data-comment-id': '7293100261164319503' },
+    el('span', { 'data-e2e': 'comment-level-1' }, '你们表情管理可不可以再好一点'));
+  const expand = el('button', { class: 'comment-reply-expand-btn' },
+    el('span', {}, '展开1条回复'));
+  let clicks = 0;
+  expand.click = () => { clicks += 1; expand.attrs.hidden = true; };
+  const panel = el('div', { 'data-e2e': 'comment-list' }, parent, expand);
+  panel.scrollTop = 0; panel.clientHeight = panel.scrollHeight = 200;
+  panel.scrollBy = () => {};
+  panel.parentElement = page.body; page.body.childNodes.push(panel);
+  const result = await loadScripts(page).scrollComments();
+  assert.equal(result.clicked, 1);
+  assert.equal(clicks, 1);
+  assert.equal(result.at_end, false, 'an expansion is not a terminal scroll');
+});
 
 function inTimeZone(zone, run) {
   const previous = process.env.TZ;
