@@ -125,8 +125,12 @@ impl<'a> DouyinPageRuntime<'a> {
         }
         let original = self.expect_object("searchInput", None).await?;
         if !script_ok(&original) {
+            let reason = original
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("search_input_not_found");
             return Ok(
-                json!({"ok": false, "query": query, "error": "search_input_not_found", "state": original}),
+                json!({"ok": false, "query": query, "error": reason, "state": original}),
             );
         }
         let previous = original
