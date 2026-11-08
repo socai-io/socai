@@ -70,6 +70,17 @@ The first connection to your existing Chrome requires enabling remote debugging 
 See [Desktop workflow](#desktop-workflow) for source selection and Feishu exports,
 and [Run results and artifacts](#run-results-and-artifacts) for saved deliverables.
 
+Use the paperclip in the desktop composer to attach Excel (`.xlsx`, `.xls`),
+CSV, Word (`.docx`), PDF or PNG/JPEG/WebP images, including mixed selections.
+Each message accepts up to 10 files, 20 MiB per original. File cards retain the
+original name and offer an unchanged original download. Ask a short question
+about the files; Excel reading includes all worksheets with row numbers, while
+CSV is decoded as text. Formula values are saved results, never recalculated;
+macros, external links, charts and embedded images are not executed or analyzed.
+Spreadsheet limits are 16 sheets, 10,000 rows/200 columns per sheet, 200,000 cells
+and 2 MiB of extracted text. Oversized or unreadable files fail explicitly rather
+than silently returning the first sheet.
+
 ### Command line
 
 The CLI is designed for agent-driven workflows, including Claude Code and Codex, and returns structured data for each platform operation.

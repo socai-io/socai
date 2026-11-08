@@ -5638,6 +5638,7 @@ dependencies = [
  "cap-std",
  "dirs 5.0.1",
  "dunce",
+ "encoding_rs",
  "flate2",
  "fs2",
  "futures",
