@@ -889,6 +889,11 @@ impl HostTool {
             // and attachment publication. Do not abandon an in-flight bill.
             "transcribe_source_media" => 1_950,
             "read_uploaded_file" => 110,
+            // Publication can read archived sources (8s), reread previews
+            // (30s), and review claims (30s) before rendering/storing a file.
+            // Wait for that bounded result; a 20s transport deadline abandons
+            // valid reviews and turns their outcome into an unknown mutation.
+            "publish_artifact" => 110,
             _ => 20,
         })
     }
@@ -1799,7 +1804,7 @@ mod tests {
     async fn host_tool_calls_the_bound_loopback_endpoint() {
         assert_eq!(HostTool::response_deadline("transcribe_source_media"), Duration::from_secs(1_950));
         assert_eq!(HostTool::response_deadline("read_uploaded_file"), Duration::from_secs(110));
-        assert_eq!(HostTool::response_deadline("publish_artifact"), Duration::from_secs(20));
+        assert_eq!(HostTool::response_deadline("publish_artifact"), Duration::from_secs(110));
         for (name, body, expected_image, expected_failure) in [
             (
                 "transcribe_source_media",
