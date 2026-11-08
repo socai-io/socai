@@ -10,7 +10,9 @@ const code=stripTypeScriptTypes(source.replace(/^import[^\n]*\n/gm,'').replace(/
 const mixed=[{id:'word',name:'报告.docx',size:3000,sha256:'a'},{id:'pdf',name:'手册.pdf',size:802000,sha256:'b'},{id:'image',name:'image.png',size:988000,sha256:'c'}];
 test('native spreadsheet picker and extracted reading copies are connected',async()=>{
  const native=await readFile(new URL('../src-tauri/src/chat_uploads.rs',import.meta.url),'utf8');
- assert.match(native,/\["xlsx", "xls", "csv", "docx", "pdf"/);
+ const picker=native.match(/\.add_filter\(\s*"Excel, CSV, Word, PDF, images",\s*&\[([\s\S]*?)\]/);
+ assert.ok(picker,'Native picker has an explicit attachment filter');
+ assert.deepEqual(Array.from(picker[1].matchAll(/"([a-z]+)"/g),m=>m[1]),['xlsx','xls','csv','docx','pdf','png','jpg','jpeg','webp']);
  assert.match(native,/"xlsx" \| "xls" => Some\(spreadsheet_text/);
  assert.match(native,/join\("table-text.txt"\)/);
  const files=[{id:'xlsx',name:'销售.xlsx',size:3000},{id:'xls',name:'旧表.xls',size:4000},{id:'csv',name:'销售.csv',size:100}];
