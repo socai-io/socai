@@ -606,7 +606,9 @@ const SocaiXhsPageScripts = (() => {
 
   // ── note content extraction (root-scoped + visible-only) ─────
   function detectNoteType(root, stateVideo = null) {
-    if (root?.querySelector?.('video')) return 'video';
+    // A Live Photo's short playback lives inside an image carousel. It is not
+    // a video note: treating it as one drops every original carousel image.
+    if ($$('video', root).some(video => !video.closest?.('.live-photo-contain, .live-video-wrapper'))) return 'video';
     if (stateVideo?.is_video || stateVideo?.best_url || (stateVideo?.streams || []).length) return 'video';
     return 'image';
   }

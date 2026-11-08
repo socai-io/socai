@@ -24,7 +24,7 @@ test('the browser regression helper fails closed before CDP without explicit acc
   assert.match(result.stderr, /SOCAI_ACCEPTANCE_TARGET, SOCAI_ACCEPTANCE_EMAIL and SOCAI_ACCEPTANCE_ACCOUNT_ID are required/);
 });
 
-function fixture({ rows = [], ends = [], replies = [], feed = false, video = null, resources = [], totalText = '共 300 条评论' } = {}) {
+function fixture({ rows = [], ends = [], replies = [], feed = false, video = null, images = [], resources = [], totalText = '共 300 条评论' } = {}) {
   class Element {
     constructor(className, parentElement = null) {
       Object.assign(this, {className, parentElement, scrollTop:0, scrollHeight:400,
@@ -53,6 +53,7 @@ function fixture({ rows = [], ends = [], replies = [], feed = false, video = nul
   };
   overlay.querySelectorAll = selector => {
     if (selector === 'video') return video ? [video] : [];
+    if (selector === '.note-slider img') return images;
     if (selector.includes('.note-content')) return [photo];
     if (selector === '.comments-el' || selector.includes('.comments-container, .comment-list')) return [area];
     if (selector.startsWith('.comment-item, .parent-comment')) return rows;
@@ -111,6 +112,24 @@ test('a video domain name or query parameter alone does not identify media', () 
     assert.equal(result.video.resolved_url, video.currentSrc);
     assert.deepEqual(Array.from(result.video.source_urls), [video.currentSrc]);
   }
+});
+
+test('Live Photo playback does not turn the containing six-image note into a video', () => {
+  // Observed live DOM: .live-photo-contain > img.live-img + video.live-video.
+  const video = {currentSrc:'blob:https://www.xiaohongshu.com/live', src:'', poster:'', duration:2.145,
+    closest: selector => selector.includes('.live-photo-contain') ? {} : null,
+    querySelectorAll:()=>[]};
+  const images = Array.from({length:6}, (_, i) => ({
+    src:`https://sns-webpic-qc.xhscdn.com/notes/owned-${i}.jpg`,
+    getAttribute:()=>null, closest:()=>null,
+    style:{display:'block',visibility:'visible',opacity:'1'},
+    getBoundingClientRect:()=>({width:561,height:748}),
+  }));
+  const result = fixture({video, images}).scripts.note();
+  assert.equal(result.type, 'image');
+  assert.equal(result.video, null);
+  assert.deepEqual(Array.from(result.image_urls), images.map(i=>i.src));
+  assert.equal(result.image_count, 6);
 });
 
 function comment(id, text) {
