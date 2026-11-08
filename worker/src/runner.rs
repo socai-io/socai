@@ -798,7 +798,10 @@ impl Tool for HostTool {
             // storage can outlast the ordinary 20s transport deadline. Wait
             // for their bounded result without retrying an unknown mutation.
             .timeout(Duration::from_secs(
-                if matches!(self.definition.name.as_str(), "read_uploaded_file" | "publish_artifact") {
+                if matches!(
+                    self.definition.name.as_str(),
+                    "read_uploaded_file" | "publish_artifact"
+                ) {
                     110
                 } else {
                     20
