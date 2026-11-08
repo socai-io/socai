@@ -82,6 +82,15 @@
       "args": {},
       "returns": { "type": "object", "description": "Douyin video detail." }
     },
+    "openComments": {
+      "action": true,
+      "description": "Open the active work's comments tab or player comment panel before collecting. Report actual login/challenge gates instead of treating a hidden panel as missing comments.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiDouyinPageScripts",
+      "callable": "openComments",
+      "args": {},
+      "returns": { "type": "object", "description": "Whether the comment panel is visible, or the explicit blocking reason." }
+    },
     "comments": {
       "description": "Collect Douyin comments and expanded replies across the lazy comment panel up to limit.",
       "path": "page_scripts.js",
