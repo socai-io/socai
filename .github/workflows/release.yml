@@ -151,8 +151,8 @@ jobs:
 
           python3 .github/scripts/set-app-version.py "${VERSION}"
 
-          git config user.name "Asksocai"
-          git config user.email "bolv@socai.io"
+          git config user.name "IRONICBo"
+          git config user.email "47499836+IRONICBo@users.noreply.github.com"
           git add Cargo.toml app/package.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml Cargo.lock
           git commit -m "chore: release socai v${VERSION}"
           versioned_sha="$(git rev-parse HEAD)"
@@ -321,8 +321,8 @@ jobs:
 
           python3 .github/scripts/set-app-version.py "${VERSION}"
 
-          git config user.name "Asksocai"
-          git config user.email "bolv@socai.io"
+          git config user.name "IRONICBo"
+          git config user.email "47499836+IRONICBo@users.noreply.github.com"
           git add Cargo.toml app/package.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml Cargo.lock
           git commit -m "chore: release socai v${VERSION}"
           versioned_sha="$(git rev-parse HEAD)"
@@ -710,8 +710,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python .github/scripts/set-app-version.py $env:VERSION
-          git config user.name 'Asksocai'
-          git config user.email 'bolv@socai.io'
+          git config user.name 'IRONICBo'
+          git config user.email '47499836+IRONICBo@users.noreply.github.com'
           git add Cargo.toml app/package.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml Cargo.lock
           git commit -m "chore: release socai v$env:VERSION"
           $versionedSha = git rev-parse HEAD
@@ -864,8 +864,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python .github/scripts/set-app-version.py $env:VERSION
-          git config user.name 'Asksocai'
-          git config user.email 'bolv@socai.io'
+          git config user.name 'IRONICBo'
+          git config user.email '47499836+IRONICBo@users.noreply.github.com'
           git add Cargo.toml app/package.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml Cargo.lock
           git commit -m "chore: release socai v$env:VERSION"
           $versionedSha = git rev-parse HEAD
@@ -1172,8 +1172,8 @@ jobs:
             fi
           done
 
-          git config user.name "Asksocai"
-          git config user.email "bolv@socai.io"
+          git config user.name "IRONICBo"
+          git config user.email "47499836+IRONICBo@users.noreply.github.com"
 
           python3 .github/scripts/set-app-version.py "${VERSION}"
 

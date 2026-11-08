@@ -851,7 +851,7 @@ function renderComposer(c: ComposerProps): string {
             placeholder="${esc(placeholder)}"
             ${disabled ? "disabled" : ""}
           >${esc(c.value)}</textarea>
-          <button id="composer-attach" type="button" class="composer__voice" aria-label="${getLanguage() === "zh" ? "上传Word、PDF或图片" : "Attach Word, PDF or images"}" title="${getLanguage() === "zh" ? "上传文件（可多选）" : "Attach files (multiple)"}" ${disabled || uploadsBusy(uploadScope) ? "disabled" : ""}><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m8 12 6-6a3 3 0 0 1 4 4L9 19a5 5 0 0 1-7-7l10-10"/></svg></button>
+          <button id="composer-attach" type="button" class="composer__voice" aria-label="${getLanguage() === "zh" ? "上传Excel、CSV、Word、PDF或图片" : "Attach Excel, CSV, Word, PDF or images"}" title="${getLanguage() === "zh" ? "上传文件（可多选）" : "Attach files (multiple)"}" ${disabled || uploadsBusy(uploadScope) ? "disabled" : ""}><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m8 12 6-6a3 3 0 0 1 4 4L9 19a5 5 0 0 1-7-7l10-10"/></svg></button>
           <span class="composer__voice-wrap" title="${esc(voiceTitle)}">
             <button
               id="composer-voice"
