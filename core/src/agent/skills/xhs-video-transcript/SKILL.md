@@ -13,6 +13,8 @@ description: 小红书 视频逐字稿. Transcribe actual video audio, preserve 
 
 ## 操作方法
 
+先查逐字稿，再查视频：用户只要下载或重发旧逐字稿时，先用 read_conversation_context 查看文件目录，定位同作品已有的完整逐字稿及 artifact_kind，原样交付并保留原时间段。当前工具支持 publish_artifact.artifact_copy 时直接复用原文件，不重新抄写，也不调用 transcribe_source_media、采集或下载视频。只有没有所需逐字稿，或用户明确要求重新转写时，才进入下面的转写流程；编辑、分析或转换格式仍按用户要求处理，不把复制旧件说成新转写。
+
 同会话已有视频原件时，先用 read_conversation_context 读取准确的 evidence 来源编号。若本轮暴露 transcribe_source_media，用其实际 schema 传入 source_run_id、source_sequence、note_id、media_index，直接转写归档原件；不为了转写已保存的视频重新 get_notes、下载或要求平台登录。只在没有所需归档时才进行新的站点采集。工具返回的原文附件可直接交付，文字预览截断时读完整附件，不用模型补写缺失口播。
 
 确认真实视频身份与音频来源，优先读取可得的真实字幕；否则使用本平台实际支持的转写能力。用户明确要求逐字稿时仅在原请求范围内调用服务，沿用现有计费与授权，不暴露密钥。保留原始音频/视频关联、语言、真实转写分段和时间范围；未返回时间戳时只交付无时间戳原文，不能按字数伪造秒点。无音轨、静音、权限、下载/转码/ASR失败与空结果分别报告。不要把简介、标题、OCR字幕截图或模型概述冒充完整口播逐字稿。用户要精读时，原文与清洗/结构分析分开。
