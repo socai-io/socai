@@ -1139,6 +1139,13 @@ mod tests {
             vec!["xhs-viral-analysis"],
         );
         assert!(initial_social_skills("按高中低利润分析销售报表", &sites).is_empty());
+        assert_eq!(
+            initial_social_skills(
+                "在抖音找一条租房收纳视频，读取真实口播并按时间段下载逐字稿。",
+                &["douyin".to_string()],
+            ),
+            vec!["dy-video-transcript"],
+        );
         // Host-only delivery hints must not turn visual comparison into OCR,
         // or a keyword/transcript request into comment collection.
         for (request, site) in [

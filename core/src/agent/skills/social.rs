@@ -264,7 +264,12 @@ pub(super) fn initial_skills(task: &str, enabled_sites: &[String]) -> Vec<String
     let monitoring = has(&["监控", "monitor"])
         || (has(&["账号", "博主", "达人", "主页"])
             && has(&["定时", "每天", "追踪更新", "新增作品"]));
-    let media = has(&["下载", "保存", "download", "save", "无水印"])
+    // A downloadable transcript/OCR document is not a request for source media.
+    // Those methods already handle their real input; additional media methods
+    // remain available on demand for explicitly requested source downloads.
+    let media = !image_text
+        && !transcript
+        && has(&["下载", "保存", "download", "save", "无水印"])
         && has(&["配图", "图片", "图集", "视频", "素材", "原图", "media"]);
     let account = has(&["账号", "博主", "达人", "主页", "account"])
         && has(&[
