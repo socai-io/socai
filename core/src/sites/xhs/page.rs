@@ -1478,7 +1478,9 @@ impl<'a> XhsPageRuntime<'a> {
             "primary_complete": parent_end_seen,
             "reply_pass_complete": reply_pass_complete,
             "visible_complete": parent_end_seen && reply_pass_complete,
-            "resume_available": !complete && matches!(stop_reason, "timeout" | "stalled"),
+            // A caller-imposed limit is not source exhaustion. The saved
+            // snapshot can continue when the caller raises its total budget.
+            "resume_available": !complete && matches!(stop_reason, "timeout" | "stalled" | "budget_reached"),
             "complete": complete,
             "ready": first
                 .get("ready")

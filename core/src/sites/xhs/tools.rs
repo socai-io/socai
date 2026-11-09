@@ -3820,7 +3820,7 @@ impl Tool for GetNotesTool {
                 },
                 "num_comments": {
                     "type": "integer",
-                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. Large budgets walk all visible primary comments before a second reply-expansion pass and resume from the note's saved comment snapshot. top_comments_wait reports primary/reply coverage, continuation and stop reason separately. 0 skips comments.",
+                    "description": "Total returned comments per note INCLUDING replies, not a primary-comment quota. Large budgets walk all visible primary comments before a second reply-expansion pass and resume from the note's saved comment snapshot. top_comments_wait reports primary/reply coverage, continuation and stop reason separately. budget_reached means this requested limit, not source exhaustion: raise num_comments to continue; do not lower the budget when completing a partial snapshot. 0 skips comments.",
                     "default": TOP_COMMENTS_PER_NOTE,
                     "minimum": 0
                 },
