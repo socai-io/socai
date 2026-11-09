@@ -58,7 +58,17 @@ impl MediaProcessor {
         ctx: &crate::agent::ToolContext,
         llm_provider: Option<Arc<dyn LlmProvider>>,
     ) -> Result<Self> {
-        let mut processor = Self::for_run_dir(ctx.output_dir(), llm_provider)?;
+        let media_dir = ctx.output_dir().join("site_media");
+        let archive_region = std::env::var("SOCAI_MEDIA_ARCHIVE_REGION").unwrap_or_default();
+        let media_dir = match archive_region.as_str() {
+            "" => media_dir,
+            // Existing archive readers recognize this path segment, including
+            // readers on older deployments. Tag only new media, not the run,
+            // conversation, login profile, or previously collected files.
+            "cn-hangzhou" => media_dir.join("socai-agent-cn"),
+            _ => anyhow::bail!("unsupported media archive region"),
+        };
+        let mut processor = Self::new(MediaConfig::new(media_dir), llm_provider)?;
         processor.set_remote_ocr(ctx.remote_ocr());
         processor.remote_asr = ctx.remote_asr();
         Ok(processor)
