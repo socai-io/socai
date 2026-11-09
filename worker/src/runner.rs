@@ -1722,13 +1722,23 @@ mod tests {
         let schema = bounded_hosted_xhs_schema(json!({
             "type": "object",
             "properties": {
+                "query": {"type": "string"},
                 "num_notes": {"type": "integer", "default": 10},
-                "num_comments": {"type": "integer", "default": 8}
-            }
+                "num_comments": {"type": "integer", "default": 8},
+                "download_media": {"type": "boolean", "default": true},
+                "ocr": {"type": "boolean", "default": false},
+                "transcribe_audio": {"type": "boolean", "default": false}
+            },
+            "required": ["query"]
         }));
-        assert_eq!(schema["properties"]["num_notes"]["default"], json!(5));
+        assert!(schema["properties"]["num_notes"].get("default").is_none());
+        assert!(schema["properties"]["num_comments"].get("default").is_none());
+        assert!(schema["properties"]["download_media"].get("default").is_none());
         assert_eq!(schema["properties"]["num_notes"]["maximum"], json!(5));
         assert_eq!(schema["properties"]["num_comments"]["maximum"], json!(5));
+        assert_eq!(schema["required"], json!([
+            "query", "num_notes", "num_comments", "download_media", "ocr", "transcribe_audio"
+        ]));
     }
 
     #[test]
