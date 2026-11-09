@@ -1249,16 +1249,11 @@ impl<'a> XhsPageRuntime<'a> {
         let mut rounds = 0;
         let mut parent_end_seen = resume_reply_pass;
         let mut reply_pass = resume_reply_pass;
-        if resume_reply_pass {
-            // Rewalking all parent pages used the whole next timeout again,
-            // leaving no time to expand the remaining replies. Start the reply
-            // walk at the top; it still captures new parents while traversing.
-            self.expect_object(
-                "scrollComments",
-                Some(&json!({ "to_start": true, "note_id": note_id })),
-            )
-            .await?;
-        }
+        // A continuation keeps its current position. Resetting every bounded
+        // call to the top can repeatedly consume the entire timeout on the
+        // same prefix. Pending reply controls are still found across the
+        // mounted list and revealed by scrollComments when offscreen; a fresh
+        // page starts at the first parents normally.
         let mut reply_pass_complete = false;
         let mut last_reply_click_at: Option<std::time::Instant> = None;
         let stop_reason;
