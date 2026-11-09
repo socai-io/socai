@@ -387,6 +387,11 @@ test('an end marker cannot exhaust replies that are pending or no longer mounted
   assert.equal(f.scripts.commentAreaState({previous_comments:[{
     comment_id:'parent-b',text:'Unmounted parent',sub_comments:[],
   }]}).exhausted_in_dom,false);
+  const parent = f.overlay.querySelectorAll('.comment-item, .parent-comment')[0];
+  parent.querySelectorAll = selector=>selector==='.comment-item-sub'?[comment('different-reply','Different reply')]:[];
+  assert.equal(f.scripts.commentAreaState({previous_comments:[{
+    comment_id:'parent-a',text:'Parent',sub_comments:[{comment_id:'hidden-reply',text:'Reply'}],
+  }]}).exhausted_in_dom,false,'Matching row counts do not prove that the same reply IDs are mounted');
 });
 
 test('overlapping snapshots merge reply IDs without replacing earlier replies', () => {
