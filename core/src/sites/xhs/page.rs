@@ -1302,6 +1302,19 @@ impl<'a> XhsPageRuntime<'a> {
                 stop_reason = "budget_reached";
                 break;
             }
+            // A fully mounted, exhausted snapshot needs no second physical
+            // walk to the bottom. Count equality alone cannot prove this: the
+            // page helper checks every accumulated parent/reply ID and refuses
+            // the shortcut for virtualized rows or pending expansion controls.
+            if reply_pass
+                && state.get("exhausted_in_dom").and_then(Value::as_bool) == Some(true)
+                && !last_reply_click_at
+                    .is_some_and(|clicked| clicked.elapsed() < Duration::from_secs(3))
+            {
+                reply_pass_complete = true;
+                stop_reason = "exhausted";
+                break;
+            }
             // Walking a long comment column is progress even before the next
             // parent page enters the viewport. Use elapsed grace instead of a
             // fixed number of loops because remote CDP and XHS hydration have

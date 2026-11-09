@@ -362,6 +362,33 @@ test('comment snapshots retain parents and replies removed by a virtual list', (
   assert.equal(state.visible_total, 1);
 });
 
+test('an exhausted mounted thread need not rewalk a long column to the bottom', () => {
+  const end = {closest:()=>null, style:{display:'block',visibility:'visible',opacity:'1'},
+    getBoundingClientRect:()=>({top:20000,bottom:20020,width:100,height:20})};
+  const f = fixture({rows:[comment('parent-a','Parent')],ends:[end],totalText:'共 999 条评论'});
+  f.area.scrollHeight = 21000;
+  const state = f.scripts.commentAreaState({previous_comments:[]});
+  assert.equal(f.area.scrollTop,0);
+  assert.equal(state.exhausted_in_dom,true);
+  assert.equal(f.scripts.commentAreaState().exhausted_in_dom,false,'A non-capture read cannot prove accumulated coverage');
+});
+
+test('an end marker cannot exhaust replies that are pending or no longer mounted', () => {
+  const end = {closest:()=>null,style:{display:'block',visibility:'visible',opacity:'1'},
+    getBoundingClientRect:()=>({width:100,height:20})};
+  const pending = {innerText:'展开更多回复',style:{display:'block',visibility:'visible',opacity:'1'},
+    getBoundingClientRect:()=>({top:20000,bottom:20020,width:100,height:20})};
+  const f = fixture({rows:[comment('parent-a','Parent')],ends:[end],replies:[pending]});
+  assert.equal(f.scripts.commentAreaState({previous_comments:[]}).exhausted_in_dom,false);
+  f.area.querySelectorAll = selector=>selector==='.end-container'?[end]:[];
+  assert.equal(f.scripts.commentAreaState({previous_comments:[{
+    comment_id:'parent-a',text:'Parent',sub_comments:[{comment_id:'hidden-reply',text:'Reply'}],
+  }]}).exhausted_in_dom,false);
+  assert.equal(f.scripts.commentAreaState({previous_comments:[{
+    comment_id:'parent-b',text:'Unmounted parent',sub_comments:[],
+  }]}).exhausted_in_dom,false);
+});
+
 test('overlapping snapshots merge reply IDs without replacing earlier replies', () => {
   const f = fixture({rows:[comment('parent-a', 'Updated parent')]});
   const previous = [{comment_id:'parent-a', text:'Old parent', sub_comments:[

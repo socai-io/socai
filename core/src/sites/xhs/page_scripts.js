@@ -2123,6 +2123,10 @@ const SocaiXhsPageScripts = (() => {
     const pending = $$(SHOW_MORE_SELECTOR, scope)
       .filter((b) => isVisible(b) && !/收起/.test(text(b)));
     const container = commentScrollContainer(root);
+    const hasEnd = $$(COMMENT_END_SELECTOR, scope).some((end) => isVisible(end)
+      && !end.closest(`${COMMENT_ROOT_SELECTOR}, ${SUB_COMMENT_SELECTOR}, .reply-container`));
+    const mounted = new Map(visible.map((item) => [commentIdentity(item),
+      new Set(item.sub_comments.map(commentIdentity))]));
     return {
       ok: true,
       note_id: noteId,
@@ -2135,8 +2139,14 @@ const SocaiXhsPageScripts = (() => {
       pending_show_more: pending.length,
       // Reply lists can have their own sentinel, and Vue can keep a hidden
       // end placeholder mounted while the next parent page is still loading.
-      has_end: $$(COMMENT_END_SELECTOR, scope).some((end) => isVisible(end)
-        && !end.closest(`${COMMENT_ROOT_SELECTOR}, ${SUB_COMMENT_SELECTOR}, .reply-container`)),
+      has_end: hasEnd,
+      // All observed IDs, including replies, are still mounted. With the
+      // parent sentinel and no expand controls, rewalking this long column
+      // cannot reveal anything; a virtualized/partial snapshot fails closed.
+      exhausted_in_dom: capture && hasEnd && pending.length === 0 && items.every((item) => {
+        const replies = mounted.get(commentIdentity(item));
+        return !!replies && item.sub_comments.every((reply) => replies.has(commentIdentity(reply)));
+      }),
       scroll_top: container ? container.scrollTop : 0,
       scroll_height: container ? container.scrollHeight : 0,
       viewport_height: container ? container.clientHeight : 0,
