@@ -75,8 +75,29 @@ function fixture({ rows = [], ends = [], replies = [], feed = false, video = nul
     innerHeight:800, innerWidth:1200, setTimeout: callback => callback()};
   vm.createContext(context);
   vm.runInContext(source, context);
-  return {scripts:vm.runInContext('SocaiXhsPageScripts', context), area, photo, overlay, Element};
+  return {scripts:vm.runInContext('SocaiXhsPageScripts', context), area, photo, overlay, Element, document, context};
 }
+
+test('a Whitelabel server error at a note URL is not a successful note read', async () => {
+  const f = fixture();
+  f.document.querySelector = selector => selector === 'h1' ? {innerText:'Whitelabel Error Page'} : null;
+  const result = await f.scripts.noteWithWait({timeout_ms:500});
+  assert.equal(result.ready, false);
+  assert.equal(result.error, 'upstream_error_page');
+  assert.equal(result.note, null);
+  assert.equal(result.attempts, 1);
+});
+
+test('a real note surface is not rejected merely for discussing Whitelabel Error Page', async () => {
+  const f = fixture();
+  const query = f.document.querySelector.bind(f.document);
+  f.document.querySelector = selector => selector === 'h1' ? {innerText:'Whitelabel Error Page'} : query(selector);
+  let now=0;
+  f.context.Date = {now:()=>now+=500};
+  const result = await f.scripts.noteWithWait({timeout_ms:500});
+  assert.notEqual(result.error, 'upstream_error_page');
+  assert(result.note);
+});
 
 test('missing or loading comment counts stay unknown instead of becoming zero', () => {
   for (const totalText of [null, '', '评论', '加载中']) {

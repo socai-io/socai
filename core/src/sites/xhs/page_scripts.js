@@ -1676,6 +1676,15 @@ const SocaiXhsPageScripts = (() => {
       };
       const tick = () => {
         attempts += 1;
+        // A server error route keeps the requested note ID in its URL. Its
+        // generic h1 is not a note title; never turn it into a successful read.
+        if (!getNoteOverlay()
+          && !document.querySelector('#detail-desc, #detail-title, .note-content, .note-scroller, .note-detail')
+          && /^Whitelabel Error Page$/i.test(norm(text(document.querySelector('h1'))))) {
+          resolve({ ready: false, reason: 'upstream_error_page', error: 'upstream_error_page',
+            waited_ms: Date.now() - startedAt, attempts, note: null });
+          return;
+        }
         const value = note();
         const hasContent = !!norm(value.content);
         const hasShell = !!(value.note_id || value.title || value.author || value.likes || value.comments_count);

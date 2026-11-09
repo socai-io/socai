@@ -2575,6 +2575,9 @@ impl<'a> XhsPageRuntime<'a> {
             )
             .await?;
 
+        if raw.get("error").and_then(Value::as_str) == Some("upstream_error_page") {
+            anyhow::bail!("note_page_unavailable: upstream_error_page");
+        }
         let mut note = parse_note(&raw["note"]);
         if !expected_id.is_empty() && !note.note_id.is_empty() && note.note_id != expected_id {
             // A card overlay can still expose the previous detail during hydration.
@@ -2583,6 +2586,9 @@ impl<'a> XhsPageRuntime<'a> {
             raw = self
                 .run_script("noteWithWait", Some(&json!({ "timeout_ms": 500 })))
                 .await?;
+            if raw.get("error").and_then(Value::as_str) == Some("upstream_error_page") {
+                anyhow::bail!("note_page_unavailable: upstream_error_page");
+            }
             let fresh = parse_note(&raw["note"]);
             if fresh.note_id != expected_id {
                 // Keep the known mismatch if the second snapshot has no identity.
