@@ -473,6 +473,36 @@ test('comment scrolling can restart a reply pass at the first parent', async () 
   assert.equal(result.at_end, false);
 });
 
+test('reply continuation uses an explicit checkpoint on this exact mounted page', () => {
+  const f = fixture({rows:[comment('a','First parent')]});
+  const opts = {note_id:'fixture',previous_comments:[]};
+  f.area.scrollTop = 900;
+  assert.equal(f.scripts.commentAreaState(opts).reply_cursor_matches,false);
+  f.scripts.commentAreaState({...opts,save_reply_cursor:true});
+  assert.equal(f.scripts.commentAreaState(opts).reply_cursor_matches,true);
+  // Native helpers are reinjected for every call; the cursor belongs to the
+  // mounted comments element, not a closure, snapshot count or global note id.
+  vm.runInContext(source,f.context);
+  const scripts=vm.runInContext('SocaiXhsPageScripts',f.context);
+  assert.equal(scripts.commentAreaState(opts).reply_cursor_matches,true);
+  f.area.scrollTop = 1100;
+  assert.equal(scripts.commentAreaState(opts).reply_cursor_matches,false);
+  f.area.scrollTop = 900;
+  scripts.commentAreaState({...opts,save_reply_cursor:false});
+  assert.equal(scripts.commentAreaState(opts).reply_cursor_matches,false);
+});
+
+test('a fresh or different note cannot inherit a saved reply walk cursor', () => {
+  const original=fixture(),fresh=fixture();
+  const opts={note_id:'fixture',previous_comments:[]};
+  original.area.scrollTop=fresh.area.scrollTop=900;
+  original.scripts.commentAreaState({...opts,save_reply_cursor:true});
+  assert.equal(original.scripts.commentAreaState(opts).reply_cursor_matches,true);
+  assert.equal(fresh.scripts.commentAreaState(opts).reply_cursor_matches,false);
+  original.context.location.href='https://www.xiaohongshu.com/explore/another';
+  assert.equal(original.scripts.commentAreaState({...opts,note_id:'another'}).reply_cursor_matches,false);
+});
+
 test('snapshot hydration preserves known likes but accepts an explicit zero', () => {
   const row = comment('a','Parent');
   const f = fixture({rows:[row]});

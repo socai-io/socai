@@ -2127,6 +2127,19 @@ const SocaiXhsPageScripts = (() => {
       && !end.closest(`${COMMENT_ROOT_SELECTOR}, ${SUB_COMMENT_SELECTOR}, .reply-container`));
     const mounted = new Map(visible.map((item) => [commentIdentity(item),
       new Set(item.sub_comments.map(commentIdentity))]));
+    // Only the final reply-pass snapshot may save a continuation cursor.
+    // DOM ownership invalidates it on navigation/re-render, and position
+    // matching invalidates it if the user scrolls between tool calls.
+    const cursorKey = '__socaiXhsReplyCursor';
+    const scrollTop = container ? container.scrollTop : 0;
+    const cursor = scope[cursorKey];
+    const replyCursorMatches = !!container && !!cursor && cursor.note_id === noteId
+      && cursor.container === container && Math.abs(cursor.scroll_top - scrollTop) <= 1;
+    if (capture && opts.save_reply_cursor === true && container) {
+      scope[cursorKey] = {note_id:noteId, container, scroll_top:scrollTop};
+    } else if (capture && opts.save_reply_cursor === false) {
+      delete scope[cursorKey];
+    }
     return {
       ok: true,
       note_id: noteId,
@@ -2137,6 +2150,7 @@ const SocaiXhsPageScripts = (() => {
       loaded_primary: items.length,
       loaded_total: items.length + subs,
       pending_show_more: pending.length,
+      reply_cursor_matches: replyCursorMatches,
       // Reply lists can have their own sentinel, and Vue can keep a hidden
       // end placeholder mounted while the next parent page is still loading.
       has_end: hasEnd,

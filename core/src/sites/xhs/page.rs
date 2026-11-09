@@ -1249,11 +1249,18 @@ impl<'a> XhsPageRuntime<'a> {
         let mut rounds = 0;
         let mut parent_end_seen = resume_reply_pass;
         let mut reply_pass = resume_reply_pass;
-        // A continuation keeps its current position. Resetting every bounded
-        // call to the top can repeatedly consume the entire timeout on the
-        // same prefix. Pending reply controls are still found across the
-        // mounted list and revealed by scrollComments when offscreen; a fresh
-        // page starts at the first parents normally.
+        // Preserve a reply walk only on the same mounted page at the saved
+        // position. Fresh/re-rendered pages or user scrolling invalidate the
+        // cursor and still walk the prefix, including virtualized replies.
+        if resume_reply_pass
+            && initial.get("reply_cursor_matches").and_then(Value::as_bool) != Some(true)
+        {
+            self.expect_object(
+                "scrollComments",
+                Some(&json!({ "to_start": true, "note_id": note_id })),
+            )
+            .await?;
+        }
         let mut reply_pass_complete = false;
         let mut last_reply_click_at: Option<std::time::Instant> = None;
         let stop_reason;
@@ -1417,6 +1424,7 @@ impl<'a> XhsPageRuntime<'a> {
                 "commentAreaState",
                 Some(&json!({
                     "previous_comments": all, "note_id": note_id, "prefer_hot": true,
+                    "save_reply_cursor": reply_pass,
                 })),
             )
             .await?;
