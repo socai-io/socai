@@ -13,6 +13,7 @@ test('native comment helpers are callable through the actual site manifest', () 
     assert.equal(manifest.browserTools[name]?.callable, name, `${name}: native calls require a declared helper`);
     assert.ok(manifest.browserTools[name].args.note_id, `${name}: declare note guard`);
   }
+  assert.equal(manifest.browserTools.commentAreaState.args.save_reply_cursor.type,'boolean');
 });
 
 test('the browser regression helper fails closed before CDP without explicit account scope', () => {
@@ -482,8 +483,7 @@ test('reply continuation uses an explicit checkpoint on this exact mounted page'
   assert.equal(f.scripts.commentAreaState(opts).reply_cursor_matches,true);
   // Native helpers are reinjected for every call; the cursor belongs to the
   // mounted comments element, not a closure, snapshot count or global note id.
-  vm.runInContext(source,f.context);
-  const scripts=vm.runInContext('SocaiXhsPageScripts',f.context);
+  const scripts=vm.runInContext('(()=>{'+source+';return SocaiXhsPageScripts})()',f.context);
   assert.equal(scripts.commentAreaState(opts).reply_cursor_matches,true);
   f.area.scrollTop = 1100;
   assert.equal(scripts.commentAreaState(opts).reply_cursor_matches,false);

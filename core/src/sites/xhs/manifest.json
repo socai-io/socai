@@ -176,7 +176,8 @@
       "args": {
         "previous_comments": { "type": "array", "required": false, "description": "Snapshots owned by the current native comment-load call; merge before virtualized rows disappear." },
         "note_id": { "type": "string", "required": false, "description": "Expected active note id; refuse to merge after a note switch." },
-        "prefer_hot": { "type": "boolean", "required": false, "description": "Hot-sort the final accumulated snapshot." }
+        "prefer_hot": { "type": "boolean", "required": false, "description": "Hot-sort the final accumulated snapshot." },
+        "save_reply_cursor": { "type": "boolean", "required": false, "description": "Only the final native snapshot saves a same-page reply cursor when its reply walk started; false clears it." }
       },
       "returns": { "type": "object", "description": "Current comment-area state. total is null when no readable numeric platform counter is present; null must not be treated as zero comments." }
     },
