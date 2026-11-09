@@ -1424,6 +1424,23 @@ fn comment_load_metadata(payload: &Value) -> Value {
     })
 }
 
+// The author badge is not always rendered, including on the author's own
+// primary comments. Use observed account IDs, never nicknames or empty IDs.
+fn mark_note_author_comments(comments: &mut [Value], note_author_id: &str) {
+    for comment in comments {
+        let is_author = comment
+            .get("author_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.trim() == note_author_id);
+        if is_author {
+            comment["is_author_reply"] = Value::Bool(true);
+        }
+        if let Some(replies) = comment.get_mut("sub_comments").and_then(Value::as_array_mut) {
+            mark_note_author_comments(replies, note_author_id);
+        }
+    }
+}
+
 /// Keep a usable note body on comment failure, but never disguise an unread
 /// thread as an empty successful result. Do not expose raw browser errors.
 fn attach_comment_load_result(note: &mut Value, result: anyhow::Result<Value>) {
@@ -1439,6 +1456,16 @@ fn attach_comment_load_result(note: &mut Value, result: anyhow::Result<Value>) {
     });
     match result {
         Ok(mut payload) => {
+            if let Some(author_id) = map
+                .get("author_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            {
+                if let Some(comments) = payload["comments"].as_array_mut() {
+                    mark_note_author_comments(comments, author_id);
+                }
+            }
             map.insert("top_comments_wait".into(), comment_load_metadata(&payload));
             map.insert("top_comments".into(), payload["comments"].take());
         }
