@@ -933,14 +933,44 @@ impl SafeDouyinMediaClient {
             );
             return;
         };
-        match self
-            .fetch_limited(&source, referer, MAX_VIDEO_DOWNLOAD_BYTES, "video")
-            .await
-            .and_then(|bytes| media.save_bytes(&bytes, video_id, ".mp4"))
-        {
-            Ok(path) => {
+        let result = async {
+            let mut bytes = self
+                .fetch_limited(&source, referer, MAX_VIDEO_DOWNLOAD_BYTES, "video")
+                .await?;
+            let mut muxed_audio = false;
+            if !crate::media::mp4_has_audio(&bytes)? {
+                if let Some(audio_url) = video
+                    .get("audio_url")
+                    .and_then(Value::as_str)
+                    .filter(|url| !url.is_empty())
+                {
+                    // The normal allowlist, redirect, content and byte checks apply to both streams.
+                    let audio = self
+                        .fetch_limited(
+                            audio_url,
+                            referer,
+                            MAX_VIDEO_DOWNLOAD_BYTES - bytes.len(),
+                            "video",
+                        )
+                        .await?;
+                    bytes = tokio::task::spawn_blocking(move || {
+                        crate::media::mux_split_audio(&bytes, &audio, MAX_VIDEO_DOWNLOAD_BYTES)
+                    })
+                    .await??;
+                    muxed_audio = true;
+                }
+            }
+            let path = media.save_bytes(&bytes, video_id, ".mp4")?;
+            Ok::<_, anyhow::Error>((path, muxed_audio))
+        }
+        .await;
+        match result {
+            Ok((path, muxed_audio)) => {
                 insert_string(video, "resolved_url", &source);
                 insert_string(video, "local_path", &path.to_string_lossy());
+                if muxed_audio {
+                    video["audio_muxed"] = json!(true);
+                }
             }
             Err(err) => insert_string(video, "download_error", &format!("{err:#}")),
         }

@@ -32,6 +32,8 @@ chrono = { version = "0.4", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # Pure-Rust AAC decode and MP4 demux for provider-compatible managed ASR WAVs.
 symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4"] }
+# Join Douyin's separate DASH video/AAC tracks without transcoding or an external binary.
+mp4io = "=0.1.2"
 sha2 = "0.10"
 fs2 = "0.4"
 # Local OCR engine (PP-OCRv6 tiny via ONNX Runtime). Default features pull a
