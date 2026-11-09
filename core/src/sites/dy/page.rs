@@ -103,7 +103,7 @@ impl<'a> DouyinPageRuntime<'a> {
     }
 
     async fn soft_navigate(&self, url: &str) -> Result<()> {
-        self.page.navigate_via_location(url).await
+        self.page.navigate_with_resource_timings(url).await
     }
 
     pub async fn detect_state(&self) -> Result<Value> {
