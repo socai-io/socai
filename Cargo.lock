@@ -3290,6 +3290,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mp4io"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c488beae43628748ca13f6fd6441487e466147292b72d90596a94c26456cb848"
+
+[[package]]
 name = "muda"
 version = "0.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5577,6 +5583,7 @@ dependencies = [
  "futures",
  "image",
  "libc",
+ "mp4io",
  "oar-ocr",
  "oar-ocr-core",
  "ort",

@@ -13,6 +13,7 @@ mod background;
 mod common;
 mod image;
 mod md5;
+mod mux;
 mod ocr;
 mod processor;
 mod remote_ocr;
@@ -31,6 +32,7 @@ pub use self::background::{
     subscribe_background_media_events, BackgroundMediaEvent,
 };
 pub use self::common::{MediaConfig, MediaUnavailable};
+pub(crate) use self::mux::{mp4_has_audio, mux_split_audio};
 pub use self::ocr::diagnostics as ocr_diagnostics;
 pub(crate) use self::ocr::ocr_images_bytes;
 pub use self::ocr::warm_up as ocr_warm_up;
