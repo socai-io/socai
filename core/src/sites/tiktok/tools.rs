@@ -355,8 +355,9 @@ impl Tool for SearchTool {
     fn description(&self) -> &str {
         "Search TikTok posts matching `query`. Returns top-level `ok`, `query`, `count`, and \
          `cards` (`url` is also present after a successful search transition); each card uses \
-         TikTok fields such as `video_id`, `url`, `title`, `author`, `author_id`, `cover_url`, \
-         `duration_seconds`, and visible engagement text."
+         TikTok fields such as `video_id` (the post id), `kind` (`video` or `photo` for photo \
+         carousels), `url`, `title`, `author`, `author_id`, `cover_url`, `duration_seconds` \
+         (null for photo posts), and visible engagement text (null when the card does not show it)."
     }
 
     fn input_schema(&self) -> Value {

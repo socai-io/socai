@@ -523,7 +523,11 @@ impl<'a> TikTokPageRuntime<'a> {
             let parsed: TikTokAuthorProfile = serde_json::from_value(raw_profile.clone())
                 .context("TikTok author page returned an invalid entity")?;
             let before = cards.len();
-            for card in parsed.video_cards {
+            for card in parsed
+                .video_cards
+                .into_iter()
+                .map(TikTokVideoCard::normalized)
+            {
                 let key = if card.video_id.is_empty() {
                     card.url.clone()
                 } else {
@@ -675,7 +679,8 @@ impl<'a> TikTokPageRuntime<'a> {
             .await?;
         Ok(raw
             .into_iter()
-            .filter_map(|item| serde_json::from_value(item).ok())
+            .filter_map(|item| serde_json::from_value::<TikTokVideoCard>(item).ok())
+            .map(TikTokVideoCard::normalized)
             .collect())
     }
 
