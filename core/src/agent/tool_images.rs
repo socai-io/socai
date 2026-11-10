@@ -11,6 +11,7 @@ const MAX_IMAGE_BYTES: usize = 6 * 1024 * 1024;
 
 struct Entry {
     call_id: String,
+    provenance: String,
     image: ToolResultContent,
     bytes: usize,
     persistent: bool,
@@ -31,6 +32,15 @@ impl ToolImageWindow {
     ) {
         // A tool-call ID identifies one result, not a growing image album.
         self.remove_where(|entry| entry.call_id == call_id);
+        let provenance = content
+            .iter()
+            .find_map(|block| match block {
+                ToolResultContent::Text { text } if text.len() <= 8192 => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or(
+                "Source metadata unavailable here; re-read the file before attributing details.",
+            );
         for image in content {
             let ToolResultContent::Image { data, .. } = image else {
                 continue;
@@ -41,6 +51,7 @@ impl ToolImageWindow {
             let bytes = data.len();
             self.entries.push_back(Entry {
                 call_id: call_id.to_string(),
+                provenance: provenance.to_string(),
                 image: image.clone(),
                 bytes,
                 persistent,
@@ -66,6 +77,21 @@ impl ToolImageWindow {
 
     pub(crate) fn after_request(&mut self) {
         self.remove_where(|entry| !entry.persistent);
+    }
+
+    /// Compaction can remove the original tool-result message. Keep its source
+    /// label with the pixels, without inventing a replacement tool result.
+    pub(crate) fn file_previews(&self) -> impl Iterator<Item = (&str, &str, &ToolResultContent)> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.persistent)
+            .map(|entry| {
+                (
+                    entry.call_id.as_str(),
+                    entry.provenance.as_str(),
+                    &entry.image,
+                )
+            })
     }
 
     fn remove_where(&mut self, mut remove: impl FnMut(&Entry) -> bool) {
