@@ -26,6 +26,7 @@ pub mod signature;
 pub mod skills;
 pub mod system_prompt;
 pub mod tool;
+mod tool_images;
 
 pub use self::conversation::{default_sessions_root, Conversation, Run};
 pub use self::file_bash_tools::{

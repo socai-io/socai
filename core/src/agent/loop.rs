@@ -485,8 +485,9 @@ pub async fn run_agent_with_events(
     let mut invalid_tool_retries = 0u32;
     let mut delivery_steps_left: Option<u32> = None;
     let mut last_system: String = build_system_prompt(&[], &extra_instructions);
-    // Pixels are needed for the next model request, not durable chat history.
-    let mut pending_tool_images: BTreeMap<String, Vec<ToolResultContent>> = BTreeMap::new();
+    // Keep immutable file previews across steps in this run, within a fixed
+    // budget. Browser screenshots remain next-request-only, not durable history.
+    let mut pending_tool_images = super::tool_images::ToolImageWindow::default();
 
     loop {
         let max_steps = extensions.execution_ceiling(&ctx, options.max_steps);
@@ -540,15 +541,13 @@ pub async fn run_agent_with_events(
             if let crate::agent::llm::MessageContent::Blocks(blocks) = &mut message.content {
                 for block in blocks {
                     if let Block::ToolResult { tool_use_id, content } = block {
-                        if let Some(images) = pending_tool_images.get(tool_use_id) {
-                            for image in images {
-                                if let ToolResultContent::Image { data, .. } = image {
-                                    if image_bytes + data.len() <= 8 * 1024 * 1024 {
-                                        image_bytes += data.len();
-                                        content.push(image.clone());
-                                    } else {
-                                        content.push(ToolResultContent::Text { text: "[Image not included in this request: visual payload budget reached. Read fewer images at a time or use OCR; do not claim to have viewed this image.]".into() });
-                                    }
+                        for image in pending_tool_images.images_for(tool_use_id) {
+                            if let ToolResultContent::Image { data, .. } = image {
+                                if image_bytes + data.len() <= 8 * 1024 * 1024 {
+                                    image_bytes += data.len();
+                                    content.push(image.clone());
+                                } else {
+                                    content.push(ToolResultContent::Text { text: "[Image not included in this request: visual payload budget reached. Read fewer images at a time or use OCR; do not claim to have viewed this image.]".into() });
                                 }
                             }
                         }
@@ -631,7 +630,7 @@ pub async fn run_agent_with_events(
             }
         };
 
-        pending_tool_images.clear();
+        pending_tool_images.after_request();
         usage += &response.usage;
 
         // Split text_blocks into visible vs "[Thinking] "-prefixed thinking.
@@ -895,7 +894,11 @@ pub async fn run_agent_with_events(
                 );
                 run_state.note_tool_result(step, &name, &effective_input, &summary, duration_s);
                 let mut history_content = bound_content_for_history(&result_content);
-                pending_tool_images.insert(id.clone(), live_tool_images(&result_content));
+                pending_tool_images.insert(
+                    &id,
+                    &result_content,
+                    name == "read_uploaded_file" && error.is_none(),
+                );
                 let feedback = if local_delivery {
                     Default::default()
                 } else {
@@ -1106,7 +1109,11 @@ pub async fn run_agent_with_events(
                 );
                 run_state.note_tool_result(step, name, &effective_input, &summary, duration_s);
                 let mut history_content = bound_content_for_history(&result_content);
-                pending_tool_images.insert(id.clone(), live_tool_images(&result_content));
+                pending_tool_images.insert(
+                    &id,
+                    &result_content,
+                    name == "read_uploaded_file" && error.is_none(),
+                );
                 let feedback = if local_delivery {
                     Default::default()
                 } else {
