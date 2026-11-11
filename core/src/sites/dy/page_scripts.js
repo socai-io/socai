@@ -144,11 +144,19 @@
     if (!input) {
       return { ok: false, error: 'search_input_not_found', state: pageState() };
     }
+    if (challengeRequired()) return { ok: false, error: 'challenge_required' };
+    const point = center(input);
+    const hit = document.elementFromPoint(point.x, point.y);
+    // A header input can remain visible underneath a full-page login mask.
+    // Do not focus or type through that mask; report the actual blocker.
+    if (!hit || (hit !== input && !input.contains(hit))) {
+      return { ok: false, error: loginBlocked(false) ? 'login_required' : 'search_input_obscured' };
+    }
     const submit = document.querySelector('[data-e2e="searchbar-button"]') ||
       Array.from(document.querySelectorAll('button')).find((btn) => visible(btn) && /搜索/.test(text(btn)));
     return {
       ok: true,
-      input: center(input),
+      input: point,
       submit: submit && visible(submit) ? center(submit) : null,
       placeholder: input.getAttribute('placeholder') || '',
       value: input.value || text(input),
@@ -156,6 +164,8 @@
   }
 
   function selectSearchInput() {
+    const loc = searchInput();
+    if (!loc.ok) return loc;
     const input = findSearchInput();
     if (!input) return { ok: false, error: 'search_input_not_found' };
     input.focus();
@@ -190,9 +200,7 @@
     const query = String((arg && arg.query) || '').trim();
     const loc = searchInput();
     if (!loc.ok) return loc;
-    // Resolve the same visible DOM input directly. A full-page login overlay
-    // can make elementFromPoint return the overlay even while the header
-    // search input remains present and focusable underneath it.
+    // Resolve the same visible, hit-tested input; never focus behind a mask.
     const target = findSearchInput();
     if (!target) {
       return { ok: false, error: 'search_input_target_missing', loc };
@@ -206,6 +214,49 @@
     target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: query }));
     target.dispatchEvent(new Event('change', { bubbles: true }));
     return { ok: true, query, value: target.value || text(target), loc: searchInput() };
+  }
+
+  function searchSuggestions(arg) {
+    const query = String((arg && arg.query) || '').trim();
+    const input = findSearchInput();
+    const value = input ? String(input.value || text(input)).trim() : '';
+    const metadata = { query, input_value: value, url: location.href, observed_at: new Date().toISOString() };
+    if (challengeRequired()) return { error: 'challenge_required', ...metadata };
+    if (!query) return { error: 'search_query_required', ...metadata };
+    if (!input) return { error: 'search_input_not_found', ...metadata };
+    const loc = searchInput();
+    if (!loc.ok) return { error: loc.error, ...metadata };
+    if (value !== query) return { error: 'search_input_mismatch', ...metadata };
+    // Observed Douyin dropdown rows carry all three attributes; the nested
+    // completion icon also has data-text, so it must not become a second row.
+    const selector = '[data-index][data-text][data-isrichsug]';
+    let scope = input.parentElement;
+    for (let depth = 0; scope && depth < 3 && !scope.querySelector(selector); depth++) scope = scope.parentElement;
+    const rows = scope ? Array.from(scope.querySelectorAll(selector)).filter(visible) : [];
+    const normalize = (value) => value.replace(/\s+/g, '').toLocaleLowerCase();
+    const suggestions = [], seen = new Set();
+    let staleCount = 0;
+    for (const row of rows) {
+      const label = (row.getAttribute('data-text') || '').trim();
+      // Douyin also suggests shorter phrases, highlighting only the matching
+      // part of the query (e.g. 租房好物 for 租房收纳). Keep these real rows;
+      // requiring the entire seed incorrectly discards platform suggestions.
+      const highlights = Array.from(row.firstElementChild?.querySelectorAll('span') || []).map(text).filter(Boolean);
+      const matchesQuery = highlights.length
+        ? highlights.some((part) => normalize(query).includes(normalize(part)))
+        : normalize(label).includes(normalize(query));
+      // DOM updates can briefly retain the preceding query's dropdown.
+      if (!label || !matchesQuery || normalize(text(row)) !== normalize(label)) {
+        staleCount++;
+        continue;
+      }
+      if (!seen.has(label)) {
+        seen.add(label);
+        suggestions.push(label);
+      }
+    }
+    if (!suggestions.length) return { error: 'search_suggestions_not_ready', ...metadata, stale_row_count: staleCount };
+    return { ...metadata, suggestions, stale_row_count: staleCount };
   }
 
   function cardNodes(root) {
@@ -1062,6 +1113,7 @@
     searchInput,
     selectSearchInput,
     setSearchInput,
+    searchSuggestions,
     searchState,
     videoCards,
     scrollFeed,

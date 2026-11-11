@@ -75,6 +75,46 @@ struct ActionScriptCancellation {
     key: String,
 }
 
+/// Remove the owned tab's temporary navigation hook even if its caller is cancelled.
+struct ResourceTimingScript {
+    session: PageJavascriptSession,
+    identifier: String,
+    removed: bool,
+}
+
+impl ResourceTimingScript {
+    async fn remove(&mut self) {
+        let _ = self
+            .session
+            .execute(
+                "Page.removeScriptToEvaluateOnNewDocument",
+                json!({"identifier": self.identifier}),
+            )
+            .await;
+        let _ = self.session.execute("Page.disable", json!({})).await;
+        self.removed = true;
+    }
+}
+
+impl Drop for ResourceTimingScript {
+    fn drop(&mut self) {
+        if self.removed {
+            return;
+        }
+        let session = self.session.clone();
+        let identifier = self.identifier.clone();
+        tokio::spawn(async move {
+            let _ = session
+                .execute(
+                    "Page.removeScriptToEvaluateOnNewDocument",
+                    json!({"identifier": identifier}),
+                )
+                .await;
+            let _ = session.execute("Page.disable", json!({})).await;
+        });
+    }
+}
+
 impl Drop for ActionScriptCancellation {
     fn drop(&mut self) {
         let Some(session) = self.session.take() else {
@@ -449,6 +489,62 @@ impl PageSession {
         self.wait_for_load_state("domcontentloaded", 15.0).await?;
         action.finish().await;
         Ok(())
+    }
+
+    /// Retain late blob-player media requests after a detail page's initial
+    /// assets fill Chrome's default 250-entry resource timing buffer.
+    pub(crate) async fn navigate_with_resource_timings(&self, url: &str) -> anyhow::Result<()> {
+        const SOURCE: &str = "performance.setResourceTimingBufferSize(1000);";
+        let session = self.javascript_session().await?;
+        let previous = session.execute("Page.getFrameTree", json!({})).await?;
+        let previous_loader = previous
+            .pointer("/frameTree/frame/loaderId")
+            .and_then(Value::as_str)
+            .context("missing navigation loader")?
+            .to_string();
+        let script = session
+            .execute(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": SOURCE}),
+            )
+            .await?;
+        let mut hook = ResourceTimingScript {
+            session: session.clone(),
+            removed: false,
+            identifier: script
+                .get("identifier")
+                .and_then(Value::as_str)
+                .context("resource timing navigation hook missing identifier")?
+                .to_string(),
+        };
+        // New-document scripts are only dispatched while this target's Page
+        // agent is enabled. The guard disables it again after navigation.
+        let outcome = async {
+            session.execute("Page.enable", json!({})).await?;
+            self.navigate_via_location(url).await?;
+            // A DOM-ready check can still observe the old document just after
+            // location.assign. Keep the hook until the new document commits.
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                let frame = session.execute("Page.getFrameTree", json!({})).await?;
+                if frame
+                    .pointer("/frameTree/frame/loaderId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|loader| !loader.is_empty() && loader != previous_loader)
+                {
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    anyhow::bail!("resource timing navigation did not commit");
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        .await;
+        // Finish cleanup on both success and error before the next detail
+        // navigation can enable its own Page agent and install its own hook.
+        hook.remove().await;
+        outcome
     }
 
     /// Navigate to `url` and wait for DOM readiness.

@@ -395,15 +395,34 @@ fn bounded_hosted_xhs_input(input: Value) -> Value {
 }
 
 fn bounded_hosted_xhs_schema(mut schema: Value) -> Value {
+    let mut required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        // Omission inherits macro defaults before the hosted limits apply.
+        // Require the agent to choose the user's scope rather than silently
+        // collecting a full batch, comments and media for a text-only request.
+        for key in [
+            "num_notes",
+            "num_comments",
+            "download_media",
+            "ocr",
+            "transcribe_audio",
+        ] {
+            if let Some(property) = properties.get_mut(key).and_then(Value::as_object_mut) {
+                property.remove("default");
+                let field = Value::String(key.into());
+                if !required.contains(&field) {
+                    required.push(field);
+                }
+            }
+        }
         if let Some(notes) = properties
             .get_mut("num_notes")
             .and_then(Value::as_object_mut)
         {
-            notes.insert(
-                "default".into(),
-                serde_json::json!(HOSTED_XHS_MAX_NOTES_PER_CALL),
-            );
             notes.insert(
                 "maximum".into(),
                 serde_json::json!(HOSTED_XHS_MAX_NOTES_PER_CALL),
@@ -411,7 +430,7 @@ fn bounded_hosted_xhs_schema(mut schema: Value) -> Value {
             notes.insert(
                 "description".into(),
                 Value::String(
-                    "Notes to inspect in this hosted call (maximum 5). Use another focused batch only when the first batch cannot satisfy the requested evidence count."
+                    "Explicit number of notes to inspect in this hosted call (maximum 5). Use the user's requested count, not the batch maximum. Only collect the remaining count when valid records are missing."
                         .into(),
                 ),
             );
@@ -424,8 +443,16 @@ fn bounded_hosted_xhs_schema(mut schema: Value) -> Value {
                 "maximum".into(),
                 serde_json::json!(HOSTED_XHS_MAX_COMMENTS_PER_NOTE),
             );
+            comments.insert(
+                "description".into(),
+                Value::String(
+                    "Explicit comment budget per note, including replies (maximum 5). Set 0 when comments are not requested or needed for the user's analysis. This is a budget, not proof of complete coverage."
+                        .into(),
+                ),
+            );
         }
     }
+    schema["required"] = Value::Array(required);
     schema
 }
 
@@ -1570,13 +1597,40 @@ mod tests {
         let schema = bounded_hosted_xhs_schema(json!({
             "type": "object",
             "properties": {
+                "query": {"type": "string"},
                 "num_notes": {"type": "integer", "default": 10},
-                "num_comments": {"type": "integer", "default": 8}
-            }
+                "num_comments": {"type": "integer", "default": 8},
+                "download_media": {"type": "boolean", "default": true},
+                "ocr": {"type": "boolean", "default": false},
+                "transcribe_audio": {"type": "boolean", "default": false}
+            },
+            "required": ["query"]
         }));
-        assert_eq!(schema["properties"]["num_notes"]["default"], json!(5));
+        assert!(schema["properties"]["num_notes"].get("default").is_none());
+        assert!(schema["properties"]["num_comments"].get("default").is_none());
+        assert!(schema["properties"]["download_media"].get("default").is_none());
         assert_eq!(schema["properties"]["num_notes"]["maximum"], json!(5));
         assert_eq!(schema["properties"]["num_comments"]["maximum"], json!(5));
+        assert_eq!(
+            schema["required"],
+            json!([
+                "query", "num_notes", "num_comments", "download_media", "ocr", "transcribe_audio"
+            ])
+        );
+
+        // Unavailable processing must not reappear as a required property.
+        // Preserve the inner tool's other requirements and avoid duplicates.
+        let mut without_transcription = schema.clone();
+        let properties = without_transcription["properties"].as_object_mut().unwrap();
+        properties.remove("transcribe_audio");
+        properties.insert("filters".into(), json!({"type": "object"}));
+        without_transcription["required"] = json!(["query", "filters", "num_notes"]);
+        let compatible = bounded_hosted_xhs_schema(without_transcription);
+        assert_eq!(
+            compatible["required"],
+            json!(["query", "filters", "num_notes", "num_comments", "download_media", "ocr"])
+        );
+        assert!(compatible["properties"].get("transcribe_audio").is_none());
     }
 
     #[test]

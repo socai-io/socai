@@ -124,6 +124,11 @@ impl XhsAuthorProfile {
             json!(self.likes_and_collections),
         );
         map.insert("note_count".into(), json!(self.note_cards.len()));
+        // This is the observed card sample, never the account's total posts.
+        map.insert(
+            "note_count_scope".into(),
+            json!("observed_cards_not_account_total"),
+        );
         let cards: Vec<Value> = self
             .note_cards
             .iter()
