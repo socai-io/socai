@@ -74,8 +74,8 @@ impl Tool for ResearchBoardTool {
                 "signal":{"type":"string","description":"What is new or worth following"},
                 "uncertainty":{"type":"string","description":"Missing details or qualification, not reason to discard"},
                 "url":{"type":"string","description":"Exact observed source URL"},
-                "stage":{"type":"string","enum":["signal","following","shortlist","context"]}
-            },"required":["id","name","platform","signal","url","stage"]}},
+                "stage":{"type":"string","enum":["signal","following","shortlist","context"],"description":"Optional: omit to retain an existing lead's stage. New leads without a stage start as signal, not a verified or shortlisted result."}
+            },"required":["id","name","platform","signal","url"]}},
             "relations":{"type":"array","maxItems":30,"items":{"type":"object","properties":{
                 "id":{"type":"string"},"from":{"type":"string","description":"Lead id"},"to":{"type":"string","description":"Lead id"},
                 "label":{"type":"string"},"url":{"type":"string","description":"Primary supporting source"},"uncertain":{"type":"boolean","description":"Use true with kind=hypothesis; fact and comparison use false. Conflicting values are conservatively stored as an uncertain hypothesis, never promoted to a fact."},
@@ -97,7 +97,7 @@ impl Tool for ResearchBoardTool {
             ("platforms", vec!["id", "status", "focus"], 10),
             (
                 "leads",
-                vec!["id", "name", "platform", "signal", "url", "stage"],
+                vec!["id", "name", "platform", "signal", "url"],
                 30,
             ),
             ("relations", vec!["id", "from", "to", "label", "url"], 30),
@@ -108,6 +108,12 @@ impl Tool for ResearchBoardTool {
                     .context("Board collections must be arrays")?;
                 anyhow::ensure!(items.len() <= max, "Too many items in one update");
                 for item in items {
+                    if key == "leads" && item.get("stage").is_some() {
+                        anyhow::ensure!(
+                            matches!(item["stage"].as_str(), Some("signal" | "following" | "shortlist" | "context")),
+                            "Invalid leads.stage: use signal, following, shortlist or context, or omit it to retain the existing stage"
+                        );
+                    }
                     for field in &fields {
                         anyhow::ensure!(
                             item[*field]
@@ -199,11 +205,25 @@ impl Tool for ResearchBoardTool {
             if let Some(updates) = input[key].as_array() {
                 let rows = board[key].as_array_mut().context("Invalid saved board")?;
                 for item in updates {
+                    let mut item = item.clone();
+                    if key == "leads" && item.get("stage").is_none() {
+                        let stage = rows
+                            .iter()
+                            .find(|r| r["id"] == item["id"])
+                            .and_then(|r| r.get("stage"))
+                            .cloned()
+                            .unwrap_or_else(|| json!("signal"));
+                        anyhow::ensure!(
+                            matches!(stage.as_str(), Some("signal" | "following" | "shortlist" | "context")),
+                            "Invalid saved leads.stage; provide a valid replacement"
+                        );
+                        item["stage"] = stage;
+                    }
                     if let Some(existing) = rows.iter_mut().find(|r| r["id"] == item["id"]) {
-                        *existing = item.clone();
+                        *existing = item;
                     } else {
                         anyhow::ensure!(rows.len() < 1000, "Board full; update existing items");
-                        rows.push(item.clone());
+                        rows.push(item);
                     }
                 }
             }
