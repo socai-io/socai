@@ -916,6 +916,8 @@ impl HostTool {
             // and attachment publication. Do not abandon an in-flight bill.
             "transcribe_source_media" => 1_950,
             "read_uploaded_file" => 110,
+            // Outlast the backend's 90s durable source-archive barrier.
+            "read_conversation_context" => 110,
             // Publication can read archived sources (8s), reread previews
             // (30s), and review claims (30s) before rendering/storing a file.
             // Wait for that bounded result; a 20s transport deadline abandons
@@ -971,7 +973,8 @@ impl Tool for HostTool {
                 "input": input,
             }))
             // Long metered reads get their host's full processing budget;
-            // ordinary tool deadlines remain unchanged.
+            // durable context waits for the 90s source-archive barrier.
+            // Ordinary tool deadlines remain unchanged.
             .timeout(Self::response_deadline(&self.definition.name))
             .send()
             .await
@@ -1859,10 +1862,17 @@ mod tests {
         assert_eq!(HostTool::response_deadline("transcribe_source_media"), Duration::from_secs(1_950));
         assert_eq!(HostTool::response_deadline("read_uploaded_file"), Duration::from_secs(110));
         assert_eq!(HostTool::response_deadline("publish_artifact"), Duration::from_secs(110));
+        assert_eq!(HostTool::response_deadline("read_conversation_context"), Duration::from_secs(110));
         for (name, body, expected_image, expected_failure) in [
             (
                 "transcribe_source_media",
                 r#"{"ok":true,"result":{"text":"real transcript","timestamps_available":false}}"#,
+                false,
+                false,
+            ),
+            (
+                "read_conversation_context",
+                r#"{"ok":true,"result":{"status":"archived"}}"#,
                 false,
                 false,
             ),
@@ -1936,6 +1946,11 @@ mod tests {
                     request.contains("authorization: Bearer test-token-that-is-long-enough-123")
                 );
                 assert!(request.contains(name));
+                if name == "read_conversation_context" {
+                    // The former 20s transport deadline disconnected before
+                    // the backend's durable source-archive barrier finished.
+                    tokio::time::sleep(Duration::from_secs(21)).await;
+                }
                 socket
                 .write_all(
                     format!(
