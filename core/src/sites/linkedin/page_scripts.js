@@ -5,6 +5,9 @@
   const COMPANY_PATH = /^\/(?:company|showcase)\/([^/?#]+)/i;
   const COMPANY_LANDING_PATH = /^\/(?:company|showcase)\/[^/?#]+\/?$/i;
   const POST_PATH = /\/(?:posts\/|feed\/update\/urn:li:)/i;
+  // Social counts are plain text in the viewer's UI language ("6 reactions", "6 reacciones", ...).
+  const REACTION_COUNT_PATTERN = /(?:^|[^\p{L}\d])\d[\d,.\u00a0\u202f]*\s*(?:reactions?|reacciones|reacción|reaccions|reacció|reações|reação|Reaktionen|Reaktion|réactions?|reazioni|reazione|个反应|次反应)(?![\p{L}])/iu;
+  const COMMENT_COUNT_PATTERN = /(?:^|[^\p{L}\d])\d[\d,.\u00a0\u202f]*\s*(?:comments?|comentarios?|comentaris?|comentários?|Kommentare?|commentaires?|commenti|commento|opmerkingen|条评论)(?![\p{L}])/iu;
   const SEARCH_PATH = /^\/search\/results\/(people|content|companies|all)\/?/i;
 
   function cleanText(value, maxLength) {
@@ -297,6 +300,36 @@
     return ids.size === 1 ? Array.from(ids)[0] : '';
   }
 
+  // Search cards rendered by LinkedIn's newer server-driven UI carry no activity URN in the DOM;
+  // the post's share or ugcPost id is only present in the commentary's componentkey.
+  function contentUrnFromComponentKey(root) {
+    if (!root) return null;
+    const found = new Map();
+    const nodes = [root, ...Array.from(root.querySelectorAll('[componentkey*="translatable-commentary-"]'))];
+    for (const node of nodes) {
+      const key = node && node.getAttribute && node.getAttribute('componentkey') || '';
+      for (const match of key.matchAll(/\b(shareId|ugcPostId|userGeneratedContentId)=(\d+)/g)) {
+        const type = match[1] === 'shareId' ? 'share' : 'ugcPost';
+        found.set(`${type}:${match[2]}`, { type, id: match[2] });
+      }
+    }
+    return found.size === 1 ? Array.from(found.values())[0] : null;
+  }
+
+  // Document ("carousel") posts render a page viewer; the container key and one page card per
+  // page are language-independent. Returns the page count, or null when the post has no document.
+  function documentPageCount(root) {
+    if (!root || !root.querySelector) return null;
+    const container = root.querySelector('[componentkey^="document-container-"]');
+    if (!container) return null;
+    const pages = container.querySelectorAll('[data-page-card="true"]').length;
+    return pages > 0 ? pages : null;
+  }
+
+  function contentUrnUrl(urn) {
+    return urn ? `https://www.linkedin.com/feed/update/urn:li:${urn.type}:${urn.id}/` : '';
+  }
+
   function activityUrl(id) {
     return id ? `https://www.linkedin.com/feed/update/urn:li:activity:${id}/` : '';
   }
@@ -531,15 +564,19 @@
     const nested = node.parentElement && node.parentElement.closest('[role="listitem"]');
     if (nested) return false;
     if (resultType === 'content') {
+      // The "Feed post" heading is localized ("Publicación en el feed", ...). The full-update view
+      // marker and the commentary's share/ugcPost key are not, so any of them identifies a post card.
       const heading = firstText(node, ['h2'], 100);
-      return !!firstNode(node, ['[data-testid="expandable-text-box"]']) && /^Feed post$/i.test(heading);
+      const isFeedPost = /^Feed post$/i.test(heading) ||
+        !!firstNode(node, ['[data-view-name="feed-full-update"]']) || !!contentUrnFromComponentKey(node);
+      return !!firstNode(node, ['[data-testid="expandable-text-box"]']) && isFeedPost;
     }
     return resultLinks(node, resultType).length > 0;
   }
 
   function hasResultIdentity(card, resultType) {
     return resultLinks(card, resultType).length > 0 ||
-      (resultType === 'content' && !!activityId('', card));
+      (resultType === 'content' && (!!activityId('', card) || !!contentUrnFromComponentKey(card)));
   }
 
   function searchResultNodes(resultType) {
@@ -607,16 +644,21 @@
       const path = url && new URL(url).pathname || '';
       const postId = expectedType === 'content' || expectedType === 'all' ? activityId(url, card) : '';
       let kind = PROFILE_PATH.test(path) ? 'profile' : COMPANY_PATH.test(path) ? 'company' : 'post';
+      const contentUrn = !postId && (expectedType === 'content' || expectedType === 'all') ?
+        contentUrnFromComponentKey(card) : null;
       if (postId) {
         kind = 'post';
         url = activityUrl(postId);
+      } else if (contentUrn) {
+        kind = 'post';
+        url = contentUrnUrl(contentUrn);
       }
       if (!url) continue;
       if (expectedType === 'people' && kind !== 'profile') continue;
       if (expectedType === 'content' && kind !== 'post') continue;
       if (expectedType === 'companies' && kind !== 'company') continue;
       const id = kind === 'profile' ? profileIdFromUrl(url) :
-        kind === 'company' ? companyIdFromUrl(url) : postId || activityId(url, card);
+        kind === 'company' ? companyIdFromUrl(url) : postId || (contentUrn && contentUrn.id) || activityId(url, card);
       const key = id ? `${kind}:${id}` : url;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -673,6 +715,7 @@
         snippet,
         image_url: imageUrl,
         media,
+        document_pages: kind === 'post' ? documentPageCount(card) : null,
         location: locationText,
         connection_degree: kind === 'profile' ? connectionDegree.replace(/^•\s*/, '') : '',
         followers,
@@ -1201,8 +1244,8 @@
       '[data-id="social-actions__comments"]',
       '.social-details-social-counts__comments',
     ]);
-    const semanticReactions = firstTextMatching(root, 'a[href], button, [role="button"]', /\b\d[\d,.]*\s+reactions?\b/i, 500);
-    const semanticComments = firstTextMatching(root, 'a[href], button, [role="button"]', /\b\d[\d,.]*\s+comments?\b/i, 500);
+    const semanticReactions = firstTextMatching(root, 'a[href], button, [role="button"]', REACTION_COUNT_PATTERN, 500);
+    const semanticComments = firstTextMatching(root, 'a[href], button, [role="button"]', COMMENT_COUNT_PATTERN, 500);
     const media = postMedia(root);
     const url = canonicalPageUrl();
     const postId = activityId(url || location.href, root);
@@ -1226,6 +1269,7 @@
       text: body,
       has_media: media.length > 0,
       media,
+      document_pages: documentPageCount(root),
       published_at: published,
       engagement: {
         reactions: reactionsNode && (reactionsNode.getAttribute('data-num-reactions') || cleanText(reactionsNode, 500)) || semanticReactions,
