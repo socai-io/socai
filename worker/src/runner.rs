@@ -794,13 +794,13 @@ impl Tool for HostTool {
                 "tool": self.definition.name,
                 "input": input,
             }))
-            // Upload parsing/OCR and artifact source reads, claim review and
-            // storage can outlast the ordinary 20s transport deadline. Wait
+            // Upload parsing/OCR, durable context synchronization, claim review
+            // and storage can outlast the ordinary 20s transport deadline. Wait
             // for their bounded result without retrying an unknown mutation.
             .timeout(Duration::from_secs(
                 if matches!(
                     self.definition.name.as_str(),
-                    "read_uploaded_file" | "publish_artifact"
+                    "read_uploaded_file" | "read_conversation_context" | "publish_artifact"
                 ) {
                     110
                 } else {
@@ -1652,6 +1652,12 @@ mod tests {
     async fn host_tool_calls_the_bound_loopback_endpoint() {
         for (name, body, expected_image, expected_failure) in [
             (
+                "read_conversation_context",
+                r#"{"ok":true,"result":{"status":"archived"}}"#,
+                false,
+                false,
+            ),
+            (
                 "create_scheduled_task",
                 r#"{"ok":true,"result":{"status":"scheduled"}}"#,
                 false,
@@ -1721,6 +1727,11 @@ mod tests {
                     request.contains("authorization: Bearer test-token-that-is-long-enough-123")
                 );
                 assert!(request.contains(name));
+                if name == "read_conversation_context" {
+                    // The former 20s transport deadline disconnected before
+                    // the backend's durable source-archive barrier finished.
+                    tokio::time::sleep(Duration::from_secs(21)).await;
+                }
                 socket
                 .write_all(
                     format!(
