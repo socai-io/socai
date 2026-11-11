@@ -43,11 +43,15 @@ class FakeNode {
 
 function loadScripts({
   semanticCards = [], legacyCards = [], globalLinks = [], sections = [], resultType = 'content',
-  pathname = `/search/results/${resultType}/`, href, main = null,
+  pathname = `/search/results/${resultType}/`, href, main = null, documentSelectors = {},
 }) {
   const document = {
-    querySelector: (selector) => selector === 'main' ? main : null,
+    querySelector: (selector) => {
+      if (documentSelectors[selector]) return documentSelectors[selector][0] || null;
+      return selector === 'main' ? main : null;
+    },
     querySelectorAll: (selector) => {
+      if (documentSelectors[selector]) return documentSelectors[selector];
       if (selector === 'main [role="listitem"]') return semanticCards;
       if (selector === 'main li.reusable-search__result-container') return legacyCards;
       if (selector === 'main section') return sections;
@@ -120,6 +124,144 @@ test('content search recovers the canonical activity URL from the semantic card 
   assert.equal(typeof scripts.commentDraftState, 'function');
   assert.equal(typeof scripts.commentSubmitTarget, 'function');
   assert.equal(typeof scripts.renderedCommentState, 'function');
+});
+
+test('content search accepts a localized feed-post heading through the full-update marker', () => {
+  const profile = new FakeNode({ text: 'Localized Author', href: 'https://www.linkedin.com/in/localized-author/' });
+  const body = new FakeNode({ text: 'Localized post body' });
+  const card = new FakeNode({
+    role: 'listitem',
+    selectors: {
+      h2: [new FakeNode({ text: 'Publicación en el feed' })],
+      '[data-view-name="feed-full-update"]': [new FakeNode({})],
+      'a[href*="/in/"], a[href*="/posts/"], a[href*="/feed/update/urn:li:"]': [profile],
+      'a[href*="/in/"]': [profile],
+      'a[href*="/in/"][aria-label]': [],
+      'a[href*="/posts/"], a[href*="/feed/update/urn:li:"]': [],
+      '[data-testid="expandable-text-box"]': [body],
+    },
+  });
+  const activityId = '7393000000000000004';
+  const breadcrumb = JSON.stringify({ updateUrn: `urn:li:activity:${activityId}` });
+  card.__reactProps$fixture = {
+    children: { _payload: { value: JSON.stringify({ breadcrumb: { content: { type: 'Buffer', data: Array.from(Buffer.from(breadcrumb)) } } }) } },
+  };
+
+  const results = loadScripts({ semanticCards: [card] }).searchResults({ result_type: 'content', limit: 5 });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].id, activityId);
+});
+
+test('content search reads the share id from the commentary componentkey when no URN is in the DOM', () => {
+  const profile = new FakeNode({ text: 'Server Driven', href: 'https://www.linkedin.com/in/server-driven/' });
+  const commentary = new FakeNode({});
+  commentary.attributes.set(
+    'componentkey',
+    'translatable-commentary-FeTranslationUrn(contentUrnCommentUrn=null, contentUrnGroupPostUrn=null, contentUrnShareUrn=ContentUrnShareUrn(shareUrn=ShareUrn(shareId=7393000000000000001)), contentUrnUgcPostUrn=null, detectedLocale=, targetLocale=es)',
+  );
+  const card = new FakeNode({
+    role: 'listitem',
+    selectors: {
+      h2: [new FakeNode({ text: 'Publicación en el feed' })],
+      '[data-view-name="feed-full-update"]': [new FakeNode({})],
+      '[componentkey*="translatable-commentary-"]': [commentary, commentary],
+      'a[href*="/in/"], a[href*="/posts/"], a[href*="/feed/update/urn:li:"]': [profile],
+      'a[href*="/in/"]': [profile],
+      'a[href*="/in/"][aria-label]': [],
+      'a[href*="/posts/"], a[href*="/feed/update/urn:li:"]': [],
+      '[data-testid="expandable-text-box"]': [new FakeNode({ text: 'Body' })],
+    },
+  });
+
+  const results = loadScripts({ semanticCards: [card] }).searchResults({ result_type: 'content', limit: 5 });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].id, '7393000000000000001');
+  assert.equal(results[0].url, 'https://www.linkedin.com/feed/update/urn:li:share:7393000000000000001/');
+});
+
+test('content search reads a ugcPost id and the document page count without a URN in the DOM', () => {
+  const profile = new FakeNode({ text: 'Doc Author', href: 'https://www.linkedin.com/in/doc-author/' });
+  const commentary = new FakeNode({});
+  commentary.attributes.set(
+    'componentkey',
+    'translatable-commentary-FeTranslationUrn(contentUrnCommentUrn=null, contentUrnGroupPostUrn=null, contentUrnShareUrn=null, contentUrnUgcPostUrn=ContentUrnUgcPostUrn(userGeneratedContentPostUrn=UserGeneratedContentPostUrn(userGeneratedContentId=7393000000000000002)), detectedLocale=, targetLocale=es)',
+  );
+  const pages = [new FakeNode({}), new FakeNode({}), new FakeNode({})];
+  const documentContainer = new FakeNode({ selectors: { '[data-page-card="true"]': pages } });
+  const card = new FakeNode({
+    role: 'listitem',
+    selectors: {
+      h2: [new FakeNode({ text: 'Publicación en el feed' })],
+      '[componentkey*="translatable-commentary-"]': [commentary],
+      '[componentkey^="document-container-"]': [documentContainer],
+      'a[href*="/in/"], a[href*="/posts/"], a[href*="/feed/update/urn:li:"]': [profile],
+      'a[href*="/in/"]': [profile],
+      'a[href*="/in/"][aria-label]': [],
+      'a[href*="/posts/"], a[href*="/feed/update/urn:li:"]': [],
+      '[data-testid="expandable-text-box"]': [new FakeNode({ text: 'Swipe through' })],
+    },
+  });
+
+  const results = loadScripts({ semanticCards: [card] }).searchResults({ result_type: 'content', limit: 5 });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].url, 'https://www.linkedin.com/feed/update/urn:li:ugcPost:7393000000000000002/');
+  assert.equal(results[0].document_pages, 3);
+});
+
+test('content search still rejects a localized heading without the full-update marker', () => {
+  const profile = new FakeNode({ text: 'Other Author', href: 'https://www.linkedin.com/in/other-author/' });
+  const card = new FakeNode({
+    role: 'listitem',
+    selectors: {
+      h2: [new FakeNode({ text: 'Publicación en el feed' })],
+      'a[href*="/in/"], a[href*="/posts/"], a[href*="/feed/update/urn:li:"]': [profile],
+      'a[href*="/in/"]': [profile],
+      'a[href*="/posts/"], a[href*="/feed/update/urn:li:"]': [],
+      '[data-testid="expandable-text-box"]': [new FakeNode({ text: 'Body' })],
+    },
+  });
+  card.__reactProps$fixture = { children: { props: { updateUrn: 'urn:li:activity:7393000000000000005' } } };
+
+  const results = loadScripts({ semanticCards: [card] }).searchResults({ result_type: 'content', limit: 5 });
+
+  assert.equal(results.length, 0);
+});
+
+test('post detail reads localized engagement counts and the document page count', () => {
+  const activityId = '7393000000000000003';
+  const postPath = `/feed/update/urn:li:activity:${activityId}/`;
+  const author = new FakeNode({ text: 'Detail Author', href: 'https://www.linkedin.com/in/detail-author/' });
+  const pages = [new FakeNode({}), new FakeNode({})];
+  const documentContainer = new FakeNode({ selectors: { '[data-page-card="true"]': pages } });
+  const root = new FakeNode({
+    text: 'Detail Author\nA document post\n10 reacciones\n3 comentarios',
+    selectors: {
+      '[data-testid="expandable-text-box"]': [new FakeNode({ text: 'A document post' })],
+      'a[href*="/in/"]': [author],
+      'a[href], button, [role="button"]': [
+        author,
+        new FakeNode({ text: '10 reacciones' }),
+        new FakeNode({ text: '3 comentarios' }),
+      ],
+      '[componentkey^="document-container-"]': [documentContainer],
+    },
+  });
+  root.attributes.set('data-activity-urn', `urn:li:activity:${activityId}`);
+
+  const detail = loadScripts({
+    pathname: postPath,
+    href: `https://www.linkedin.com${postPath}`,
+    documentSelectors: { 'article[data-activity-urn]': [root] },
+  }).postDetail();
+
+  assert.equal(detail.ok, true);
+  assert.equal(detail.post_id, activityId);
+  assert.equal(detail.engagement.reactions, '10 reacciones');
+  assert.equal(detail.engagement.comments, '3 comentarios');
+  assert.equal(detail.document_pages, 2);
 });
 
 test('semantic content search rejects unrelated and nested list items', () => {
