@@ -551,23 +551,6 @@
         }
       },
       {
-        "id": "gpt-5.3-chat-latest",
-        "display_name": "GPT-5.3 Chat (latest)",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 1.75,
-              "output_per_million": 14,
-              "cache_read_per_million": 0.175,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
         "id": "gpt-5.2-pro",
         "display_name": "GPT-5.2 Pro",
         "source": "pi-ai",
@@ -579,23 +562,6 @@
               "input_per_million": 21,
               "output_per_million": 168,
               "cache_read_per_million": 0,
-              "cache_write_per_million": 0
-            }
-          ]
-        }
-      },
-      {
-        "id": "gpt-5.2-chat-latest",
-        "display_name": "GPT-5.2 Chat",
-        "source": "pi-ai",
-        "pricing": {
-          "currency": "USD",
-          "source": "pi-ai",
-          "tiers": [
-            {
-              "input_per_million": 1.75,
-              "output_per_million": 14,
-              "cache_read_per_million": 0.175,
               "cache_write_per_million": 0
             }
           ]
@@ -1054,9 +1020,9 @@
           "source": "pi-ai",
           "tiers": [
             {
-              "input_per_million": 1.9,
-              "output_per_million": 8,
-              "cache_read_per_million": 0.38,
+              "input_per_million": 1.9421,
+              "output_per_million": 8.0673,
+              "cache_read_per_million": 0.3884,
               "cache_write_per_million": 0
             }
           ]
@@ -1071,9 +1037,9 @@
           "source": "pi-ai",
           "tiers": [
             {
-              "input_per_million": 0.95,
-              "output_per_million": 4,
-              "cache_read_per_million": 0.19,
+              "input_per_million": 0.9711,
+              "output_per_million": 4.0337,
+              "cache_read_per_million": 0.1942,
               "cache_write_per_million": 0
             }
           ]
@@ -1088,9 +1054,9 @@
           "source": "pi-ai",
           "tiers": [
             {
-              "input_per_million": 0.95,
-              "output_per_million": 4,
-              "cache_read_per_million": 0.16,
+              "input_per_million": 0.9711,
+              "output_per_million": 4.0337,
+              "cache_read_per_million": 0.1643,
               "cache_write_per_million": 0
             }
           ]
