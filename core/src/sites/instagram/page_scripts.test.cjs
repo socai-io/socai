@@ -748,3 +748,93 @@ test('profile detail exposes redirected login and challenge gates at the top lev
   assert.equal(detail.login_required, true);
   assert.equal(detail.ok, false);
 });
+
+test('profile grid flags carousel posts by localized icon label or icon path', () => {
+  function icon({ label = '', path = '' } = {}) {
+    return {
+      getAttribute: (name) => name === 'aria-label' ? label : '',
+      querySelector: (selector) => selector === 'path' && path ? { getAttribute: (name) => name === 'd' ? path : '' } : null,
+    };
+  }
+  function card(href, icons) {
+    return {
+      href,
+      getAttribute: (name) => name === 'href' ? href : '',
+      querySelector: () => null,
+      querySelectorAll: (selector) => selector === 'svg' ? icons : [],
+    };
+  }
+  const cards = [
+    card('https://www.instagram.com/creator/p/Labeled123/', [icon({ label: 'Carrusel' })]),
+    card('https://www.instagram.com/creator/p/PathOnly123/', [icon({ path: 'M34.8 29.7V11c0-2.9-2.3-5.2-5.2-5.2H11' })]),
+    card('https://www.instagram.com/creator/p/Single123/', [icon({ label: 'Pinned post icon', path: 'M15 2a1 1 0 0 1 1 1' })]),
+    card('https://www.instagram.com/creator/reel/Reel123/', [icon({ label: 'Carousel' })]),
+  ];
+  const main = { querySelectorAll: (selector) => selector.includes('/p/') ? cards : [] };
+  const document = { querySelector: (selector) => selector === 'main' ? main : null, querySelectorAll: () => [] };
+  const window = { getComputedStyle: () => ({ visibility: 'visible', display: 'block' }) };
+  const location = { href: 'https://www.instagram.com/creator/', pathname: '/creator/' };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'page_scripts.js'), 'utf8'), { URL, document, window, location });
+
+  const posts = window.SocaiInstagramPageScripts.profilePosts({ limit: 10 });
+
+  assert.deepEqual(Array.from(posts, (post) => [post.id, post.is_carousel]), [
+    ['Labeled123', true],
+    ['PathOnly123', true],
+    ['Single123', false],
+    ['Reel123', false],
+  ]);
+});
+
+test('post detail counts carousel slides from the indicator dots', () => {
+  function detailFor(shortcode, dotGroups) {
+    const groups = dotGroups.map((count) => {
+      const parent = {};
+      return Array.from({ length: count }, () => ({ parentElement: parent }));
+    });
+    const article = {
+      querySelector: () => null,
+      querySelectorAll: (selector) => selector === 'div._acnb' ? groups.flat() : [],
+    };
+    const main = {
+      querySelector: (selector) => selector === 'article' ? article : null,
+      querySelectorAll: (selector) => selector === 'article' ? [article] : [],
+    };
+    const metadata = {
+      'og:type': 'article',
+      'og:url': `https://www.instagram.com/p/${shortcode}/`,
+      description: '5 likes, 1 comments - creator on September 20, 2026: “Slides caption”.',
+    };
+    const document = {
+      body: { innerText: 'Hydrated Instagram post' },
+      readyState: 'complete',
+      title: 'Slides fixture',
+      querySelector: (selector) => {
+        const meta = selector.match(/^meta\[property="([^"]+)"\], meta\[name="\1"\]$/);
+        if (meta && metadata[meta[1]]) return { getAttribute: () => metadata[meta[1]] };
+        if (selector === 'main') return main;
+        return null;
+      },
+      querySelectorAll: () => [],
+    };
+    const window = { getComputedStyle: () => ({ visibility: 'visible', display: 'block' }) };
+    const context = {
+      URL,
+      document,
+      location: { href: `https://www.instagram.com/p/${shortcode}/`, pathname: `/p/${shortcode}/` },
+      performance: { getEntriesByType: () => [] },
+      window,
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'page_scripts.js'), 'utf8'), context);
+    return window.SocaiInstagramPageScripts.postDetail();
+  }
+
+  const carousel = detailFor('Slides123', [4, 1]);
+  assert.equal(carousel.ok, true);
+  assert.equal(carousel.kind, 'post');
+  assert.equal(carousel.slide_count, 4);
+
+  const single = detailFor('Single123', []);
+  assert.equal(single.ok, true);
+  assert.equal(single.slide_count, null);
+});
