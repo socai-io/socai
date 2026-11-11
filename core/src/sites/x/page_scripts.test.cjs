@@ -70,6 +70,7 @@ function tweetFixture(id, {
   const replyButton = new FakeNode({ attributes: { 'aria-label': `${replyCount} Replies` } });
   const repostButton = new FakeNode({ attributes: { 'aria-label': '34 reposts' } });
   const likeButton = new FakeNode({ attributes: { 'aria-label': '56 Likes' } });
+  const viewsLink = new FakeNode({ href: `https://x.com/${username}/status/${id}/analytics`, attributes: { 'aria-label': '1906 views. View post analytics' } });
   const article = new FakeNode({
     text: `${reply ? `${replyLabel} @${replyTo}\n` : ''}OpenAI\n@${username}\n${text}\n12\n34\n56`,
     attributes: { 'data-testid': 'tweet' },
@@ -85,6 +86,7 @@ function tweetFixture(id, {
       '[data-testid="retweet"], [data-testid="unretweet"]': [repostButton],
       '[data-testid="like"], [data-testid="unlike"]': [likeButton],
       '[data-testid="bookmark"], [data-testid="removeBookmark"]': [],
+      'a[href$="/analytics"]': [viewsLink],
       '[data-testid="quoteTweet"]': [],
       'span, div[dir="ltr"]': replyContext ? [replyContext] : [],
     },
@@ -161,6 +163,7 @@ test('post detail returns canonical identity, content, media, and metrics', () =
   assert.equal(detail.metrics.replies, 12);
   assert.equal(detail.metrics.reposts, 34);
   assert.equal(detail.metrics.likes, 56);
+  assert.equal(detail.metrics.views, 1906);
 });
 
 test('post-open state requires hydrated author, timestamp, and root content', () => {
