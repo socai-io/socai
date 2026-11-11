@@ -2362,6 +2362,9 @@ fn compact_profile_posts(posts: &Value) -> Value {
                         item[key] = value.clone();
                     }
                 }
+                if let Some(value) = post.get("is_carousel").and_then(Value::as_bool) {
+                    item["is_carousel"] = json!(value);
+                }
                 item
             })
             .collect(),
@@ -2380,6 +2383,7 @@ fn compact_opened_post(id: &str, entity: &Value, comments: &Value, card_video_ur
         "ok": true,
         "id": entity.get("id").and_then(Value::as_str).unwrap_or(id),
         "kind": entity.get("kind").and_then(Value::as_str).unwrap_or("post"),
+        "slide_count": entity.get("slide_count").cloned().unwrap_or(Value::Null),
         "url": entity.get("url").and_then(Value::as_str).unwrap_or(""),
         "author": entity.pointer("/author/username").and_then(Value::as_str).unwrap_or(""),
         "caption": entity.get("caption").and_then(Value::as_str).unwrap_or(""),

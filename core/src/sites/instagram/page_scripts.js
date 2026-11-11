@@ -278,6 +278,23 @@
     return candidates;
   }
 
+  // Grid cards of multi-image posts carry a carousel icon. Its label is localized, so the icon's
+  // path is matched as well.
+  const CAROUSEL_ICON_LABEL = /^(carousel|carrusel|carrossel|carrousel|karussell|carosello|轮播)$/i;
+  const CAROUSEL_ICON_PATH = 'M34.8 29.7V11c0-2.9';
+
+  function isCarouselCard(link) {
+    if (!link || !link.querySelectorAll) return false;
+    for (const icon of link.querySelectorAll('svg')) {
+      const title = icon.querySelector && icon.querySelector('title');
+      const label = (icon.getAttribute('aria-label') || cleanText(title, 40) || '').trim();
+      if (CAROUSEL_ICON_LABEL.test(label)) return true;
+      const path = icon.querySelector && icon.querySelector('path');
+      if (path && (path.getAttribute('d') || '').startsWith(CAROUSEL_ICON_PATH)) return true;
+    }
+    return false;
+  }
+
   const GENERIC_CARD_LABEL = /^(reels?|clips?|videos?|photos?|posts?|carousels?|视频|图片|帖子)$/i;
 
   function cardMedia(link) {
@@ -335,6 +352,7 @@
         subtitle,
         thumbnail_url: media.imageUrl,
         video_url: media.videoUrl,
+        is_carousel: kind === 'post' && isCarouselCard(link),
         media_description: meaningfulLine(media.alt, media.badgeLabel),
         position: output.length + 1,
       });
@@ -662,6 +680,7 @@
         url,
         title: description,
         thumbnail_url: image && (image.currentSrc || image.src) || '',
+        is_carousel: identity.kind === 'post' && isCarouselCard(link),
         position: output.length + 1,
         ...profileViews(link),
       });
@@ -1505,6 +1524,19 @@
     return foldCoverIntoVideo(output);
   }
 
+  // A carousel post shows one indicator dot per slide under the media, while only the current
+  // slides are mounted. The largest sibling group of indicator dots is the slide count.
+  function carouselSlideCount(root) {
+    if (!root || !root.querySelectorAll) return null;
+    const groups = new Map();
+    for (const dot of root.querySelectorAll('div._acnb')) {
+      const parent = dot.parentElement;
+      if (parent) groups.set(parent, (groups.get(parent) || 0) + 1);
+    }
+    const largest = Math.max(0, ...groups.values());
+    return largest >= 2 ? largest : null;
+  }
+
   function postDetail() {
     const identity = activePostIdentity();
     const candidateUrl = canonicalPageUrl();
@@ -1549,6 +1581,7 @@
       id: identity.shortcode,
       shortcode: identity.shortcode,
       kind,
+      slide_count: kind === 'post' ? carouselSlideCount(root) : null,
       url: `https://www.instagram.com/p/${identity.shortcode}/`,
       author: {
         username: author,
