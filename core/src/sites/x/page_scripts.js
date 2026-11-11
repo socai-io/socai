@@ -329,6 +329,7 @@
         reposts: buttonMetric(article, '[data-testid="retweet"], [data-testid="unretweet"]'),
         likes: buttonMetric(article, '[data-testid="like"], [data-testid="unlike"]'),
         bookmarks: buttonMetric(article, '[data-testid="bookmark"], [data-testid="removeBookmark"]'),
+        views: buttonMetric(article, 'a[href$="/analytics"]'),
       },
       is_reply: replyTargets(article).length > 0,
       quoted_post: quote ? cleanText(quote, 10000) : '',
