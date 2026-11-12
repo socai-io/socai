@@ -1,22 +1,96 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+/// A search-result or profile-grid card. Despite the name it covers every
+/// post kind: `kind` is `"video"` for `/video/<id>` posts and `"photo"` for
+/// `/photo/<id>` carousels, and `video_id` holds the post id for both.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TikTokVideoCard {
     pub video_id: String,
+    pub kind: String,
     pub url: String,
     pub title: String,
     pub author: String,
     pub author_id: String,
     pub author_url: String,
-    pub likes: String,
-    pub comments: String,
-    pub shares: String,
-    pub views: String,
+    /// Engagement text as the card shows it; `None` when the card does not
+    /// show it (unknown, not zero).
+    #[serde(deserialize_with = "empty_as_none")]
+    pub likes: Option<String>,
+    #[serde(deserialize_with = "empty_as_none")]
+    pub comments: Option<String>,
+    #[serde(deserialize_with = "empty_as_none")]
+    pub shares: Option<String>,
+    #[serde(deserialize_with = "empty_as_none")]
+    pub views: Option<String>,
     pub cover_url: String,
-    pub duration_seconds: i64,
+    /// `None` for photo carousels, which have no running time.
+    pub duration_seconds: Option<i64>,
     pub position: usize,
+}
+
+impl TikTokVideoCard {
+    /// Fill `video_id` and `kind` from the card URL when the extractor left
+    /// them empty, and drop a duration a photo post cannot have.
+    pub fn normalized(mut self) -> Self {
+        if let Some((kind, id)) = extract_post(&self.url) {
+            if self.video_id.is_empty() {
+                self.video_id = id;
+            }
+            if self.kind.is_empty() {
+                self.kind = kind.as_str().to_string();
+            }
+        }
+        if self.kind == TikTokPostKind::Photo.as_str() {
+            self.duration_seconds = None;
+        }
+        self
+    }
+}
+
+fn empty_as_none<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(value.filter(|text| !text.trim().is_empty()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TikTokPostKind {
+    Video,
+    Photo,
+}
+
+impl TikTokPostKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Video => "video",
+            Self::Photo => "photo",
+        }
+    }
+}
+
+/// Post id and kind from a `/video/<id>` or `/photo/<id>` URL.
+pub fn extract_post(url: &str) -> Option<(TikTokPostKind, String)> {
+    for (marker, kind) in [
+        ("/video/", TikTokPostKind::Video),
+        ("/photo/", TikTokPostKind::Photo),
+    ] {
+        let Some(rest) = url.split(marker).nth(1) else {
+            continue;
+        };
+        let value = rest
+            .split(['?', '#', '/', '&'])
+            .next()
+            .unwrap_or_default()
+            .trim();
+        if !value.is_empty() {
+            return Some((kind, value.to_string()));
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -38,6 +112,11 @@ pub struct TikTokVideo {
     pub entity_type: String,
     pub platform: String,
     pub video_id: String,
+    /// `"video"`, or `"photo"` for a `/photo/<id>` carousel.
+    pub kind: String,
+    /// Number of images in a photo carousel; `None` for videos or when the
+    /// page does not expose it.
+    pub image_count: Option<i64>,
     pub url: String,
     pub title: String,
     pub description: String,
@@ -52,7 +131,8 @@ pub struct TikTokVideo {
     pub shares: String,
     pub favorites: String,
     pub views: String,
-    pub duration_seconds: i64,
+    /// `None` for photo carousels, which have no running time.
+    pub duration_seconds: Option<i64>,
     pub cover_url: String,
     pub video: Value,
     pub top_comments: Vec<TikTokComment>,
@@ -103,7 +183,7 @@ pub fn normalize_tiktok_url(raw: &str) -> String {
 }
 
 pub fn extract_video_id(url: &str) -> String {
-    for marker in ["/video/", "/player/v1/"] {
+    for marker in ["/video/", "/photo/", "/player/v1/"] {
         let Some(rest) = url.split(marker).nth(1) else {
             continue;
         };

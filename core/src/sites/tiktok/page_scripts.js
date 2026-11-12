@@ -40,8 +40,22 @@
   }
 
   function videoIdFromUrl(url) {
-    const match = String(url || '').match(/\/(?:video|player\/v1)\/([^/?#]+)/);
+    const match = String(url || '').match(/\/(?:video|photo|player\/v1)\/([^/?#]+)/);
     return match ? match[1] : '';
+  }
+
+  // Grid and search cards link to /video/<id> or, for photo carousels,
+  // /photo/<id>. Both are posts; `kind` keeps the difference.
+  const POST_LINK_SELECTOR = 'a[href*="/video/"], a[href*="/photo/"]';
+
+  function postFromUrl(url) {
+    const match = String(url || '').match(/\/(video|photo)\/([^/?#]+)/);
+    return match ? { id: match[2], kind: match[1] } : { id: '', kind: '' };
+  }
+
+  function metricText(node) {
+    const value = text(node);
+    return value ? value : null;
   }
 
   function handleFromUrl(url) {
@@ -187,12 +201,12 @@
   function cardNodes(root) {
     const scope = root && root.querySelectorAll ? root : document;
     const nodes = Array.from(scope.querySelectorAll(
-      '[data-e2e="search-card-video"], [data-e2e="user-post-item"], [data-e2e="recommend-list-item-container"], a[href*="/video/"]'
+      `[data-e2e="search-card-video"], [data-e2e="user-post-item"], [data-e2e="recommend-list-item-container"], ${POST_LINK_SELECTOR}`
     ));
     const cards = [];
     const seen = new Set();
     for (const node of nodes) {
-      const link = node.matches('a[href*="/video/"]') ? node : node.querySelector('a[href*="/video/"]');
+      const link = node.matches(POST_LINK_SELECTOR) ? node : node.querySelector(POST_LINK_SELECTOR);
       const card = node.closest('[data-e2e="search-card-video"], [data-e2e="user-post-item"], [data-e2e="recommend-list-item-container"]') || link || node;
       if (!card || !link || !visible(card) || seen.has(card)) continue;
       seen.add(card);
@@ -245,6 +259,16 @@
       httpsUrl(video.dynamicCover) ||
       httpsUrl(video.zoomCover) ||
       httpsUrl(item && item.cover) ||
+      photoCoverFromItem(item) ||
+      '';
+  }
+
+  function photoCoverFromItem(item) {
+    const post = item && item.imagePost || {};
+    const images = Array.isArray(post.images) ? post.images : [];
+    const first = images[0] || {};
+    return httpsUrl(post.cover && (post.cover.imageURL || post.cover)) ||
+      httpsUrl(first.imageURL || first.displayImage) ||
       '';
   }
 
@@ -272,7 +296,7 @@
         return;
       }
       if (typeof node !== 'object') return;
-      if (node.video && (node.id || node.video_id)) remember(node);
+      if ((node.video || node.imagePost) && (node.id || node.video_id)) remember(node);
       const keys = Object.keys(node);
       if (keys.length > 80) return;
       for (const key of keys) walk(node[key], depth + 1);
@@ -303,7 +327,7 @@
       const props = node.memoizedProps;
       if (props && typeof props === 'object') {
         for (const candidate of [props, props.item, props.data, props.videoData]) {
-          if (!candidate || typeof candidate !== 'object' || !candidate.video) continue;
+          if (!candidate || typeof candidate !== 'object' || !(candidate.video || candidate.imagePost)) continue;
           const id = String(candidate.id || candidate.video_id || '');
           if (id && id === String(videoId)) return candidate;
         }
@@ -319,8 +343,9 @@
   // JSON on a search page does not include it, and the visible <img> is often
   // still the 1x1 placeholder. A cover whose signature contains %2F fails in
   // the desktop webview, so prefer one that does not.
-  function cardMedia(card, videoId) {
-    const video = (reactItem(card, videoId) || {}).video || {};
+  function cardMedia(card, videoId, kind) {
+    const item = reactItem(card, videoId) || {};
+    const video = item.video || {};
     const zoom = video.zoomCover || {};
     const covers = [
       video.cover,
@@ -331,11 +356,13 @@
       zoom['240'],
       video.dynamicCover,
     ].map(httpsUrl).filter(Boolean);
+    const photoCover = photoCoverFromItem(item);
+    if (photoCover) covers.push(photoCover);
     const visible = coverFromCard(card);
     if (visible) covers.push(visible);
     return {
       cover: covers.find((url) => !/%2F/i.test(url)) || covers[0] || '',
-      play: playUrlFromItem({ video }),
+      play: kind === 'photo' ? '' : playUrlFromItem({ video }),
     };
   }
 
@@ -370,37 +397,42 @@
     const seen = new Set();
     for (const card of cardNodes(root)) {
       if (viewportOnly && !inViewport(card)) continue;
-      const link = card.matches('a[href*="/video/"]') ? card : card.querySelector('a[href*="/video/"]');
+      const link = card.matches(POST_LINK_SELECTOR) ? card : card.querySelector(POST_LINK_SELECTOR);
       const url = normUrl(link && (link.href || link.getAttribute('href')) || '');
-      const videoId = videoIdFromUrl(url);
+      const post = postFromUrl(url);
+      const videoId = post.id;
+      const isPhoto = post.kind === 'photo';
       if (!videoId || seen.has(videoId)) continue;
       seen.add(videoId);
       const img = card.querySelector('img');
       const allText = text(card);
       const authorLink = Array.from(card.querySelectorAll('a[href^="/@"], a[href*="tiktok.com/@"]'))
-        .find((link) => !/\/video\//.test(link.getAttribute('href') || '')) || null;
+        .find((link) => !/\/(?:video|photo)\//.test(link.getAttribute('href') || '')) || null;
       const authorUrl = normUrl(authorLink && (authorLink.href || authorLink.getAttribute('href')) || '');
       const handle = handleFromUrl(authorUrl || url);
       const profileUrl = handle ? normUrl(`/@${handle}`) : '';
       if (expectedHandle && handle.toLowerCase() !== expectedHandle) continue;
       const desc = text(card.querySelector('[data-e2e="search-card-desc"], [data-e2e="video-desc"], [class*="Desc"]'));
       const duration = text(card.querySelector('[data-e2e="video-duration"], time, [class*="Duration"]'));
-      const media = cardMedia(card, videoId);
+      const media = cardMedia(card, videoId, post.kind);
       const player = card.querySelector('video');
       cards.push({
         video_id: videoId,
+        kind: post.kind,
         url,
         title: desc || img && img.alt || allText,
         author: text(authorLink) || handle,
         author_id: handle,
         author_url: profileUrl,
-        likes: text(card.querySelector('[data-e2e="like-count"], [data-e2e="search-card-like-container"]')),
-        comments: text(card.querySelector('[data-e2e="comment-count"]')),
-        shares: text(card.querySelector('[data-e2e="share-count"]')),
-        views: text(card.querySelector('[data-e2e="video-views"], [class*="VideoViews"]')),
+        // A metric the card does not show is null (unknown), never 0.
+        likes: metricText(card.querySelector('[data-e2e="like-count"], [data-e2e="search-card-like-container"]')),
+        comments: metricText(card.querySelector('[data-e2e="comment-count"]')),
+        shares: metricText(card.querySelector('[data-e2e="share-count"]')),
+        views: metricText(card.querySelector('[data-e2e="video-views"], [class*="VideoViews"]')),
         cover_url: media.cover || embedded.cover[videoId] || '',
-        video_url: media.play || embedded.play[videoId] || allowedMediaUrl((player && (player.currentSrc || player.src)) || ''),
-        duration_seconds: durationSeconds(duration),
+        video_url: isPhoto ? '' : media.play || embedded.play[videoId] || allowedMediaUrl((player && (player.currentSrc || player.src)) || ''),
+        // A photo carousel has no running time.
+        duration_seconds: isPhoto ? null : durationSeconds(duration),
         position: cards.length,
       });
       if (cards.length >= limit) break;
@@ -491,8 +523,12 @@
     const metadataVideoId = videoIdFromUrl(metaContent('og:url'));
     const structuredAuthor = breadcrumbAuthor();
     const identityHydrated = !!stateVideo || metadataVideoId === videoId || !!structuredAuthor.handle;
+    // A /photo/<id> carousel renders images, not a <video>; its detail is
+    // proven by the same identity and text signals.
+    const isPhoto = postFromUrl(location.href).kind === 'photo';
+    const hasMedia = hasVideo || isPhoto;
     const hasDetail = identityHydrated &&
-      (!!stateVideo || (hasVideo && (detailText.length > 0 || !!structuredAuthor.handle)));
+      (!!stateVideo || (hasMedia && (detailText.length > 0 || !!structuredAuthor.handle)));
     const unavailableNode = firstVisible([
       '[data-e2e="video-unavailable"]',
       '[data-e2e="browse-video-error"]',
@@ -508,6 +544,7 @@
       site: 'tiktok',
       state: videoId ? 'video_detail' : 'other',
       video_id: videoId,
+      kind: isPhoto ? 'photo' : 'video',
       url: location.href,
       ready_state: document.readyState,
       login_required: loginBlocked(hasVideo),
@@ -550,7 +587,9 @@
     const descNode = firstVisible(['[data-e2e="browse-video-desc"]', '[data-e2e="video-desc"]', '[class*="DivVideoInfo"]']);
     const description = stateVideo.desc || text(descNode) || metaContent('og:description') || metaContent('description');
     const playerCover = firstVisible(['img[alt="Video Cover"]', '[aria-label="TikTok video player"] img']);
-    const cover = normUrl(stateVideo.video && (stateVideo.video.cover || stateVideo.video.originCover || stateVideo.video.dynamicCover) || video && video.poster || playerCover && (playerCover.currentSrc || playerCover.src) || metaContent('og:image'));
+    const isPhoto = state.kind === 'photo' || !!(stateVideo.imagePost && Array.isArray(stateVideo.imagePost.images));
+    const photoImages = stateVideo.imagePost && Array.isArray(stateVideo.imagePost.images) ? stateVideo.imagePost.images : null;
+    const cover = isPhoto && photoCoverFromItem(stateVideo) || normUrl(stateVideo.video && (stateVideo.video.cover || stateVideo.video.originCover || stateVideo.video.dynamicCover) || video && video.poster || playerCover && (playerCover.currentSrc || playerCover.src) || metaContent('og:image'));
     const seek = firstVisible(['[role="slider"][aria-label="Seek video"]']);
     const seekDuration = seek && (seek.getAttribute('aria-valuetext') || '').split(/\s+of\s+/i).pop() || '';
     const hashtags = Array.from(new Set([
@@ -561,6 +600,8 @@
       entity_type: 'video',
       platform: 'tiktok',
       video_id: state.video_id,
+      kind: isPhoto ? 'photo' : 'video',
+      image_count: photoImages && photoImages.length ? photoImages.length : null,
       url: location.href,
       title: metaContent('og:title') || description || document.title || '',
       description,
@@ -575,7 +616,7 @@
       shares: String(stats.shareCount || text(firstVisible(['[data-e2e="share-count"]', 'a[aria-label^="Share this post on TikTok"]'])) || ''),
       favorites: String(stats.collectCount || text(firstVisible(['[data-e2e="collect-count"]', '[data-e2e="bookmark-count"]'])) || ''),
       views: String(stats.playCount || ''),
-      duration_seconds: Math.round(Number(stateVideo.video && stateVideo.video.duration || video && video.duration || durationSeconds(seekDuration) || 0)),
+      duration_seconds: isPhoto ? null : Math.round(Number(stateVideo.video && stateVideo.video.duration || video && video.duration || durationSeconds(seekDuration) || 0)),
       cover_url: cover,
       video: collectVideoInfo(video, stateVideo, cover),
       top_comments: [],
@@ -903,6 +944,45 @@
     };
   }
 
+  function tagFromUrl(url) {
+    const match = String(url || '').match(/\/tag\/([^/?#]+)/);
+    if (!match) return '';
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (_) {
+      return match[1];
+    }
+  }
+
+  // Hashtag pages (/tag/<name>) render the same post grid as search and
+  // author pages, so videoCards reads them unchanged.
+  function tagState() {
+    const tag = tagFromUrl(location.href);
+    const cards = videoCards({ limit: 3 });
+    const titleNode = firstVisible(['[data-e2e="challenge-title"]', 'h1']);
+    const emptyNode = firstVisible([
+      '[data-e2e="challenge-item-list-empty"]',
+      'main [class*="EmptyState"]',
+      'main [class*="NoResult"]',
+      'main h2',
+    ]);
+    const unavailable = cards.length === 0 &&
+      /couldn['’]t find this hashtag|hashtag (?:isn['’]t|is not) available|no (?:videos|posts) (?:yet|found)/i.test(text(emptyNode));
+    return {
+      ok: !!tag && cards.length > 0,
+      site: 'tiktok',
+      state: tag ? 'tag' : 'other',
+      tag,
+      title: text(titleNode),
+      url: location.href,
+      ready_state: document.readyState,
+      card_count: cards.length,
+      unavailable,
+      login_required: loginBlocked(cards.length > 0),
+      challenge_required: challengeRequired(),
+    };
+  }
+
   function scrollFeed(arg) {
     const down = !(arg && arg.nudge_up);
     const delta = down ? Math.floor(window.innerHeight * 0.85) : -Math.floor(window.innerHeight * 0.35);
@@ -932,6 +1012,7 @@
   window.SocaiTikTokPageScripts = {
     pageState,
     searchState,
+    tagState,
     videoCards,
     scrollFeed,
     videoState,

@@ -20,6 +20,14 @@
       "args": { "query": { "type": "string", "required": false, "description": "Expected search text." } },
       "returns": { "type": "object", "description": "Search transition and result state." }
     },
+    "tagState": {
+      "description": "Before accepting videoCards on a hashtag page, verify the active /tag/<name> route and distinguish hydrated posts from login, CAPTCHA, unavailable, and unhydrated states.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiTikTokPageScripts",
+      "callable": "tagState",
+      "args": {},
+      "returns": { "type": "object", "description": "Hashtag page identity and result state." }
+    },
     "videoCards": {
       "description": "Collect TikTok video cards across the current lazy result or author grid up to limit. On search routes, call searchState first and accept an empty array only when it confirms an explicit empty result.",
       "path": "page_scripts.js",
