@@ -938,3 +938,78 @@ test('notifications keep replies separate from follows, and follow back skips pe
   assert.equal(backs[0].bio, 'building small tools');
   assert.equal(backs[0].follows_you, true);
 });
+
+test('post cards read author followers from React props and the verified badge from the DOM', () => {
+  const article = tweetFixture('3001', { username: 'fixture_author' });
+  const userName = article.querySelector('[data-testid="User-Name"]');
+  userName.selectors['[data-testid="icon-verified"]'] = [new FakeNode()];
+  const quotedUser = { screen_name: 'someone_else', followers_count: 999 };
+  const authorUser = { legacy: { screen_name: 'Fixture_Author', followers_count: 48210 }, is_blue_verified: true };
+  article['__reactFiber$fixture'] = {
+    memoizedProps: { className: 'css-fixture', children: [] },
+    return: {
+      memoizedProps: { quotedTweet: { user: quotedUser } },
+      return: { memoizedProps: { tweet: { id_str: '3001', user: authorUser } }, return: null },
+    },
+  };
+  const plain = tweetFixture('3002', { username: 'plain_author' });
+  const scripts = loadScripts({
+    href: 'https://x.com/search?q=fixture&f=live',
+    pathname: '/search',
+    articles: [article, plain],
+  });
+
+  const [first, second] = scripts.searchResults({ limit: 10 });
+
+  assert.equal(first.author.username, 'fixture_author');
+  assert.equal(first.author.followers, 48210);
+  assert.equal(first.author.verified, true);
+  assert.equal(second.author.followers, null);
+  assert.equal(second.author.verified, false);
+});
+
+test('post cards keep followers null when React props only carry another account', () => {
+  const article = tweetFixture('3003', { username: 'fixture_author' });
+  article['__reactProps$fixture'] = { tweet: { user: { screen_name: 'other_account', followers_count: 12, verified: true } } };
+  const scripts = loadScripts({
+    href: 'https://x.com/fixture_author',
+    pathname: '/fixture_author',
+    articles: [article],
+  });
+
+  const [post] = scripts.profilePosts({ limit: 10 });
+
+  assert.equal(post.author.followers, null);
+  assert.equal(post.author.verified, false);
+});
+
+test('profile header reads followers from the verified_followers link and the verified badge', () => {
+  const name = new FakeNode({
+    text: 'Fixture\n@fixture_author',
+    attributes: { 'data-testid': 'UserName' },
+    selectors: { '[data-testid="icon-verified"]': [new FakeNode()] },
+  });
+  const followers = new FakeNode({ href: '/fixture_author/verified_followers', text: '12.5K Followers' });
+  const following = new FakeNode({ href: '/fixture_author/following', text: '310 Following' });
+  const article = tweetFixture('3004', { username: 'fixture_author' });
+  const primary = new FakeNode({
+    attributes: { 'data-testid': 'primaryColumn' },
+    selectors: {
+      '[data-testid="UserName"]': [name],
+      'a[href]': [followers, following],
+      'article[data-testid="tweet"], article': [article],
+    },
+  });
+  const scripts = loadScripts({
+    href: 'https://x.com/fixture_author',
+    pathname: '/fixture_author',
+    articles: [article],
+    primary,
+  });
+
+  const detail = scripts.profileDetail();
+
+  assert.equal(detail.followers, 12500);
+  assert.equal(detail.following, 310);
+  assert.equal(detail.verified, true);
+});

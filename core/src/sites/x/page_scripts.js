@@ -274,6 +274,61 @@
     return metric(`${node.getAttribute('aria-label') || ''} ${cleanText(node, 120)}`);
   }
 
+  // The user object a timeline post renders carries screen_name and
+  // followers_count, either flat or under legacy/core (GraphQL shape).
+  function userRecordFor(value, username) {
+    if (!value || typeof value !== 'object') return null;
+    const legacy = value.legacy && typeof value.legacy === 'object' ? value.legacy : null;
+    const core = value.core && typeof value.core === 'object' ? value.core : null;
+    const screenName = [value.screen_name, legacy && legacy.screen_name, core && core.screen_name]
+      .find((name) => typeof name === 'string' && name);
+    if (!screenName || screenName.toLowerCase() !== username) return null;
+    const followers = [value.followers_count, legacy && legacy.followers_count]
+      .find((count) => typeof count === 'number' && Number.isFinite(count) && count >= 0);
+    if (followers === undefined) return null;
+    const verified = [value.is_blue_verified, value.verified, legacy && legacy.verified]
+      .some((flag) => flag === true);
+    return { followers, verified };
+  }
+
+  function findUserRecord(value, username, depth, seen) {
+    if (!value || typeof value !== 'object' || depth > 6 || seen.has(value) || seen.size > 5000) return null;
+    seen.add(value);
+    if (typeof value.nodeType === 'number') return null;
+    const direct = userRecordFor(value, username);
+    if (direct) return direct;
+    for (const key of Object.keys(value)) {
+      if (key === 'children' || key.startsWith('_') || key.startsWith('__react')) continue;
+      let child;
+      try {
+        child = value[key];
+      } catch (_) {
+        continue;
+      }
+      const found = findUserRecord(child, username, depth + 1, seen);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  // Follower counts are not rendered on timeline cards. The post's React
+  // props hold the author's user object, so read it from there; no extra
+  // request or hover is needed. Returns null when the props do not carry it.
+  function authorRecord(article, username) {
+    if (!article || !username) return null;
+    const seen = new Set();
+    const propKey = Object.keys(article).find((name) => name.startsWith('__reactProps'));
+    const direct = propKey && findUserRecord(article[propKey], username, 0, seen);
+    if (direct) return direct;
+    const fiberKey = Object.keys(article).find((name) => name.startsWith('__reactFiber'));
+    let current = fiberKey && article[fiberKey];
+    for (let depth = 0; current && depth < 25; depth += 1, current = current.return) {
+      const found = findUserRecord(current.memoizedProps, username, 0, seen);
+      if (found) return found;
+    }
+    return null;
+  }
+
   function parseAuthor(article, identity) {
     const root = article.querySelector('[data-testid="User-Name"]');
     const text = cleanText(root, 1000);
@@ -283,10 +338,14 @@
       .find((entry) => entry.username);
     const username = profile && profile.username || handle && handle[1].toLowerCase() || identity.username;
     const lines = text.split('\n').filter(Boolean);
+    const record = authorRecord(article, username);
+    const badge = root ? !!root.querySelector('[data-testid="icon-verified"]') : null;
     return {
       username,
       display_name: lines.find((line) => !line.startsWith('@')) || '',
       url: username ? xUrl(`https://x.com/${username}`) : '',
+      followers: record ? record.followers : null,
+      verified: badge || record && record.verified || (root ? false : null),
     };
   }
 
@@ -747,11 +806,11 @@
     const description = primary.querySelector('[data-testid="UserDescription"]');
     const text = cleanText(nameRoot, 1000);
     const lines = text.split('\n').filter(Boolean);
-    const linkText = (suffix) => {
+    const linkText = (...suffixes) => {
       const link = Array.from(primary.querySelectorAll('a[href]')).find((node) => {
         try {
           const parts = new URL(node.getAttribute('href') || node.href, location.href).pathname.split('/').filter(Boolean);
-          return parts.length === 2 && parts[0].toLowerCase() === username && parts[1].toLowerCase() === suffix;
+          return parts.length === 2 && parts[0].toLowerCase() === username && suffixes.includes(parts[1].toLowerCase());
         } catch (_) {
           return false;
         }
@@ -770,7 +829,9 @@
       tab: route.tab,
       display_name: lines.find((line) => !line.startsWith('@')) || '',
       bio: cleanText(description, 5000),
-      followers: metric(linkText('followers')),
+      // The header links followers to /verified_followers on current X builds.
+      followers: metric(linkText('followers', 'verified_followers')),
+      verified: nameRoot ? !!nameRoot.querySelector('[data-testid="icon-verified"]') : null,
       following: metric(linkText('following')),
       viewer_following: header.ok ? header.following : null,
       url: xUrl(location.href),
