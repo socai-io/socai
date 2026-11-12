@@ -69,6 +69,7 @@ pub fn instagram_agent_instructions(extra: &str) -> String {
 fn instagram_tools(page: Arc<PageSession>) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(SearchTool { page: page.clone() }),
+        Arc::new(TagTool { page: page.clone() }),
         Arc::new(AccountsTool { page: page.clone() }),
         Arc::new(ProfileTool { page: page.clone() }),
         Arc::new(GetPostsTool { page: page.clone() }),
@@ -237,6 +238,39 @@ pub static INSTAGRAM_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
             run: run_search,
         },
         SiteCommand {
+            name: "tag",
+            tool_name: "tag",
+            about: "Open an Instagram hashtag page and print its post and Reel grid cards as JSON, without opening the posts.",
+            args: &[
+                CommandArg {
+                    key: "tag",
+                    long: None,
+                    value_name: "HASHTAG",
+                    help: "Hashtag, with or without the leading #.",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "num",
+                    long: Some("num"),
+                    value_name: "N",
+                    help: "Number of grid cards to collect by scrolling. Defaults to 10.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "wait_seconds",
+                    long: Some("wait-seconds"),
+                    value_name: "SECONDS",
+                    help: "Maximum wait for the hashtag page to hydrate. Defaults to 30.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_tag,
+        },
+        SiteCommand {
             name: "search_accounts",
             tool_name: "search_accounts",
             about: "Find Instagram accounts from the homepage search dropdown, in the order shown.",
@@ -401,6 +435,15 @@ fn run_search(
     progress: Option<ToolProgressSender>,
 ) -> BoxFuture<Value> {
     run_named(page, args, debug_snapshot, progress, "search", "search")
+}
+
+fn run_tag(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
+    run_named(page, args, debug_snapshot, progress, "tag", "tag")
 }
 
 fn run_accounts(
@@ -661,6 +704,102 @@ impl Tool for SearchTool {
             payload["ok"] = json!(false);
         }
         Ok(json_result(&payload))
+    }
+}
+
+/// A hashtag without the leading `#`: letters, digits, and underscores only.
+fn normalize_hashtag(value: &str) -> anyhow::Result<String> {
+    let tag = value.trim().trim_start_matches('#').trim();
+    if tag.is_empty() {
+        anyhow::bail!("tag is required");
+    }
+    if tag.chars().count() > 100 {
+        anyhow::bail!("tag must contain at most 100 characters");
+    }
+    if !tag.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+        anyhow::bail!("tag may only contain letters, digits, and underscores");
+    }
+    Ok(tag.to_string())
+}
+
+struct TagTool {
+    page: Arc<PageSession>,
+}
+
+#[async_trait]
+impl Tool for TagTool {
+    fn name(&self) -> &str {
+        "tag"
+    }
+
+    fn description(&self) -> &str {
+        "Open the Instagram hashtag page for `tag` (with or without `#`) and return its post and Reel grid cards without opening them. Cards have the same shape as `search` preview cards. Use get_posts on a card URL for caption, likes, and comments."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "tag": { "type": "string", "maxLength": 101 },
+                "num": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 },
+                "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
+            },
+            "required": ["tag"]
+        })
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let tag = normalize_hashtag(&required_string(&input, "tag")?)?;
+        let num = get_i64(&input, "num", DEFAULT_RESULT_COUNT).clamp(1, MAX_TOOL_ITEMS);
+        let wait_seconds =
+            get_f64(&input, "wait_seconds", DEFAULT_WAIT_SECONDS).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
+        let target = format!(
+            "https://www.instagram.com/explore/tags/{}/",
+            percent_encode_query(&tag)
+        );
+        navigate_https(&self.page, &target).await?;
+        let tag_args = json!({ "tag": tag });
+        let state =
+            wait_for_browser_tool(&self.page, SITE_ID, "tagState", Some(&tag_args), wait_seconds)
+                .await?;
+        if let Some(reason) = gate_reason(&state) {
+            return Ok(json_result(&failure_payload(
+                reason,
+                json!({ "tag": tag, "state": state, "count": 0, "results": [] }),
+            )));
+        }
+        let empty = state.get("empty").and_then(Value::as_bool).unwrap_or(false);
+        if !state.get("ok").and_then(Value::as_bool).unwrap_or(false) && !empty {
+            return Ok(json_result(&failure_payload(
+                state
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tag_results_unavailable"),
+                json!({ "tag": tag, "state": state, "count": 0, "results": [] }),
+            )));
+        }
+        let results = if empty {
+            Value::Array(Vec::new())
+        } else {
+            invoke_browser_tool(
+                &self.page,
+                ctx,
+                SITE_ID,
+                "searchResults",
+                Some(&json!({ "limit": num, "posts_only": true })),
+                true,
+            )
+            .await?
+        };
+        let count = results.as_array().map(Vec::len).unwrap_or(0);
+        Ok(json_result(&json!({
+            "ok": true,
+            "tag": tag,
+            "url": current_url(&self.page).await.unwrap_or_default(),
+            "count": count,
+            "results": results,
+            "state": state,
+        })))
     }
 }
 

@@ -748,3 +748,99 @@ test('profile detail exposes redirected login and challenge gates at the top lev
   assert.equal(detail.login_required, true);
   assert.equal(detail.ok, false);
 });
+
+// Synthetic hashtag grid: two post links, one Reel link and one profile
+// link. Fake shortcodes, no captured markup.
+function hashtagFixture({ href, pathname, withLinks = true, mainText = '' }) {
+  const node = (props = {}) => ({
+    innerText: '',
+    textContent: '',
+    getAttribute: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    closest: () => null,
+    ...props,
+  });
+  const card = (path, extra = {}) => {
+    const link = node({ href: `https://www.instagram.com${path}`, ...extra });
+    link.getAttribute = (name) => name === 'href' ? path : null;
+    return link;
+  };
+  const reelVideo = node({ tagName: 'VIDEO', currentSrc: '', src: '', poster: '' });
+  const links = withLinks ? [
+    card('/p/FixturePostA/'),
+    card('/reel/FixtureReelB/', { querySelector: (selector) => selector === 'video' ? reelVideo : null }),
+    card('/fixture_account/'),
+    card('/p/FixturePostC/'),
+  ] : [];
+  const main = node({
+    innerText: mainText,
+    textContent: mainText,
+    querySelectorAll: (selector) => selector === 'a[href]' ? links : [],
+  });
+  const document = {
+    body: { innerText: 'Hydrated Instagram page' },
+    readyState: 'complete',
+    title: 'Hashtag fixture',
+    querySelector: (selector) => selector === 'main' ? main : null,
+    querySelectorAll: () => [],
+  };
+  const window = { getComputedStyle: () => ({ visibility: 'visible', display: 'block' }) };
+  const context = { URL, document, location: { href, pathname }, window, Date };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'page_scripts.js'), 'utf8'), context);
+  return window.SocaiInstagramPageScripts;
+}
+
+test('tag state accepts the hashtag route and counts only post and Reel cards', () => {
+  const scripts = hashtagFixture({
+    href: 'https://www.instagram.com/explore/tags/fixturetag/',
+    pathname: '/explore/tags/fixturetag/',
+  });
+  const first = scripts.tagState({ tag: '#FixtureTag' });
+  assert.equal(first.route, 'tag');
+  assert.equal(first.tag, 'fixturetag');
+  assert.equal(first.tag_matches, true);
+  assert.equal(first.result_count, 3);
+  // Results must stay stable before the grid counts as hydrated.
+  assert.equal(first.status, 'hydrating');
+  assert.equal(first.ok, false);
+
+  const cards = scripts.searchResults({ limit: 10, posts_only: true });
+  assert.deepEqual([...cards].map((item) => [item.kind, item.id]), [
+    ['post', 'FixturePostA'],
+    ['reel', 'FixtureReelB'],
+    ['post', 'FixturePostC'],
+  ]);
+  assert.deepEqual([...cards].map((item) => item.position), [1, 2, 3]);
+  // Without the filter the profile link is still a search candidate.
+  assert.equal(scripts.searchResults({ limit: 10 }).length, 4);
+});
+
+test('tag state follows the keyword search a hashtag redirects to', () => {
+  const redirected = hashtagFixture({
+    href: 'https://www.instagram.com/explore/search/keyword/?q=%23fixturetag',
+    pathname: '/explore/search/keyword/',
+  }).tagState({ tag: 'fixturetag' });
+  assert.equal(redirected.route, 'keyword_search');
+  assert.equal(redirected.tag, 'fixturetag');
+  assert.equal(redirected.tag_matches, true);
+
+  const other = hashtagFixture({
+    href: 'https://www.instagram.com/explore/search/keyword/?q=%23othertag',
+    pathname: '/explore/search/keyword/',
+  }).tagState({ tag: 'fixturetag' });
+  assert.equal(other.status, 'tag_mismatch');
+  assert.equal(other.ok, false);
+});
+
+test('tag state reports an explicit empty hashtag page', () => {
+  const state = hashtagFixture({
+    href: 'https://www.instagram.com/explore/tags/fixturetag/',
+    pathname: '/explore/tags/fixturetag/',
+    withLinks: false,
+    mainText: 'No posts yet',
+  }).tagState({ tag: 'fixturetag' });
+  assert.equal(state.empty, true);
+  assert.equal(state.status, 'empty');
+  assert.equal(state.ok, true);
+});

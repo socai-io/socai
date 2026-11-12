@@ -20,6 +20,16 @@
       "args": {},
       "returns": { "type": "object", "description": "Current Instagram page state." }
     },
+    "tagState": {
+      "description": "After navigating to https://www.instagram.com/explore/tags/<tag>/, verify the hashtag route (or the keyword search Instagram redirects it to) and distinguish settled post results, an explicit empty state, and login or challenge gates.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiInstagramPageScripts",
+      "callable": "tagState",
+      "args": {
+        "tag": { "type": "string", "required": false, "description": "Expected hashtag, with or without #." }
+      },
+      "returns": { "type": "object", "description": "Hashtag route, tag, gate, and post result state." }
+    },
     "searchState": {
       "description": "After navigating to https://www.instagram.com/explore/search/keyword/?q=<encoded-query>, verify the active keyword search surface and distinguish results, an explicit empty state, and login or challenge gates. If that route is unavailable, navigate to the homepage, use openSearch/setSearchQuery, then verify again.",
       "path": "page_scripts.js",
@@ -92,7 +102,8 @@
       "callable": "searchResults",
       "args": {
         "limit": { "type": "integer", "required": false, "description": "Maximum results to return." },
-        "viewport_only": { "type": "boolean", "required": false, "description": "Only include results intersecting the viewport." }
+        "viewport_only": { "type": "boolean", "required": false, "description": "Only include results intersecting the viewport." },
+        "posts_only": { "type": "boolean", "required": false, "description": "Only include post and reel results." }
       },
       "returns": { "type": "array", "description": "Visible Instagram search candidates." }
     },
