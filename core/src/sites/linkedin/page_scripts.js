@@ -5,7 +5,14 @@
   const COMPANY_PATH = /^\/(?:company|showcase)\/([^/?#]+)/i;
   const COMPANY_LANDING_PATH = /^\/(?:company|showcase)\/[^/?#]+\/?$/i;
   const POST_PATH = /\/(?:posts\/|feed\/update\/urn:li:)/i;
+  // Social counts are plain text in the viewer's UI language ("6 reactions", "6 reacciones", ...).
+  const REACTION_COUNT_PATTERN = /(?:^|[^\p{L}\d])\d[\d,.\u00a0\u202f]*\s*(?:reactions?|reacciones|reacción|reaccions|reacció|reações|reação|Reaktionen|Reaktion|réactions?|reazioni|reazione|个反应|次反应)(?![\p{L}])/iu;
+  const COMMENT_COUNT_PATTERN = /(?:^|[^\p{L}\d])\d[\d,.\u00a0\u202f]*\s*(?:comments?|comentarios?|comentaris?|comentários?|Kommentare?|commentaires?|commenti|commento|opmerkingen|条评论)(?![\p{L}])/iu;
   const SEARCH_PATH = /^\/search\/results\/(people|content|companies|all)\/?/i;
+  // A member's recent activity or a company's posts tab.
+  const ACTIVITY_PATH = /^\/(?:(in)\/([^/?#]+)\/recent-activity(?:\/[a-z-]+)?|(company|showcase)\/([^/?#]+)\/posts)\/?$/i;
+  // Relative post age in the viewer's language: "3d", "2 sem", "1 mes", "5 h", "1 a"...
+  const RELATIVE_AGE_PATTERN = /^\d+\s*(?:m|mins?|minutes?|minutos?|h|hours?|horas?|hores|d|days?|días?|dias?|dies|w|weeks?|sem|semanas?|setmanes|mo|months?|mes(?:es)?|mesos|mês|yr|years?|a|años?|anys|anos?|j|jours?|semaines?|mois|ans?|Std\.?|Tage?|Wochen?|Monate?|Jahre?|g|giorni|settimane|mesi|anni|ore)\.?(?:\s*•.*)?$/iu;
 
   function cleanText(value, maxLength) {
     const raw = typeof value === 'string'
@@ -96,6 +103,51 @@
       if (pattern.test(value)) return value;
     }
     return '';
+  }
+
+  // "1,234 reactions", "1.234 reacciones", "12 comentarios" -> number. Group
+  // separators are dropped only before exactly three digits. Abbreviated
+  // counts ("1.2K") are scaled. null when there is no count.
+  function socialCount(value) {
+    const text = cleanText(value || '', 200);
+    const match = text.match(/(\d[\d,.\u00a0\u202f ]*)\s*([KM])?(?![\p{L}\d])/iu) || text.match(/(\d[\d,.\u00a0\u202f ]*)/u);
+    if (!match) return null;
+    const raw = match[1].trim();
+    const unit = (match[2] || '').toUpperCase();
+    let number;
+    if (unit) {
+      number = Number(raw.replace(',', '.')) * (unit === 'K' ? 1e3 : 1e6);
+    } else {
+      number = Number(raw.replace(/[,.\u00a0\u202f ](?=\d{3}(?:\D|$))/g, '').replace(/[^\d]/g, ''));
+    }
+    return Number.isFinite(number) ? Math.round(number) : null;
+  }
+
+  // Reaction and comment counts on a post card, from the classic count nodes,
+  // or from localized count text in links, buttons, or their aria-labels.
+  function cardSocialCounts(card) {
+    const labelled = (pattern) => {
+      for (const node of card.querySelectorAll('a[href], button, [role="button"], [aria-label]')) {
+        const label = node.getAttribute && node.getAttribute('aria-label') || '';
+        if (pattern.test(label)) return label;
+        const value = cleanText(node, 200);
+        if (pattern.test(value)) return value;
+      }
+      return '';
+    };
+    const reactionsNode = firstNode(card, [
+      '[data-id="social-actions__reactions"]',
+      '.social-details-social-counts__reactions-count',
+    ]);
+    const commentsNode = firstNode(card, [
+      '[data-id="social-actions__comments"]',
+      '.social-details-social-counts__comments',
+    ]);
+    const reactions = reactionsNode && (reactionsNode.getAttribute('data-num-reactions') || cleanText(reactionsNode, 200)) ||
+      labelled(REACTION_COUNT_PATTERN);
+    const comments = commentsNode && (commentsNode.getAttribute('data-num-comments') || cleanText(commentsNode, 200)) ||
+      labelled(COMMENT_COUNT_PATTERN);
+    return { reactions: socialCount(reactions), comments: socialCount(comments) };
   }
 
   function linkedInUrl(raw) {
@@ -295,6 +347,36 @@
     const reactId = activityIdFromReact(root);
     if (reactId) ids.add(reactId);
     return ids.size === 1 ? Array.from(ids)[0] : '';
+  }
+
+  // Search cards rendered by LinkedIn's newer server-driven UI carry no activity URN in the DOM;
+  // the post's share or ugcPost id is only present in the commentary's componentkey.
+  function contentUrnFromComponentKey(root) {
+    if (!root) return null;
+    const found = new Map();
+    const nodes = [root, ...Array.from(root.querySelectorAll('[componentkey*="translatable-commentary-"]'))];
+    for (const node of nodes) {
+      const key = node && node.getAttribute && node.getAttribute('componentkey') || '';
+      for (const match of key.matchAll(/\b(shareId|ugcPostId|userGeneratedContentId)=(\d+)/g)) {
+        const type = match[1] === 'shareId' ? 'share' : 'ugcPost';
+        found.set(`${type}:${match[2]}`, { type, id: match[2] });
+      }
+    }
+    return found.size === 1 ? Array.from(found.values())[0] : null;
+  }
+
+  // Document ("carousel") posts render a page viewer; the container key and one page card per
+  // page are language-independent. Returns the page count, or null when the post has no document.
+  function documentPageCount(root) {
+    if (!root || !root.querySelector) return null;
+    const container = root.querySelector('[componentkey^="document-container-"]');
+    if (!container) return null;
+    const pages = container.querySelectorAll('[data-page-card="true"]').length;
+    return pages > 0 ? pages : null;
+  }
+
+  function contentUrnUrl(urn) {
+    return urn ? `https://www.linkedin.com/feed/update/urn:li:${urn.type}:${urn.id}/` : '';
   }
 
   function activityUrl(id) {
@@ -531,15 +613,19 @@
     const nested = node.parentElement && node.parentElement.closest('[role="listitem"]');
     if (nested) return false;
     if (resultType === 'content') {
+      // The "Feed post" heading is localized ("Publicación en el feed", ...). The full-update view
+      // marker and the commentary's share/ugcPost key are not, so any of them identifies a post card.
       const heading = firstText(node, ['h2'], 100);
-      return !!firstNode(node, ['[data-testid="expandable-text-box"]']) && /^Feed post$/i.test(heading);
+      const isFeedPost = /^Feed post$/i.test(heading) ||
+        !!firstNode(node, ['[data-view-name="feed-full-update"]']) || !!contentUrnFromComponentKey(node);
+      return !!firstNode(node, ['[data-testid="expandable-text-box"]']) && isFeedPost;
     }
     return resultLinks(node, resultType).length > 0;
   }
 
   function hasResultIdentity(card, resultType) {
     return resultLinks(card, resultType).length > 0 ||
-      (resultType === 'content' && !!activityId('', card));
+      (resultType === 'content' && (!!activityId('', card) || !!contentUrnFromComponentKey(card)));
   }
 
   function searchResultNodes(resultType) {
@@ -607,16 +693,21 @@
       const path = url && new URL(url).pathname || '';
       const postId = expectedType === 'content' || expectedType === 'all' ? activityId(url, card) : '';
       let kind = PROFILE_PATH.test(path) ? 'profile' : COMPANY_PATH.test(path) ? 'company' : 'post';
+      const contentUrn = !postId && (expectedType === 'content' || expectedType === 'all') ?
+        contentUrnFromComponentKey(card) : null;
       if (postId) {
         kind = 'post';
         url = activityUrl(postId);
+      } else if (contentUrn) {
+        kind = 'post';
+        url = contentUrnUrl(contentUrn);
       }
       if (!url) continue;
       if (expectedType === 'people' && kind !== 'profile') continue;
       if (expectedType === 'content' && kind !== 'post') continue;
       if (expectedType === 'companies' && kind !== 'company') continue;
       const id = kind === 'profile' ? profileIdFromUrl(url) :
-        kind === 'company' ? companyIdFromUrl(url) : postId || activityId(url, card);
+        kind === 'company' ? companyIdFromUrl(url) : postId || (contentUrn && contentUrn.id) || activityId(url, card);
       const key = id ? `${kind}:${id}` : url;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -664,6 +755,9 @@
       const imageUrl = kind === 'profile' ? profileImageUrl(card) :
         kind === 'company' ? companyLogoUrl(card) : '';
       const media = kind === 'post' ? postMedia(card) : [];
+      const social = kind === 'post' ? cardSocialCounts(card) : { reactions: null, comments: null };
+      const authorLink = kind === 'post' ? firstNode(card, ['a[href*="/in/"]', 'a[href*="/company/"]', 'a[href*="/showcase/"]']) : null;
+      const authorUrl = linkedInUrl(authorLink && (authorLink.href || authorLink.getAttribute('href')) || '');
       output.push({
         kind,
         id,
@@ -673,6 +767,11 @@
         snippet,
         image_url: imageUrl,
         media,
+        document_pages: kind === 'post' ? documentPageCount(card) : null,
+        reactions: social.reactions,
+        comments: social.comments,
+        author_id: authorUrl ? profileIdFromUrl(authorUrl) || companyIdFromUrl(authorUrl) : '',
+        author_url: authorUrl,
         location: locationText,
         connection_degree: kind === 'profile' ? connectionDegree.replace(/^•\s*/, '') : '',
         followers,
@@ -711,6 +810,15 @@
     const needsLogin = loginRoute();
     const routeMatches = !!match && (expectedType === 'all' || actualType === expectedType);
     const queryMatches = !expectedQuery || normalizedQuery(actualQuery) === normalizedQuery(expectedQuery);
+    // Content filters ride in the URL as quoted values (sortBy="date_posted").
+    const filterValue = (key) => (url.searchParams.get(key) || '').replace(/["\[\]]/g, '').split(',')[0].trim();
+    const expectedFilters = input.filters && typeof input.filters === 'object' ? input.filters : {};
+    const actualFilters = {};
+    for (const key of ['sortBy', 'datePosted', 'contentType']) {
+      if (filterValue(key)) actualFilters[key] = filterValue(key);
+    }
+    const filtersMatch = Object.keys(expectedFilters).every((key) =>
+      !expectedFilters[key] || filterValue(key) === String(expectedFilters[key]));
     const hydrated = document.readyState !== 'loading' && (results.length > 0 || empty || challenge || limited || needsLogin);
     let error = '';
     if (challenge) error = 'challenge_required';
@@ -719,6 +827,7 @@
     else if (!match) error = 'wrong_search_route';
     else if (!routeMatches) error = 'result_type_mismatch';
     else if (!queryMatches) error = 'query_mismatch';
+    else if (!filtersMatch) error = 'filter_mismatch';
     else if (!hydrated) error = 'not_hydrated';
     return {
       ok: !error,
@@ -729,7 +838,9 @@
       expected_result_type: expectedType,
       actual_query: actualQuery,
       expected_query: expectedQuery,
-      valid_transition: !!match && routeMatches && queryMatches,
+      filters: actualFilters,
+      filters_match: filtersMatch,
+      valid_transition: !!match && routeMatches && queryMatches && filtersMatch,
       hydrated,
       empty,
       result_count: results.length,
@@ -739,24 +850,214 @@
     };
   }
 
+  function scrollableAncestor(node) {
+    for (let el = node; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+      if (!el.getBoundingClientRect) continue;
+      const style = window.getComputedStyle(el);
+      const overflowY = style.overflowY || style.overflow || '';
+      if (el.scrollHeight > el.clientHeight + 24 && /(auto|scroll|overlay)/.test(overflowY)) return el;
+    }
+    return null;
+  }
+
+  const MORE_RESULTS_LABEL = /^(?:show|see|load) more(?: results)?$|^(?:mostrar|ver|cargar) más(?: resultados)?$|^(?:mostra|veure|carrega) més(?: resultats)?$|^(?:mostrar|ver|carregar) mais(?: resultados)?$|^(?:afficher|voir) plus(?: de résultats)?$|^(?:mehr anzeigen|weitere ergebnisse(?: anzeigen)?)$|^(?:mostra|vedi) altri(?: risultati)?$|^显示更多(?:结果)?$/i;
+
+  function moreResultsButton() {
+    const main = document.querySelector('main') || document.body;
+    return Array.from(main.querySelectorAll('button')).find((button) =>
+      visible(button) && !button.disabled && MORE_RESULTS_LABEL.test(cleanText(button, 80))) || null;
+  }
+
+  // Newer search pages scroll an inner container rather than the window, so
+  // window.scrollBy alone never loads more cards. Scroll the container that
+  // holds the results (and the window), bring the last card into view, and
+  // press a visible "Show more results" button when the list ends in one.
   async function scrollResults(arg) {
-    if (!SEARCH_PATH.test(location.pathname)) {
+    const onActivity = ACTIVITY_PATH.test(location.pathname);
+    if (!SEARCH_PATH.test(location.pathname) && !onActivity) {
       return { ok: false, error: 'wrong_search_route', url: location.href };
     }
     const resultType = searchRouteType();
-    const before = { scroll_y: window.scrollY, result_count: searchResultNodes(resultType).length };
+    const listNodes = () => onActivity ? activityPostNodes() : searchResultNodes(resultType);
+    const nodes = listNodes();
+    const last = nodes[nodes.length - 1] || null;
+    const container = scrollableAncestor(last || document.querySelector('main'));
+    const before = {
+      scroll_y: window.scrollY,
+      container_top: container ? container.scrollTop : null,
+      result_count: nodes.length,
+    };
     const input = arg || {};
-    if (input.to_top) window.scrollTo({ top: 0, behavior: 'auto' });
-    else {
-      const step = Math.max(320, Math.min(900, Math.floor(window.innerHeight * 0.8)));
-      window.scrollBy({ top: input.nudge_up ? -Math.floor(step / 2) : step, behavior: 'auto' });
+    const viewport = container ? container.clientHeight : window.innerHeight;
+    const step = Math.max(320, Math.min(900, Math.floor(viewport * 0.8)));
+    let clickedMore = false;
+    if (input.to_top) {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      if (container) container.scrollTop = 0;
+    } else if (input.nudge_up) {
+      window.scrollBy({ top: -Math.floor(step / 2), behavior: 'auto' });
+      if (container) container.scrollBy({ top: -Math.floor(step / 2), behavior: 'auto' });
+    } else {
+      const more = moreResultsButton();
+      if (more) {
+        await browserAction(() => more.click());
+        clickedMore = true;
+      } else {
+        if (last && last.scrollIntoView) last.scrollIntoView({ block: 'end', behavior: 'auto' });
+        window.scrollBy({ top: step, behavior: 'auto' });
+        if (container) container.scrollBy({ top: step, behavior: 'auto' });
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 350));
+    const atEnd = !clickedMore && !moreResultsButton() && (container ?
+      container.scrollTop + container.clientHeight >= container.scrollHeight - 8 :
+      window.scrollY + window.innerHeight >= (document.documentElement.scrollHeight || 0) - 8);
     return {
       ok: true,
       url: location.href,
       before,
-      after: { scroll_y: window.scrollY, result_count: searchResultNodes(resultType).length },
+      after: {
+        scroll_y: window.scrollY,
+        container_top: container ? container.scrollTop : null,
+        result_count: listNodes().length,
+      },
+      scroll_container: !!container,
+      clicked_more: clickedMore,
+      at_end: atEnd,
+    };
+  }
+
+  function activityRoute() {
+    const match = location.pathname.match(ACTIVITY_PATH);
+    if (!match) return null;
+    return match[1] ? { kind: 'profile', id: decodeURIComponent(match[2]) } :
+      { kind: 'company', id: decodeURIComponent(match[4]) };
+  }
+
+  function activityPostIdentity(card) {
+    const postId = activityIdFromRoot(card) || activityId('', card);
+    if (postId) return { id: postId, url: activityUrl(postId) };
+    const urn = contentUrnFromComponentKey(card);
+    return urn ? { id: urn.id, url: contentUrnUrl(urn) } : null;
+  }
+
+  function activityPostNodes() {
+    if (!ACTIVITY_PATH.test(location.pathname)) return [];
+    const selectors = [
+      'main [data-urn^="urn:li:activity:"]',
+      'main [data-id^="urn:li:activity:"]',
+      'main [data-view-name="feed-full-update"]',
+      'main [role="listitem"]',
+      'main .feed-shared-update-v2',
+    ];
+    const nodes = [];
+    const seen = new Set();
+    for (const selector of selectors) {
+      for (const node of document.querySelectorAll(selector)) {
+        const card = node.closest('[data-urn^="urn:li:activity:"], [data-id^="urn:li:activity:"], [role="listitem"]') || node;
+        if (seen.has(card) || card.closest('header, nav, aside')) continue;
+        if (card.parentElement && card.parentElement.closest('[data-urn^="urn:li:activity:"], [data-id^="urn:li:activity:"], [role="listitem"]')) continue;
+        const hasBody = !!firstNode(card, [
+          '[data-testid="expandable-text-box"]',
+          '.update-components-text',
+          '.feed-shared-update-v2__description',
+          '[componentkey^="document-container-"]',
+          'video',
+          'img[src]',
+        ]);
+        if (!hasBody || !activityPostIdentity(card)) continue;
+        seen.add(card);
+        nodes.push(card);
+      }
+    }
+    return nodes;
+  }
+
+  const REPOST_PATTERN = /\b(?:reposted|reposted this|ha compartido|ha republicado|ha recompartido|ha compartit|ha republicat|a republié|hat repostet|hat geteilt|ha ripubblicato|repostou|republicou|转发了)\b/i;
+
+  function activityPosts(arg) {
+    const input = arg || {};
+    const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
+    const route = activityRoute();
+    const output = [];
+    const seen = new Set();
+    for (const card of activityPostNodes()) {
+      const identity = activityPostIdentity(card);
+      if (!identity || seen.has(identity.id)) continue;
+      seen.add(identity.id);
+      const authorLink = firstNode(card, [
+        'a[data-tracking-control-name*="feed-actor-name"]',
+        '.update-components-actor__name a',
+        '.update-components-actor__meta-link',
+        'a[href*="/in/"]',
+        'a[href*="/company/"]',
+      ]);
+      const authorUrl = linkedInUrl(authorLink && (authorLink.href || authorLink.getAttribute('href')) || '');
+      const authorPath = authorUrl && new URL(authorUrl).pathname || '';
+      const authorId = profileIdFromUrl(authorUrl) || companyIdFromUrl(authorUrl);
+      const lines = cleanText(card, 3000).split('\n').map((line) => line.trim()).filter(Boolean);
+      const published = relativeTimeNear(authorLink, card) ||
+        firstTextMatching(card, 'time, p, span', RELATIVE_AGE_PATTERN, 200);
+      const social = cardSocialCounts(card);
+      const media = postMedia(card);
+      output.push({
+        kind: 'post',
+        id: identity.id,
+        url: identity.url,
+        author: {
+          name: authorNameFromLink(authorLink) || '',
+          id: authorId,
+          url: authorUrl,
+          kind: PROFILE_PATH.test(authorPath) ? 'profile' : COMPANY_PATH.test(authorPath) ? 'company' : '',
+        },
+        is_repost: lines.slice(0, 3).some((line) => REPOST_PATTERN.test(line)) ||
+          !!(route && authorId && authorId.toLowerCase() !== route.id.toLowerCase()),
+        text: firstText(card, [
+          '[data-testid="expandable-text-box"]',
+          '.update-components-text',
+          '.feed-shared-update-v2__description',
+        ], 20000),
+        published_at: published,
+        reactions: social.reactions,
+        comments: social.comments,
+        document_pages: documentPageCount(card),
+        has_media: media.length > 0,
+        media,
+        position: output.length,
+      });
+      if (output.length >= limit) break;
+    }
+    return output;
+  }
+
+  function activityState() {
+    const route = activityRoute();
+    const posts = route ? activityPostNodes().length : 0;
+    const mainText = cleanText(document.querySelector('main') || document.body, 10000);
+    const empty = !!route && posts === 0 &&
+      /hasn['’]t posted|no recent (?:activity|posts)|nothing to see|no ha publicado|no hay (?:actividad|publicaciones)|aún no ha publicado|n['’]a rien publié|noch nichts gepostet|non ha ancora pubblicato|ainda não publicou/i.test(mainText);
+    const challenge = challengeRequired();
+    const limited = rateLimited();
+    const needsLogin = loginRoute();
+    const hydrated = document.readyState !== 'loading' && (posts > 0 || empty || challenge || limited || needsLogin);
+    let error = '';
+    if (challenge) error = 'challenge_required';
+    else if (limited) error = 'rate_limited';
+    else if (needsLogin) error = 'login_required';
+    else if (!route) error = 'wrong_activity_route';
+    else if (!hydrated) error = 'not_hydrated';
+    return {
+      ok: !error,
+      error,
+      url: location.href,
+      owner_kind: route ? route.kind : '',
+      owner_id: route ? route.id : '',
+      hydrated,
+      empty,
+      post_count: posts,
+      login_required: needsLogin,
+      challenge_required: challenge,
+      rate_limited: limited,
     };
   }
 
@@ -1201,8 +1502,8 @@
       '[data-id="social-actions__comments"]',
       '.social-details-social-counts__comments',
     ]);
-    const semanticReactions = firstTextMatching(root, 'a[href], button, [role="button"]', /\b\d[\d,.]*\s+reactions?\b/i, 500);
-    const semanticComments = firstTextMatching(root, 'a[href], button, [role="button"]', /\b\d[\d,.]*\s+comments?\b/i, 500);
+    const semanticReactions = firstTextMatching(root, 'a[href], button, [role="button"]', REACTION_COUNT_PATTERN, 500);
+    const semanticComments = firstTextMatching(root, 'a[href], button, [role="button"]', COMMENT_COUNT_PATTERN, 500);
     const media = postMedia(root);
     const url = canonicalPageUrl();
     const postId = activityId(url || location.href, root);
@@ -1226,6 +1527,7 @@
       text: body,
       has_media: media.length > 0,
       media,
+      document_pages: documentPageCount(root),
       published_at: published,
       engagement: {
         reactions: reactionsNode && (reactionsNode.getAttribute('data-num-reactions') || cleanText(reactionsNode, 500)) || semanticReactions,
@@ -1493,6 +1795,8 @@
     searchState,
     searchResults,
     scrollResults,
+    activityState,
+    activityPosts,
     profileDetail,
     profileHistory,
     companyDetail,
