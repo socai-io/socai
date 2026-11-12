@@ -821,13 +821,13 @@ impl Tool for HostTool {
                 "tool": self.definition.name,
                 "input": input,
             }))
-            // Upload parsing/OCR and artifact source reads, claim review and
-            // storage can outlast the ordinary 20s transport deadline. Wait
+            // Upload parsing/OCR, durable context synchronization, claim review
+            // and storage can outlast the ordinary 20s transport deadline. Wait
             // for their bounded result without retrying an unknown mutation.
             .timeout(Duration::from_secs(
                 if matches!(
                     self.definition.name.as_str(),
-                    "read_uploaded_file" | "publish_artifact"
+                    "read_uploaded_file" | "read_conversation_context" | "publish_artifact"
                 ) {
                     110
                 } else {
@@ -966,6 +966,8 @@ pub fn prepare_run(session_dir: &Path, spec: &RunSpec) -> Result<PreparedRun> {
     let digest = format!("{:x}", Sha256::digest(spec.run_id.as_bytes()));
     let run_dir = conversation_dir.join("runs").join(digest);
     let recovering = run_dir.exists();
+    std::fs::create_dir_all(&run_dir).context("failed to create prepared run directory")?;
+    restore_research_board(&conversation, &run_dir)?;
     let mut context_note = conversation.context_note();
     if recovering {
         context_note.push_str(&format!(
@@ -979,6 +981,41 @@ pub fn prepare_run(session_dir: &Path, spec: &RunSpec) -> Result<PreparedRun> {
         context_note,
         conversation_dir,
     })
+}
+
+/// A board belongs to the conversation, even though each turn persists its
+/// own snapshot. Never replace a recovered turn's newer board with history.
+fn restore_research_board(conversation: &Conversation, run_dir: &Path) -> Result<()> {
+    let destination = run_dir.join("research-board.json");
+    if destination.exists() {
+        return Ok(());
+    }
+    let root = std::fs::canonicalize(&conversation.dir)?;
+    for run in conversation.runs.iter().rev() {
+        let source = Path::new(&run.run_dir).join("research-board.json");
+        let source = match std::fs::canonicalize(source) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("failed to locate previous research board"),
+        };
+        anyhow::ensure!(source.starts_with(&root), "Previous board is outside this conversation");
+        anyhow::ensure!(std::fs::metadata(&source)?.len() <= 750000, "Previous research board is too large");
+        let mut board: Value = serde_json::from_slice(&std::fs::read(source)?)
+            .context("failed to restore previous research board")?;
+        anyhow::ensure!(
+            ["platforms", "leads", "relations"].iter().all(|key| board[*key].is_array()),
+            "Invalid previous research board"
+        );
+        // Observed browser actions belong to their original turn, not this one.
+        if let Some(object) = board.as_object_mut() {
+            object.remove("operations");
+        }
+        let temporary = destination.with_extension("json.tmp");
+        std::fs::write(&temporary, serde_json::to_vec_pretty(&board)?)?;
+        std::fs::rename(temporary, destination)?;
+        break;
+    }
+    Ok(())
 }
 
 pub async fn execute_run(
@@ -1706,6 +1743,12 @@ mod tests {
     async fn host_tool_calls_the_bound_loopback_endpoint() {
         for (name, body, expected_image, expected_failure) in [
             (
+                "read_conversation_context",
+                r#"{"ok":true,"result":{"status":"archived"}}"#,
+                false,
+                false,
+            ),
+            (
                 "create_scheduled_task",
                 r#"{"ok":true,"result":{"status":"scheduled"}}"#,
                 false,
@@ -1775,6 +1818,11 @@ mod tests {
                     request.contains("authorization: Bearer test-token-that-is-long-enough-123")
                 );
                 assert!(request.contains(name));
+                if name == "read_conversation_context" {
+                    // The former 20s transport deadline disconnected before
+                    // the backend's durable source-archive barrier finished.
+                    tokio::time::sleep(Duration::from_secs(21)).await;
+                }
                 socket
                 .write_all(
                     format!(
@@ -1879,12 +1927,30 @@ mod tests {
         let merged = load_notes(&resumed.run_dir);
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0]["note_id"], "web:source-1");
-        assert_ne!(
-            prepare_run(&session_dir, &run_spec("another-run"))
-                .expect("prepare another run")
-                .run_dir,
-            resumed.run_dir
-        );
+        let board = json!({"platforms":[], "leads":[{"id":"github:repo", "stage":"following", "name":"Repo", "platform":"github", "signal":"Original", "url":"https://github.com/masakaai/codex-multiple-env"}],
+            "relations":[], "operations":[{"tool":"old-read"}], "summary":"Previous findings"});
+        std::fs::write(first.run_dir.join("research-board.json"), board.to_string()).expect("save board");
+        record_run(&first, "first question", "answer", "completed");
+        let next = prepare_run(&session_dir, &run_spec("another-run")).expect("prepare next turn");
+        assert_ne!(next.run_dir, resumed.run_dir);
+        let inherited: Value = serde_json::from_slice(&std::fs::read(next.run_dir.join("research-board.json")).expect("inherited board")).expect("decode board");
+        assert_eq!(inherited["leads"][0]["stage"], "following");
+        assert_eq!(inherited["summary"], "Previous findings");
+        assert!(inherited.get("operations").is_none());
+        let runtime = tokio::runtime::Runtime::new().expect("create tool runtime");
+        let tool = socai_core::agent::research_board::ResearchBoardTool::default();
+        runtime.block_on(tool.call(json!({"leads":[{"id":"github:repo", "name":"Repo", "platform":"github", "signal":"Updated", "url":"https://github.com/masakaai/codex-multiple-env"}]}), &ToolContext::new("another-run", &next.run_dir))).expect("update inherited lead without stage");
+        let mut newer: Value = serde_json::from_slice(&std::fs::read(next.run_dir.join("research-board.json")).expect("updated board")).expect("decode updated board");
+        assert_eq!(newer["leads"][0]["stage"], "following");
+        assert_eq!(newer["leads"][0]["signal"], "Updated");
+        newer["leads"][0]["stage"] = json!("shortlist");
+        std::fs::write(next.run_dir.join("research-board.json"), newer.to_string()).expect("save newer board");
+        prepare_run(&session_dir, &run_spec("another-run")).expect("recover next turn");
+        let recovered: Value = serde_json::from_slice(&std::fs::read(next.run_dir.join("research-board.json")).expect("recovered board")).expect("decode recovered board");
+        assert_eq!(recovered, newer, "recovery must not roll back newer stages");
+        let other_session = session_dir.join("other-account-session");
+        let isolated = prepare_run(&other_session, &run_spec("another-run")).expect("prepare isolated session");
+        assert!(!isolated.run_dir.join("research-board.json").exists());
 
         std::fs::remove_dir_all(session_dir).expect("remove session directory");
     }
