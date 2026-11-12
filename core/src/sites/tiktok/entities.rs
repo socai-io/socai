@@ -112,6 +112,11 @@ pub struct TikTokVideo {
     pub entity_type: String,
     pub platform: String,
     pub video_id: String,
+    /// `"video"`, or `"photo"` for a `/photo/<id>` carousel.
+    pub kind: String,
+    /// Number of images in a photo carousel; `None` for videos or when the
+    /// page does not expose it.
+    pub image_count: Option<i64>,
     pub url: String,
     pub title: String,
     pub description: String,
@@ -126,7 +131,8 @@ pub struct TikTokVideo {
     pub shares: String,
     pub favorites: String,
     pub views: String,
-    pub duration_seconds: i64,
+    /// `None` for photo carousels, which have no running time.
+    pub duration_seconds: Option<i64>,
     pub cover_url: String,
     pub video: Value,
     pub top_comments: Vec<TikTokComment>,
@@ -177,7 +183,7 @@ pub fn normalize_tiktok_url(raw: &str) -> String {
 }
 
 pub fn extract_video_id(url: &str) -> String {
-    for marker in ["/video/", "/player/v1/"] {
+    for marker in ["/video/", "/photo/", "/player/v1/"] {
         let Some(rest) = url.split(marker).nth(1) else {
             continue;
         };

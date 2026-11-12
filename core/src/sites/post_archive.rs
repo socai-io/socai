@@ -269,7 +269,7 @@ fn preview_video_notes(site_id: &str, tool_name: &str, result: &Value) -> Vec<Pr
             .flatten()
             .filter_map(|item| platform_card_video(site_id, item))
             .collect(),
-        ("tiktok" | "dy", "search") => result
+        ("tiktok" | "dy", "search" | "tag") => result
             .get("cards")
             .and_then(Value::as_array)
             .into_iter()
@@ -788,6 +788,7 @@ fn is_content_tool(tool_name: &str) -> bool {
             | "videoCards"
             | "videoDetail"
             | "search"
+            | "tag"
             | "get_videos"
             | "author_scan"
     )
@@ -1402,7 +1403,7 @@ fn normalize_instagram_detail_media(item: &Value) -> Value {
 
 fn video_platform_records(site_id: &str, tool_name: &str, result: &Value) -> Vec<(String, Value)> {
     match tool_name {
-        "search" => result
+        "search" | "tag" => result
             .get("cards")
             .and_then(Value::as_array)
             .into_iter()

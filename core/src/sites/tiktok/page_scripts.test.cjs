@@ -238,3 +238,104 @@ test('page state counts photo cards', () => {
   const state = loadScripts(searchPage()).pageState();
   assert.equal(state.card_count, 2);
 });
+
+// Hashtag pages wrap each post in a challenge-item container.
+function tagPage(tag = 'exampletag') {
+  const item = (href, desc) => el('div', { 'data-e2e': 'challenge-item' },
+    el('a', { href }, el('img', { src: VIDEO_COVER, alt: desc })),
+    el('div', { 'data-e2e': 'challenge-item-desc' }, desc),
+    el('a', { 'data-e2e': 'challenge-item-username', href: `/@${HANDLE}` }, HANDLE));
+  const body = el('body', {},
+    el('main', {},
+      el('h1', { 'data-e2e': 'challenge-title' }, `#${tag}`),
+      el('div', { 'data-e2e': 'challenge-item-list' },
+        item(`/@${HANDLE}/video/${VIDEO_ID}`, 'A synthetic video'),
+        item(`/@${HANDLE}/photo/${PHOTO_ID}`, 'A synthetic photo carousel'))));
+  return { url: `https://www.tiktok.com/tag/${encodeURIComponent(tag)}`, body, html: el('html', {}, body) };
+}
+
+test('tag state reads the hashtag route and its post grid', () => {
+  const scripts = loadScripts(tagPage('café_tips'));
+  const state = scripts.tagState();
+  assert.equal(state.ok, true);
+  assert.equal(state.state, 'tag');
+  assert.equal(state.tag, 'café_tips');
+  assert.equal(state.title, '#café_tips');
+  assert.equal(state.card_count, 2);
+  assert.equal(state.unavailable, false);
+
+  const cards = scripts.videoCards({ limit: 10 });
+  assert.deepEqual([...cards].map((card) => [card.video_id, card.kind]), [[VIDEO_ID, 'video'], [PHOTO_ID, 'photo']]);
+  assert.equal(cards[0].author_id, HANDLE);
+  // Tag cards show no engagement counts: unknown, not zero.
+  assert.equal(cards[0].views, null);
+  assert.equal(cards[0].likes, null);
+});
+
+test('tag state is not ok before the grid hydrates or off a tag route', () => {
+  const empty = el('body', {}, el('main', {}, el('h2', {}, "Couldn't find this hashtag")));
+  const missing = loadScripts({ url: 'https://www.tiktok.com/tag/nothinghere', body: empty, html: el('html', {}, empty) }).tagState();
+  assert.equal(missing.ok, false);
+  assert.equal(missing.tag, 'nothinghere');
+  assert.equal(missing.unavailable, true);
+
+  const other = loadScripts(searchPage()).tagState();
+  assert.equal(other.ok, false);
+  assert.equal(other.state, 'other');
+});
+
+function detailPage(url, itemStruct) {
+  const body = el('body', {},
+    el('main', {}, el('div', { 'data-e2e': 'browse-video-desc' }, itemStruct.desc)),
+    el('script', { id: '__UNIVERSAL_DATA_FOR_REHYDRATION__', type: 'application/json' }, JSON.stringify({
+      __DEFAULT_SCOPE__: { 'webapp.video-detail': { itemInfo: { itemStruct } } },
+    })));
+  return { url, body, html: el('html', {}, body) };
+}
+
+const AUTHOR = { uniqueId: HANDLE, nickname: 'Example Creator', id: '2000000000000000001' };
+
+test('post detail reads a /photo/ carousel with likes, date and image count', () => {
+  const scripts = loadScripts(detailPage(PHOTO_URL, {
+    id: PHOTO_ID,
+    desc: 'A synthetic photo carousel #example',
+    createTime: 1767225600,
+    author: AUTHOR,
+    stats: { diggCount: 345, commentCount: 6, shareCount: 7, collectCount: 8, playCount: 9000 },
+    imagePost: {
+      cover: { imageURL: { urlList: [PHOTO_COVER] } },
+      images: [1, 2, 3].map(() => ({ imageURL: { urlList: [PHOTO_COVER] } })),
+    },
+  }));
+
+  const state = scripts.videoState();
+  assert.equal(state.ok, true);
+  assert.equal(state.video_id, PHOTO_ID);
+  assert.equal(state.kind, 'photo');
+
+  const detail = scripts.videoDetail();
+  assert.equal(detail.video_id, PHOTO_ID);
+  assert.equal(detail.kind, 'photo');
+  assert.equal(detail.image_count, 3);
+  assert.equal(detail.duration_seconds, null);
+  assert.equal(detail.likes, '345');
+  assert.equal(detail.views, '9000');
+  assert.equal(detail.created_at, '2026-01-01T00:00:00.000Z');
+  assert.equal(detail.author_id, HANDLE);
+  assert.equal(detail.cover_url, PHOTO_COVER);
+  assert.deepEqual([...detail.hashtags], ['example']);
+});
+
+test('post detail keeps videos as kind video with a duration', () => {
+  const detail = loadScripts(detailPage(VIDEO_URL, {
+    id: VIDEO_ID,
+    desc: 'A synthetic video',
+    createTime: 1767225600,
+    author: AUTHOR,
+    stats: { diggCount: 12 },
+    video: { duration: 15, cover: VIDEO_COVER },
+  })).videoDetail();
+  assert.equal(detail.kind, 'video');
+  assert.equal(detail.image_count, null);
+  assert.equal(detail.duration_seconds, 15);
+});

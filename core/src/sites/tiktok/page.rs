@@ -154,6 +154,65 @@ impl<'a> TikTokPageRuntime<'a> {
         }))
     }
 
+    /// Open the `/tag/<name>` page for a hashtag and collect its post cards.
+    pub async fn tag_videos(&self, tag: &str, wait_seconds: f64, num_videos: usize) -> Result<Value> {
+        let tag = normalize_hashtag(tag)?;
+        let target = format!(
+            "https://www.tiktok.com/tag/{}",
+            percent_encode_query(&tag)
+        );
+        let navigation = self.navigate_to(&target).await?;
+        let state = self
+            .wait_for_named_state(
+                "tagState",
+                wait_seconds.max(TRANSITION_TIMEOUT_S),
+                "tag",
+                &tag,
+                &navigation,
+            )
+            .await?;
+        if let Some(reason) = state_failure_reason(&state) {
+            return Ok(json!({
+                "ok": false,
+                "tag": tag,
+                "reason": reason,
+                "state": state,
+                "count": 0,
+                "cards": [],
+            }));
+        }
+        if state.get("unavailable").and_then(Value::as_bool) == Some(true) {
+            return Ok(json!({
+                "ok": false,
+                "tag": tag,
+                "reason": "tag_unavailable",
+                "state": state,
+                "count": 0,
+                "cards": [],
+            }));
+        }
+        if !script_ok(&state) {
+            return Ok(json!({
+                "ok": false,
+                "tag": tag,
+                "reason": "tag_results_unavailable",
+                "state": state,
+                "count": 0,
+                "cards": [],
+            }));
+        }
+        let cards = self
+            .collect_video_cards(num_videos.clamp(1, MAX_COLLECTED_ITEMS))
+            .await?;
+        Ok(json!({
+            "ok": true,
+            "tag": tag,
+            "url": self.current_url().await?,
+            "count": cards.len(),
+            "cards": cards,
+        }))
+    }
+
     pub async fn read_video(
         &self,
         locator: &str,
@@ -446,7 +505,9 @@ impl<'a> TikTokPageRuntime<'a> {
                 .pointer("/video/resolved_url")
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.is_empty());
-            if (has_author && has_media) || Instant::now() >= deadline {
+            // Photo carousels have no playable media to wait for.
+            let is_photo = latest.get("kind").and_then(Value::as_str) == Some("photo");
+            if (has_author && (has_media || is_photo)) || Instant::now() >= deadline {
                 return Ok(latest);
             }
             sleep_ms(250).await;
@@ -950,6 +1011,21 @@ fn percent_encode_query(value: &str) -> String {
         }
     }
     encoded
+}
+
+/// A hashtag without the leading `#`: letters, digits, and underscores only.
+fn normalize_hashtag(value: &str) -> Result<String> {
+    let tag = value.trim().trim_start_matches('#').trim();
+    if tag.is_empty() {
+        anyhow::bail!("tag is required");
+    }
+    if tag.chars().count() > 100 {
+        anyhow::bail!("tag must contain at most 100 characters");
+    }
+    if !tag.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+        anyhow::bail!("tag may only contain letters, digits, and underscores");
+    }
+    Ok(tag.to_string())
 }
 
 fn search_transition_ok(value: &Value, query: &str) -> bool {

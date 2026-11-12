@@ -48,6 +48,7 @@ pub fn tiktok_tools_with_llm_provider(
 ) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(SearchTool { page: page.clone() }) as Arc<dyn Tool>,
+        Arc::new(TagTool { page: page.clone() }),
         Arc::new(GetVideosTool {
             page: page.clone(),
             llm_provider,
@@ -119,9 +120,42 @@ pub static TIKTOK_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
             run: run_search,
         },
         SiteCommand {
+            name: "tag",
+            tool_name: "tag",
+            about: "Open a TikTok hashtag page and print its post cards as JSON.",
+            args: &[
+                CommandArg {
+                    key: "tag",
+                    long: None,
+                    value_name: "HASHTAG",
+                    help: "Hashtag, with or without the leading #.",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "num",
+                    long: Some("num"),
+                    value_name: "N",
+                    help: "Number of post cards to collect by scrolling. Defaults to 10.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "wait_seconds",
+                    long: Some("wait-seconds"),
+                    value_name: "SECONDS",
+                    help: "Maximum wait for the hashtag page transition. Defaults to 30.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_tag,
+        },
+        SiteCommand {
             name: "get-videos",
             tool_name: "get_videos",
-            about: "Read TikTok video details and top comments by id or URL.",
+            about: "Read TikTok post details (videos and /photo/ carousels) and top comments by id or URL.",
             args: &[
                 CommandArg {
                     key: "videos",
@@ -233,6 +267,28 @@ fn run_search(
             site_id: "tiktok",
             command_name: "search",
             tool_name: "search",
+            before: None,
+            after: None,
+            include_run_metadata: false,
+        },
+    )
+}
+
+fn run_tag(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
+    run_registered_command(
+        page,
+        args,
+        debug_snapshot,
+        progress,
+        ToolCommand {
+            site_id: "tiktok",
+            command_name: "tag",
+            tool_name: "tag",
             before: None,
             after: None,
             include_run_metadata: false,
@@ -387,6 +443,47 @@ impl Tool for SearchTool {
     }
 }
 
+pub struct TagTool {
+    page: Arc<PageSession>,
+}
+
+#[async_trait]
+impl Tool for TagTool {
+    fn name(&self) -> &str {
+        "tag"
+    }
+
+    fn description(&self) -> &str {
+        "Open the TikTok hashtag page for `tag` (with or without `#`) and collect its post cards. \
+         Returns top-level `ok`, `tag`, `count`, and `cards` (`url` is also present after a \
+         successful transition); cards have the same shape as `search` cards, including `kind` \
+         (`video` or `photo`)."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "tag": { "type": "string", "maxLength": 101, "description": "Hashtag, with or without the leading #" },
+                "num": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 },
+                "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
+            },
+            "required": ["tag"]
+        })
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let tag = required_string(&input, "tag")?;
+        let num = get_i64(&input, "num", 10).clamp(1, MAX_TOOL_ITEMS) as usize;
+        let wait_seconds = get_f64(&input, "wait_seconds", 30.0).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
+        let result = TikTokPageRuntime::new(&self.page)
+            .tag_videos(&tag, wait_seconds, num)
+            .await?;
+        persist_site_tool_result(ctx, "tiktok", "tag", &result, None);
+        Ok(json_result(&result))
+    }
+}
+
 pub struct GetVideosTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
@@ -399,9 +496,10 @@ impl Tool for GetVideosTool {
     }
 
     fn description(&self) -> &str {
-        "Read one or more TikTok posts by video id or URL. Returns one entry per input under \
-         `videos[]`; successful entries place TikTok-native post data under `entity`, \
-         including `video_id`, `description`, `hashtags`, creator \
+        "Read one or more TikTok posts by video id or URL (`/video/` or `/photo/`). Returns one \
+         entry per input under `videos[]`; successful entries place TikTok-native post data under \
+         `entity`, including `video_id`, `kind` (`video` or `photo`), `image_count` (photo \
+         carousels), `description`, `hashtags`, creator \
          `author_id`/`author_internal_id`, `created_at`, engagement fields, `video`, and \
          `top_comments`. Media can be downloaded and sent to the paid socai ASR service when \
          requested."
@@ -416,7 +514,7 @@ impl Tool for GetVideosTool {
                     "items": { "type": "string", "maxLength": 2048 },
                     "minItems": 1,
                     "maxItems": 100,
-                    "description": "TikTok video ids, canonical URLs, player URLs, or short links."
+                    "description": "TikTok video ids, canonical /video/ or /photo/ URLs, player URLs, or short links."
                 },
                 "num_comments": { "type": "integer", "default": 8, "minimum": 0, "maximum": 100 },
                 "download_media": { "type": "boolean", "default": false },
