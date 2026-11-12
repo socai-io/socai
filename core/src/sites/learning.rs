@@ -499,6 +499,7 @@ fn pagination_scroll_tool(site_id: &str, tool_name: &str) -> Option<&'static str
     match (site_id, tool_name) {
         ("linkedin" | "instagram" | "dy" | "tiktok" | "x", "comments") => Some("scrollComments"),
         ("linkedin" | "instagram" | "x", "searchResults") => Some("scrollResults"),
+        ("linkedin", "activityPosts") => Some("scrollResults"),
         ("x", "searchPeople" | "searchLists" | "searchMedia") => Some("scrollResults"),
         ("instagram" | "x", "profilePosts") => Some("scrollPosts"),
         ("x", "feedPosts" | "notificationItems" | "followBackCandidates") => Some("scrollResults"),

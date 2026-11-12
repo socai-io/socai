@@ -41,6 +41,7 @@ fn linkedin_tools(page: Arc<PageSession>) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(SearchTool { page: page.clone() }),
         Arc::new(ProfileTool { page: page.clone() }),
+        Arc::new(ProfilePostsTool { page: page.clone() }),
         Arc::new(HistoryTool { page: page.clone() }),
         Arc::new(CompanyTool { page: page.clone() }),
         Arc::new(CompanyPeopleTool { page: page.clone() }),
@@ -97,6 +98,30 @@ pub static LINKEDIN_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
                     kind: ArgKind::Int,
                 },
                 CommandArg {
+                    key: "sort",
+                    long: Some("sort"),
+                    value_name: "ORDER",
+                    help: "Content results only: relevance or date (latest first). Defaults to LinkedIn's order.",
+                    required: false,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "date_posted",
+                    long: Some("date-posted"),
+                    value_name: "RANGE",
+                    help: "Content results only: past-24h, past-week, or past-month.",
+                    required: false,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "content_type",
+                    long: Some("content-type"),
+                    value_name: "TYPE",
+                    help: "Content results only: documents (PDF carousels), images, videos, live-videos, collaborative-articles, or jobs.",
+                    required: false,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
                     key: "wait_seconds",
                     long: Some("wait-seconds"),
                     value_name: "SECONDS",
@@ -132,6 +157,39 @@ pub static LINKEDIN_NATIVE_ADAPTER: NativeSiteAdapter = NativeSiteAdapter {
             ],
             slow: SlowWhen::Always,
             run: run_profile,
+        },
+        SiteCommand {
+            name: "profile-posts",
+            tool_name: "profile_posts",
+            about: "List posts from a LinkedIn member's recent activity (or a company's posts tab) with reactions, comments, and age as JSON.",
+            args: &[
+                CommandArg {
+                    key: "profile",
+                    long: None,
+                    value_name: "ID_OR_URL",
+                    help: "Member id or profile URL, or a company page URL.",
+                    required: true,
+                    kind: ArgKind::Str,
+                },
+                CommandArg {
+                    key: "num",
+                    long: Some("num"),
+                    value_name: "N",
+                    help: "Number of posts to collect by scrolling. Defaults to 10.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+                CommandArg {
+                    key: "wait_seconds",
+                    long: Some("wait-seconds"),
+                    value_name: "SECONDS",
+                    help: "Maximum wait for the activity page to hydrate. Defaults to 30.",
+                    required: false,
+                    kind: ArgKind::Int,
+                },
+            ],
+            slow: SlowWhen::Always,
+            run: run_profile_posts,
         },
         SiteCommand {
             name: "history",
@@ -359,6 +417,22 @@ fn run_profile(
     run_named(page, args, debug_snapshot, progress, "profile", "profile")
 }
 
+fn run_profile_posts(
+    page: Arc<PageSession>,
+    args: Value,
+    debug_snapshot: bool,
+    progress: Option<ToolProgressSender>,
+) -> BoxFuture<Value> {
+    run_named(
+        page,
+        args,
+        debug_snapshot,
+        progress,
+        "profile-posts",
+        "profile_posts",
+    )
+}
+
 fn run_history(
     page: Arc<PageSession>,
     args: Value,
@@ -486,7 +560,11 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search LinkedIn people, companies, or content matching `query`."
+        "Search LinkedIn people, companies, or content matching `query`. Content searches accept \
+         `sort` (relevance or date), `date_posted` (past-24h, past-week, past-month), and \
+         `content_type` (documents for PDF carousels, images, videos, live-videos, \
+         collaborative-articles, jobs). Post results carry `reactions` and `comments` as shown \
+         on the card (null when not shown)."
     }
 
     fn input_schema(&self) -> Value {
@@ -496,6 +574,12 @@ impl Tool for SearchTool {
                 "query": { "type": "string", "maxLength": 512 },
                 "result_type": { "type": "string" },
                 "num": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 },
+                "sort": { "type": "string", "enum": ["relevance", "date"] },
+                "date_posted": { "type": "string", "enum": ["past-24h", "past-week", "past-month"] },
+                "content_type": {
+                    "type": "string",
+                    "enum": ["documents", "images", "videos", "live-videos", "collaborative-articles", "jobs"]
+                },
                 "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
             },
             "required": ["query"]
@@ -512,12 +596,21 @@ impl Tool for SearchTool {
         let num = get_i64(&input, "num", DEFAULT_RESULT_COUNT).clamp(1, MAX_TOOL_ITEMS);
         let wait_seconds =
             get_f64(&input, "wait_seconds", DEFAULT_WAIT_SECONDS).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
+        let filters = ContentSearchFilters::from_input(&input)?;
+        if !filters.is_empty() && result_type != "content" {
+            anyhow::bail!("sort, date_posted, and content_type apply to content searches only");
+        }
         let target = format!(
-            "https://www.linkedin.com/search/results/{result_type}/?keywords={}",
-            percent_encode_query(&query)
+            "https://www.linkedin.com/search/results/{result_type}/?keywords={}{}",
+            percent_encode_query(&query),
+            filters.query_string()
         );
         navigate_https(&self.page, &target).await?;
-        let state_args = json!({ "query": query, "result_type": result_type });
+        let state_args = json!({
+            "query": query,
+            "result_type": result_type,
+            "filters": filters.to_json(),
+        });
         let state = wait_for_browser_tool(
             &self.page,
             SITE_ID,
@@ -572,6 +665,7 @@ impl Tool for SearchTool {
             "ok": true,
             "query": query,
             "result_type": result_type,
+            "filters": filters.to_json(),
             "url": current_url(&self.page).await.unwrap_or_default(),
             "count": results.as_array().map(Vec::len).unwrap_or(0),
             "results": results,
@@ -613,6 +707,86 @@ impl Tool for ProfileTool {
         Ok(json_result(
             &read_object_page(&self.page, &url, "profileDetail", wait_seconds).await?,
         ))
+    }
+}
+
+struct ProfilePostsTool {
+    page: Arc<PageSession>,
+}
+
+#[async_trait]
+impl Tool for ProfilePostsTool {
+    fn name(&self) -> &str {
+        "profile_posts"
+    }
+
+    fn description(&self) -> &str {
+        "List posts from a LinkedIn member's recent activity (`/in/<id>/recent-activity/all/`) or a \
+         company's posts tab, in page order. Each post has `id`, `url`, `author`, `is_repost`, \
+         `text`, `published_at` (relative age as shown), `reactions` and `comments` (numbers, \
+         null when not shown), `document_pages`, and `media`."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "profile": { "type": "string" },
+                "num": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 },
+                "wait_seconds": { "type": "number", "default": 30, "minimum": 1, "maximum": 330 }
+            },
+            "required": ["profile"]
+        })
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let locator = required_string(&input, "profile")?;
+        let url = linkedin_activity_url(&locator)?;
+        let num = get_i64(&input, "num", DEFAULT_RESULT_COUNT).clamp(1, MAX_TOOL_ITEMS);
+        let wait_seconds =
+            get_f64(&input, "wait_seconds", DEFAULT_WAIT_SECONDS).clamp(1.0, MAX_TOOL_WAIT_SECONDS);
+        navigate_https(&self.page, &url).await?;
+        let state =
+            wait_for_browser_tool(&self.page, SITE_ID, "activityState", None, wait_seconds).await?;
+        if let Some(reason) = gate_reason(&state) {
+            return Ok(json_result(&failure_payload(
+                reason,
+                json!({ "url": url, "state": state, "count": 0, "posts": [] }),
+            )));
+        }
+        let empty = state.get("empty").and_then(Value::as_bool).unwrap_or(false);
+        if !state.get("ok").and_then(Value::as_bool).unwrap_or(false) && !empty {
+            return Ok(json_result(&failure_payload(
+                state
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("activity_unavailable"),
+                json!({ "url": url, "state": state, "count": 0, "posts": [] }),
+            )));
+        }
+        let posts = if empty {
+            Value::Array(Vec::new())
+        } else {
+            invoke_browser_tool(
+                &self.page,
+                ctx,
+                SITE_ID,
+                "activityPosts",
+                Some(&json!({ "limit": num })),
+                true,
+            )
+            .await?
+        };
+        Ok(json_result(&json!({
+            "ok": true,
+            "owner_kind": state.get("owner_kind").cloned().unwrap_or(Value::Null),
+            "owner_id": state.get("owner_id").cloned().unwrap_or(Value::Null),
+            "url": current_url(&self.page).await.unwrap_or_default(),
+            "count": posts.as_array().map(Vec::len).unwrap_or(0),
+            "posts": posts,
+            "state": state,
+        })))
     }
 }
 
@@ -1517,6 +1691,82 @@ async fn read_linkedin_post(
     }))
 }
 
+/// Content search filters as LinkedIn's URL parameters spell them.
+#[derive(Default)]
+struct ContentSearchFilters {
+    sort_by: Option<&'static str>,
+    date_posted: Option<&'static str>,
+    content_type: Option<&'static str>,
+}
+
+impl ContentSearchFilters {
+    fn from_input(input: &Value) -> anyhow::Result<Self> {
+        let sort_by = get_str(input, "sort")
+            .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "relevance" => Ok("relevance"),
+                "date" | "latest" | "date_posted" | "date-posted" => Ok("date_posted"),
+                other => anyhow::bail!("unsupported LinkedIn sort: {other}"),
+            })
+            .transpose()?;
+        let date_posted = get_str(input, "date_posted")
+            .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "past-24h" | "24h" | "day" => Ok("past-24h"),
+                "past-week" | "week" => Ok("past-week"),
+                "past-month" | "month" => Ok("past-month"),
+                other => anyhow::bail!("unsupported LinkedIn date_posted: {other}"),
+            })
+            .transpose()?;
+        let content_type = get_str(input, "content_type")
+            .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "documents" | "document" => Ok("documents"),
+                "images" | "image" | "photos" => Ok("photos"),
+                "videos" | "video" => Ok("videos"),
+                "live-videos" | "live" => Ok("liveVideos"),
+                "collaborative-articles" | "articles" => Ok("collaborativeArticles"),
+                "jobs" => Ok("jobs"),
+                other => anyhow::bail!("unsupported LinkedIn content_type: {other}"),
+            })
+            .transpose()?;
+        Ok(Self {
+            sort_by,
+            date_posted,
+            content_type,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.sort_by.is_none() && self.date_posted.is_none() && self.content_type.is_none()
+    }
+
+    fn pairs(&self) -> Vec<(&'static str, &'static str)> {
+        [
+            ("sortBy", self.sort_by),
+            ("datePosted", self.date_posted),
+            ("contentType", self.content_type),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key, value)))
+        .collect()
+    }
+
+    /// LinkedIn quotes each value: `&sortBy=%22date_posted%22`.
+    fn query_string(&self) -> String {
+        self.pairs()
+            .into_iter()
+            .map(|(key, value)| format!("&{key}=%22{value}%22"))
+            .collect()
+    }
+
+    fn to_json(&self) -> Value {
+        Value::Object(
+            self.pairs()
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), json!(value)))
+                .collect(),
+        )
+    }
+}
+
 fn normalize_result_type(value: &str) -> anyhow::Result<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "people" => Ok("people"),
@@ -1597,6 +1847,33 @@ fn linkedin_history_url(locator: &str, section: &str) -> anyhow::Result<String> 
     }
     Ok(format!(
         "https://www.linkedin.com/in/{}/details/{section}/",
+        linkedin_slug(locator)?
+    ))
+}
+
+/// The activity list for a member (`/in/<id>/recent-activity/all/`) or a
+/// company (`/company/<id>/posts/`). A bare id is read as a member id.
+fn linkedin_activity_url(locator: &str) -> anyhow::Result<String> {
+    if let Some(url) = linkedin_https_url(locator) {
+        let parsed = reqwest::Url::parse(&url)?;
+        let parts: Vec<&str> = parsed
+            .path_segments()
+            .map(|parts| parts.filter(|part| !part.is_empty()).collect())
+            .unwrap_or_default();
+        return match parts.as_slice() {
+            ["in", id, ..] => Ok(format!(
+                "https://www.linkedin.com/in/{}/recent-activity/all/",
+                linkedin_slug(id)?
+            )),
+            [kind @ ("company" | "showcase"), id, ..] => Ok(format!(
+                "https://www.linkedin.com/{kind}/{}/posts/",
+                linkedin_slug(id)?
+            )),
+            _ => anyhow::bail!("LinkedIn activity URL must include /in/<id> or /company/<id>"),
+        };
+    }
+    Ok(format!(
+        "https://www.linkedin.com/in/{}/recent-activity/all/",
         linkedin_slug(locator)?
     ))
 }

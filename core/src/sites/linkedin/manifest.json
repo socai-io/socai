@@ -19,9 +19,10 @@
       "callable": "searchState",
       "args": {
         "query": { "type": "string", "required": false, "description": "Expected search keywords." },
-        "result_type": { "type": "string", "required": false, "description": "Expected result type: people, content, companies, or all." }
+        "result_type": { "type": "string", "required": false, "description": "Expected result type: people, content, companies, or all." },
+        "filters": { "type": "object", "required": false, "description": "Expected content filters as URL parameters: sortBy, datePosted, contentType." }
       },
-      "returns": { "type": "object", "description": "Search route and result state." }
+      "returns": { "type": "object", "description": "Search route, filter, and result state." }
     },
     "searchResults": {
       "description": "Collect LinkedIn people, content, or company search results across lazy-scroll pages up to limit, with canonical identity and preview assets.",
@@ -37,7 +38,7 @@
     },
     "scrollResults": {
       "action": true,
-      "description": "Scroll a LinkedIn search page by one bounded viewport step to hydrate more results.",
+      "description": "Scroll a LinkedIn search page (its inner results container and the window) by one bounded step, or press a visible Show more results button, to hydrate more results.",
       "path": "page_scripts.js",
       "binding": "window.SocaiLinkedInPageScripts",
       "callable": "scrollResults",
@@ -46,6 +47,24 @@
         "to_top": { "type": "boolean", "required": false, "description": "Reset the result page to the top." }
       },
       "returns": { "type": "object", "description": "Search scroll and result-count state." }
+    },
+    "activityState": {
+      "description": "After navigating to https://www.linkedin.com/in/<id>/recent-activity/all/ or https://www.linkedin.com/company/<id>/posts/, verify the activity route and report whether posts hydrated, the list is explicitly empty, or a login, challenge, or rate-limit gate is shown.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiLinkedInPageScripts",
+      "callable": "activityState",
+      "args": {},
+      "returns": { "type": "object", "description": "Activity route, owner, and post-list state." }
+    },
+    "activityPosts": {
+      "description": "Collect posts from a member's recent activity or a company's posts tab across lazy-scroll pages up to limit, with id, URL, author, repost flag, text, relative age, reactions, comments, document pages, and media.",
+      "path": "page_scripts.js",
+      "binding": "window.SocaiLinkedInPageScripts",
+      "callable": "activityPosts",
+      "args": {
+        "limit": { "type": "integer", "required": false, "description": "Maximum posts to return." }
+      },
+      "returns": { "type": "array", "description": "Activity posts in page order." }
     },
     "profileDetail": {
       "description": "Extract visible profile identity, relationship labels, landing-page history, and avatar for research.",
