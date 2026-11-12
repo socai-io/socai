@@ -2,6 +2,7 @@
   const browserAction = typeof socaiAction === "function" ? socaiAction : async (perform) => perform();
   const POST_PATH = /^\/(?:[A-Za-z0-9._]+\/)?(p|reel)\/([A-Za-z0-9_-]+)\/?/i;
   const SEARCH_PATH = /^\/explore\/search\/keyword\/?/i;
+  const TAG_PATH = /^\/explore\/tags\/([^/]+)\/?/i;
   const RESERVED_PROFILE_NAMES = new Set([
     'accounts', 'about', 'api', 'challenge', 'developer', 'direct', 'emails',
     'download', 'explore', 'graphql', 'legal', 'oauth', 'p', 'privacy', 'reel',
@@ -241,7 +242,7 @@
   }
 
   function searchSurfaceActive() {
-    if (SEARCH_PATH.test(location.pathname)) return true;
+    if (SEARCH_PATH.test(location.pathname) || TAG_PATH.test(location.pathname)) return true;
     const input = searchInput();
     if (!input) return false;
     const expanded = input.getAttribute('aria-expanded');
@@ -254,7 +255,7 @@
     const candidates = [];
     const seen = new Set();
     const roots = [];
-    if (SEARCH_PATH.test(location.pathname)) {
+    if (SEARCH_PATH.test(location.pathname) || TAG_PATH.test(location.pathname)) {
       roots.push(document.querySelector('main') || document.body);
     } else {
       for (const dialog of document.querySelectorAll('[role="dialog"]')) roots.push(dialog);
@@ -309,11 +310,13 @@
     const input = arg || {};
     const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
     const viewportOnly = !!input.viewport_only;
+    const postsOnly = !!input.posts_only;
     const output = [];
     for (const link of searchResultLinks()) {
       if (viewportOnly && !inViewport(link)) continue;
       const url = instagramUrl(link.href || link.getAttribute('href'));
       let kind = resultKind(url);
+      if (postsOnly && kind !== 'post' && kind !== 'reel') continue;
       const identity = postIdentity(url);
       const username = profileUsername(url);
       let id = identity && identity.shortcode || username;
@@ -398,6 +401,73 @@
       expected_query: expected,
       query: actual,
       query_matches: queryMatches,
+      result_count: resultCount,
+      empty,
+      hydrated,
+      login_required: login,
+      challenge_required: challenge,
+      rate_limited: limited,
+    };
+  }
+
+  function normalizedTag(value) {
+    return cleanText(value || '', 200).replace(/^#/, '').trim().toLocaleLowerCase();
+  }
+
+  // The hashtag of the current page: the /explore/tags/<tag>/ route, or the
+  // keyword search Instagram may redirect a hashtag to (q=#tag or q=tag).
+  function currentTag() {
+    const match = location.pathname.match(TAG_PATH);
+    if (match) {
+      try {
+        return normalizedTag(decodeURIComponent(match[1]));
+      } catch (_) {
+        return normalizedTag(match[1]);
+      }
+    }
+    if (SEARCH_PATH.test(location.pathname)) return normalizedTag(new URL(location.href).searchParams.get('q') || '');
+    return '';
+  }
+
+  function tagPostLinks() {
+    return searchResultLinks().filter((link) => {
+      const kind = resultKind(instagramUrl(link.href || link.getAttribute('href')));
+      return kind === 'post' || kind === 'reel';
+    });
+  }
+
+  function tagState(arg) {
+    const expected = normalizedTag(arg && arg.tag || '');
+    const actual = currentTag();
+    const challenge = challengeRequired();
+    const limited = rateLimited();
+    const login = loginRoute();
+    const validRoute = TAG_PATH.test(location.pathname) || SEARCH_PATH.test(location.pathname);
+    const tagMatches = !!actual && (!expected || expected === actual);
+    const resultCount = validRoute ? tagPostLinks().length : 0;
+    const root = document.querySelector('main') || document.body;
+    const empty = validRoute && resultCount === 0 &&
+      /(no posts yet|no results|we couldn't find|isn't available|not available|未找到结果|没有帖子)/i.test(cleanText(root, 12000));
+    const stableFor = searchResultStability(resultCount, `${location.pathname}\n${actual}`);
+    const resultsSettled = resultCount > 0 && stableFor >= 800;
+    const hydrated = document.readyState !== 'loading' && (resultsSettled || empty || login || challenge || limited);
+    let status = 'unhydrated';
+    if (login) status = 'login_required';
+    else if (challenge) status = 'challenge_required';
+    else if (limited) status = 'rate_limited';
+    else if (!validRoute) status = 'not_tag_surface';
+    else if (!tagMatches) status = 'tag_mismatch';
+    else if (resultCount > 0 && !resultsSettled) status = 'hydrating';
+    else if (resultCount > 0) status = 'results';
+    else if (empty) status = 'empty';
+    return {
+      ok: validRoute && tagMatches && !login && !challenge && !limited && hydrated,
+      status,
+      url: location.href,
+      route: TAG_PATH.test(location.pathname) ? 'tag' : validRoute ? 'keyword_search' : 'other',
+      expected_tag: expected,
+      tag: actual,
+      tag_matches: tagMatches,
       result_count: resultCount,
       empty,
       hydrated,
@@ -1653,6 +1723,7 @@
     loginState,
     pageState,
     searchState,
+    tagState,
     setSearchQuery,
     openSearch,
     accountSuggestions,
