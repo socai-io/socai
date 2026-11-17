@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import { t } from "./i18n";
+import { VoiceActivityDetector, paintVoiceActivity } from "./voice-activity";
 
 export type VoicePhase = "idle" | "requesting" | "recording" | "transcribing";
 export type VoiceRoute = "cloud" | "local";
@@ -126,9 +127,11 @@ export namespace voiceInput {
   }
 
   export function cancelRecording(message = ""): void {
-    if (phase !== "recording" && phase !== "requesting") return;
+    if (phase === "idle") return;
     captureGeneration += 1;
     automaticTranscriptHandler = null;
+    stopLocalProgressPolling();
+    transcriptionRoute = null;
     cleanupRecording();
     phase = "idle";
     operationError = message;
@@ -172,24 +175,29 @@ export namespace voiceInput {
       capturedSampleRate = audioContext.sampleRate;
       chunks = [];
       sourceNode = audioContext.createMediaStreamSource(stream);
-      processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+      processorNode = audioContext.createScriptProcessor(2048, 1, 1);
+      const detector = new VoiceActivityDetector();
       silentGain = audioContext.createGain();
       silentGain.gain.value = 0;
       processorNode.onaudioprocess = (event) => {
-        chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+        if (generation !== captureGeneration || phase !== "recording") return;
+        const samples = new Float32Array(event.inputBuffer.getChannelData(0));
+        chunks.push(samples);
         event.outputBuffer.getChannelData(0).fill(0);
+        const activity = detector.update(samples, capturedSampleRate);
+        paintVoiceActivity(activity.level);
+        if (activity.stop === "empty") cancelRecording(t("voice.error.noSpeech"));
+        else if (activity.stop === "silence") finishAutomatically();
       };
       sourceNode.connect(processorNode);
       processorNode.connect(silentGain);
       silentGain.connect(audioContext.destination);
+      await audioContext.resume();
+      if (generation !== captureGeneration) return;
       phase = "recording";
-      recordingTimer = window.setTimeout(() => {
-        const handler = automaticTranscriptHandler;
-        void stopAndTranscribe().then((text) => {
-          if (text && handler) handler(text);
-        });
-      }, MAX_RECORDING_MS);
+      recordingTimer = window.setTimeout(finishAutomatically, MAX_RECORDING_MS);
     } catch (error) {
+      if (generation !== captureGeneration) return;
       console.error("microphone capture failed:", error);
       automaticTranscriptHandler = null;
       cleanupRecording();
@@ -200,7 +208,8 @@ export namespace voiceInput {
   }
 
   async function stopAndTranscribe(): Promise<string | null> {
-    captureGeneration += 1;
+    if (phase !== "recording") return null;
+    const generation = ++captureGeneration;
     transcriptionRoute = status?.route ?? null;
     phase = "transcribing";
     operationError = "";
@@ -220,20 +229,30 @@ export namespace voiceInput {
       const result = await invoke<VoiceTranscript>("voice_input_transcribe", {
         audioBase64: bytesToBase64(wav),
       });
+      if (generation !== captureGeneration) return null;
       const text = result.text.trim();
       if (!text) throw new Error(t("voice.error.noSpeech"));
       void refresh();
       return text;
     } catch (error) {
+      if (generation !== captureGeneration) return null;
       console.error("voice_input_transcribe failed:", error);
       operationError = error instanceof Error ? error.message : `${error}`;
       return null;
     } finally {
-      stopLocalProgressPolling();
-      transcriptionRoute = null;
-      phase = "idle";
-      onChange();
+      if (generation === captureGeneration) {
+        stopLocalProgressPolling();
+        transcriptionRoute = null;
+        phase = "idle";
+        onChange();
+      }
     }
+  }
+
+  function finishAutomatically(): void {
+    if (phase !== "recording") return;
+    const handler = automaticTranscriptHandler;
+    void stopAndTranscribe().then(text => { if (text && handler) handler(text); });
   }
 
   function startLocalProgressPolling(): void {
@@ -305,6 +324,7 @@ export namespace voiceInput {
   }
 
   function cleanupRecording(): void {
+    paintVoiceActivity(0);
     if (recordingTimer !== null) window.clearTimeout(recordingTimer);
     recordingTimer = null;
     if (processorNode) {
