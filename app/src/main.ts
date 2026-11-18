@@ -688,9 +688,9 @@ async function main(): Promise<void> {
   // run boundaries ask for a full render so the task list and conversation
   // turns update; normal stream rows append in place to preserve scroll.
   await listen<AgentTaskEventPayload>("agent_task:event", (event) => {
-    void notifyTaskCompletion(event.payload);
     const showRuntimeError = captureRuntimeErrorNotice(event.payload);
     if (agentPanel.appendTaskEvent(event.payload) || showRuntimeError) render();
+    void notifyTaskCompletion(event.payload);
     if (event.payload.kind === "tool_result") {
       // Each finished step's notes are on disk — refresh so the result row's
       // embed and newly-created artifact cards render now, not when the whole

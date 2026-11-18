@@ -1,7 +1,7 @@
+import { requestCompletionNotificationPermission } from "../lib/completion-notifications";
 import { bindWorkflows, openWorkflows, renderWorkflows, type WorkflowSkill } from "./workflows";
 import { refreshResearchBoard, bindResearchBoard } from "./research-board";
 import { getLanguage } from "../lib/i18n";
-import { requestCompletionNotificationPermission } from "../lib/completion-notifications";
 //! Task workspace coordinator: shared state, agent configuration popover,
 //! task event intake, and bindings. The sidebar (history list) + delete dialog
 //! live in `task_history.ts`; the conversation view lives in `conversation.ts`.
