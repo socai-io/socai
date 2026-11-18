@@ -7,12 +7,16 @@ import {resolve,join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 const binary=resolve(process.argv[2]),label=process.argv[3];
 assert(['before','after'].includes(label));
+const preloaded=process.argv[4]==='--preload-research';
+assert(process.argv.length===4||(preloaded&&process.argv.length===5));
 const stage=await mkdtemp('/tmp/socai-research-contract-');
 const credentials=join(stage,'synthetic-auth.json'),config=join(stage,'config.json');
 await writeFile(credentials,JSON.stringify({socai_pro:{device_id:'synthetic-device',device_token:'synthetic-loopback-token',user_id:'synthetic-user'}}),{mode:0o600,flag:'wx'});
 await writeFile(config,'{}',{flag:'wx'});
 const calls=[
- {label:'activate',name:'read_skill',input:{name:'research'}},
+ // Both are real entrypoints: quick mode loads the skill through a tool;
+ // deep mode loads it before the first request and reads the initial ledger.
+ {label:'activate',name:preloaded?'research_read':'read_skill',input:preloaded?{}:{name:'research'}},
  {label:'requires-initialization',name:'research_update',input:{exploration:'Synthetic initial plan'},error:/initialize research/},
  {label:'initialize',name:'research_update',input:{objective:'Synthetic transport contract',criteria:['Preserve the saved plan']}},
  {label:'save-plan',name:'research_update',input:{next_steps:['Inspect fixture A','Compare fixture B']}},
@@ -59,7 +63,7 @@ child.stdout.on('data',data=>{
  for(;;){const end=buffer.indexOf('\n');if(end<0)break;const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line.trim())continue;
   let frame;try{frame=JSON.parse(line);}catch{continue;}frames.push(frame);
   if(frame.frame==='ready'&&!sent){sent=true;send({type:'session.bind',request_id:'fixture-bind',binding});}
-  if(frame.frame==='bound')send({type:'run.start',request_id:'fixture-start',binding,run_id:'research-fixture-'+randomUUID(),prompt:'Synthetic local research contract; do not browse or contact external services.',provider:'socai',model:'fixture-model',enabled_sites:[],max_steps:30,max_tokens:1024,research:{deep:false}});
+  if(frame.frame==='bound')send({type:'run.start',request_id:'fixture-start',binding,run_id:'research-fixture-'+randomUUID(),prompt:'Synthetic local research contract; do not browse or contact external services.',provider:'socai',model:'fixture-model',enabled_sites:[],max_steps:30,max_tokens:1024,research:{deep:preloaded}});
   if(frame.frame==='event'&&['done','failed','cancelled'].includes(frame.event?.event)){terminal=true;send({type:'shutdown',request_id:'fixture-shutdown'});child.stdin.end();}
  }
 });
@@ -101,7 +105,7 @@ try{
  const read=results.find(result=>result.call_id==='fixture-call-4');
  check('research_read returns current plan',objects(read?.content).some(value=>JSON.stringify(value.next_steps)===JSON.stringify(plan)));
 }catch(error){checks.push({name:'fixture validation',ok:false,error:error.message});}
-const result={at:new Date().toISOString(),binary,label,stage,exit,checks,allVerified:checks.every(check=>check.ok),httpRequests:requests.length,
+const result={at:new Date().toISOString(),binary,label,stage,exit,researchActivation:preloaded?'entrypoint-preloaded':'read-skill-tool',checks,allVerified:checks.every(check=>check.ok),httpRequests:requests.length,
  actualNativeWorker:true,scriptedLoopbackModel:true,paidModelCalls:0,chromeTouched:false,customerTasksReplayed:0,productionAuthUsed:false,installedCliChanged:false,
  technicalErrors:frames.filter(frame=>frame.event?.event==='tool_result'&&frame.event.error).map(frame=>({callId:frame.event.call_id,error:frame.event.error})),
  terminalKind:frames.find(frame=>['done','failed','cancelled'].includes(frame.event?.event))?.event?.event||null,
