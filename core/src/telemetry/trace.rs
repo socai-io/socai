@@ -139,10 +139,12 @@ impl RunTraceBuilder {
             Some(session) => md5_hex(format!("socai-conversation:{session}").as_bytes()),
             None => Uuid::new_v4().simple().to_string(),
         };
+        let root_span_id = new_span_id();
+        super::remember_trace_account(&trace_id, &root_span_id);
         Self {
             run_dir: run_dir.to_path_buf(),
             trace_id,
-            root_span_id: new_span_id(),
+            root_span_id,
             run_id: run_id.to_string(),
             task_text: truncate_chars(&redact_secrets(task), TASK_TEXT_MAX_CHARS),
             provider: provider.to_string(),

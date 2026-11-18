@@ -34,4 +34,4 @@ pub use billing::{
 pub use browser::{create_browser_session, release_browser_session, BrowserSessionInfo};
 pub use google::sign_in_with_google;
 
-pub(crate) use auth::telemetry_account_snapshot;
+pub(crate) use auth::{telemetry_account_snapshot, AccountTelemetrySnapshot};
