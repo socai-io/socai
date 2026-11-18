@@ -73,8 +73,10 @@ pub struct CloudCredentials {
     pub active_until: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AccountTelemetrySnapshot {
+    pub account_id: String,
+    pub email: String,
     pub phone: String,
     pub balance_points: Option<i64>,
     pub active_until: Option<String>,
@@ -374,8 +376,8 @@ pub fn set_hosted_llm_selected(selected: bool) -> Result<()> {
 
 pub(crate) fn telemetry_account_snapshot() -> Option<AccountTelemetrySnapshot> {
     let credentials = load_credentials()?;
-    let phone = credentials.phone.trim().to_string();
-    if credentials.user_id.trim().is_empty() || phone.is_empty() {
+    let account_id = credentials.user_id.trim().to_string();
+    if account_id.is_empty() || credentials.device_token.trim().is_empty() {
         return None;
     }
     let pro_subscribed = credentials
@@ -384,7 +386,9 @@ pub(crate) fn telemetry_account_snapshot() -> Option<AccountTelemetrySnapshot> {
         .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
         .is_some_and(|until| until > chrono::Utc::now());
     Some(AccountTelemetrySnapshot {
-        phone,
+        account_id,
+        email: credentials.email.trim().to_string(),
+        phone: credentials.phone.trim().to_string(),
         balance_points: credentials.balance_points,
         active_until: credentials.active_until,
         pro_subscribed,

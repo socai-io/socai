@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
@@ -12,6 +14,66 @@ pub mod tool_call;
 pub mod trace;
 
 pub use trace::{redact_secrets, redact_telemetry_error};
+
+type TraceAccountCache = HashMap<String, (Instant, crate::cloud::AccountTelemetrySnapshot)>;
+
+fn trace_accounts() -> &'static Mutex<TraceAccountCache> {
+    static ACCOUNTS: OnceLock<Mutex<TraceAccountCache>> = OnceLock::new();
+    ACCOUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Capture once when a run starts, never from the account active during upload.
+/// Evicted or pre-upgrade traces stay unattributed rather than guessing an owner.
+pub(crate) fn remember_trace_account(trace_id: &str, span_id: &str) {
+    if !telemetry_enabled() {
+        return;
+    }
+    let Some(account) = crate::cloud::telemetry_account_snapshot() else {
+        return;
+    };
+    let Ok(mut accounts) = trace_accounts().lock() else {
+        return;
+    };
+    let key = format!("{trace_id}-{span_id}");
+    if accounts.contains_key(&key) {
+        return;
+    }
+    if accounts.len() >= 512 {
+        if let Some(oldest) = accounts
+            .iter()
+            .min_by_key(|(_, (at, _))| *at)
+            .map(|(key, _)| key.clone())
+        {
+            accounts.remove(&oldest);
+        }
+    }
+    accounts.insert(key, (Instant::now(), account));
+}
+
+#[derive(Serialize, Deserialize)]
+struct PendingTraceEnvelope {
+    schema_version: u32,
+    trace_payload: Value,
+    account: Option<crate::cloud::AccountTelemetrySnapshot>,
+}
+
+fn decode_pending_trace(bytes: &[u8]) -> std::io::Result<PendingTraceEnvelope> {
+    let value: Value = serde_json::from_slice(bytes).map_err(std::io::Error::other)?;
+    if value.get("resourceSpans").is_some() {
+        // Old spools have no run-start identity; never attach today's account.
+        return Ok(PendingTraceEnvelope {
+            schema_version: 1,
+            trace_payload: value,
+            account: None,
+        });
+    }
+    let envelope: PendingTraceEnvelope =
+        serde_json::from_value(value).map_err(std::io::Error::other)?;
+    if envelope.schema_version != 1 || trace_spool_key(&envelope.trace_payload).is_none() {
+        return Err(std::io::Error::other("invalid private trace envelope"));
+    }
+    Ok(envelope)
+}
 
 /// Reduce a browser endpoint source to its stable category before telemetry.
 ///
@@ -155,7 +217,7 @@ enum QueuedItem {
     Event(QueuedEvent),
     /// Path to a run's `trace.json` that was not ready when it was queued.
     TraceFile(PathBuf),
-    /// Durable, identity-free copy under telemetry/pending-traces.
+    /// Private durable envelope; the original run's trace stays identity-free.
     PendingTrace(PathBuf),
 }
 
@@ -163,6 +225,7 @@ enum QueuedItem {
 struct QueuedEvent {
     name: String,
     properties: Value,
+    account: Option<crate::cloud::AccountTelemetrySnapshot>,
 }
 
 #[derive(Clone)]
@@ -212,6 +275,7 @@ impl Telemetry {
         let _ = self.sender.try_send(QueuedItem::Event(QueuedEvent {
             name: name.into(),
             properties,
+            account: crate::cloud::telemetry_account_snapshot(),
         }));
     }
 
@@ -281,7 +345,7 @@ async fn worker_loop(mut receiver: mpsc::Receiver<QueuedItem>, config: WorkerCon
                 match item {
                     QueuedItem::Event(event) => {
                         let timestamp_ms = now_ms();
-                        let properties = enrich_properties(event.properties, &config, timestamp_ms);
+                        let properties = enrich_properties(event.properties, &config, timestamp_ms, event.account.as_ref());
                         let row = local_row(&event.name, &config.install_id, timestamp_ms, &properties);
                         let _ = append_jsonl(&config.local_path, &row).await;
 
@@ -320,7 +384,32 @@ fn stage_trace_file(source: &Path, pending_dir: &Path) -> std::io::Result<PathBu
     std::fs::create_dir_all(pending_dir)?;
     let destination = pending_dir.join(format!("{key}.json"));
     let temporary = pending_dir.join(format!("{key}.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temporary, bytes)?;
+    let previous = std::fs::read(&destination)
+        .ok()
+        .and_then(|bytes| decode_pending_trace(&bytes).ok())
+        .filter(|saved| trace_spool_key(&saved.trace_payload).as_deref() == Some(key.as_str()))
+        .and_then(|saved| saved.account);
+    let account = previous.or_else(|| {
+        trace_accounts()
+            .lock()
+            .ok()
+            .and_then(|accounts| accounts.get(&key).map(|(_, account)| account.clone()))
+    });
+    let bytes = serde_json::to_vec(&PendingTraceEnvelope {
+        schema_version: 1,
+        trace_payload: payload,
+        account,
+    })
+    .map_err(std::io::Error::other)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    std::io::Write::write_all(&mut file, &bytes)?;
     if destination.exists() {
         let _ = std::fs::remove_file(&destination);
     }
@@ -380,10 +469,11 @@ async fn upload_pending_trace(client: &reqwest::Client, config: &WorkerConfig, p
     let Ok(bytes) = tokio::fs::read(path).await else {
         return;
     };
-    let Ok(mut payload) = serde_json::from_slice::<Value>(&bytes) else {
+    let Ok(envelope) = decode_pending_trace(&bytes) else {
         return;
     };
-    enrich_trace_resource(&mut payload, config);
+    let mut payload = envelope.trace_payload;
+    enrich_trace_resource(&mut payload, config, envelope.account.as_ref());
     let Ok(response) = client.post(traces_endpoint()).json(&payload).send().await else {
         return;
     };
@@ -394,7 +484,11 @@ async fn upload_pending_trace(client: &reqwest::Client, config: &WorkerConfig, p
 
 /// The on-disk trace stays identity-free so run dirs can be shared; the
 /// uploaded copy carries the same source/install identity as events.
-fn enrich_trace_resource(payload: &mut Value, config: &WorkerConfig) {
+fn enrich_trace_resource(
+    payload: &mut Value,
+    config: &WorkerConfig,
+    account: Option<&crate::cloud::AccountTelemetrySnapshot>,
+) {
     let Some(attributes) = payload
         .get_mut("resourceSpans")
         .and_then(Value::as_array_mut)
@@ -405,6 +499,17 @@ fn enrich_trace_resource(payload: &mut Value, config: &WorkerConfig) {
     else {
         return;
     };
+    attributes.retain(|attribute| {
+        !matches!(
+            attribute.get("key").and_then(Value::as_str),
+            Some(
+                "socai.account_id"
+                    | "socai.account_email"
+                    | "socai.account_phone"
+                    | "socai.account_identity_basis"
+            )
+        )
+    });
     for (key, value) in [
         ("socai.source", config.source.as_str()),
         ("socai.install_id", config.install_id.as_str()),
@@ -416,18 +521,24 @@ fn enrich_trace_resource(payload: &mut Value, config: &WorkerConfig) {
         "key": "socai.pro_activated",
         "value": { "boolValue": crate::cloud::pro_activated() },
     }));
-    if let Some(account) = crate::cloud::telemetry_account_snapshot() {
-        attributes.push(json!({
-            "key": "socai.account_phone",
-            "value": { "stringValue": account.phone },
-        }));
+    if let Some(account) = account {
+        for (key, value) in [
+            ("socai.account_id", account.account_id.as_str()),
+            ("socai.account_email", account.email.as_str()),
+            ("socai.account_phone", account.phone.as_str()),
+            ("socai.account_identity_basis", "run_start_snapshot"),
+        ] {
+            if !value.is_empty() {
+                attributes.push(json!({ "key": key, "value": { "stringValue": value } }));
+            }
+        }
         if let Some(balance_points) = account.balance_points {
             attributes.push(json!({
                 "key": "socai.points_balance",
                 "value": { "intValue": balance_points.to_string() },
             }));
         }
-        if let Some(active_until) = account.active_until {
+        if let Some(active_until) = &account.active_until {
             attributes.push(json!({
                 "key": "socai.pro_active_until",
                 "value": { "stringValue": active_until },
@@ -450,7 +561,12 @@ fn traces_endpoint() -> String {
         .unwrap_or_else(|| TRACES_ENDPOINT.to_string())
 }
 
-fn enrich_properties(properties: Value, config: &WorkerConfig, timestamp_ms: u64) -> Value {
+fn enrich_properties(
+    properties: Value,
+    config: &WorkerConfig,
+    timestamp_ms: u64,
+    account: Option<&crate::cloud::AccountTelemetrySnapshot>,
+) -> Value {
     let mut map = match properties {
         Value::Object(map) => map,
         other => {
@@ -467,14 +583,26 @@ fn enrich_properties(properties: Value, config: &WorkerConfig, timestamp_ms: u64
     map.insert("session_id".into(), json!(config.session_id));
     map.insert("created_at_ms".into(), json!(timestamp_ms));
 
-    if let Some(account) = crate::cloud::telemetry_account_snapshot() {
-        map.entry("account_phone")
-            .or_insert_with(|| json!(account.phone));
+    if let Some(account) = account {
+        for (key, value) in [
+            ("account_id", account.account_id.as_str()),
+            ("account_email", account.email.as_str()),
+            ("account_phone", account.phone.as_str()),
+        ] {
+            map.remove(key);
+            if !value.is_empty() {
+                map.insert(key.into(), json!(value));
+            }
+        }
+        map.insert(
+            "account_identity_basis".into(),
+            json!("event_capture_snapshot"),
+        );
         if let Some(balance_points) = account.balance_points {
             map.entry("balance_points")
                 .or_insert_with(|| json!(balance_points));
         }
-        if let Some(active_until) = account.active_until {
+        if let Some(active_until) = &account.active_until {
             map.entry("pro_active_until")
                 .or_insert_with(|| json!(active_until));
         }
