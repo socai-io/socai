@@ -16,7 +16,10 @@ The entrypoint sets the execution budget; loading a skill does not increase it.
   Pass known findings and gaps; workers do not inherit the conversation.
   XHS explore separately supports up to three XHS-only branches. Use only
   exposed tools and stay within the selected platforms.
-- Keep research_update incremental and the exploration notebook short. Recover
+- Initialize research_update with objective and non-empty criteria from the
+  user's goal before sending incremental updates. Keep next_steps a short
+  action list: omit it to retain the plan, replace it when direction changes,
+  or send [] to clear it. Keep the exploration notebook short. Recover
   details with research_read or saved artifacts; read_saved_notes is an XHS
   helper when available. Preserve source URLs for relevant secondary leads.
 - Before long-form delivery record coverage, remaining valuable paths and a
