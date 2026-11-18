@@ -612,6 +612,17 @@ socai stop
 
 `socai stop` is only required when the background daemon is already running; it lets the new setting take effect at the next start.
 
+A request timeout or interrupted response does not prove a command stopped. The
+CLI preserves the daemon endpoint and does not replay a request after connection
+when the outcome is unknown, including responses lacking matching build identity.
+Inspect status, recent daemon logs, the owning PID and actual listener before
+recovery; do not stop a shared daemon or switch browser profiles automatically.
+Missing or refused IPC connections can still start a daemon normally. Explicit
+version rejections can replace it only after shutdown and endpoint removal are
+confirmed. After the shutdown acknowledgement, the CLI waits up to 15 seconds
+for endpoint release to cover bounded browser teardown; it proceeds immediately
+when the endpoint disappears and never replaces one that is still present.
+
 The hosted browser is currently in beta. Activate socai pro before selecting it:
 
 ```bash
@@ -872,6 +883,22 @@ Check core/CLI/worker and desktop builds, then verify live API/HTML reads,
 pagination, explicit failures and a GitHub-only run without Chrome.
 
 ### Browser action implementation
+
+To verify CLI transport recovery on macOS/Linux without connecting Chrome:
+
+```bash
+cargo build --locked -p socai-cli
+node scripts/check-daemon-transport.mjs ./target/debug/socai after
+```
+
+The check uses unique temporary Unix sockets and task registration only, with
+telemetry disabled. It exercises interrupted/invalid/legacy responses, ordinary
+errors and success, cold startup, unconfirmed shutdown and an unresponsive
+shutdown request hitting the native ten-second deadline, and acknowledged
+shutdown that releases the endpoint after the former two-second deadline. It stops only test
+daemons through their own endpoint; it never calls the global helper sweep.
+Evidence remains in the printed temporary directory. This is not Windows or
+real-platform login/collection acceptance.
 
 Configuration, defaults, and action boundaries are documented under
 [Browser action speed](#browser-action-speed). The shared core resolves platforms

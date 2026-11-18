@@ -9,7 +9,7 @@ description: >
 description_zh: 使用本机 Socai 与已登录的 Chrome 调研六个社交平台的公开帖子、评论、账号和趋势，输出可溯源的跨平台洞察。
 description_en: Researches public posts, comments, creators, companies, and trends across Xiaohongshu, Douyin, TikTok, Instagram, LinkedIn, and X/Twitter through the local Socai CLI and authenticated Chrome session.
 category: writing
-version: 0.5.0
+version: 0.5.1
 author: socai
 allowed-tools: Bash,Read,Write,Glob,Grep
 ---
@@ -43,6 +43,9 @@ allowed-tools: Bash,Read,Write,Glob,Grep
 ## 执行规则
 
 - 默认仅运行搜索、主页、帖子、评论和页面状态等只读命令。
+- 同一个 daemon 的浏览器命令按顺序执行，不并发排队。用户指定的数量和深度优先；未指定时先轻量获取索引，再选择需要的正文，不默认采集评论、OCR 或视频转写。
+- 小红书探查可使用 `--preview`；不需要评论时显式传 `--num-comments 0`，具体参数以当前命令帮助为准。大结果保存为任务独立文件，按需读取相关记录，不把整批原始 JSON 塞进上下文。
+- 连接超时或反复断开时读取 [连接排查](references/connection-troubleshooting.md)。先核对日志、PID 和实际监听端口，不自动重发超时命令、不停止 daemon、不切换 profile 或重启 Chrome。
 - 只查询需求相关的平台，保留结构化 JSON 直到完成综合分析。
 - 将 `login_required`、`challenge_required`、`rate_limited`、空结果、部分结果和超时作为证据限制写入结果。
 - 引用 Socai 返回的原始帖子或主页 URL；区分事实观察与推断，不补造指标、作者、日期或评论。

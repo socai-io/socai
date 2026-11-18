@@ -1,6 +1,6 @@
 {
   "name": "xiaohongshu-research-expert",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Evidence-first Xiaohongshu research expert built on socai. Drives the user's signed-in Chrome to study topics, competitors, word-of-mouth and creators, and reports every conclusion back to a traceable note.",
   "author": {
     "name": "Tony Chong",

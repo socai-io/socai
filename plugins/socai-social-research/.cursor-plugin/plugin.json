@@ -1,6 +1,6 @@
 {
   "name": "socai-social-research",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Research public posts, comments, creators, and trends on Xiaohongshu, Douyin, TikTok, Instagram, LinkedIn, and X/Twitter with the local socai CLI and the user's authenticated Chrome session.",
   "author": {
     "name": "socai"
