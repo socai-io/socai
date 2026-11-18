@@ -146,7 +146,11 @@ impl Tool for ResearchBoardTool {
                     if let Some(excerpt) = source.get("excerpt") { anyhow::ensure!(excerpt.as_str().is_some_and(|s| s.len() <= 4000), "Invalid source excerpt"); }
                 }
                 if kind == "comparison" {
-                    anyhow::ensure!(sources.iter().any(|s| s["lead_id"] == edge["from"]) && sources.iter().any(|s| s["lead_id"] == edge["to"]), "Comparisons require sources for both endpoints");
+                    for endpoint in ["from", "to"] {
+                        anyhow::ensure!(sources.iter().any(|s| s["lead_id"] == edge[endpoint]),
+                            "Comparisons require sources for both endpoints. Relation {}: missing source for {endpoint} lead {}. This entire update was rejected; none of its supplied leads or relationships were saved. Add the observed source and resubmit the full update, including its leads. Never invent evidence. If that source is unavailable, keep the leads but omit the unsupported comparison and report the evidence gap.",
+                            edge["id"], edge[endpoint]);
+                    }
                 }
             }
         }
