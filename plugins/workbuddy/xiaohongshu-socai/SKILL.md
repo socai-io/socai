@@ -9,7 +9,7 @@ description: >
 description_zh: 在本机已登录的 Chrome 中真实浏览小红书，完成关键词搜索、博主主页分析、笔记正文与评论采集，返回可溯源的结构化结果。
 description_en: Drives your signed-in Chrome to research Xiaohongshu (RedNote) — keyword search, creator profiles, note bodies and comments, image OCR and video transcription — returning structured, source-linked results.
 category: writing
-version: 1.1.0
+version: 1.1.1
 author: socai
 allowed-tools: Bash,Read,Write,Glob,Grep
 ---
@@ -68,11 +68,16 @@ $installer = Join-Path $env:TEMP 'socai-install.ps1'; Invoke-WebRequest -UseBasi
 按 `error_code` 对应处理，不要重试同一条命令硬碰：
 
 - `BROWSER_PERMISSION_REQUIRED` — 用户需在系统设置里允许 Chrome 数据访问与远程调试，确认后重试一次。
-- `BROWSER_ENDPOINT_UNREACHABLE` — 启动一个受支持的 Chrome 窗口，或切到托管档案：`socai config set chrome.profile managed` 然后 `socai stop`。
-- `REMOTE_SESSION_UNAVAILABLE` — 托管云端浏览器不可用，改回 `existing` 或稍后再试。
+- `DAEMON_UNAVAILABLE` / `BROWSER_NOT_CONNECTED` — 首次启动时可能是正常状态，先执行本次任务最小的只读命令；如果仍失败，再按下面的连接排查处理。
+- `BROWSER_ENDPOINT_UNREACHABLE` / `BROWSER_DISCONNECTED` — 先按下面的连接排查处理，保留当前浏览器和登录状态。
+- `REMOTE_SESSION_UNAVAILABLE` — 托管云端浏览器不可用，说明限制并检查服务状态，不擅自改成本地浏览器。
 - 其它 — 照 `next_step` 字段里给的动作执行。
 
 首次连接时 Chrome 会弹权限确认框，**必须由用户手动点确认**，这一步无法自动化。提醒用户去看屏幕。
+
+### 连接超时或反复断开
+
+先读取 [连接排查](references/connection-troubleshooting.md)，核对当前二进制、daemon 日志和实际监听端口。超时不等于 daemon 已退出，也不代表命令没有执行；不要自动重发、停止 daemon、切换 profile 或新建 Chrome。不要同时向同一个 daemon 发送多条浏览器命令。
 
 ## 核心工作流
 
@@ -104,6 +109,8 @@ daemon 会自动把它们归入当前任务，不需要额外参数。新的用�
 - `--transcribe-audio` — 转写视频语音。只有用户明确要视频内容时开，且需要已登录并选中 socai agent。
 - `--download-media` — 把图片视频下载到 run 目录。用户要本地文件时开。
 
+用户指定的数量和深度优先。没有指定时，先用 `--preview` 查看卡片，只对需要核对的笔记读取正文；不需要评论的任务显式传 `--num-comments 0`。不要为了环境检查运行默认十篇正文加评论的完整搜索。
+
 `--filter` 是搜索页筛选器，可重复传，取值见 @references/cli-reference.md。
 
 ### 第三步：执行并落盘（必做）
@@ -119,16 +126,7 @@ echo "exit=$?"; cat /tmp/xhs-search.err
 
 ### 第零步：定位技能目录
 
-下面的辅助脚本就装在这个技能包里。**先跑一次把路径解析出来，本次任务后续直接复用**：
-
-```bash
-SKILL_DIR=$(ls -d ~/.workbuddy/skills/xiaohongshu-socai 2>/dev/null \
-  || find "$HOME" ~/.workbuddy ~/.claude ~/.codebuddy -maxdepth 4 -type d \
-       -name xiaohongshu-socai -not -path '*/node_modules/*' 2>/dev/null | head -1)
-echo "$SKILL_DIR"
-```
-
-找不到就说明技能没装好，提示用户重装。**不要把 `<skill-dir>` 当成真路径去执行。**
+下面的辅助脚本就装在这个技能包里。使用宿主提供的本 `SKILL.md` 的实际所在目录作为 `SKILL_DIR`，确认其中存在 `scripts/summarize.py` 后，本次任务直接复用这个目录。不要扫描整个用户目录来找技能，也不要把占位路径当成真路径执行；宿主没有提供路径时，只检查它声明的技能安装目录，找不到就说明当前限制。
 
 ### 第四步：读结果
 

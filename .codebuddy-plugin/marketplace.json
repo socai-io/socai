@@ -4,13 +4,13 @@
     "name": "socai"
   },
   "description": "Official socai integrations for social-media research.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "plugins": [
     {
       "name": "socai-social-research",
       "source": "./plugins/socai-social-research",
       "description": "Research public posts, comments, creators, and trends on Xiaohongshu, Douyin, TikTok, Instagram, LinkedIn, and X/Twitter with the local socai CLI and the user's authenticated Chrome session.",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "author": {
         "name": "socai"
       },

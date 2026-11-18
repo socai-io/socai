@@ -128,7 +128,7 @@ top_comments 的完整对象（text, author, likes, time, sub_comments[]）
 | `BROWSER_NOT_CONNECTED` | 需要浏览器时跑一条只读平台命令即可 |
 | `BROWSER_DISCONNECTED` | 从 socai 重新连接后再开始 |
 | `BROWSER_PERMISSION_REQUIRED` | 允许 Chrome 数据访问与远程调试后重试一次 |
-| `BROWSER_ENDPOINT_UNREACHABLE` | 启动受支持的 Chrome，或切到托管档案 |
+| `BROWSER_ENDPOINT_UNREACHABLE` | 按[连接排查](connection-troubleshooting.md)核对日志、监听端口和调试连接，保留现有 profile |
 | `REMOTE_SESSION_UNAVAILABLE` | 检查 socai pro 与托管浏览器服务，稍后重试 |
 | `DAEMON_UNAVAILABLE` | 先跑一条只读平台命令，再重试 status |
 
