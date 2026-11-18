@@ -33,14 +33,34 @@ const calls=[
  {label:'reject-unacknowledged-blocker',name:'research_update',input:{review:{reason:'blocked',coverage:'Synthetic blocker',remaining_gaps:[]}},error:/remaining_gaps must acknowledge/},
  {label:'record-honest-review',name:'research_update',input:{review:{reason:'satisfied',coverage:'Synthetic local contract exercised; no external source claims',remaining_gaps:[]}}},
 ];
-const requests=[],frames=[];let serverError=null;
+const requests=[],frames=[],published=[];let serverError=null;
 const server=createServer(async(req,res)=>{
  try{
+  let raw='';for await(const chunk of req){raw+=chunk;assert(raw.length<500000);}
+  const body=JSON.parse(raw);
+  if(req.url==='/host-tools'){
+   assert(preloaded);assert.equal(req.headers.authorization,'Bearer synthetic-host-storage-token-for-fixture');
+   assert.deepEqual(body.binding,binding);assert.equal(body.run_id,runId);
+   if(['internal_memory_load','internal_memory_record'].includes(body.tool)){
+    // Memory is optional and outside this fixture; refuse it explicitly.
+    res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({ok:false,error:'Synthetic memory unavailable'}));return;
+   }
+   assert.equal(body.tool,'publish_artifact');assert.equal(body.input.name,'research-findings.csv');
+   assert.equal(body.input.media_type,'text/csv');assert.equal(typeof body.input.content,'string');
+   assert(body.input.content.includes('名称,平台,信号或内容'));assert.equal(published.length,0);
+   await writeFile(join(stage,'received-research-findings.csv'),body.input.content,{flag:'wx'});
+   published.push(body.input);
+   res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({ok:true,result:{name:body.input.name}}));return;
+  }
   assert.equal(req.url,'/v1/llm/chat/completions');
   assert.equal(req.headers.authorization,'Bearer synthetic-loopback-token');
-  let raw='';for await(const chunk of req){raw+=chunk;assert(raw.length<500000);}
-  const body=JSON.parse(raw),index=requests.length;requests.push(body);
-  assert(index<=calls.length,'Unexpected extra model request');
+  const index=requests.length;requests.push(body);
+  assert(index<=calls.length+(preloaded?1:0),'Unexpected extra model request');
+  if(index===calls.length+1){
+   assert(preloaded&&published.length===1);assert(!body.tools?.length);
+   assert(JSON.stringify(body.messages).includes('跨任务记忆'));
+   res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({id:'fixture-memory',choices:[{index:0,message:{role:'assistant',content:'Synthetic fixture exercised the local research plan contract.'},finish_reason:'stop'}],usage:{prompt_tokens:100,completion_tokens:10,total_tokens:110}}));return;
+  }
   const call=calls[index];
   const message=call?{role:'assistant',content:null,tool_calls:[{id:'fixture-call-'+index,type:'function',function:{name:call.name,arguments:JSON.stringify(call.input)}}]}:{role:'assistant',content:'Synthetic contract complete; not a customer task.'};
   res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({id:'fixture-response-'+index,object:'chat.completion',choices:[{index:0,message,finish_reason:call?'tool_calls':'stop'}],usage:{prompt_tokens:100,completion_tokens:10,total_tokens:110}}));
@@ -54,6 +74,7 @@ const env={PATH:process.env.PATH,TMPDIR:process.env.TMPDIR||'/tmp',
  SOCAI_TELEMETRY:'off',SOCAI_TELEMETRY_TASK_TEXT:'off',SOCAI_TELEMETRY_QUERY_TEXT:'off',RUST_LOG:'error'};
 const child=spawn(binary,[],{env,stdio:['pipe','pipe','pipe']});
 const binding={user_id:'synthetic-user',session_id:randomUUID(),kernel_id:'synthetic-kernel',assignment_epoch:1};
+const runId='research-fixture-'+randomUUID();
 let buffer='',stderr='',sent=false,terminal=false;
 const checks=[];const check=(name,ok)=>checks.push({name,ok:Boolean(ok)});
 const send=value=>child.stdin.write(JSON.stringify({protocol_version:2,...value})+'\n');
@@ -63,7 +84,8 @@ child.stdout.on('data',data=>{
  for(;;){const end=buffer.indexOf('\n');if(end<0)break;const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line.trim())continue;
   let frame;try{frame=JSON.parse(line);}catch{continue;}frames.push(frame);
   if(frame.frame==='ready'&&!sent){sent=true;send({type:'session.bind',request_id:'fixture-bind',binding});}
-  if(frame.frame==='bound')send({type:'run.start',request_id:'fixture-start',binding,run_id:'research-fixture-'+randomUUID(),prompt:'Synthetic local research contract; do not browse or contact external services.',provider:'socai',model:'fixture-model',enabled_sites:[],max_steps:30,max_tokens:1024,research:{deep:preloaded}});
+  if(frame.frame==='bound')send({type:'run.start',request_id:'fixture-start',binding,run_id:runId,prompt:'Synthetic local research contract; do not browse or contact external services.',provider:'socai',model:'fixture-model',enabled_sites:[],max_steps:30,max_tokens:1024,research:{deep:preloaded},...(preloaded?{host_tools:[{name:'publish_artifact',description:'Publish the synthetic fixture table only.',input_schema:{type:'object'}}],host_tool_endpoint:{url:`http://127.0.0.1:${port}/host-tools`,bearer_token:'synthetic-host-storage-token-for-fixture'}}:{})});
+  if(frame.frame==='command_error')child.kill('SIGTERM');
   if(frame.frame==='event'&&['done','failed','cancelled'].includes(frame.event?.event)){terminal=true;send({type:'shutdown',request_id:'fixture-shutdown'});child.stdin.end();}
  }
 });
@@ -77,8 +99,9 @@ function objects(value){
 }
 try{
  if(serverError)throw serverError;
- check('native worker exits normally',exit.code===0&&terminal);
- check('exact scripted loop completed',requests.length===calls.length+1);
+ check('native worker exits normally',exit.code===0&&terminal&&frames.some(frame=>frame.event?.event==='done'));
+ check('deep table reaches isolated host storage',preloaded?published.length===1:published.length===0);
+ check('exact scripted loop completed',requests.length===calls.length+1+(preloaded?1:0));
  const results=frames.filter(frame=>frame.frame==='event'&&frame.event.event==='tool_result').map(frame=>frame.event);
  check('all scripted tools executed',results.length===calls.length);
  const saved=new Map();
