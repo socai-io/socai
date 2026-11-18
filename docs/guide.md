@@ -612,6 +612,15 @@ socai stop
 
 `socai stop` is only required when the background daemon is already running; it lets the new setting take effect at the next start.
 
+The hosted browser is currently in beta. Activate socai pro before selecting it:
+
+```bash
+socai pro activate <invite_code>
+socai config set chrome.profile remote
+```
+
+Advanced endpoint overrides remain available through `SOCAI_CDP_WS` and `SOCAI_CDP_URL`.
+
 A request timeout or interrupted response does not prove a command stopped. The
 CLI preserves the daemon endpoint and does not replay a request after connection
 when the outcome is unknown, including responses lacking matching build identity.
@@ -622,15 +631,6 @@ version rejections can replace it only after shutdown and endpoint removal are
 confirmed. After the shutdown acknowledgement, the CLI waits up to 15 seconds
 for endpoint release to cover bounded browser teardown; it proceeds immediately
 when the endpoint disappears and never replaces one that is still present.
-
-The hosted browser is currently in beta. Activate socai pro before selecting it:
-
-```bash
-socai pro activate <invite_code>
-socai config set chrome.profile remote
-```
-
-Advanced endpoint overrides remain available through `SOCAI_CDP_WS` and `SOCAI_CDP_URL`.
 
 ### Browser action speed
 
