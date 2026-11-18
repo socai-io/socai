@@ -103,7 +103,8 @@ try{
  check('deep table reaches isolated host storage',preloaded?published.length===1:published.length===0);
  check('exact scripted loop completed',requests.length===calls.length+1+(preloaded?1:0));
  const results=frames.filter(frame=>frame.frame==='event'&&frame.event.event==='tool_result').map(frame=>frame.event);
- check('all scripted tools executed',results.length===calls.length);
+ const initial=results.filter(result=>result.call_id===`initial-skill-${runId}-1`);
+ check('all scripted tools executed',results.length===calls.length+initial.length&&initial.length<=(preloaded?1:0)&&initial.every(result=>result.name==='read_skill'&&!result.error)&&new Set(results.map(result=>result.call_id)).size===results.length);
  const saved=new Map();
  for(let i=0;i<calls.length;i++){
   const expected=calls[i],actual=results.find(result=>result.call_id==='fixture-call-'+i);
@@ -131,6 +132,7 @@ try{
 const result={at:new Date().toISOString(),binary,label,stage,exit,researchActivation:preloaded?'entrypoint-preloaded':'read-skill-tool',checks,allVerified:checks.every(check=>check.ok),httpRequests:requests.length,
  actualNativeWorker:true,scriptedLoopbackModel:true,paidModelCalls:0,chromeTouched:false,customerTasksReplayed:0,productionAuthUsed:false,installedCliChanged:false,
  technicalErrors:frames.filter(frame=>frame.event?.event==='tool_result'&&frame.event.error).map(frame=>({callId:frame.event.call_id,error:frame.event.error})),
+ toolResults:frames.filter(frame=>frame.event?.event==='tool_result').map(frame=>({callId:frame.event.call_id,name:frame.event.name,error:frame.event.error??null})),
  terminalKind:frames.find(frame=>['done','failed','cancelled'].includes(frame.event?.event))?.event?.event||null,
  stderrTail:stderr.slice(-2000)};
 await writeFile(join(stage,'result.json'),JSON.stringify(result,null,2)+'\n',{flag:'wx'});
