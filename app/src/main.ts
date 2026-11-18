@@ -19,6 +19,7 @@ import {
 import { authMenu } from "./panels/auth";
 import { agentPanel } from "./panels/tasks";
 import { settingsMenu } from "./panels/settings";
+import { notifyTaskCompletion } from "./lib/completion-notifications";
 import { subscriptionMenu } from "./panels/subscription";
 import { growthPanel } from "./panels/growth";
 
@@ -687,6 +688,7 @@ async function main(): Promise<void> {
   // run boundaries ask for a full render so the task list and conversation
   // turns update; normal stream rows append in place to preserve scroll.
   await listen<AgentTaskEventPayload>("agent_task:event", (event) => {
+    void notifyTaskCompletion(event.payload);
     const showRuntimeError = captureRuntimeErrorNotice(event.payload);
     if (agentPanel.appendTaskEvent(event.payload) || showRuntimeError) render();
     if (event.payload.kind === "tool_result") {

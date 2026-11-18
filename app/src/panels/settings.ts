@@ -14,6 +14,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ShellState } from "../main";
 import { esc } from "../lib/html";
+import {completionNotificationsEnabled, setCompletionNotificationsEnabled} from "../lib/completion-notifications";
 import {
   getLanguage,
   getTimezone,
@@ -236,6 +237,10 @@ export namespace settingsMenu {
           <label class="t-small settings-row-label" for="settings-timezone">${esc(t("settings.timezone"))}</label>
           <select id="settings-timezone" class="input-field settings-row-select">${options}</select>
         </div>
+        <div class="settings-row">
+          <label class="t-small settings-row-label" for="settings-completion-notifications">${getLanguage() === "zh" ? "任务完成提醒" : "Task completion alerts"}</label>
+          <input id="settings-completion-notifications" type="checkbox" ${completionNotificationsEnabled() ? "checked" : ""} />
+        </div>
       </section>
     `;
   }
@@ -280,6 +285,9 @@ export namespace settingsMenu {
     shell: ShellState,
     onOpen: () => void = () => {},
   ): void {
+    document.getElementById("settings-completion-notifications")?.addEventListener("change", (event) => {
+      setCompletionNotificationsEnabled((event.currentTarget as HTMLInputElement).checked);
+    });
     document.getElementById("settings-toggle")?.addEventListener("click", (event) => {
       event.stopPropagation();
       if (!open) onOpen();
