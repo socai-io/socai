@@ -115,7 +115,10 @@ Return to broader discovery when a restricted pass adds little.
 
 research_update upserts complete entries by stable ID; omitted leads remain.
 Send only changed leads. Keep exploration a short current plan, not a cumulative
-report. Kinds are person/project/topic/query; statuses are pending/investigating/
+report. next_steps replaces a list of up to five non-empty action strings
+(2,000 characters each); omit it to retain the list or send [] to clear it.
+research_read and runtime checkpoints preserve the current action list.
+Kinds are person/project/topic/query; statuses are pending/investigating/
 promising/excluded/deferred. Promising means worth following up, not verified,
 investable or fundraising. Store a source URL, useful findings, why a branch was
 parked, and next actions/questions where useful. Do not replicate every fact in

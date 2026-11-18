@@ -128,6 +128,7 @@ pub struct ResearchState {
     pub focus: ResearchFocus,
     pub objective: String,
     pub criteria: Vec<String>,
+    pub next_steps: Vec<String>,
     pub leads: BTreeMap<String, ResearchLead>,
     pub review: Option<ResearchReview>,
     #[serde(skip)]
@@ -141,6 +142,7 @@ struct ResearchUpdate {
     focus: Option<ResearchFocus>,
     objective: Option<String>,
     criteria: Option<Vec<String>>,
+    next_steps: Option<Vec<String>>,
     #[serde(default)]
     leads: Vec<ResearchLead>,
     review: Option<ResearchReview>,
@@ -168,6 +170,10 @@ impl ResearchState {
         }
         if self.objective.is_empty() || self.criteria.is_empty() {
             bail!("initialize research with an objective and non-empty criteria");
+        }
+        if let Some(next_steps) = update.next_steps {
+            string_list(&next_steps, "next_steps", 5, 2000)?;
+            self.next_steps = next_steps;
         }
         if update.leads.len() > 20 {
             bail!("update at most 20 leads per call");
@@ -238,6 +244,7 @@ impl ResearchState {
             "focus": self.focus,
             "objective": truncate(&self.objective, 500),
             "criteria": self.criteria.iter().map(|c| truncate(c, 200)).collect::<Vec<_>>(),
+            "next_steps": self.next_steps.iter().map(|step| truncate(step, 200)).collect::<Vec<_>>(),
             "lead_count": self.leads.len(),
             "open_lead_count": self.leads.values().filter(|lead| lead.open()).count(),
             "status_counts": {
@@ -267,6 +274,8 @@ impl ResearchState {
             "Acquisition has ended. Completion bookkeeping is waived. Use existing materials for partial delivery and explain gaps. If local read/write/publish tools are exposed, use them only to finish deliverables; do not call research_update or resume discovery."
         } else if self.review.is_some() {
             "Coverage review is recorded. Address any preflight feedback, then proceed to delivery if no valuable new branch remains. Do not re-evaluate unchanged coverage for each local read, write or publish action."
+        } else if self.objective.is_empty() || self.criteria.is_empty() {
+            "Research ledger is not initialized. The first research_update call must include objective and non-empty criteria based on the user's request. Do not invent extra scope. Later updates may omit these fields; use next_steps for a short action list and exploration for the current notebook."
         } else {
             "Before drafting long deliverables, record a coverage review with research_update and read its feedback in a separate round. Review is invalidated by new acquisition or ledger changes, not by local file reads/writes or publishing."
         };
@@ -658,6 +667,7 @@ impl Tool for ResearchReadTool {
             "focus": research.focus,
             "objective": research.objective,
             "total_selected": selected.len(),
+            "next_steps": research.next_steps,
             "offset": input.offset,
             "next_offset": (next < selected.len()).then_some(next),
             "leads": page,
@@ -674,7 +684,9 @@ impl Tool for ResearchUpdateTool {
     }
 
     fn description(&self) -> &str {
-        "Maintain the current run's research objective, criteria, and leads after loading the research skill. \
+        "Maintain the current run's research objective, criteria, next steps, and leads after loading the research skill. \
+         The first update must include objective and non-empty criteria from the user's request; later incremental updates may omit them. \
+         next_steps replaces the saved action list (at most five non-empty strings); omit to retain it or send [] to clear it. \
          Upsert only changed leads as complete entries by stable id; omitted leads are retained. Avoid resending unchanged entries. Record findings, counterevidence, \
          questions, sources and next actions. Explore is the default: retain useful uncertain leads, \
          and use promising for worthwhile follow-up, not verified/investable. Before drafting long deliverables, submit a review with actual coverage, \
@@ -689,6 +701,7 @@ impl Tool for ResearchUpdateTool {
                 "exploration": {"type":"string", "maxLength":12000, "description":"Free-form discovery notebook: useful directions tried, recent new people/background, promising next branches and why; park low-value directions with reasons. Replace with the current plan. Unknown facts alone are not a discovery backlog. No required format."},
                 "objective": {"type": "string", "maxLength": 1500},
                 "criteria": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"type": "string", "maxLength": 500}},
+                "next_steps": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 2000}, "description": "Replace the saved short action list; omitted retains it, [] clears it. Use exploration for longer discovery notes."},
                 "leads": {"type": "array", "maxItems": 20, "items": {
                     "type": "object",
                     "properties": {
