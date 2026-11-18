@@ -119,6 +119,17 @@ All three interfaces share the same browser connection, site capabilities, and r
 
 The desktop app keeps task history and artifacts for each research task.
 
+### Completion notifications
+
+Task completion alerts are on by default. The app requests system permission
+when you send a task or enable alerts in Settings, not when it starts. You can
+turn off **Task completion alerts** in Settings at any time.
+
+Alerts are quiet while you are actively viewing Socai. Failed, cancelled and
+historical runs do not trigger completion alerts; an alert means the run ended,
+not that its answer has been reviewed. The notification contains no task text.
+Your operating system's notification settings still apply.
+
 ### Research sources
 
 The desktop composer supports Auto or one or more research sources: Xiaohongshu,
