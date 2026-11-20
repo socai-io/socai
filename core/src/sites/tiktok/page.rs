@@ -559,12 +559,13 @@ impl<'a> TikTokPageRuntime<'a> {
         }
         profile.video_cards = cards;
         if num_videos.is_some() && profile.video_cards.is_empty() {
-            return Ok(json!({
-                "ok": false,
-                "reason": "author_videos_incomplete",
-                "missing": ["video_cards"],
-                "profile": profile,
-            }));
+            // A captcha or login wall can appear while the last scroll settles, after the loop's
+            // last state check: read the state once more so it is reported as such.
+            let final_state = self.expect_object("authorState", None).await?;
+            return Ok(empty_author_result(
+                &final_state,
+                serde_json::to_value(&profile)?,
+            ));
         }
         Ok(json!({ "ok": true, "profile": profile }))
     }
@@ -1028,6 +1029,24 @@ fn state_failure_reason(value: &Value) -> Option<&str> {
                 )
             })
     }
+}
+
+/// The result of an author read that collected no video cards: a blocking page state wins over
+/// "incomplete", so callers can tell a captcha from a profile that did not render its grid.
+fn empty_author_result(final_state: &Value, profile: Value) -> Value {
+    if let Some(reason) = state_failure_reason(final_state) {
+        return json!({
+            "ok": false,
+            "reason": reason,
+            "state": final_state,
+        });
+    }
+    json!({
+        "ok": false,
+        "reason": "author_videos_incomplete",
+        "missing": ["video_cards"],
+        "profile": profile,
+    })
 }
 
 fn script_ok(value: &Value) -> bool {
