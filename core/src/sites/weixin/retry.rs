@@ -39,7 +39,9 @@ where
     let mut retries = 0;
     loop {
         let mut value = operation().await?;
-        if !blocked(&value) {
+        // Waiting cannot complete a human verification challenge. Return it
+        // immediately, while keeping `blocked` true so batch reads stop too.
+        if !blocked(&value) || value["reason"] == "challenge_required" {
             return Ok(value);
         }
         if retries == 3 {
