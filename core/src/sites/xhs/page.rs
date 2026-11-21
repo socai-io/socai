@@ -1003,7 +1003,7 @@ impl<'a> XhsPageRuntime<'a> {
         self.page
             .click(number(click_at, "x"), number(click_at, "y"))
             .await?;
-        let opened = self.wait_for_note_open(per_attempt).await?;
+        let mut opened = self.wait_for_note_open(per_attempt).await?;
         if note_is_open(&opened) {
             return Ok(json!({
                 "ok": true,
@@ -1022,7 +1022,8 @@ impl<'a> XhsPageRuntime<'a> {
             self.page
                 .click(number(&retry, "x"), number(&retry, "y"))
                 .await?;
-            let opened = self.wait_for_note_open(per_attempt).await?;
+            // Keep the latest attempt's state, including a newly shown login wall.
+            opened = self.wait_for_note_open(per_attempt).await?;
             if note_is_open(&opened) {
                 return Ok(json!({
                     "ok": true,
