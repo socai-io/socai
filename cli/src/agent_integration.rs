@@ -14,6 +14,9 @@ const SKILL_MD: &str =
 const COMMANDS_MD: &str = include_str!(
     "../../plugins/socai-social-research/skills/socai-social-research/references/commands.md"
 );
+const CONNECTION_TROUBLESHOOTING_MD: &str = include_str!(
+    "../../plugins/socai-social-research/skills/socai-social-research/references/connection-troubleshooting.md"
+);
 
 #[derive(Clone, Copy)]
 enum Scope {
@@ -442,6 +445,10 @@ fn prepare_install(target: &Path, nonce: u128, index: usize) -> Result<PreparedI
             .with_context(|| format!("could not create {}", references.display()))?;
         write_new(&staged.join("SKILL.md"), SKILL_MD)?;
         write_new(&references.join("commands.md"), COMMANDS_MD)?;
+        write_new(
+            &references.join("connection-troubleshooting.md"),
+            CONNECTION_TROUBLESHOOTING_MD,
+        )?;
         if !target_is_current(&staged) {
             bail!(
                 "staged integration verification failed for {}",
@@ -620,10 +627,13 @@ fn remove_path(path: &Path) -> Result<()> {
 fn target_is_current(path: &Path) -> bool {
     let skill = path.join("SKILL.md");
     let commands = path.join("references/commands.md");
+    let troubleshooting = path.join("references/connection-troubleshooting.md");
     reject_symlink_components(&skill).is_ok()
         && reject_symlink_components(&commands).is_ok()
+        && reject_symlink_components(&troubleshooting).is_ok()
         && regular_file_matches(&skill, SKILL_MD)
         && regular_file_matches(&commands, COMMANDS_MD)
+        && regular_file_matches(&troubleshooting, CONNECTION_TROUBLESHOOTING_MD)
 }
 
 fn regular_file_matches(path: &Path, expected: &str) -> bool {

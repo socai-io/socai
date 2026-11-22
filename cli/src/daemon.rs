@@ -80,9 +80,10 @@ fn process_build_id() -> &'static str {
     })
 }
 
-/// Daemon failures the client recovers by replacing the running daemon.
+/// Distinguish failure before dispatch from a response with a known outcome.
 #[derive(Debug)]
 enum DaemonClientError {
+    Unavailable(String),
     VersionMismatch(String),
     StaleDaemon(String),
     CommandFailed(String),
@@ -91,7 +92,8 @@ enum DaemonClientError {
 impl std::fmt::Display for DaemonClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DaemonClientError::VersionMismatch(message)
+            DaemonClientError::Unavailable(message)
+            | DaemonClientError::VersionMismatch(message)
             | DaemonClientError::StaleDaemon(message)
             | DaemonClientError::CommandFailed(message) => f.write_str(message),
         }
@@ -309,11 +311,6 @@ pub async fn run_daemon() -> Result<()> {
         }
     }
 
-    // Unlink our IPC endpoint before the slow browser teardown: a successor
-    // daemon may bind a fresh socket at this path right away, and removing it
-    // after shutdown would yank the new daemon's endpoint from under it.
-    cleanup_stale_ipc(&paths).await?;
-    let _ = fs::remove_file(&paths.pid).await;
     // Tear down directly on the runtime handle, not through the DaemonState
     // mutex — an in-flight command may hold that mutex for minutes. Stopping
     // means stopping: the browser is yanked from under any such command (it
@@ -324,6 +321,13 @@ pub async fn run_daemon() -> Result<()> {
     // could stall ~30s per command against a wedged browser and eat the
     // SIGTERM kill grace before the release starts.
     runtime_for_shutdown.disconnect_browser().await;
+    // Keep the endpoint reserved until bounded browser teardown returns. Version
+    // replacement waits for its removal; unlinking it earlier would let a
+    // successor start while this runtime still owns its browser connection.
+    // No endpoint cleanup may run after this point: a successor can bind as
+    // soon as the marker disappears.
+    let _ = fs::remove_file(&paths.pid).await;
+    cleanup_stale_ipc(&paths).await?;
     Ok(())
 }
 
@@ -365,14 +369,26 @@ pub async fn send_or_spawn(
         // command. Replace it with the CLI the user just invoked.
         Some(DaemonClientError::VersionMismatch(_) | DaemonClientError::StaleDaemon(_)) => {
             eprintln!("socai daemon does not match this CLI; restarting it");
-            let _ = stop_daemon().await;
-            wait_for_daemon_exit().await;
+            if !stop_daemon().await? || !wait_for_daemon_exit().await {
+                return Err(
+                    err.context("daemon shutdown was not confirmed; existing endpoint preserved")
+                );
+            }
         }
         // The daemon is alive and returned an application/browser error. Keep
         // its CDP websocket and reusable site tab intact so a corrected follow-
         // up command can continue in the same browser session.
         Some(DaemonClientError::CommandFailed(_)) => return Err(err),
-        None => {}
+        // Only a missing/refused IPC connection proves this request was not
+        // dispatched. Once connected, EOF, invalid JSON, write failures and
+        // timeouts can all happen after execution; never unlink the live
+        // socket or silently replay those commands.
+        Some(DaemonClientError::Unavailable(_)) => {}
+        None => {
+            return Err(err.context(
+                "daemon response was interrupted; command outcome is unknown; inspect status, logs and saved output before retrying (request was not replayed)",
+            ));
+        }
     }
     spawn_daemon().await?;
     send_request(site, command, args, command_timeout, on_progress).await
@@ -1150,7 +1166,18 @@ async fn send_request(
     on_progress: &mut dyn FnMut(ToolProgressEvent),
 ) -> Result<Value> {
     let paths = daemon_paths()?;
-    let (stream, auth) = connect_daemon(&paths).await?;
+    let (stream, auth) = connect_daemon(&paths).await.map_err(|err| {
+        if err.downcast_ref::<std::io::Error>().is_some_and(|source| {
+            matches!(
+                source.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            )
+        }) {
+            anyhow::Error::new(DaemonClientError::Unavailable(format!("{err:#}")))
+        } else {
+            err
+        }
+    })?;
     let request = DaemonRequest {
         id: request_id(),
         site: site.to_string(),
@@ -1203,14 +1230,14 @@ async fn send_request(
             }
             // Legacy daemons (pre build checking) execute commands without
             // validating; their responses lack the build identity. Treat them as
-            // stale so they get replaced rather than silently serving old code.
+            // uncertain, not safe-to-retry: the command may already have run.
             if !matches!(command, "ping" | "shutdown")
                 && (response.version.as_deref() != Some(PROTOCOL_VERSION)
                     || response.build_id.as_deref() != Some(process_build_id()))
             {
-                return Err(anyhow::Error::new(DaemonClientError::StaleDaemon(
-                    "socai daemon predates build checking or runs a different build".to_string(),
-                )));
+                return Err(anyhow!(
+                    "socai daemon response lacks matching build identity; the command may already have executed; inspect its output before updating the daemon"
+                ));
             }
             return response
                 .result
@@ -1325,18 +1352,24 @@ async fn connect_daemon(paths: &DaemonPaths) -> Result<(DaemonStream, Option<Str
     Ok((stream, Some(endpoint.token)))
 }
 
-/// Give a just-stopped daemon a moment to unlink its IPC endpoint so the
-/// successor's pre-spawn cleanup doesn't race its exit cleanup.
-async fn wait_for_daemon_exit() {
-    let Ok(paths) = daemon_paths() else { return };
+/// Wait for bounded browser teardown and the daemon to release its endpoint.
+/// A slow shutdown fails closed instead of starting an overlapping successor.
+async fn wait_for_daemon_exit() -> bool {
+    let Ok(paths) = daemon_paths() else {
+        return false;
+    };
     #[cfg(unix)]
     let marker = paths.socket.clone();
     #[cfg(windows)]
     let marker = paths.endpoint.clone();
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // Browser teardown can spend five seconds closing owned targets or
+    // releasing a remote session, then eight settling an in-flight connect.
+    // Poll rather than sleeping so healthy handoffs still finish immediately.
+    let deadline = Instant::now() + Duration::from_secs(15);
     while marker.exists() && Instant::now() < deadline {
         sleep(Duration::from_millis(50)).await;
     }
+    !marker.exists()
 }
 
 #[cfg(unix)]

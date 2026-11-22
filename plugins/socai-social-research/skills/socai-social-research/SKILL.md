@@ -32,6 +32,9 @@ For a cross-platform request, invoke each named platform. If the user explicitly
 ## Execution rules
 
 - Default to read-only search, profile, post, comment, and page-state commands.
+- Send browser commands to a shared daemon sequentially, not concurrently. Honor the user's requested sample and depth; otherwise start with a lightweight index and selectively fetch bodies. Do not enable comments, OCR, or transcription without a research need.
+- For an XHS probe use `--preview`; explicitly use `--num-comments 0` when comments are unnecessary, after checking current help. Save large JSON results to task-specific files and read relevant records instead of loading the entire batch into context.
+- For connection timeouts or repeated disconnects, read [connection troubleshooting](references/connection-troubleshooting.md). Check logs, the actual daemon PID and listener before recovery. Do not automatically resend timed-out commands, stop the daemon, switch profiles, restart Chrome, or bring it to the foreground.
 - Use only the platforms relevant to the request. Preserve structured JSON until synthesis.
 - Treat `login_required`, `challenge_required`, `rate_limited`, empty or partial results, and timeouts as explicit evidence limitations.
 - Cite canonical post/profile URLs returned by socai. Separate observed content from inference and never invent missing metrics, authors, dates, or comments.
