@@ -172,6 +172,17 @@ shows when Socai is waiting for the model service. Once the service responds,
 Socai retries the current step with the tool results it already collected.
 You can stop the task while it is waiting.
 
+### Completion notifications
+
+Task completion alerts are on by default. The app requests system permission
+when you send a task or enable alerts in Settings, not when it starts. You can
+turn off **Task completion alerts** in Settings at any time.
+
+Alerts are quiet while you are actively viewing Socai. Failed, cancelled and
+historical runs do not trigger completion alerts; an alert means the run ended,
+not that its answer has been reviewed. The notification contains no task text.
+Your operating system's notification settings still apply.
+
 ### Research sources
 
 The desktop composer supports Auto or one or more research sources: Xiaohongshu,

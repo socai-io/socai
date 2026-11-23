@@ -1,3 +1,4 @@
+import { requestCompletionNotificationPermission } from "../lib/completion-notifications";
 import { bindWorkflows, openWorkflows, renderWorkflows, type WorkflowSkill } from "./workflows";
 import { refreshResearchBoard, bindResearchBoard } from "./research-board";
 import { getLanguage } from "../lib/i18n";
@@ -1646,6 +1647,7 @@ export namespace agentPanel {
     shell.rerender();
     try {
       const selected = selectedModel();
+      requestCompletionNotificationPermission();
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_start", {
         language: getLanguage(),
         task: value,
@@ -1692,6 +1694,7 @@ export namespace agentPanel {
     streamScroll.set(taskId, { top: 0, pinned: true });
     shell.rerender();
     try {
+      requestCompletionNotificationPermission();
       const snapshot = await invoke<AgentTaskSnapshot>("agent_task_reply", {
         language: getLanguage(),
         taskId,

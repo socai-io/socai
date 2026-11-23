@@ -19,6 +19,7 @@ import {
 import { authMenu } from "./panels/auth";
 import { agentPanel } from "./panels/tasks";
 import { settingsMenu } from "./panels/settings";
+import { notifyTaskCompletion } from "./lib/completion-notifications";
 import { subscriptionMenu } from "./panels/subscription";
 import { growthPanel } from "./panels/growth";
 
@@ -705,6 +706,7 @@ async function main(): Promise<void> {
     }
     const showRuntimeError = captureRuntimeErrorNotice(event.payload);
     if (agentPanel.appendTaskEvent(event.payload) || showRuntimeError) render();
+    void notifyTaskCompletion(event.payload);
     if (event.payload.kind === "tool_result") {
       // Each finished step's notes are on disk — refresh so the result row's
       // embed and newly-created artifact cards render now, not when the whole
