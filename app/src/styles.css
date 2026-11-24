@@ -2951,9 +2951,10 @@ code {
 .auth-sign-in { min-height: 30px; padding: 5px 14px; }
 .auth-chip { max-width: min(320px, 55vw); }
 .auth-chip .badge-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.auth-login-options { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
+.auth-login-options { display: flex; flex-direction: column; gap: var(--sp-2); }
 .auth-login-option { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 8px; white-space: normal; }
-.auth-login-option img { flex: 0 0 20px; width: 20px; height: 20px; object-fit: contain; }
+.auth-login-option img,
+.auth-login-option svg { flex: 0 0 20px; width: 20px; height: 20px; object-fit: contain; }
 .auth-model-picker .agent-account-config { margin-top: 0; }
 .auth-model-picker .agent-config-key { padding: 0; border: 0; background: transparent; }
 .settings-chrome-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }

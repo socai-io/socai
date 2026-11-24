@@ -1063,6 +1063,7 @@ struct TurnBrowser {
     telemetry: DesktopTelemetry,
     runtime: SocaiRuntime,
     task_id: String,
+    billing_turn_id: String,
     session_id: String,
     title: String,
     home_url: &'static str,
@@ -1070,6 +1071,41 @@ struct TurnBrowser {
 }
 
 impl TurnBrowser {
+    // A connection can be reused across many turns. Record its actual type
+    // when this turn binds a page, not just when Chrome first connects.
+    async fn capture_browser_use(&self, stage: &str, page: &RuntimePageSession) {
+        // Read ownership from the page that this turn actually uses, even if
+        // the process-wide connection disconnects before this event is sent.
+        let remote = page.is_remote_browser();
+        let status = self.runtime.browser_status().await;
+        let (profile, source) = match &status {
+            BrowserStatus::Connected {
+                managed, source, ..
+            } => (
+                if remote {
+                    "remote"
+                } else if *managed {
+                    "managed"
+                } else {
+                    "existing"
+                },
+                socai_core::telemetry::browser_source_category(source),
+            ),
+            _ => (if remote { "remote" } else { "unknown" }, "unknown"),
+        };
+        self.telemetry.capture(
+            "socai_agent_task_browser",
+            json!({
+                "task_id": self.task_id,
+                "billing_turn_id": self.billing_turn_id,
+                "stage": stage,
+                "browser_type": if remote { "remote" } else { "local" },
+                "browser_profile": profile,
+                "browser_source": source,
+            }),
+        );
+    }
+
     async fn page(&self) -> Result<Arc<RuntimePageSession>> {
         self.admitted
             .get_or_init(|| self.admit())
@@ -1305,6 +1341,7 @@ impl TurnBrowser {
         let duration_ms = started.elapsed().as_millis() as u64;
         match recovery {
             Ok(()) => {
+                self.capture_browser_use("recovered", &browser.page).await;
                 self.emit_recovery_event(
                     "recovered",
                     "browser connection recovered; retrying the interrupted operation".into(),
@@ -1422,6 +1459,7 @@ impl TurnBrowser {
         let url = bind_task_page(&self.app, &self.registry, &self.task_id, &page, &self.title)
             .await
             .ok_or_else(|| PageAdmission::Failed("task is no longer active".into()))?;
+        self.capture_browser_use("admitted", &page).await;
         guard.disarm();
         Ok(AdmittedBrowser {
             page,
@@ -3036,6 +3074,7 @@ async fn run_agent_task_background(
         "socai_agent_task_start",
         json!({
             "task_id": task_id.clone(),
+            "billing_turn_id": billing_id,
             "provider": provider.clone(),
             "model": model.clone(),
             "task_len": task.chars().count(),
@@ -3114,6 +3153,7 @@ async fn run_agent_task_background(
                         json!({
                             "task_id": task_id.clone(),
                             "run_id": outcome.run_id.clone(),
+                            "billing_turn_id": billing_id,
                             "provider": provider.clone(),
                             "model": model.clone(),
                             "outcome": "completed",
@@ -3173,6 +3213,7 @@ async fn run_agent_task_background(
                             "provider": provider.clone(),
                             "model": model.clone(),
                             "outcome": "failed",
+                            "billing_turn_id": billing_id,
                             "error": short_error(&error),
                             "points_used": snapshot.points_used,
                             "duration_ms": duration_ms(snapshot.started_at, snapshot.finished_at),
@@ -3334,6 +3375,11 @@ async fn run_desktop_agent(
     let conversation = Conversation::load(session_dir)?;
     let seed_messages = conversation.chat_messages();
     let context_note = conversation.context_note();
+    let prior_run_dirs = conversation
+        .runs
+        .iter()
+        .map(|run| PathBuf::from(&run.run_dir))
+        .collect();
     let session_id = conversation.id;
     let research_mode = selection.research_mode;
     let workflow = selection.workflow;
@@ -3369,6 +3415,7 @@ async fn run_desktop_agent(
             telemetry: telemetry.clone(),
             runtime,
             task_id: task_id.clone(),
+            billing_turn_id: billing_id.to_owned(),
             session_id: session_id.clone(),
             title: format!("task · {}", title_safe(task)),
             home_url: recovery_home_url,
@@ -3498,6 +3545,7 @@ async fn run_desktop_agent(
             enabled_sites: available_sites,
             initial_skills: research.initial_skills(),
             seed_messages,
+            prior_run_dirs,
             run_dir,
             working_dir: Some(PathBuf::from(session_dir)),
             session_id: Some(session_id),
@@ -3837,6 +3885,71 @@ pub fn auth_google_cancel(state: State<'_, GoogleAuthState>) -> Result<(), Strin
         .cancel
         .lock()
         .map_err(|_| "Google login unavailable")?;
+    if let Some(sender) = active.as_mut() {
+        let (closed, receiver) = tokio::sync::oneshot::channel();
+        drop(receiver);
+        let sender = std::mem::replace(sender, closed);
+        let _ = sender.send(());
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+pub struct WechatAuthState {
+    cancel: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+#[tauri::command]
+pub async fn auth_wechat_login(
+    app: AppHandle,
+    state: State<'_, WechatAuthState>,
+    telemetry: State<'_, DesktopTelemetry>,
+    link: bool,
+) -> Result<socai_core::cloud::AuthSession, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    {
+        let mut active = state
+            .cancel
+            .lock()
+            .map_err(|_| "WeChat login unavailable")?;
+        if active.is_some() {
+            return Err("WeChat login already in progress".into());
+        }
+        *active = Some(sender);
+    }
+    let result = tokio::select! {
+        result = socai_core::cloud::sign_in_with_wechat(link, |url| {
+            open_external(url.to_owned())
+                .map_err(|_| anyhow::anyhow!("failed to open WeChat login browser"))?;
+            let _ = app.emit("auth-wechat-browser-opened", ());
+            Ok(())
+        }) => result.map_err(|err| format!("{err:#}")),
+        _ = receiver => Err("WeChat login cancelled".into()),
+    };
+    if let Ok(mut active) = state.cancel.lock() {
+        *active = None;
+    }
+    telemetry.capture(
+        "socai_auth_login",
+        json!({
+            "method": "wechat", "link": link,
+            "outcome": if result.is_ok() { "completed" } else { "failed" },
+        }),
+    );
+    if result.is_ok() {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_focus();
+        }
+    }
+    result
+}
+
+#[tauri::command]
+pub fn auth_wechat_cancel(state: State<'_, WechatAuthState>) -> Result<(), String> {
+    let mut active = state
+        .cancel
+        .lock()
+        .map_err(|_| "WeChat login unavailable")?;
     if let Some(sender) = active.as_mut() {
         let (closed, receiver) = tokio::sync::oneshot::channel();
         drop(receiver);

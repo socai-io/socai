@@ -128,6 +128,7 @@ pub fn run() {
         .manage(runtime)
         .manage(AgentTaskRegistry::new(&telemetry))
         .manage(commands::GoogleAuthState::default())
+        .manage(commands::WechatAuthState::default())
         .manage(connectors::feishu::FeishuState::default())
         .manage(telemetry)
         .setup(|app| {
@@ -381,6 +382,8 @@ pub fn run() {
             commands::auth_session,
             commands::auth_google_login,
             commands::auth_google_cancel,
+            commands::auth_wechat_login,
+            commands::auth_wechat_cancel,
             commands::auth_sms_send,
             commands::auth_sms_verify,
             commands::auth_logout,

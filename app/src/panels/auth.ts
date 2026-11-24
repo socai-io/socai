@@ -8,11 +8,14 @@ import type { ShellState } from "../main";
 import { esc } from "../lib/html";
 import { getLocale, getTimezone, setAccountSignedIn, t } from "../lib/i18n";
 
+const WECHAT_ICON = `<svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><path fill="#07C160" d="M9.5 4C5.36 4 2 6.82 2 10.3c0 1.98 1.09 3.74 2.79 4.9l-.7 2.1 2.44-1.22c.93.27 1.93.42 2.97.42.32 0 .64-.02.95-.05a5.28 5.28 0 0 1-.27-1.67c0-3.17 2.86-5.74 6.39-5.74.34 0 .67.03 1 .08C16.86 6.18 13.52 4 9.5 4Zm-2.5 5.15a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm5 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/><path fill="#07C160" d="M22 14.78c0-2.78-2.69-5.03-6-5.03s-6 2.25-6 5.03 2.69 5.03 6 5.03c.77 0 1.51-.12 2.19-.34l1.96.98-.56-1.69c1.46-.91 2.41-2.35 2.41-3.98Zm-8-1.03a.85.85 0 1 1 0-1.7.85.85 0 0 1 0 1.7Zm4 0a.85.85 0 1 1 0-1.7.85.85 0 0 1 0 1.7Z"/></svg>`;
+
 interface AuthSession {
   logged_in: boolean;
   user_id: string;
   phone: string;
   email: string;
+  nickname: string;
   device_id: string;
   status: string;
 }
@@ -33,13 +36,14 @@ interface WalletBalance {
   active_until: string | null;
 }
 
-type AuthPhase = "loading" | "idle" | "sending" | "verifying" | "google" | "logging_out";
+type AuthPhase = "loading" | "idle" | "sending" | "verifying" | "google" | "wechat" | "logging_out";
 
 const EMPTY_SESSION: AuthSession = {
   logged_in: false,
   user_id: "",
   phone: "",
   email: "",
+  nickname: "",
   device_id: "",
   status: "",
 };
@@ -63,6 +67,7 @@ export namespace authMenu {
   let loginExpanded = false;
   let upgradeExpanded = false;
   let googleBrowserOpened = false;
+  let wechatBrowserOpened = false;
 
   export async function loadSession(): Promise<void> {
     phase = "loading";
@@ -139,7 +144,7 @@ export namespace authMenu {
   export function closePopover(): boolean {
     if (!open) return false;
     open = false;
-    if (!challenge && phase !== "google") loginExpanded = false;
+    if (!challenge && phase !== "google" && phase !== "wechat") loginExpanded = false;
     stopCountdown();
     return true;
   }
@@ -148,7 +153,11 @@ export namespace authMenu {
     modelConfigContent = "",
     subscriptionContent = "",
   ): string {
-    const accountLabel = sessionRejected ? t("auth.signInAgain") : session.logged_in ? (session.phone ? maskPhone(session.phone) : session.email || t("auth.title")) : t("auth.signIn");
+    const accountLabel = sessionRejected
+      ? t("auth.signInAgain")
+      : session.logged_in
+        ? (session.phone ? maskPhone(session.phone) : session.email || session.nickname || t("auth.title"))
+        : t("auth.signIn");
     const dot = isLoggedIn() ? "badge-dot-ink" : "badge-dot-hollow";
     return `
       <div class="auth-menu">
@@ -192,10 +201,19 @@ export namespace authMenu {
     </div>`;
   }
 
+  function renderWechatPending(): string {
+    return `<div class="auth-form" role="status">
+      <p class="t-small subtle auth-copy">${esc(t(wechatBrowserOpened ? "auth.wechatWaiting" : "auth.wechatPreparing"))}</p>
+      <button id="auth-wechat-cancel" type="button" class="auth-text-button">${esc(t("auth.wechatCancel"))}</button>
+    </div>`;
+  }
+
   function renderLoginOptions(): string {
     if (phase === "google") return renderGooglePending();
+    if (phase === "wechat") return renderWechatPending();
     return `
       <div class="auth-login-options">
+        <button id="auth-wechat-login" type="button" class="btn-ghost auth-login-option" ${phase !== "idle" ? "disabled" : ""}>${WECHAT_ICON}<span>${esc(t("auth.wechatLogin"))}</span></button>
         <button id="auth-google-login" type="button" class="btn-ghost auth-login-option" ${phase !== "idle" ? "disabled" : ""}><img src="${googleLogo}" width="20" height="20" alt="" /><span>${esc(t("auth.googleLogin"))}</span></button>
         <button id="auth-start-login" type="button" class="btn-ghost auth-login-option" aria-expanded="${loginExpanded || challenge ? "true" : "false"}" ${phase !== "idle" ? "disabled" : ""}>${esc(t("auth.phoneLogin"))}</button>
       </div>
@@ -235,6 +253,8 @@ export namespace authMenu {
       ${upgradeExpanded && !sessionRejected ? `<section class="auth-upgrade-panel" aria-label="${esc(t("subscription.upgradePro"))}">${subscriptionContent}</section>` : ""}
       ${phase === "google" ? renderGooglePending() : session.email || sessionRejected ? ""
         : `<button id="auth-google-link" type="button" class="auth-text-button" ${phase !== "idle" ? "disabled" : ""}>${esc(t("auth.googleLink"))}</button>`}
+      ${phase === "wechat" ? renderWechatPending() : session.nickname || sessionRejected ? ""
+        : `<button id="auth-wechat-link" type="button" class="auth-text-button" ${phase !== "idle" ? "disabled" : ""}>${esc(t("auth.wechatLink"))}</button>`}
       <div class="auth-session-actions">
         <button id="auth-logout" type="button" class="auth-text-button" ${phase !== "idle" ? "disabled" : ""}>${esc(phase === "logging_out" ? t("auth.loggingOut") : t("auth.logout"))}</button>
       </div>
@@ -327,6 +347,18 @@ export namespace authMenu {
         shell.rerender();
       });
     });
+    document.getElementById("auth-wechat-login")?.addEventListener("click", () => {
+      void wechatLogin(shell, onSessionChanged, false);
+    });
+    document.getElementById("auth-wechat-link")?.addEventListener("click", () => {
+      void wechatLogin(shell, onSessionChanged, true);
+    });
+    document.getElementById("auth-wechat-cancel")?.addEventListener("click", () => {
+      void invoke("auth_wechat_cancel").catch(() => {
+        error = t("auth.requestFailed");
+        shell.rerender();
+      });
+    });
 
     if (session.logged_in) {
       document.getElementById("auth-sign-in-again")?.addEventListener("click", () => {
@@ -414,6 +446,40 @@ export namespace authMenu {
         error = friendlyError(err);
         open = true;
         loginExpanded = !session.logged_in;
+      }
+    } finally {
+      unlisten?.();
+      phase = "idle";
+      shell.rerender();
+    }
+  }
+
+  async function wechatLogin(shell: ShellState, onSessionChanged: () => Promise<void>, link: boolean): Promise<void> {
+    if (phase !== "idle") return;
+    phase = "wechat";
+    wechatBrowserOpened = false;
+    error = "";
+    shell.rerender();
+    let unlisten: UnlistenFn | undefined;
+    try {
+      unlisten = await listen("auth-wechat-browser-opened", () => {
+        wechatBrowserOpened = true;
+        shell.rerender();
+      });
+      setSession(await invoke<AuthSession>("auth_wechat_login", { link }));
+      challenge = null;
+      code = "";
+      retryAt = 0;
+      loginExpanded = false;
+      upgradeExpanded = false;
+      stopExpiryTimer();
+      stopCountdown();
+      await refreshWallet();
+      await onSessionChanged();
+    } catch (err) {
+      if (!String(err).toLowerCase().includes("wechat login cancelled")) {
+        error = friendlyError(err);
+        open = true;
       }
     } finally {
       unlisten?.();
@@ -604,6 +670,11 @@ export namespace authMenu {
 
   function friendlyError(value: unknown): string {
     const message = String(value).toLowerCase();
+    if (message.includes("wechat login is not configured")) return t("auth.wechatNotConfigured");
+    if (message.includes("failed to open wechat login browser")) return t("auth.wechatBrowserFailed");
+    if (message.includes("wechat login timed out") || message.includes("wechat login expired")) return t("auth.wechatTimeout");
+    if (message.includes("already linked") || message.includes("already has a wechat")) return t("auth.wechatConflict");
+    if (message.includes("wechat")) return t("auth.wechatFailed");
     if (message.includes("google login is not configured")) return t("auth.googleNotConfigured");
     if (message.includes("failed to open google login browser")) return t("auth.googleBrowserFailed");
     if (message.includes("google login timed out")) return t("auth.googleTimeout");

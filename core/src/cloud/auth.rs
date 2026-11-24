@@ -24,6 +24,7 @@ pub struct AuthSession {
     pub user_id: String,
     pub phone: String,
     pub email: String,
+    pub nickname: String,
     pub device_id: String,
     pub status: String,
 }
@@ -62,6 +63,8 @@ pub struct CloudCredentials {
     #[serde(default)]
     pub email: String,
     #[serde(default)]
+    pub nickname: String,
+    #[serde(default)]
     pub status: String,
     #[serde(default)]
     pub hosted_llm_default_applied: bool,
@@ -97,6 +100,8 @@ pub(super) struct LoginResponse {
     phone: String,
     #[serde(default)]
     email: String,
+    #[serde(default)]
+    nickname: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,6 +124,7 @@ pub fn auth_session() -> Result<AuthSession> {
         user_id: creds.user_id,
         phone: creds.phone,
         email: creds.email,
+        nickname: creds.nickname,
         device_id: creds.device_id,
         status: if creds.status.trim().is_empty() {
             "active".into()
@@ -180,6 +186,7 @@ pub async fn activate_with_base_url(
         user_id: String::new(),
         phone: String::new(),
         email: String::new(),
+        nickname: String::new(),
         status: String::new(),
         hosted_llm_default_applied: false,
         hosted_llm_selected: false,
@@ -283,6 +290,7 @@ pub(super) fn save_login_credentials(
             body.phone
         },
         email: body.email,
+        nickname: body.nickname,
         status: body.status,
         hosted_llm_default_applied: previous
             .as_ref()
@@ -422,6 +430,7 @@ fn logged_out_session() -> AuthSession {
         user_id: String::new(),
         phone: String::new(),
         email: String::new(),
+        nickname: String::new(),
         device_id: String::new(),
         status: String::new(),
     }

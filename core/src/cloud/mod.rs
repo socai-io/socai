@@ -7,6 +7,7 @@ mod browser;
 mod google;
 mod growth;
 mod guest;
+mod wechat;
 pub use growth::{
     cancel_scheduled_task, create_conversation_share, create_promotion_invites,
     create_scheduled_task, delete_scheduled_task, promotion, revoke_conversation_share,
@@ -33,5 +34,6 @@ pub use billing::{
 };
 pub use browser::{create_browser_session, release_browser_session, BrowserSessionInfo};
 pub use google::sign_in_with_google;
+pub use wechat::sign_in_with_wechat;
 
 pub(crate) use auth::telemetry_account_snapshot;
