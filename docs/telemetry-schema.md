@@ -195,6 +195,11 @@ Current metadata keys:
 | `security_verification_marker` | string | Matched verification marker (`Security Verification` or `image captcha`). |
 | `recovery_tool` | string | Agent tool recommended for the recognized blocker; currently `wait_for_rate_limit`. |
 | `waited_seconds` | integer | Actual randomized cooldown duration returned by a wait tool. |
+| `ip_hash` | string | Added by the proxy. 16-hex-char salted HMAC-SHA256 of the client IP (never raw IP). |
+| `ip_prefix_hash` | string | Added by the proxy. 16-hex-char salted HMAC-SHA256 of the IPv4 `/24` or IPv6 `/48` prefix. |
+| `geo_country` | string | Added by the proxy from Vercel `x-vercel-ip-country` when present. |
+| `geo_city` | string | Added by the proxy from Vercel `x-vercel-ip-city` (URL-decoded) when present. |
+| `net_asn` | string | Added by the proxy from Vercel `x-vercel-ip-as-number` when present. |
 | `proxy_version` | number | Added by the proxy. Current value: `1`. |
 
 ## CLI external-agent task context

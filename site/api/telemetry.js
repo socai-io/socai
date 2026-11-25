@@ -1,3 +1,5 @@
+import { createHmac } from 'node:crypto';
+
 const DEFAULT_AXIOM_URL = 'https://api.axiom.co';
 const DEFAULT_DATASET = 'socai-cli-prod';
 const MAX_BODY_BYTES = 128 * 1024;
@@ -51,8 +53,9 @@ export default async function handler(req, res) {
     return;
   }
 
+  const netCtx = networkContext(req);
   const sanitized = events
-    .map((event) => sanitizeEvent(event))
+    .map((event) => sanitizeEvent(event, netCtx))
     .filter((event) => event !== null);
 
   if (sanitized.length === 0) {
@@ -118,7 +121,7 @@ function normalizeEvents(input) {
   return [];
 }
 
-function sanitizeEvent(raw) {
+function sanitizeEvent(raw, netCtx = null) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return null;
   }
@@ -145,7 +148,13 @@ function sanitizeEvent(raw) {
     }
   }
 
-  // Stamp proxy_version after the loop so a client-sent value can't override it.
+  // Stamp proxy-derived fields after the loop so client-sent values can't override them.
+  for (const key of ['ip_hash', 'ip_prefix_hash', 'geo_country', 'geo_city', 'net_asn']) {
+    delete out[key];
+  }
+  if (netCtx) {
+    Object.assign(out, netCtx);
+  }
   out.proxy_version = 1;
   return out;
 }
@@ -225,6 +234,74 @@ function cleanString(value, maxChars = MAX_STRING_CHARS) {
   return cleaned.length > maxChars ? `${cleaned.slice(0, maxChars)}…` : cleaned;
 }
 
+function clientIp(req) {
+  const raw =
+    String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim() ||
+    String(req.headers?.['x-real-ip'] || '').trim() ||
+    String(req.socket?.remoteAddress || '').trim();
+  if (!raw) {
+    return undefined;
+  }
+  return raw.startsWith('::ffff:') ? raw.slice(7) : raw;
+}
+
+function ipPrefix(ip) {
+  if (!ip) {
+    return undefined;
+  }
+  if (ip.includes('.')) {
+    const parts = ip.split('.');
+    return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0/24` : undefined;
+  }
+  if (ip.includes(':')) {
+    const parts = ip.toLowerCase().split(':');
+    return parts.length >= 3 ? `${parts.slice(0, 3).join(':')}::/48` : undefined;
+  }
+  return undefined;
+}
+
+function hashNetworkId(value) {
+  const salt = process.env.TELEMETRY_IP_SALT || process.env.AXIOM_ORG_ID || 'socai-ip-v1';
+  return createHmac('sha256', salt).update(value).digest('hex').slice(0, 16);
+}
+
+function decodeHeader(value) {
+  const cleaned = cleanString(typeof value === 'string' ? value : undefined, 120);
+  if (!cleaned) {
+    return undefined;
+  }
+  try {
+    return cleanString(decodeURIComponent(cleaned), 120);
+  } catch {
+    return cleaned;
+  }
+}
+
+function networkContext(req) {
+  const ctx = {};
+  const ip = clientIp(req);
+  if (ip) {
+    ctx.ip_hash = hashNetworkId(ip);
+    const prefix = ipPrefix(ip);
+    if (prefix) {
+      ctx.ip_prefix_hash = hashNetworkId(prefix);
+    }
+  }
+  const country = cleanString(req.headers?.['x-vercel-ip-country'], 16);
+  const city = decodeHeader(req.headers?.['x-vercel-ip-city']);
+  const asn = cleanString(req.headers?.['x-vercel-ip-as-number'], 32);
+  if (country) {
+    ctx.geo_country = country;
+  }
+  if (city) {
+    ctx.geo_city = city;
+  }
+  if (asn) {
+    ctx.net_asn = asn;
+  }
+  return ctx;
+}
+
 function rateLimitKey(req, events) {
   const installId = events
     .map(flattenEvent)
@@ -233,8 +310,7 @@ function rateLimitKey(req, events) {
   if (installId) {
     return `install:${installId}`;
   }
-  const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return `ip:${forwardedFor || req.socket?.remoteAddress || 'unknown'}`;
+  return `ip:${clientIp(req) || 'unknown'}`;
 }
 
 function consumeRateLimit(key, count) {
