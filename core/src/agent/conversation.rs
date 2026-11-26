@@ -217,7 +217,7 @@ fn final_reasoning_content(run_dir: &Path) -> Option<String> {
     let response = responses.pop()?;
     let response = std::fs::read_to_string(response).ok()?;
     let response = serde_json::from_str::<LLMResponse>(&response).ok()?;
-    (!response.reasoning_content.trim().is_empty()).then_some(response.reasoning_content)
+    (!response.reasoning_content.is_empty()).then_some(response.reasoning_content)
 }
 
 /// Reconstruct the normalized transcript that the agent had already seen

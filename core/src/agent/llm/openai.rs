@@ -588,8 +588,13 @@ fn build_chat_messages(
                     assistant_msg.insert("tool_calls".into(), Value::Array(tool_calls.clone()));
                 }
                 if preserve_reasoning && (preserve_all_reasoning || !tool_calls.is_empty()) {
-                    if let Some(reasoning) = reasoning.filter(|text| !text.trim().is_empty()) {
-                        assistant_msg.insert("reasoning_content".into(), json!(reasoning));
+                    // DeepSeek replay distinguishes an empty reasoning field
+                    // from an omitted one. Keep returned whitespace verbatim;
+                    // histories without reasoning still carry an empty field.
+                    if preserve_all_reasoning
+                        || reasoning.as_ref().is_some_and(|text| !text.trim().is_empty())
+                    {
+                        assistant_msg.insert("reasoning_content".into(), json!(reasoning.unwrap_or_default()));
                     }
                 }
                 out.push(Value::Object(assistant_msg));
