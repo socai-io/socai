@@ -354,6 +354,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","call_i
 
 event: response.completed
 data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":5}}}
+
 "#;
 
         let parsed =
@@ -855,6 +856,40 @@ struct ResponsesRequest {
     include: Vec<&'static str>,
 }
 
+// Frame decoded SSE data before reading JSON. CRLF is one line ending; bare
+// CR/LF also delimit lines. An unfinished event at EOF is not dispatched.
+fn responses_sse_data(body: &str) -> impl Iterator<Item = String> + '_ {
+    let mut lines = body.split_inclusive(['\r', '\n']);
+    let mut previous_cr = false;
+    let mut data = String::new();
+    std::iter::from_fn(move || {
+        for chunk in lines.by_ref() {
+            let paired_lf = previous_cr && chunk == "\n";
+            previous_cr = chunk.ends_with('\r');
+            if paired_lf {
+                continue;
+            }
+            let line = chunk
+                .strip_suffix('\r')
+                .or_else(|| chunk.strip_suffix('\n'))
+                .unwrap_or(chunk);
+            if line.is_empty() {
+                if !data.is_empty() {
+                    data.pop(); // Remove only the final field-joining LF.
+                    return Some(std::mem::take(&mut data));
+                }
+                continue;
+            }
+            let (field, value) = line.split_once(':').unwrap_or((line, ""));
+            if field == "data" {
+                data.push_str(value.strip_prefix(' ').unwrap_or(value));
+                data.push('\n');
+            }
+        }
+        None
+    })
+}
+
 fn parse_responses_sse(
     body: &str,
     provider: Provider,
@@ -868,14 +903,11 @@ fn parse_responses_sse(
     let mut provider_usage: Option<Value> = None;
     let mut completed = false;
 
-    for line in body.lines() {
-        let Some(data) = line.strip_prefix("data: ") else {
-            continue;
-        };
+    for data in responses_sse_data(body) {
         if data.trim() == "[DONE]" {
             continue;
         }
-        let value: Value = serde_json::from_str(data)?;
+        let value: Value = serde_json::from_str(&data)?;
         match value.get("type").and_then(Value::as_str) {
             Some("response.output_text.delta") => {
                 if let Some(delta) = value.get("delta").and_then(Value::as_str) {
