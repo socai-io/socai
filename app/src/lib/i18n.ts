@@ -447,6 +447,11 @@ const messages = {
     zh: "无法保存设置。",
   },
   "settings.version": { en: "app version", zh: "应用版本" },
+  "settings.wechatGroup": { en: "WeChat user group", zh: "微信用户群" },
+  "settings.wechatGroupQrAlt": {
+    en: "socai WeChat user group QR code",
+    zh: "socai 微信用户群二维码",
+  },
   "settings.loadFailed": {
     en: "could not load settings.",
     zh: "无法加载设置。",

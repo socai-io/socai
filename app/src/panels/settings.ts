@@ -62,6 +62,10 @@ const GEAR_SVG = `
   </svg>
 `;
 
+// Loaded from socai.io so the weekly WeChat group QR refresh reaches installed
+// desktop builds without requiring a new app release.
+const WECHAT_GROUP_QR_URL = "https://socai.io/wechat-group-qr.jpg";
+
 export namespace settingsMenu {
   let open = false;
   let config: DesktopConfig | null = null;
@@ -144,6 +148,7 @@ export namespace settingsMenu {
       return `
         <div class="topbar-popover settings-popover" role="dialog" aria-label="${esc(t("settings.title"))}">
           <p class="t-small subtle result-error">${esc(t("settings.loadFailed"))}</p>
+          ${renderWechatGroup()}
           ${renderVersionFooter()}
         </div>
       `;
@@ -162,6 +167,7 @@ export namespace settingsMenu {
         ${renderChromeGroup(shell)}
         ${renderGeneralGroup(draft)}
         ${renderOutputGroup(config, draft)}
+        ${renderWechatGroup()}
         ${renderStatus()}
         ${renderVersionFooter()}
       </div>
@@ -237,6 +243,26 @@ export namespace settingsMenu {
             <button type="button" class="btn-ghost btn-compact" data-settings-browse="settings-output-dir">${esc(t("settings.browse"))}</button>
           </div>
           <p class="t-small subtle settings-field-hint">${esc(t("settings.outputHint"))}</p>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderWechatGroup(): string {
+    return `
+      <section class="settings-group settings-community">
+        <p class="settings-group-label">${esc(t("settings.wechatGroup"))}</p>
+        <div class="settings-community-qr">
+          <div class="settings-community-qr__frame">
+            <img
+              class="settings-community-qr__img"
+              src="${WECHAT_GROUP_QR_URL}"
+              alt="${esc(t("settings.wechatGroupQrAlt"))}"
+              width="180"
+              height="285"
+              decoding="async"
+            />
+          </div>
         </div>
       </section>
     `;
