@@ -1989,7 +1989,7 @@ fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> V
     // a later request carries tools, not only turns that called a tool.
     if response.thinking_blocks.is_empty()
         && response.reasoning_items.is_empty()
-        && !response.reasoning_content.trim().is_empty()
+        && !response.reasoning_content.is_empty()
     {
         blocks.push(Block::ReasoningContent {
             text: response.reasoning_content.clone(),
